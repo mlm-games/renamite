@@ -1,0 +1,19 @@
+[package]
+name = "renamite-io-lottie"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Lottie (.json / .tgs) import and export for renamite."
+
+[dependencies]
+renamite-model = { path = "../renamite-model" }
+renamite-animation = { path = "../renamite-animation" }
+renamite-geometry = { path = "../renamite-geometry" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+velato = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+
+[features]
+ref-render = ["dep:velato", "dep:vello"]

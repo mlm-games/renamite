@@ -1,0 +1,16 @@
+[package]
+name = "renamite-behavior-canvas"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Canvas tool behaviors: Select, Transform, Pen, PathEdit, shapes."
+
+[dependencies]
+renamite-behavior-common = { path = "../renamite-behavior-common" }
+renamite-history = { path = "../renamite-history" }
+renamite-model = { path = "../renamite-model" }
+renamite-geometry = { path = "../renamite-geometry" }
+renamite-animation = { path = "../renamite-animation" }
+glam.workspace = true
+smallvec.workspace = true
+serde.workspace = true

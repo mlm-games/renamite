@@ -1,0 +1,74 @@
+[workspace]
+resolver = "3"
+members = ["apps/renamite-editor", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/mlm-games/renamite"
+
+[workspace.dependencies]
+
+repose-core = "0.26"
+repose-ui = "0.26"
+repose-material = "0.26"
+repose-canvas = "0.26"
+repose-docking = "0.26"
+repose-platform = "0.26"
+repose-render-wgpu = "0.26"
+repose-text = "0.26"
+repose-app = "0.26"
+repose-tree = "0.26"
+
+
+kurbo = { version = "0.13", features = ["serde"] }
+glam = { version = "0.33", default-features = false, features = [
+    "std",
+    "serde",
+    "f64",
+] }
+lyon_tessellation = "1.0.20"
+lyon_path = "1.0"
+linesweeper = "0.4"
+
+# CI/reference only
+vello = { version = "0.9" }
+velato = { version = "0.11" }
+usvg = { version = "0.48" }
+resvg = { version = "0.48" }
+
+
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+ron = "0.12"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+slotmap = { version = "1.1", features = ["serde"] }
+smallvec = "1.15"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+bytemuck = { version = "1.25", features = ["derive"] }
+rustc-hash = "2.1"
+bitflags = { version = "2", features = ["serde"] }
+
+#TODO: replace with rlobkit-dialogs
+rfd = { version = "0.17" }
+
+[workspace.dependencies.graphite-vector-types]
+package = "vector-types"
+git = "https://github.com/GraphiteEditor/Graphite"
+rev = "<PINNED_COMMIT>"
+default-features = false
+features = ["serde"]
+
+[workspace.dependencies.graphite-core-types]
+package = "core-types"
+git = "https://github.com/GraphiteEditor/Graphite"
+rev = "<SAME_PIN>"
+default-features = false
+features = ["serde"]
+
+[profile.release]
+lto = "thin"

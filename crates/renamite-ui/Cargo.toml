@@ -1,0 +1,24 @@
+[package]
+name = "renamite-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Material shell + panels for renamite, built on Repose."
+
+[dependencies]
+repose-core.workspace = true
+repose-ui.workspace = true
+repose-material.workspace = true
+repose-docking.workspace = true
+repose-canvas.workspace = true
+repose-tree.workspace = true
+repose-text.workspace = true
+renamite-behavior-common = { path = "../renamite-behavior-common" }
+renamite-behavior-canvas = { path = "../renamite-behavior-canvas" }
+renamite-behavior-timeline = { path = "../renamite-behavior-timeline" }
+renamite-model = { path = "../renamite-model" }
+renamite-history = { path = "../renamite-history" }
+renamite-animation = { path = "../renamite-animation" }
+renamite-render-bridge = { path = "../renamite-render-bridge" }
+renamite-platform = { path = "../renamite-platform" }
+serde.workspace = true

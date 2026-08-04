@@ -1,0 +1,22 @@
+[package]
+name = "renamite-test-support"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Fixtures, scene snapshots, and proptest helpers for renamite tests."
+
+[dependencies]
+renamite-model = { path = "../renamite-model" }
+renamite-history = { path = "../renamite-history" }
+renamite-animation = { path = "../renamite-animation" }
+renamite-geometry = { path = "../renamite-geometry" }
+renamite-behavior-common = { path = "../renamite-behavior-common" }
+renamite-behavior-canvas = { path = "../renamite-behavior-canvas" }
+renamite-behavior-timeline = { path = "../renamite-behavior-timeline" }
+serde_json.workspace = true
+serde.workspace = true
+proptest = { version = "1", optional = true }
+
+[features]
+proptest = ["dep:proptest"]

@@ -1,0 +1,18 @@
+[package]
+name = "renamite-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Files, clipboard, and autosave backends for renamite."
+
+[dependencies]
+serde.workspace = true
+rfd = { workspace = true, optional = true }
+web-sys = { version = "0.3", optional = true }
+
+[features]
+native = ["dep:rfd"]
+web = ["dep:web-sys"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Blob", "Url", "File"] }

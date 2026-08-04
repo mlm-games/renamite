@@ -1,0 +1,2 @@
+[toolchain]
+channel = "1.93"   # or "beta" to track Repose; keep CI matrix explicit
