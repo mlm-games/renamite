@@ -1,6 +1,6 @@
 use glam::DVec2;
-use renamite_behavior_canvas::{CanvasEvent, PointerButton};
-use renamite_behavior_common::ViewTransform;
+use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolOverlay};
+use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform};
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::input::{PointerEvent, PointerEventKind};
@@ -98,6 +98,22 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 let view = s.viewport.view;
                 let prepared = s.renderer.prepare(&scene, &view);
                 s.renderer.paint_prepared(&prepared, scope);
+
+                let overlay = {
+                    let ctx = ToolContext {
+                        doc: &s.file.document,
+                        scene: &scene,
+                        comp: s.file.document.main,
+                        selection: &s.selection,
+                        playhead: renamite_animation::Frame(s.playback.head as i64),
+                        record: false,
+                        view,
+                        snap: SnapConfig { grid: None, anchor: false, guide: false },
+                        modifiers: Modifiers::none(),
+                    };
+                    s.tool.overlay(s.active_tool, &ctx)
+                };
+                paint_overlay(scope, &overlay, &view);
             },
         ),
         ViewportControls(session),
@@ -226,5 +242,48 @@ fn map_button(pe: &PointerEvent) -> PointerButton {
             repose_core::input::PointerButton::Tertiary => PointerButton::Middle,
         },
         _ => PointerButton::Primary,
+    }
+}
+
+fn to_screen_rect(min: DVec2, max: DVec2, view: &ViewTransform) -> Rect {
+    let a = view.world_to_screen(min);
+    let b = view.world_to_screen(max);
+    Rect {
+        x: a.x as f32,
+        y: a.y as f32,
+        w: (b.x - a.x) as f32,
+        h: (b.y - a.y) as f32,
+    }
+}
+
+/// Tool overlay primitives (selection bounds, rubber band, shape preview).
+fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransform) {
+    let th = theme();
+    let primary = th.primary;
+    match overlay {
+        ToolOverlay::None => {}
+        ToolOverlay::RubberBand { min, max } => {
+            let r = to_screen_rect(*min, *max, view);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+        }
+        ToolOverlay::Selection { min, max, rotate, scale } => {
+            let r = to_screen_rect(*min, *max, view);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+            for p in [rotate, scale] {
+                let sp = view.world_to_screen(*p);
+                let rect = Rect {
+                    x: sp.x as f32 - 4.0,
+                    y: sp.y as f32 - 4.0,
+                    w: 8.0,
+                    h: 8.0,
+                };
+                scope.draw_rect(rect, th.on_primary, 2.0);
+                scope.draw_rect_stroke(rect, primary, 2.0, 1.0);
+            }
+        }
+        ToolOverlay::ShapePreview { min, max, .. } => {
+            let r = to_screen_rect(*min, *max, view);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+        }
     }
 }

@@ -14,11 +14,14 @@
 
 
 use glam::DVec2;
-use kurbo::{BezPath, ParamCurveNearest, Point, Shape};
 use renamite_animation::{FrameRate, LoopMode, PlayState, Playback};
 use renamite_io_ren::RenFile;
 use renamite_machine::{MachineId, MachineInstance, PointerEventKind};
-use renamite_model::{evaluate_with, CompId, FillRule, NodeId, Overrides, PaintKind, Scene};
+use renamite_model::{
+    evaluate_with, pick, CompId, NodeId, Overrides, Scene,
+};
+
+pub use renamite_model::{nodes_bounds, pick_box};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlayerError {
@@ -296,50 +299,9 @@ impl Engine {
     }
 }
 
-/// Topmost pickable item under `pt` (world space). Rules:
-/// bbox fast-reject (inflated by half stroke width) → clip-mask reject →
-/// fill-rule-correct containment for fills, distance ≤ half width for strokes.
-/// Items with zero opacity never capture the pointer.
-pub fn pick(scene: &Scene, pt: DVec2) -> Option<NodeId> {
-    let q = Point::new(pt.x, pt.y);
-    for item in scene.items.iter().rev() {
-        if item.opacity <= 0.0 {
-            continue;
-        }
-        let pad = match &item.kind {
-            PaintKind::Stroke(s) => (s.width * 0.5).max(1.0),
-            PaintKind::Fill(_) => 0.0,
-        };
-        if !item.path.bounding_box().inflate(pad, pad).contains(q) {
-            continue;
-        }
-        if let Some(ci) = item.clip {
-            match scene.clips.get(ci as usize) {
-                Some(c) if c.path.contains(q) => {}
-                _ => continue, // clipped away (or dangling index): not pickable
-            }
-        }
-        let hit = match &item.kind {
-            PaintKind::Fill(rule) => match rule {
-                FillRule::NonZero => item.path.winding(q) != 0,
-                FillRule::EvenOdd => item.path.winding(q) % 2 != 0,
-            },
-            PaintKind::Stroke(_) => nearest_dist(&item.path, q) <= pad,
-        };
-        if hit {
-            return Some(item.node);
-        }
-    }
-    None
-}
-
-fn nearest_dist(path: &BezPath, q: Point) -> f64 {
-    let mut best = f64::MAX;
-    for seg in path.segments() {
-        best = best.min(seg.nearest(q, 1e-6).distance_sq);
-    }
-    best.sqrt()
-}
+/// Topmost pickable item under `pt` (world space). Moved to `renamite-model`
+/// so canvas behaviors can hit-test without pulling the player in.
+/// See [`renamite_model::pick`].
 
 /// Self-contained player: owns the project, hides the borrow plumbing.
 pub struct Player {
@@ -409,14 +371,15 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kurbo::Shape;
     use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
     use renamite_machine::{
         Clip, ClipMap, Condition, InputDef, InputKind, Listener, ListenerAction, Machine,
         MachineLayer, MachineMap, State, StateKind, Track, Transition,
     };
     use renamite_model::{
-        BlendMode, ClipPath, Color, Document, KeyframeData, Node, NodeKind, Paint, Parent,
-        PropPath, SceneItem, ShapeKind, StyleKind, Value,
+        BlendMode, ClipPath, Color, Document, FillRule, KeyframeData, Node, NodeKind, Paint,
+        PaintKind, Parent, PropPath, SceneItem, ShapeKind, StyleKind, Value,
     };
 
     fn rect_kind(size: f64) -> NodeKind {

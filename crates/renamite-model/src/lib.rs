@@ -5,7 +5,7 @@
 //! is in painter's order. Nodes live in a slotmap arena; tree membership is
 //! attach/detach so undo/redo never changes a NodeId.
 
-use kurbo::{Affine, BezPath, Point, Shape as KurboShape};
+use kurbo::{Affine, BezPath, Point, ParamCurveNearest, Shape as KurboShape};
 use renamite_animation::{
     Angle, Animated, AnimatedTransform, EasingHandle, Frame, Interpolation, Tween,
 };
@@ -545,6 +545,84 @@ pub enum Value {
     I64(i64),
 }
 
+/// Topmost pickable item under `pt` (world space).
+pub fn pick(scene: &Scene, pt: glam::DVec2) -> Option<NodeId> {
+    let q = Point::new(pt.x, pt.y);
+    for item in scene.items.iter().rev() {
+        if item.opacity <= 0.0 {
+            continue;
+        }
+        let pad = match &item.kind {
+            PaintKind::Stroke(s) => (s.width * 0.5).max(1.0),
+            PaintKind::Fill(_) => 0.0,
+        };
+        if !item.path.bounding_box().inflate(pad, pad).contains(q) {
+            continue;
+        }
+        if let Some(ci) = item.clip {
+            match scene.clips.get(ci as usize) {
+                Some(c) if c.path.contains(q) => {}
+                _ => continue, // clipped away (or dangling index): not pickable
+            }
+        }
+        let hit = match &item.kind {
+            PaintKind::Fill(rule) => match rule {
+                FillRule::NonZero => item.path.winding(q) != 0,
+                FillRule::EvenOdd => item.path.winding(q) % 2 != 0,
+            },
+            PaintKind::Stroke(_) => nearest_dist(&item.path, q) <= pad,
+        };
+        if hit {
+            return Some(item.node);
+        }
+    }
+    None
+}
+
+fn nearest_dist(path: &BezPath, q: Point) -> f64 {
+    let mut best = f64::MAX;
+    for seg in path.segments() {
+        best = best.min(seg.nearest(q, 1e-6).distance_sq);
+    }
+    best.sqrt()
+}
+
+/// Nodes whose geometry is FULLY CONTAINED in the box (rubber-band semantics).
+pub fn pick_box(scene: &Scene, min: glam::DVec2, max: glam::DVec2) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    for item in &scene.items {
+        if item.opacity <= 0.0 {
+            continue;
+        }
+        let bb = item.path.bounding_box();
+        if bb.x0 >= min.x
+            && bb.x1 <= max.x
+            && bb.y0 >= min.y
+            && bb.y1 <= max.y
+            && !out.contains(&item.node)
+        {
+            out.push(item.node);
+        }
+    }
+    out
+}
+
+/// Union bbox of all items belonging to `nodes` (selection bounds).
+pub fn nodes_bounds(
+    scene: &Scene,
+    nodes: &[NodeId],
+) -> Option<(glam::DVec2, glam::DVec2)> {
+    let mut acc: Option<kurbo::Rect> = None;
+    for item in &scene.items {
+        if !nodes.contains(&item.node) {
+            continue;
+        }
+        let bb = item.path.bounding_box();
+        acc = Some(acc.map_or(bb, |a| a.union(bb)));
+    }
+    acc.map(|r| (glam::DVec2::new(r.x0, r.y0), glam::DVec2::new(r.x1, r.y1)))
+}
+
 /// Serialized keyframe (for RestoreKeyframe / undo).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KeyframeData {
@@ -895,5 +973,29 @@ mod tests {
         let a = evaluate(&doc, doc.main, 0.0);
         let b = evaluate_with(&doc, doc.main, 0.0, &Overrides::default());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pick_hits_center_and_misses_outside() {
+        let (doc, shape) = doc_with_ellipse_and_fill();
+        let scene = evaluate(&doc, doc.main, 0.0);
+        assert_eq!(pick(&scene, DVec2::ZERO), Some(shape));
+        assert_eq!(pick(&scene, DVec2::new(500.0, 500.0)), None);
+    }
+
+    #[test]
+    fn pick_box_contains_fully() {
+        let (doc, shape) = doc_with_ellipse_and_fill();
+        let scene = evaluate(&doc, doc.main, 0.0);
+        let picked = pick_box(&scene, DVec2::splat(-200.0), DVec2::splat(200.0));
+        assert_eq!(picked, vec![shape]);
+    }
+
+    #[test]
+    fn nodes_bounds_unions_selected() {
+        let (doc, shape) = doc_with_ellipse_and_fill();
+        let scene = evaluate(&doc, doc.main, 0.0);
+        let (min, max) = nodes_bounds(&scene, &[shape]).unwrap();
+        assert!(min.x <= 0.0 && max.x >= 0.0, "bounds must cover the ellipse center");
     }
 }

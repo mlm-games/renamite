@@ -3138,6 +3138,7 @@ dependencies = [
  "renamite-behavior-common",
  "renamite-geometry",
  "renamite-history",
+ "renamite-machine",
  "renamite-model",
  "serde",
  "smallvec",

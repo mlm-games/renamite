@@ -4,7 +4,7 @@ use std::rc::Rc;
 use glam::DVec2;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
-use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolBehavior};
+use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
     TimelineScrubBehavior, TimelineTarget,
@@ -42,7 +42,7 @@ pub struct Session {
     pub active_page: PanelPage,
     pub playback: Playback,
     pub playing: bool,
-    pub tool: ToolBehavior,
+    pub tool: ToolSet,
     pub keys: TimelineKeyframeBehavior,
     pub scrub: TimelineScrubBehavior,
     pub renderer: SceneRenderer,
@@ -70,7 +70,7 @@ impl Session {
                 dir: 1.0,
             },
             playing: false,
-            tool: ToolBehavior::default(),
+            tool: ToolSet::default(),
             keys: TimelineKeyframeBehavior::default(),
             scrub: TimelineScrubBehavior::default(),
             renderer: SceneRenderer::new(),
@@ -93,7 +93,10 @@ impl Session {
                 }
                 ToolOutput::Commands(cmds) => {
                     for c in cmds {
-                        apply_cmd(&mut self.history, &mut self.file, Some(c));
+                        if let Some(id) = self.history_apply(c) {
+                            // Select what shape tools create.
+                            self.selection.nodes = vec![id];
+                        }
                     }
                     self.bump();
                 }
@@ -102,6 +105,7 @@ impl Session {
                     self.engine.scrub(&self.file, f);
                     self.bump();
                 }
+                ToolOutput::SwitchTool(t) => self.active_tool = t,
                 ToolOutput::RequestSelection(ch) => match ch {
                     renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
                     renamite_history::SelectionChange::Toggle(id) => {
@@ -121,6 +125,14 @@ impl Session {
         self.engine.reevaluate(&self.file);
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    /// Apply one command; returns the created node id, if any.
+    pub fn history_apply(&mut self, cmd: renamite_history::EditorCommand) -> Option<renamite_model::NodeId> {
+        let his = &mut self.history;
+        let file = &mut self.file;
+        let mut pm = pm_from(file);
+        his.apply(&mut pm, cmd).ok().and_then(|a| a.created)
     }
 
     /// Called by the `animation_driver` tick each frame. Returns true while playing.
@@ -322,38 +334,22 @@ pub fn map_button(pe: &PointerEvent) -> PointerButton {
     }
 }
 
-fn toolbar_toolctx<'a>(
-    doc: &'a renamite_model::Document,
-    comp: renamite_model::CompId,
-    selection: &'a Selection,
-    playback: &'a Playback,
-    view: ViewTransform,
-) -> ToolContext<'a> {
-    ToolContext {
-        doc,
-        comp,
-        selection,
-        playhead: Frame(playback.head as i64),
-        record: false,
-        view,
-        snap: SnapConfig {
-            grid: None,
-            anchor: false,
-            guide: false,
-        },
-        modifiers: Modifiers::none(),
-    }
-}
-
 pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent) {
-    let ctx = toolbar_toolctx(
-        &s.file.document,
-        s.file.document.main,
-        &s.selection,
-        &s.playback,
-        s.viewport.view,
-    );
-    let outs = s.tool.handle(&ctx, ev);
+    let outs = {
+        let Session { file, engine, selection, playback, viewport, tool, active_tool, .. } = s;
+        let ctx = ToolContext {
+            doc: &file.document,
+            scene: engine.scene(),
+            comp: file.document.main,
+            selection,
+            playhead: Frame(playback.head as i64),
+            record: false, // TODO: wire record toggle
+            view: viewport.view,
+            snap: SnapConfig { grid: None, anchor: false, guide: false },
+            modifiers: Modifiers::none(), // TODO: map from PointerEvent when Repose exposes them
+        };
+        tool.handle(*active_tool, &ctx, ev)
+    };
     s.apply_outputs(outs);
 }
 

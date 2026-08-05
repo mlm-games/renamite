@@ -70,6 +70,8 @@ pub struct SnapConfig {
 
 pub struct ToolContext<'a> {
     pub doc: &'a Document,
+    /// Evaluated frame currently on screen — the hit-test surface.
+    pub scene: &'a renamite_model::Scene,
     pub comp: CompId,
     pub selection: &'a Selection,
     pub playhead: Frame,

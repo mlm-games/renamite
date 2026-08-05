@@ -14,3 +14,6 @@ renamite-animation.workspace = true
 glam.workspace = true
 smallvec.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+renamite-machine.workspace = true
