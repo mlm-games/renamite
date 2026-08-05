@@ -146,6 +146,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,6 +192,56 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
+dependencies = [
+ "anstyle",
+ "anstyle-parse",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "anstyle-parse"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-query"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "anstyle-wincon"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+dependencies = [
+ "anstyle",
+ "once_cell_polyfill",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -634,6 +693,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -746,6 +811,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -841,6 +937,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "env_filter"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "jiff",
+ "log",
 ]
 
 [[package]]
@@ -1544,10 +1663,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "is_terminal_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "0.2.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "668b7183bd07af9a4885f5c35b0cc5c83c4607a913c16b7e17291832910d2dcc"
+dependencies = [
+ "defmt",
+ "jiff-core",
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7feca88439efe53da3754500c1851dedf3cb36c524dd5cf8225cc0794de95d09"
+dependencies = [
+ "defmt",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a69dcb3a21cfb32ce1cd056169337ca284af0766dd766e7878819b251a49204"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "jni"
@@ -2284,6 +2445,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "once_cell_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2843,6 +3010,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2900,14 +3090,11 @@ dependencies = [
 name = "renamite-editor"
 version = "0.1.0"
 dependencies = [
- "renamite-model",
- "renamite-platform",
+ "anyhow",
+ "env_logger",
  "renamite-ui",
- "repose-app",
  "repose-core",
  "repose-platform",
- "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -3047,9 +3234,8 @@ dependencies = [
  "renamite-geometry",
  "renamite-model",
  "repose-canvas",
- "repose-render-wgpu",
+ "repose-core",
  "rustc-hash 2.1.3",
- "serde",
 ]
 
 [[package]]
@@ -3074,22 +3260,25 @@ dependencies = [
 name = "renamite-ui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "glam",
  "renamite-animation",
  "renamite-behavior-canvas",
  "renamite-behavior-common",
  "renamite-behavior-timeline",
  "renamite-history",
+ "renamite-io-ren",
+ "renamite-machine",
  "renamite-model",
- "renamite-platform",
+ "renamite-player",
  "renamite-render-bridge",
  "repose-canvas",
  "repose-core",
  "repose-docking",
  "repose-material",
- "repose-text",
- "repose-tree",
+ "repose-platform",
  "repose-ui",
- "serde",
+ "smallvec",
 ]
 
 [[package]]
@@ -3100,9 +3289,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repose-app"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde328c09796580d1d1ef26ea1b81e7e62ba734710e23292f7da7d9251f7e073"
+checksum = "cc7423d0f1f5e061616416b67ee6d41f7dcc90a3d3b91ab252b3c2ed2a383896"
 dependencies = [
  "log",
  "repose-core",
@@ -3114,9 +3303,9 @@ dependencies = [
 
 [[package]]
 name = "repose-canvas"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8966fcaff6dfd64fca23284d57263c79933ead0ef7cbea666d93aa3155c5c9ad"
+checksum = "a86a91cef490bc0dc5ba7d6403d89a61104b82fcacf1f42bcd358e961c5ce61c"
 dependencies = [
  "repose-core",
  "repose-ui",
@@ -3124,9 +3313,9 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb0c6067c9d43b38c3f771e5a7061ae327ccecc6b5ea47f16bd2fa8c662a2aad"
+checksum = "c4ce88fc67a7cc7ca23c73d79475a316420a42f167fc92af7605e4e479b2453a"
 dependencies = [
  "accesskit",
  "bitflags 2.13.1",
@@ -3143,9 +3332,9 @@ dependencies = [
 
 [[package]]
 name = "repose-devtools"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cd8c1624e93b54f768ac14cb9d3c76f8994b623a9e0e728e5e9603208df7ba4"
+checksum = "89890fbc32666b05c13a457684bd1397a6bd608edc821b1c4bc59f969ccb6944"
 dependencies = [
  "log",
  "repose-core",
@@ -3154,9 +3343,9 @@ dependencies = [
 
 [[package]]
 name = "repose-docking"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c737a9ad0601d43cb4e6991f93d102be4e03194b0c043a819ce7791753f2edc8"
+checksum = "624c5e884d92a4c4344ac9b1aab673d01bd5633462057c6eb049e19f001fe64d"
 dependencies = [
  "log",
  "repose-core",
@@ -3165,9 +3354,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcde7a6e79ed6d0c652b955c2026c9e04f238f8e135273bc44a86fc4c359e6d5"
+checksum = "25dc01d921166448d46ee4b4c34d9cc3c4cc14c14625ce5f058dc2667ff3438e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3176,9 +3365,9 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "846ee9bebb0dc322d86cd0ec558c9d64de0d617f3cc2c8dbbc16e182728a0c09"
+checksum = "a8938182df831339c963f2bb0bf8233d07ccc41870920bd8dea2cd6f381050d7"
 dependencies = [
  "repose-core",
  "repose-text",
@@ -3188,9 +3377,9 @@ dependencies = [
 
 [[package]]
 name = "repose-navigation"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3c731f3f14e97bf7f771876aae9b5c347ce21d095c1c395fb9a633f9298f9be"
+checksum = "7315d3b09b3af95603f1730dbec3dbb157d3f44d534826597829e2835de1bb45"
 dependencies = [
  "log",
  "repose-core",
@@ -3201,9 +3390,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b03fa1a784d9c9229c62d18af798c2e78394d5386943ff1678af7601d917632e"
+checksum = "af6bb6a41fabdf0767149abde08b74effbf1a0eeb7e89c45a4d332032afa0ce0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3231,9 +3420,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f4d9dd4f4ae1286281d06023ec4a28ad89bb57a1eab5d35830a02e5d65455ee"
+checksum = "76c6411dfc11e09fcad63dc93da699096cdb9476aee04dd90c1a296f1f7bdc2a"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3250,9 +3439,9 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e92fc051408548c141f8741919e88c62c962750c9b041ac3e92851a516b37924"
+checksum = "0c97c64fc6b43eafc2fcf0c9597aa2ff37603e804958a337074b8c0f3d15b6f3"
 dependencies = [
  "font-awl",
  "log",
@@ -3266,9 +3455,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ed53905c5b2f47cd41ddbabd79f4b57317953e1f1fd21c6b9982312ddd72f47"
+checksum = "578ed5590f17e589f1d8ed3b686e22cbc72f9e988a9fc4df9e5c9104b065614c"
 dependencies = [
  "log",
  "rapidhash",
@@ -3280,9 +3469,9 @@ dependencies = [
 
 [[package]]
 name = "repose-ui"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8d6f0315de33ce762b90c826144c4957d02ed6185385afe75002d8da6a52895"
+checksum = "046e03b6ad91de9a3556471a6db1edb60629196c5b66b59baf8cc02f9b758942"
 dependencies = [
  "log",
  "repose-core",
@@ -4105,6 +4294,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
+name = "utf8parse"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
 name = "uuid"
 version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4394,9 +4589,9 @@ dependencies = [
 
 [[package]]
 name = "webbrowser"
-version = "1.2.3"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d6eb50cc7b133f0c7720a64661fbd8e520b882f8ab9015deea5e00d5cd809c4"
+checksum = "62c35be770821a214dbc362fc26908c853e776c0004294d0b10b8a6bad582f94"
 dependencies = [
  "jni",
  "log",

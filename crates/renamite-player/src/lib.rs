@@ -351,8 +351,6 @@ fn nearest_dist(path: &BezPath, q: Point) -> f64 {
     best.sqrt()
 }
 
-// ================= owning wrapper for embedders =================
-
 /// Self-contained player: owns the project, hides the borrow plumbing.
 pub struct Player {
     pub project: RenFile,
