@@ -48,6 +48,7 @@ postcard = { version = "1.1.3", default-features = false, features = [
 ] }
 slotmap = { version = "1.1", features = ["serde"] }
 smallvec = "1.15"
+proptest = "1"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"

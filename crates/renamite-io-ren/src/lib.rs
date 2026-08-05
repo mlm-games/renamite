@@ -4,9 +4,10 @@
 //! RON gives: comments in source files, trailing commas, real enum syntax
 //! (`Clip(clip: ..., loop_mode: Loop)`), and clean git diffs. (for a better alternative to .riv)
 
-use renamite_machine::{ClipMap, MachineId, MachineMap};
+use renamite_machine::{ClipId, ClipMap, MachineId, MachineMap, StateKind};
 use renamite_model::Document;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 pub const EXT: &str = "ren";
 pub const EXT_BINARY: &str = "renb";
@@ -26,6 +27,13 @@ pub struct RenFile {
     /// Machine auto-started by runtimes/preview (None = plain timeline playback).
     #[serde(default)]
     pub start_machine: Option<MachineId>,
+    /// Attached/live clips in UI order. Arena entries outside this vec are undo
+    /// history; `garbage_collect` drops them before save.
+    #[serde(default)]
+    pub clip_order: Vec<ClipId>,
+    /// Attached/live machines in UI order.
+    #[serde(default)]
+    pub machine_order: Vec<MachineId>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -44,7 +52,65 @@ impl RenFile {
             clips: ClipMap::default(),
             machines: MachineMap::default(),
             start_machine: None,
+            clip_order: Vec::new(),
+            machine_order: Vec::new(),
         }
+    }
+
+    /// Repair invariants after parsing (legacy files predate order vecs).
+    pub fn normalize(&mut self) {
+        self.clip_order.retain(|id| self.clips.contains_key(*id));
+        let seen: HashSet<_> = self.clip_order.iter().copied().collect();
+        for id in self.clips.keys() {
+            if !seen.contains(&id) {
+                self.clip_order.push(id);
+            }
+        }
+        self.machine_order.retain(|id| self.machines.contains_key(*id));
+        let seen: HashSet<_> = self.machine_order.iter().copied().collect();
+        for id in self.machines.keys() {
+            if !seen.contains(&id) {
+                self.machine_order.push(id);
+            }
+        }
+        if let Some(s) = self.start_machine {
+            if !self.machines.contains_key(s) {
+                self.start_machine = None;
+            }
+        }
+    }
+
+    /// Drop arena entries not reachable from the order vecs. Mirror of
+    /// Document::garbage_collect.
+    pub fn garbage_collect(&mut self) {
+        let live_m: HashSet<_> = self.machine_order.iter().copied().collect();
+        self.machines.retain(|id, _| live_m.contains(&id));
+        if let Some(s) = self.start_machine {
+            if !self.machines.contains_key(s) {
+                self.start_machine = None;
+            }
+        }
+        let mut live_c: HashSet<_> = self.clip_order.iter().copied().collect();
+        for m in self.machines.values() {
+            for layer in &m.layers {
+                for state in &layer.states {
+                    match &state.kind {
+                        StateKind::Clip { clip, .. } => {
+                            live_c.insert(*clip);
+                        }
+                        StateKind::Blend1D { children, .. } => {
+                            for ch in children {
+                                live_c.insert(ch.clip);
+                            }
+                        }
+                        StateKind::Empty => {}
+                    }
+                }
+            }
+        }
+        self.clips.retain(|id, _| live_c.contains(&id));
+        self.clip_order.retain(|id| self.clips.contains_key(*id));
+        self.document.garbage_collect();
     }
 }
 
@@ -80,7 +146,9 @@ pub fn open(text: &str) -> Result<RenFile, RenError> {
         return Err(RenError::UnsupportedVersion(version));
     }
     // v1: no migrations yet. When v2 lands: migrate the Value, then type.
-    Ok(ron::from_str(text)?)
+    let mut file: RenFile = ron::from_str(text)?;
+    file.normalize();
+    Ok(file)
 }
 
 fn peek_version(v: &ron::value::Value) -> Option<i64> {
@@ -117,12 +185,15 @@ pub fn open_binary(bytes: &[u8]) -> Result<RenFile, RenError> {
     if &magic[..4] != RENB_MAGIC { return Err(RenError::BadMagic); }
     let version = u32::from_le_bytes(magic[4..8].try_into().unwrap());
     if version > CURRENT_VERSION { return Err(RenError::UnsupportedVersion(version)); }
-    Ok(postcard::from_bytes(rest)?)
+    let mut file: RenFile = postcard::from_bytes(rest)?;
+    file.normalize();
+    Ok(file)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use renamite_animation::{Frame, LoopMode};
 
     #[test]
     fn ron_roundtrip() {
@@ -151,5 +222,69 @@ mod tests {
         let f = RenFile::new(renamite_model::Document::empty(), "bin");
         let back = open_binary(&save_binary(&f).unwrap()).unwrap();
         assert_eq!(back.meta.name, "bin");
+    }
+
+    #[test]
+    fn legacy_file_without_order_gets_normalized() {
+        use renamite_machine::{Clip, Machine};
+        let mut f = RenFile::new(renamite_model::Document::empty(), "legacy");
+        let cid = f.clips.insert(Clip {
+            name: "c".into(),
+            range: (Frame(0), Frame(10)),
+            tracks: vec![],
+            events: vec![],
+        });
+        let mid = f.machines.insert(Machine {
+            name: "m".into(),
+            inputs: vec![],
+            layers: vec![],
+            listeners: vec![],
+        });
+        let text = save(&f).unwrap();
+        // Simulate a legacy v1 file that predates the order vecs.
+        let text = text
+            .replace("    clip_order: [],\n", "")
+            .replace("    machine_order: [],\n", "");
+        assert!(!text.contains("clip_order"));
+        let back = open(&text).unwrap();
+        assert_eq!(back.clip_order, vec![cid]);
+        assert_eq!(back.machine_order, vec![mid]);
+        assert_eq!(back.clips.len(), 1);
+        assert_eq!(back.machines.len(), 1);
+    }
+
+    #[test]
+    fn gc_keeps_machine_referenced_detached_clip() {
+        use renamite_machine::{MachineLayer, State};
+        let mut f = RenFile::new(renamite_model::Document::empty(), "gc");
+        let cid = f.clips.insert(renamite_machine::Clip {
+            name: "c".into(),
+            range: (Frame(0), Frame(10)),
+            tracks: vec![],
+            events: vec![],
+        });
+        let mid = f.machines.insert(renamite_machine::Machine {
+            name: "m".into(),
+            inputs: vec![],
+            listeners: vec![],
+            layers: vec![MachineLayer {
+                name: "base".into(),
+                entry: 0,
+                any_transitions: vec![],
+                states: vec![State {
+                    name: "play".into(),
+                    kind: StateKind::Clip { clip: cid, speed: 1.0, loop_mode: LoopMode::Once },
+                    transitions: vec![],
+                }],
+            }],
+        });
+        f.clip_order.push(cid);
+        f.machine_order.push(mid);
+        // Detach the clip (drop from order) but keep it in the arena.
+        f.clip_order.clear();
+        f.garbage_collect();
+        assert!(f.clips.contains_key(cid)); // referenced by machine -> kept
+        assert!(!f.clip_order.contains(&cid)); // still detached
+        assert!(f.machines.contains_key(mid));
     }
 }

@@ -16,3 +16,6 @@ postcard = { workspace = true, optional = true }
 [features]
 default = []
 binary = ["dep:postcard"]
+
+[dev-dependencies]
+renamite-animation.workspace = true
