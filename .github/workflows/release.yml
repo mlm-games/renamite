@@ -1,0 +1,32 @@
+name: Release Editor Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Version to build (informational; rust-app-release reads Cargo.toml)"
+        required: false
+        type: string
+      mark_prerelease:
+        description: "Mark as prerelease"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-editor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: mlm-games/ci/.github/workflows/rust-app-release.yml@v1
+    with:
+      working-directory: .
+      app-name: "renamite"
+      app-slug: "renamite"
+      # crate-publish already bumped + tagged; build the editor at that version.
+      bump-type: none
+      prerelease: ${{ inputs.mark_prerelease }}
+      generate-release-notes: true
+      changelog-path: "CHANGELOG.md"
+    secrets: inherit
