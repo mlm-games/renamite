@@ -11,7 +11,7 @@ use renamite_behavior_timeline::{
 };
 use renamite_history::{History, OutputVec, ProjectMut, ToolId, ToolOutput};
 use renamite_io_ren::RenFile;
-use renamite_model::PropPath;
+use renamite_model::{PropPath, Value};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
@@ -54,6 +54,20 @@ pub struct Session {
     pub layer_drag: Option<LayerDragState>,
     /// Rename-in-progress: node id + draft text (view state).
     pub renaming: Option<(renamite_model::NodeId, String)>,
+    /// Properties → write keys at playhead even when the prop isn't animated.
+    pub record: bool,
+    /// Active pointer-drag on a Properties number field (view state).
+    pub inspector_drag: Option<InspectorDrag>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InspectorDrag {
+    pub path: PropPath,
+    /// DVec2: 0 = x, 1 = y; F64/Angle: 0; Color: 0..3 = r/g/b/a.
+    pub channel: usize,
+    pub origin_value: Value,
+    pub press_x: f32,
+    pub txn: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +107,8 @@ impl Session {
             expanded_layers: std::collections::HashSet::new(),
             layer_drag: None,
             renaming: None,
+            record: false,
+            inspector_drag: None,
         }
     }
 
@@ -149,7 +165,7 @@ impl Session {
     }
 
     /// Auto-expand ancestor groups so a selected (possibly nested) node's
-    /// layers row becomes visible. View state only — not undoable.
+    /// layers row becomes visible. View state only - not undoable.
     pub fn ensure_selection_visible(&mut self) {
         for &id in &self.selection.nodes {
             let mut walk = id;
@@ -373,14 +389,14 @@ pub fn map_button(pe: &PointerEvent) -> PointerButton {
 
 pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent) {
     let outs = {
-        let Session { file, engine, selection, playback, viewport, tool, active_tool, .. } = s;
+        let Session { file, engine, selection, playback, viewport, tool, active_tool, record, .. } = s;
         let ctx = ToolContext {
             doc: &file.document,
             scene: engine.scene(),
             comp: file.document.main,
             selection,
             playhead: Frame(playback.head as i64),
-            record: false, // TODO: wire record toggle
+            record: *record,
             view: viewport.view,
             snap: SnapConfig { grid: None, anchor: false, guide: false },
             modifiers: Modifiers::none(), // TODO: map from PointerEvent when Repose exposes them

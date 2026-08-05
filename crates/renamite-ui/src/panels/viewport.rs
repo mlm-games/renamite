@@ -106,7 +106,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         comp: s.file.document.main,
                         selection: &s.selection,
                         playhead: renamite_animation::Frame(s.playback.head as i64),
-                        record: false,
+                        record: s.record,
                         view,
                         snap: SnapConfig { grid: None, anchor: false, guide: false },
                         modifiers: Modifiers::none(),

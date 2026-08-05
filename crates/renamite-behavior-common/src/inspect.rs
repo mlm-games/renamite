@@ -1,0 +1,430 @@
+//! Property inspector: descriptors, diamond state, edit commands.
+//!
+//! Pure, headless-testable helpers the Properties panel renders. Descriptors
+//! are a fixed table per `NodeKind` (plus always-on transform/opacity) mapped
+//! to `PropPath`s that match `Document::prop_mut`.
+
+use renamite_animation::Frame;
+use renamite_history::{EditorCommand, resolve_property_edit};
+use renamite_model::{
+    Document, ModifierKind, NodeId, NodeKind, PropPath, ShapeKind, StyleKind, Value,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PropKind {
+    F64 {
+        min: Option<f64>,
+        max: Option<f64>,
+        step: f64,
+    },
+    DVec2,
+    Angle, // degrees
+    Color,
+    Bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropDescriptor {
+    pub path: PropPath,
+    pub label: &'static str,
+    pub kind: PropKind,
+    /// Section header grouping ("Transform", "Shape", …).
+    pub section: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiamondState {
+    /// No keys on this prop.
+    Empty,
+    /// Keys exist, none at playhead.
+    HasKeys,
+    /// Key exactly at playhead.
+    AtPlayhead,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropRow {
+    pub desc: PropDescriptor,
+    pub value: Value,
+    pub diamond: DiamondState,
+    pub animated: bool,
+}
+
+/// Properties shown for a single selected node (empty if missing).
+pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRow> {
+    let Some(node) = doc.nodes.get(id) else {
+        return vec![];
+    };
+    descriptors_for(&node.kind)
+        .into_iter()
+        .filter_map(|desc| {
+            let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
+            let animated = doc.property_is_animated(id, &desc.path);
+            let diamond = diamond_state(doc, id, &desc.path, playhead, animated);
+            Some(PropRow {
+                desc,
+                value,
+                diamond,
+                animated,
+            })
+        })
+        .collect()
+}
+
+fn diamond_state(
+    doc: &Document,
+    id: NodeId,
+    path: &PropPath,
+    playhead: Frame,
+    animated: bool,
+) -> DiamondState {
+    if !animated {
+        return DiamondState::Empty;
+    }
+    if doc.keyframe_data(id, path, playhead).is_some() {
+        DiamondState::AtPlayhead
+    } else {
+        DiamondState::HasKeys
+    }
+}
+
+fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
+    let mut d = vec![
+        pd(
+            "Transform",
+            "Position",
+            "transform.position",
+            PropKind::DVec2,
+        ),
+        pd("Transform", "Scale", "transform.scale", PropKind::DVec2),
+        pd(
+            "Transform",
+            "Rotation",
+            "transform.rotation",
+            PropKind::Angle,
+        ),
+        pd("Transform", "Opacity", "opacity", f04()),
+        pd("Transform", "Anchor", "transform.anchor", PropKind::DVec2),
+    ];
+    match kind {
+        NodeKind::Shape(s) => match s {
+            ShapeKind::Path(_) => {}
+            ShapeKind::Rect { .. } => {
+                d.push(pd("Shape", "Size", "shape.size", PropKind::DVec2));
+                d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Shape",
+                    "Corner radius",
+                    "shape.rounded",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
+            ShapeKind::Ellipse { .. } => {
+                d.push(pd("Shape", "Size", "shape.size", PropKind::DVec2));
+                d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
+            }
+            ShapeKind::Star { .. } | ShapeKind::Polygon { .. } => {
+                d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Shape",
+                    "Points",
+                    "shape.points",
+                    PropKind::F64 {
+                        min: Some(3.0),
+                        max: Some(64.0),
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Shape",
+                    "Outer radius",
+                    "shape.outer_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
+        },
+        NodeKind::Style(StyleKind::Fill { .. }) => {
+            d.push(pd("Fill", "Color", "fill.color", PropKind::Color));
+        }
+        NodeKind::Style(StyleKind::Stroke { .. }) => {
+            d.push(pd("Stroke", "Color", "stroke.color", PropKind::Color));
+            d.push(pd(
+                "Stroke",
+                "Width",
+                "stroke.width",
+                PropKind::F64 {
+                    min: Some(0.0),
+                    max: None,
+                    step: 0.5,
+                },
+            ));
+        }
+        NodeKind::Modifier(m) => match m {
+            ModifierKind::TrimPath { .. } => {
+                d.push(pd("Trim", "Start", "trim.start", f01()));
+                d.push(pd("Trim", "End", "trim.end", f01()));
+                d.push(pd(
+                    "Trim",
+                    "Offset",
+                    "trim.offset",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 0.01,
+                    },
+                ));
+            }
+            ModifierKind::Repeater { .. } => {
+                d.push(pd(
+                    "Repeater",
+                    "Copies",
+                    "repeater.copies",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: Some(100.0),
+                        step: 1.0,
+                    },
+                ));
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+    d
+}
+
+fn f01() -> PropKind {
+    PropKind::F64 {
+        min: Some(0.0),
+        max: Some(1.0),
+        step: 0.01,
+    }
+}
+
+fn f04() -> PropKind {
+    PropKind::F64 {
+        min: Some(0.0),
+        max: Some(1.0),
+        step: 0.01,
+    }
+}
+
+fn pd(section: &'static str, label: &'static str, path: &str, kind: PropKind) -> PropDescriptor {
+    PropDescriptor {
+        path: PropPath::new(path),
+        label,
+        kind,
+        section,
+    }
+}
+
+// ----- commands -----
+
+/// Drag/type a new value (static or key at playhead via record rule).
+pub fn cmd_set_value(
+    doc: &Document,
+    id: NodeId,
+    path: &PropPath,
+    value: Value,
+    playhead: Frame,
+    record: bool,
+) -> EditorCommand {
+    resolve_property_edit(doc, id, path, value, playhead, record)
+}
+
+/// Toggle keyframe diamond at playhead.
+pub fn cmd_toggle_key(
+    doc: &Document,
+    id: NodeId,
+    path: &PropPath,
+    playhead: Frame,
+) -> Option<EditorCommand> {
+    if doc.keyframe_data(id, path, playhead).is_some() {
+        return Some(EditorCommand::RemoveKeyframe {
+            id,
+            prop: path.clone(),
+            frame: playhead,
+        });
+    }
+    let value = doc.value_at(id, path, playhead.0 as f64).ok()?;
+    Some(EditorCommand::AddKeyframe {
+        id,
+        prop: path.clone(),
+        frame: playhead,
+        value,
+    })
+}
+
+/// Multi-selection: only show props common to all ids (same path set intersection).
+pub fn props_for_selection(doc: &Document, ids: &[NodeId], playhead: Frame) -> Vec<PropRow> {
+    match ids {
+        [] => vec![],
+        [id] => props_for_node(doc, *id, playhead),
+        ids => {
+            let mut iter = ids.iter().copied();
+            let mut common = props_for_node(doc, iter.next().unwrap(), playhead);
+            for id in iter {
+                let paths: std::collections::HashSet<_> = props_for_node(doc, id, playhead)
+                    .into_iter()
+                    .map(|r| r.desc.path.as_str().to_string())
+                    .collect();
+                common.retain(|r| paths.contains(r.desc.path.as_str()));
+            }
+            common
+        }
+    }
+}
+
+/// One edit command per node that actually carries `path` (silently skips the
+/// rest). All nodes get the SAME absolute value - v1 multi-edit semantics.
+pub fn apply_value_to_each(
+    doc: &Document,
+    ids: &[NodeId],
+    path: &PropPath,
+    value: Value,
+    playhead: Frame,
+    record: bool,
+) -> Vec<EditorCommand> {
+    ids.iter()
+        .filter(|id| doc.nodes.get(**id).and_then(|n| n.prop_ref(path)).is_some())
+        .map(|id| cmd_set_value(doc, *id, path, value.clone(), playhead, record))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renamite_animation::Animated;
+    use renamite_history::EditorCommand;
+    use renamite_model::{Color, FillRule, Node, Parent};
+
+    fn doc_with_ellipse_and_rect() -> (Document, NodeId, NodeId) {
+        let mut doc = Document::empty();
+        let ellipse = doc.create_node(Node::new(
+            "e",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::splat(100.0)),
+            }),
+        ));
+        let rect = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::splat(50.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                color: Animated::new(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(ellipse, Parent::Comp(doc.main), 0).unwrap();
+        doc.attach(rect, Parent::Comp(doc.main), 1).unwrap();
+        doc.attach(fill, Parent::Comp(doc.main), 2).unwrap();
+        (doc, ellipse, rect)
+    }
+
+    #[test]
+    fn ellipse_lists_transform_and_shape_size() {
+        let (doc, ellipse, _) = doc_with_ellipse_and_rect();
+        let rows = props_for_node(&doc, ellipse, Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"transform.position"));
+        assert!(paths.contains(&"transform.scale"));
+        assert!(paths.contains(&"opacity"));
+        assert!(paths.contains(&"shape.size"));
+        assert!(paths.contains(&"shape.pos"));
+        assert!(
+            !paths.contains(&"shape.rounded"),
+            "ellipse has no corner radius"
+        );
+    }
+
+    #[test]
+    fn fill_lists_color() {
+        let (doc, _, _) = doc_with_ellipse_and_rect();
+        let fill_id = doc.nodes.iter().find(|(_, n)| n.name == "f").unwrap().0;
+        let rows = props_for_node(&doc, fill_id, Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"fill.color"));
+    }
+
+    #[test]
+    fn diamond_empty_has_at_playhead() {
+        let (mut doc, ellipse, _) = doc_with_ellipse_and_rect();
+        let prop = PropPath::new("shape.size");
+        let find = |doc: &Document, frame: i64| {
+            props_for_node(doc, ellipse, Frame(frame))
+                .into_iter()
+                .find(|r| r.desc.path.as_str() == "shape.size")
+                .unwrap()
+                .diamond
+        };
+        assert_eq!(find(&doc, 0), DiamondState::Empty);
+
+        doc.add_keyframe(
+            ellipse,
+            &prop,
+            Frame(10),
+            &Value::DVec2(glam::DVec2::splat(200.0)),
+        )
+        .unwrap();
+        assert_eq!(find(&doc, 10), DiamondState::AtPlayhead);
+        assert_eq!(find(&doc, 0), DiamondState::HasKeys);
+    }
+
+    #[test]
+    fn toggle_key_adds_then_removes() {
+        let (mut doc, ellipse, _) = doc_with_ellipse_and_rect();
+        let prop = PropPath::new("shape.size");
+
+        let add = cmd_toggle_key(&doc, ellipse, &prop, Frame(10)).unwrap();
+        assert!(matches!(add, EditorCommand::AddKeyframe { .. }));
+
+        doc.add_keyframe(ellipse, &prop, Frame(10), &Value::DVec2(glam::DVec2::ZERO))
+            .unwrap();
+        let remove = cmd_toggle_key(&doc, ellipse, &prop, Frame(10)).unwrap();
+        assert!(matches!(remove, EditorCommand::RemoveKeyframe { .. }));
+    }
+
+    #[test]
+    fn multi_select_intersects_paths() {
+        let (doc, ellipse, rect) = doc_with_ellipse_and_rect();
+        let rows = props_for_selection(&doc, &[ellipse, rect], Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"shape.pos"));
+        assert!(paths.contains(&"shape.size"));
+        assert!(paths.contains(&"transform.position"));
+        assert!(
+            !paths.contains(&"shape.rounded"),
+            "rect-only prop must be filtered"
+        );
+    }
+
+    #[test]
+    fn apply_value_to_each_skips_missing_props() {
+        let (doc, ellipse, _) = doc_with_ellipse_and_rect();
+        let fill_id = doc.nodes.iter().find(|(_, n)| n.name == "f").unwrap().0;
+        let cmds = apply_value_to_each(
+            &doc,
+            &[ellipse, fill_id],
+            &PropPath::new("shape.size"),
+            Value::DVec2(glam::DVec2::splat(80.0)),
+            Frame(0),
+            false,
+        );
+        assert_eq!(cmds.len(), 1, "fill has no shape.size");
+    }
+}

@@ -36,6 +36,10 @@ repose_material::material_symbols! {
     expand_more:         '\u{e5cf}',
     chevron_right:       '\u{e5cc}',
     drag_indicator:      '\u{e945}',
+
+    radio_button_unchecked: '\u{e836}',
+    stop_circle:            '\u{ef71}',
+    fiber_manual_record:    '\u{eb61}',
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {

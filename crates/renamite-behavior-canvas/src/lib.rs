@@ -126,7 +126,7 @@ impl SelectTool {
     }
 
     fn press(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
-        // 1. Handles win over shapes — single-node selection only (v1).
+        // 1. Handles win over shapes - single-node selection only (v1).
         if let [node] = ctx.selection.nodes[..]
             && let Some((min, max)) = nodes_bounds(ctx.scene, &ctx.selection.nodes)
         {

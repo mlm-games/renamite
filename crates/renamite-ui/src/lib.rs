@@ -33,6 +33,7 @@ pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
 
 pub fn AppTopBar(session: SessionRef) -> View {
     let is_playing = session.borrow().playing;
+    let recording = session.borrow().record;
     let name = session.borrow().file.meta.name.clone();
 
     TopAppBar(
@@ -62,6 +63,17 @@ pub fn AppTopBar(session: SessionRef) -> View {
                     s.bump();
                 }
             }),
+            if recording {
+                CompactIconAction(Symbols::fiber_manual_record, "Stop recording keys", {
+                    let session = session.clone();
+                    move || toggle_record(&session)
+                })
+            } else {
+                CompactIconAction(Symbols::radio_button_unchecked, "Record keys on edit", {
+                    let session = session.clone();
+                    move || toggle_record(&session)
+                })
+            },
             if is_playing {
                 CompactIconAction(Symbols::pause, "Pause", {
                     let session = session.clone();
@@ -91,6 +103,13 @@ fn toggle_playback(session: &SessionRef) {
     } else {
         PlayState::Stopped
     };
+    request_frame();
+}
+
+fn toggle_record(session: &SessionRef) {
+    let mut s = session.borrow_mut();
+    s.record = !s.record;
+    s.revision = s.revision.wrapping_add(1);
     request_frame();
 }
 

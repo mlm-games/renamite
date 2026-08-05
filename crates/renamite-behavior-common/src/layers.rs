@@ -116,7 +116,7 @@ pub fn drop_command(
     if dragged == target.id {
         return None;
     }
-    // Prevent parenting a node under its own descendant — host should also
+    // Prevent parenting a node under its own descendant - host should also
     // reject via is_ancestor check when as_child.
     if as_child && target.kind == LayerKind::Group {
         return Some(cmd_move(dragged, Parent::Node(target.id), usize::MAX));
@@ -261,7 +261,7 @@ mod tests {
         let cmd = drop_command(lone, g, true, false).unwrap();
         assert!(!move_is_noop(&doc, &cmd));
         // Dragging a child within its group "after" its sibling lands it one
-        // slot later — a real move.
+        // slot later - a real move.
         let mut exp = std::collections::HashSet::new();
         exp.insert(group);
         let rows = flatten_layers(&doc, doc.main, &exp);
