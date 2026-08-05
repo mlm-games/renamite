@@ -13,12 +13,12 @@ repose-docking.workspace = true
 repose-canvas.workspace = true
 repose-tree.workspace = true
 repose-text.workspace = true
-renamite-behavior-common = { path = "../renamite-behavior-common" }
-renamite-behavior-canvas = { path = "../renamite-behavior-canvas" }
-renamite-behavior-timeline = { path = "../renamite-behavior-timeline" }
-renamite-model = { path = "../renamite-model" }
-renamite-history = { path = "../renamite-history" }
-renamite-animation = { path = "../renamite-animation" }
-renamite-render-bridge = { path = "../renamite-render-bridge" }
-renamite-platform = { path = "../renamite-platform" }
+renamite-behavior-common.workspace = true
+renamite-behavior-canvas.workspace = true
+renamite-behavior-timeline.workspace = true
+renamite-model.workspace = true
+renamite-history.workspace = true
+renamite-animation.workspace = true
+renamite-render-bridge.workspace = true
+renamite-platform.workspace = true
 serde.workspace = true

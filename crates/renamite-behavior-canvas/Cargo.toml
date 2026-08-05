@@ -6,11 +6,11 @@ license.workspace = true
 description = "Canvas tool behaviors: Select, Transform, Pen, PathEdit, shapes."
 
 [dependencies]
-renamite-behavior-common = { path = "../renamite-behavior-common" }
-renamite-history = { path = "../renamite-history" }
-renamite-model = { path = "../renamite-model" }
-renamite-geometry = { path = "../renamite-geometry" }
-renamite-animation = { path = "../renamite-animation" }
+renamite-behavior-common.workspace = true
+renamite-history.workspace = true
+renamite-model.workspace = true
+renamite-geometry.workspace = true
+renamite-animation.workspace = true
 glam.workspace = true
 smallvec.workspace = true
 serde.workspace = true

@@ -14,8 +14,8 @@ path = "src/main.rs"
 repose-platform.workspace = true
 repose-app.workspace = true
 repose-core.workspace = true
-renamite-ui = { path = "../../crates/renamite-ui" }
-renamite-platform = { path = "../../crates/renamite-platform", features = ["native"] }
-renamite-model = { path = "../../crates/renamite-model" }
+renamite-ui.workspace = true
+renamite-platform = { workspace = true, features = ["native"] }
+renamite-model.workspace = true
 tracing.workspace = true
 serde_json.workspace = true

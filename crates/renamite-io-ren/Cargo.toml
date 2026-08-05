@@ -6,8 +6,8 @@ license.workspace = true
 description = ".ren project format (RON) + .renb runtime binary (postcard)."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-machine = { path = "../renamite-machine" }
+renamite-model.workspace = true
+renamite-machine.workspace = true
 serde.workspace = true
 ron.workspace = true
 thiserror.workspace = true

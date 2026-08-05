@@ -7,13 +7,13 @@ publish = false
 description = "Fixtures, scene snapshots, and proptest helpers for renamite tests."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-history = { path = "../renamite-history" }
-renamite-animation = { path = "../renamite-animation" }
-renamite-geometry = { path = "../renamite-geometry" }
-renamite-behavior-common = { path = "../renamite-behavior-common" }
-renamite-behavior-canvas = { path = "../renamite-behavior-canvas" }
-renamite-behavior-timeline = { path = "../renamite-behavior-timeline" }
+renamite-model.workspace = true
+renamite-history.workspace = true
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
+renamite-behavior-common.workspace = true
+renamite-behavior-canvas.workspace = true
+renamite-behavior-timeline.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 proptest = { version = "1", optional = true }

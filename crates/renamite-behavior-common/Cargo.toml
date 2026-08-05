@@ -6,8 +6,8 @@ license.workspace = true
 description = "ToolContext, selection, snapping, and view transforms shared by renamite behaviors."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-history = { path = "../renamite-history" }
-renamite-animation = { path = "../renamite-animation" }
+renamite-model.workspace = true
+renamite-history.workspace = true
+renamite-animation.workspace = true
 glam.workspace = true
 serde.workspace = true

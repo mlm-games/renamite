@@ -10,9 +10,9 @@ serde.workspace = true
 smallvec.workspace = true
 slotmap.workspace = true
 thiserror.workspace = true
-renamite-animation = { path = "../renamite-animation" }
-renamite-model = { path = "../renamite-model" }
-renamite-geometry = { path = "../renamite-geometry" }
+renamite-animation.workspace = true
+renamite-model.workspace = true
+renamite-geometry.workspace = true
 
 [dev-dependencies]
 glam.workspace = true

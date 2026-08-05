@@ -11,5 +11,5 @@ slotmap.workspace = true
 kurbo.workspace = true
 glam.workspace = true
 thiserror.workspace = true
-renamite-animation = { path = "../renamite-animation" }
-renamite-geometry = { path = "../renamite-geometry" }
+renamite-animation.workspace = true
+renamite-geometry.workspace = true

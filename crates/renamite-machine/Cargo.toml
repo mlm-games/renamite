@@ -6,9 +6,9 @@ license.workspace = true
 description = "Named clips + interactive state machines (inputs, transitions, blends, listeners, events)."
 
 [dependencies]
-renamite-animation = { path = "../renamite-animation" }
-renamite-model = { path = "../renamite-model" }
-renamite-geometry = { path = "../renamite-geometry" }
+renamite-animation.workspace = true
+renamite-model.workspace = true
+renamite-geometry.workspace = true
 glam.workspace = true
 slotmap.workspace = true
 serde.workspace = true

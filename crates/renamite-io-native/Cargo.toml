@@ -6,8 +6,8 @@ license.workspace = true
 description = "Versioned .rmot native format for renamite."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-animation = { path = "../renamite-animation" }
+renamite-model.workspace = true
+renamite-animation.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -6,10 +6,10 @@ license.workspace = true
 description = "Timeline behaviors: scrub, keyframe drag, easing curves."
 
 [dependencies]
-renamite-behavior-common = { path = "../renamite-behavior-common" }
-renamite-history = { path = "../renamite-history" }
-renamite-animation = { path = "../renamite-animation" }
-renamite-model = { path = "../renamite-model" }
+renamite-behavior-common.workspace = true
+renamite-history.workspace = true
+renamite-animation.workspace = true
+renamite-model.workspace = true
 glam.workspace = true
 smallvec.workspace = true
 serde.workspace = true

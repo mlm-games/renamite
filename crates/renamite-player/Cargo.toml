@@ -6,11 +6,11 @@ license.workspace = true
 description = "Headless runtime for .ren projects."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-machine = { path = "../renamite-machine" }
-renamite-animation = { path = "../renamite-animation" }
-renamite-geometry = { path = "../renamite-geometry" }
-renamite-io-ren = { path = "../renamite-io-ren" }
+renamite-model.workspace = true
+renamite-machine.workspace = true
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
+renamite-io-ren.workspace = true
 kurbo.workspace = true
 glam.workspace = true
 thiserror.workspace = true

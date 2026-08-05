@@ -8,4 +8,4 @@ description = "Frame, Animated<T>, Tween, Playback, and easing for renamite."
 [dependencies]
 serde.workspace = true
 glam.workspace = true
-renamite-geometry = { path = "../renamite-geometry" }
+renamite-geometry.workspace = true

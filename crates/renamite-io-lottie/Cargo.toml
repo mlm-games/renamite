@@ -6,9 +6,9 @@ license.workspace = true
 description = "Lottie (.json / .tgs) import and export for renamite."
 
 [dependencies]
-renamite-model = { path = "../renamite-model" }
-renamite-animation = { path = "../renamite-animation" }
-renamite-geometry = { path = "../renamite-geometry" }
+renamite-model.workspace = true
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
