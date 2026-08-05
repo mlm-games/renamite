@@ -218,9 +218,224 @@ impl History {
     pub fn can_redo(&self) -> bool { !self.redo.is_empty() }
 }
 
-/// Apply a command to `doc`, filling in InsertNode ids, and return the created
-/// root (if any) plus the inverse commands captured from prior state.
+/// Apply a command to the project, filling in creation ids, and return the
+/// created root (if any) plus the inverse commands captured from prior state.
+/// Document commands are delegated to [`apply_document_command`].
 fn apply_command(
+    p: &mut ProjectMut<'_>,
+    cmd: &mut EditorCommand,
+) -> Result<(Option<NodeId>, Vec<EditorCommand>), EditError> {
+    use EditorCommand::*;
+    match cmd {
+        InsertNode { .. } | AttachNode { .. } | RemoveNode { .. } | MoveNode { .. }
+        | GroupNodes { .. } | SetNodeFlags { .. } | SetStatic { .. } | AddKeyframe { .. }
+        | RemoveKeyframe { .. } | RestoreKeyframe { .. } | MoveKeyframes { .. }
+        | SetEasing { .. } | EditAnchors { .. } | ReversePath { .. } => {
+            let (node, inv) = apply_document_command(&mut p.document, cmd)?;
+            Ok((node, inv))
+        }
+
+        CreateClip { index, clip, id } => {
+            let cid = match *id {
+                Some(c) => {
+                    // Redo path: arena entry must still exist (GC is save-only).
+                    if !p.clips.contains_key(c) { return Err(EditError::MissingClip); }
+                    c
+                }
+                None => { let c = p.clips.insert(clip.clone()); *id = Some(c); c }
+            };
+            if p.clip_order.contains(&cid) { return Err(EditError::ClipAlreadyAttached); }
+            let i = (*index).min(p.clip_order.len());
+            p.clip_order.insert(i, cid);
+            Ok((None, vec![DetachClip { id: cid }]))
+        }
+        AttachClip { id, index } => {
+            if !p.clips.contains_key(*id) { return Err(EditError::MissingClip); }
+            if p.clip_order.contains(id) { return Err(EditError::ClipAlreadyAttached); }
+            let i = (*index).min(p.clip_order.len());
+            p.clip_order.insert(i, *id);
+            Ok((None, vec![DetachClip { id: *id }]))
+        }
+        DetachClip { id } => {
+            let i = p.clip_order.iter().position(|c| c == id)
+                .ok_or(EditError::ClipNotAttached)?;
+            p.clip_order.remove(i);
+            Ok((None, vec![AttachClip { id: *id, index: i }]))
+        }
+        SetClipMeta { id, name, range } => {
+            let c = p.clips.get_mut(*id).ok_or(EditError::MissingClip)?;
+            let old_name = name.is_some().then(|| c.name.clone());
+            let old_range = range.is_some().then_some(c.range);
+            if let Some(n) = name { c.name = n.clone(); }
+            if let Some(r) = range { c.range = *r; }
+            Ok((None, vec![SetClipMeta { id: *id, name: old_name, range: old_range }]))
+        }
+
+        AddClipKey { clip, node, prop, key } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            match clip_track_mut(c, *node, prop) {
+                Some(t) => match t.keys.binary_search_by_key(&key.frame, |k| k.frame) {
+                    Ok(i) => {
+                        let old = std::mem::replace(&mut t.keys[i], key.clone());
+                        Ok((None, vec![AddClipKey {
+                            clip: *clip, node: *node, prop: prop.clone(), key: old,
+                        }]))
+                    }
+                    Err(i) => {
+                        t.keys.insert(i, key.clone());
+                        Ok((None, vec![RemoveClipKey {
+                            clip: *clip, node: *node, prop: prop.clone(), frame: key.frame,
+                        }]))
+                    }
+                },
+                None => {
+                    // Track auto-created -> the exact inverse is "no track".
+                    c.tracks.push(Track { node: *node, prop: prop.clone(), keys: vec![key.clone()] });
+                    Ok((None, vec![RemoveClipTrack {
+                        clip: *clip, node: *node, prop: prop.clone(),
+                    }]))
+                }
+            }
+        }
+        RemoveClipKey { clip, node, prop, frame } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            let t = clip_track_mut(c, *node, prop).ok_or(EditError::MissingTrack)?;
+            let i = t.keys.binary_search_by_key(frame, |k| k.frame)
+                .map_err(|_| EditError::NoClipKey(frame.0))?;
+            let key = t.keys.remove(i); // empty track remains: exact-inverse invariant
+            Ok((None, vec![AddClipKey { clip: *clip, node: *node, prop: prop.clone(), key }]))
+        }
+        MoveClipKeys { moves } => {
+            use std::collections::{HashMap, HashSet};
+            // Phase 0: validate against the batch's FINAL frame-set per track.
+            let mut sets: HashMap<(ClipId, NodeId, PropPath), HashSet<Frame>> = HashMap::new();
+            for m in moves.iter() {
+                let k = (m.clip, m.node, m.prop.clone());
+                if !sets.contains_key(&k) {
+                    let c = p.clips.get(m.clip).ok_or(EditError::MissingClip)?;
+                    let t = c.tracks.iter()
+                        .find(|t| t.node == m.node && t.prop == m.prop)
+                        .ok_or(EditError::MissingTrack)?;
+                    sets.insert(k.clone(), t.keys.iter().map(|x| x.frame).collect());
+                }
+            }
+            for m in moves.iter() {
+                let s = sets.get_mut(&(m.clip, m.node, m.prop.clone())).unwrap();
+                if !s.remove(&m.from) { return Err(EditError::NoClipKey(m.from.0)); }
+            }
+            for m in moves.iter() {
+                let s = sets.get_mut(&(m.clip, m.node, m.prop.clone())).unwrap();
+                if !s.insert(m.to) { return Err(EditError::ClipKeyExists(m.to.0)); }
+            }
+            // Phase 1: remove all sources. Phase 2: insert all at destinations.
+            let mut captured = Vec::with_capacity(moves.len());
+            for m in moves.iter() {
+                let c = p.clips.get_mut(m.clip).expect("validated");
+                let t = clip_track_mut(c, m.node, &m.prop).expect("validated");
+                let i = t.keys.binary_search_by_key(&m.from, |k| k.frame).expect("validated");
+                captured.push(t.keys.remove(i));
+            }
+            for (m, mut key) in moves.iter().zip(captured) {
+                key.frame = m.to;
+                let c = p.clips.get_mut(m.clip).expect("validated");
+                let t = clip_track_mut(c, m.node, &m.prop).expect("validated");
+                let i = t.keys.partition_point(|k| k.frame < m.to);
+                t.keys.insert(i, key);
+            }
+            let inv = moves.iter().map(|m| ClipKeyMove {
+                clip: m.clip, node: m.node, prop: m.prop.clone(), from: m.to, to: m.from,
+            }).collect();
+            Ok((None, vec![MoveClipKeys { moves: inv }]))
+        }
+        CreateClipTrack { clip, track } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            if clip_track_mut(c, track.node, &track.prop).is_some() {
+                return Err(EditError::TrackExists);
+            }
+            c.tracks.push(track.clone());
+            Ok((None, vec![RemoveClipTrack {
+                clip: *clip, node: track.node, prop: track.prop.clone(),
+            }]))
+        }
+        RemoveClipTrack { clip, node, prop } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            let i = c.tracks.iter().position(|t| t.node == *node && &t.prop == prop)
+                .ok_or(EditError::MissingTrack)?;
+            let track = c.tracks.remove(i);
+            Ok((None, vec![CreateClipTrack { clip: *clip, track }]))
+        }
+        AddClipEvent { clip, event } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            // Canonical (frame, name) order keeps undo/redo structurally exact.
+            let i = c.events.partition_point(|e| {
+                (e.frame, e.name.as_str()) <= (event.frame, event.name.as_str())
+            });
+            c.events.insert(i, event.clone());
+            Ok((None, vec![RemoveClipEvent {
+                clip: *clip, frame: event.frame, name: event.name.clone(),
+            }]))
+        }
+        RemoveClipEvent { clip, frame, name } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            let i = c.events.iter().position(|e| e.frame == *frame && &e.name == name)
+                .ok_or(EditError::NoClipKey(frame.0))?;
+            let event = c.events.remove(i);
+            Ok((None, vec![AddClipEvent { clip: *clip, event }]))
+        }
+
+        CreateMachine { index, machine, id } => {
+            let mid = match *id {
+                Some(m) => {
+                    if !p.machines.contains_key(m) { return Err(EditError::MissingMachine); }
+                    m
+                }
+                None => { let m = p.machines.insert(machine.clone()); *id = Some(m); m }
+            };
+            if p.machine_order.contains(&mid) { return Err(EditError::MachineAlreadyAttached); }
+            let i = (*index).min(p.machine_order.len());
+            p.machine_order.insert(i, mid);
+            Ok((None, vec![DetachMachine { id: mid }]))
+        }
+        AttachMachine { id, index } => {
+            if !p.machines.contains_key(*id) { return Err(EditError::MissingMachine); }
+            if p.machine_order.contains(id) { return Err(EditError::MachineAlreadyAttached); }
+            let i = (*index).min(p.machine_order.len());
+            p.machine_order.insert(i, *id);
+            Ok((None, vec![DetachMachine { id: *id }]))
+        }
+        DetachMachine { id } => {
+            let i = p.machine_order.iter().position(|m| m == id)
+                .ok_or(EditError::MachineNotAttached)?;
+            p.machine_order.remove(i);
+            let mut inverse = Vec::new();
+            // Inverse group is applied REVERSED by undo, so list [SetStart, Attach]
+            // replays as Attach-then-SetStart.
+            if *p.start_machine == Some(*id) {
+                *p.start_machine = None;
+                inverse.push(SetStartMachine { start: Some(*id) });
+            }
+            inverse.push(AttachMachine { id: *id, index: i });
+            Ok((None, inverse))
+        }
+        ReplaceMachine { id, machine } => {
+            let m = p.machines.get_mut(*id).ok_or(EditError::MissingMachine)?;
+            let old = std::mem::replace(m, machine.clone());
+            Ok((None, vec![ReplaceMachine { id: *id, machine: old }]))
+        }
+        SetStartMachine { start } => {
+            if let Some(s) = start
+                && !p.machines.contains_key(*s)
+            {
+                return Err(EditError::MissingMachine);
+            }
+            let old = std::mem::replace(p.start_machine, *start);
+            Ok((None, vec![SetStartMachine { start: old }]))
+        }
+    }
+}
+
+/// Document-only commands (the pre-refactor apply bodies, unchanged).
+fn apply_document_command(
     doc: &mut Document,
     cmd: &mut EditorCommand,
 ) -> Result<(Option<NodeId>, Vec<EditorCommand>), EditError> {
@@ -330,6 +545,7 @@ fn apply_command(
             }
             Ok((None, vec![ReversePath { id: *id }]))
         }
+        _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
 }
 
@@ -352,26 +568,41 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 && moves.iter().zip(nmoves.iter())
                     .all(|(a, b)| a.id == b.id && a.prop == b.prop && a.from == b.from),
         (SetNodeFlags { id, .. }, SetNodeFlags { id: nid, .. }) => *id == *nid,
+        (AddClipKey { clip, node, prop, key },
+         AddClipKey { clip: nc, node: nn, prop: np, key: nk }) =>
+            *clip == *nc && *node == *nn && *prop == *np && key.frame == nk.frame,
+        (SetClipMeta { id, .. }, SetClipMeta { id: nid, .. }) => *id == *nid,
+        (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,
+        (MoveClipKeys { moves }, MoveClipKeys { moves: nmoves }) =>
+            moves.len() == nmoves.len()
+                && moves.iter().zip(nmoves.iter()).all(|(a, b)| {
+                    a.clip == b.clip && a.node == b.node && a.prop == b.prop && a.from == b.from
+                }),
         _ => false,
     }
 }
 
-fn undo_transaction(doc: &mut Document, t: &AppliedTransaction) -> Result<(), EditError> {
+fn undo_transaction(p: &mut ProjectMut<'_>, t: &AppliedTransaction) -> Result<(), EditError> {
     for group in t.inverse.iter().rev() {
         for cmd in group.iter().rev() {
             let mut c = cmd.clone();
-            apply_command(doc, &mut c)?;
+            apply_command(p, &mut c)?;
         }
     }
     Ok(())
 }
 
-fn redo_transaction(doc: &mut Document, t: &AppliedTransaction) -> Result<(), EditError> {
+fn redo_transaction(p: &mut ProjectMut<'_>, t: &AppliedTransaction) -> Result<(), EditError> {
     for cmd in &t.forward {
         let mut c = cmd.clone();
-        apply_command(doc, &mut c)?;
+        apply_command(p, &mut c)?;
     }
     Ok(())
+}
+
+/// Find the (node, prop) track on a clip, if it exists.
+fn clip_track_mut<'t>(c: &'t mut Clip, node: NodeId, prop: &PropPath) -> Option<&'t mut Track> {
+    c.tracks.iter_mut().find(|t| t.node == node && &t.prop == prop)
 }
 
 /// Recursively create a tree's arena nodes once, filling `tree.id`; no-ops on
@@ -478,104 +709,328 @@ mod tests {
     use super::*;
     use renamite_model::NodeKind;
 
-    fn comp(doc: &Document) -> Parent { Parent::Comp(doc.main) }
+    fn f64_key(f: i64, v: f64) -> KeyframeData {
+        KeyframeData {
+            frame: Frame(f), value: Value::F64(v),
+            interpolation: Interpolation::Linear,
+            ease_out: EasingHandle::LINEAR_OUT, ease_in: EasingHandle::LINEAR_IN,
+        }
+    }
 
-    fn single(doc: &mut Document) -> NodeId {
-        let id = doc.create_node(Node::new("x", NodeKind::Group));
-        doc.attach(id, comp(doc), 0).unwrap();
-        id
+    fn empty_clip() -> Clip {
+        Clip { name: "c".into(), range: (Frame(0), Frame(60)), tracks: vec![], events: vec![] }
+    }
+
+    fn empty_machine() -> Machine {
+        Machine { name: "m".into(), inputs: vec![], layers: vec![], listeners: vec![] }
+    }
+
+    struct World {
+        doc: Document,
+        clips: ClipMap,
+        clip_order: Vec<ClipId>,
+        machines: MachineMap,
+        machine_order: Vec<MachineId>,
+        start: Option<MachineId>,
+    }
+
+    impl World {
+        fn new() -> Self {
+            Self {
+                doc: Document::empty(),
+                clips: ClipMap::default(),
+                clip_order: vec![],
+                machines: MachineMap::default(),
+                machine_order: vec![],
+                start: None,
+            }
+        }
+        fn pm(&mut self) -> ProjectMut<'_> {
+            ProjectMut {
+                document: &mut self.doc,
+                clips: &mut self.clips,
+                clip_order: &mut self.clip_order,
+                machines: &mut self.machines,
+                machine_order: &mut self.machine_order,
+                start_machine: &mut self.start,
+            }
+        }
+        fn snapshot(&self) -> serde_json::Value {
+            serde_json::to_value((
+                &self.doc, &self.clips, &self.clip_order,
+                &self.machines, &self.machine_order, &self.start,
+            )).unwrap()
+        }
+        fn node(&mut self) -> NodeId {
+            let id = self.doc.create_node(Node::new("n", NodeKind::Group));
+            self.doc.attach(id, Parent::Comp(self.doc.main), 0).unwrap();
+            id
+        }
     }
 
     #[test]
     fn insert_undo_redo_is_arena_stable() {
-        let mut doc = Document::empty();
+        let mut w = World::new();
         let mut h = History::new();
-        let parent = comp(&doc);
-        let created = h.apply(&mut doc, EditorCommand::InsertNode {
+        let parent = Parent::Comp(w.doc.main);
+        let created = h.apply(&mut w.pm(), EditorCommand::InsertNode {
             parent, index: 0, tree: NodeTree::leaf(Node::new("rect", NodeKind::Group)),
         }).unwrap().created.unwrap();
         h.commit();
-        assert!(doc.nodes.contains_key(created));
-        assert!(doc.locate(created).is_some());
-        h.undo(&mut doc).unwrap();
-        assert!(doc.nodes.contains_key(created));   // still in arena
-        assert!(doc.locate(created).is_none());     // just detached
-        h.redo(&mut doc).unwrap();
-        assert!(doc.locate(created).is_some());
-        assert!(doc.nodes.contains_key(created));
+        assert!(w.doc.nodes.contains_key(created));
+        assert!(w.doc.locate(created).is_some());
+        h.undo(&mut w.pm()).unwrap();
+        assert!(w.doc.nodes.contains_key(created));   // still in arena
+        assert!(w.doc.locate(created).is_none());     // just detached
+        h.redo(&mut w.pm()).unwrap();
+        assert!(w.doc.locate(created).is_some());
+        assert!(w.doc.nodes.contains_key(created));
     }
 
     #[test]
     fn remove_undo_reattaches() {
-        let mut doc = Document::empty();
-        let id = single(&mut doc);
+        let mut w = World::new();
+        let id = w.node();
         let mut h = History::new();
-        h.apply(&mut doc, EditorCommand::RemoveNode { id }).unwrap();
+        h.apply(&mut w.pm(), EditorCommand::RemoveNode { id }).unwrap();
         h.commit();
-        assert!(doc.locate(id).is_none());
-        assert!(doc.nodes.contains_key(id));
-        h.undo(&mut doc).unwrap();
-        assert_eq!(doc.locate(id), Some((comp(&doc), 0)));
-        h.redo(&mut doc).unwrap();
-        assert!(doc.locate(id).is_none());
+        assert!(w.doc.locate(id).is_none());
+        assert!(w.doc.nodes.contains_key(id));
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.locate(id), Some((Parent::Comp(w.doc.main), 0)));
+        h.redo(&mut w.pm()).unwrap();
+        assert!(w.doc.locate(id).is_none());
     }
 
     #[test]
     fn set_static_undo_redo_restores() {
-        let mut doc = Document::empty();
-        let id = single(&mut doc);
+        let mut w = World::new();
+        let id = w.node();
         let mut h = History::new();
         let prop = PropPath::new("transform.position");
-        h.apply(&mut doc, EditorCommand::SetStatic {
+        h.apply(&mut w.pm(), EditorCommand::SetStatic {
             id, prop: prop.clone(), value: Value::DVec2(glam::DVec2::new(10.0, 20.0)),
         }).unwrap();
         h.commit();
-        assert_eq!(doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(10.0, 20.0)));
-        h.undo(&mut doc).unwrap();
-        assert_eq!(doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::ZERO));
-        h.redo(&mut doc).unwrap();
-        assert_eq!(doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(10.0, 20.0)));
+        assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(10.0, 20.0)));
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::ZERO));
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(10.0, 20.0)));
     }
 
     #[test]
     fn drag_coalesces_to_one_undo_step() {
-        let mut doc = Document::empty();
-        let id = single(&mut doc);
+        let mut w = World::new();
+        let id = w.node();
         let mut h = History::new();
         let prop = PropPath::new("transform.position");
         h.begin("drag");
         for p in [glam::DVec2::new(1.0, 0.0), glam::DVec2::new(2.0, 0.0), glam::DVec2::new(3.0, 0.0)] {
-            h.apply(&mut doc, EditorCommand::SetStatic {
+            h.apply(&mut w.pm(), EditorCommand::SetStatic {
                 id, prop: prop.clone(), value: Value::DVec2(p),
             }).unwrap();
         }
         h.commit();
         assert!(h.can_undo());
-        h.undo(&mut doc).unwrap();
+        h.undo(&mut w.pm()).unwrap();
         assert!(!h.can_undo());                    // one drag = one undo
-        assert_eq!(doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::ZERO));
-        h.redo(&mut doc).unwrap();
-        assert_eq!(doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(3.0, 0.0)));
+        assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::ZERO));
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(3.0, 0.0)));
     }
 
     #[test]
     fn add_remove_keyframe_undo() {
-        let mut doc = Document::empty();
-        let id = single(&mut doc);
+        let mut w = World::new();
+        let id = w.node();
         let mut h = History::new();
         let prop = PropPath::new("transform.position");
         let v = Value::DVec2(glam::DVec2::new(5.0, 5.0));
-        h.apply(&mut doc, EditorCommand::AddKeyframe {
+        h.apply(&mut w.pm(), EditorCommand::AddKeyframe {
             id, prop: prop.clone(), frame: Frame(10), value: v,
         }).unwrap();
-        h.apply(&mut doc, EditorCommand::RemoveKeyframe {
+        h.apply(&mut w.pm(), EditorCommand::RemoveKeyframe {
             id, prop: prop.clone(), frame: Frame(10),
         }).unwrap();
         h.commit();
-        assert!(doc.keyframe_data(id, &prop, Frame(10)).is_none());
-        h.undo(&mut doc).unwrap();
-        assert!(doc.keyframe_data(id, &prop, Frame(10)).is_some());
-        h.undo(&mut doc).unwrap();
-        assert!(doc.keyframe_data(id, &prop, Frame(10)).is_none());
+        assert!(w.doc.keyframe_data(id, &prop, Frame(10)).is_none());
+        h.undo(&mut w.pm()).unwrap();
+        assert!(w.doc.keyframe_data(id, &prop, Frame(10)).is_some());
+        h.undo(&mut w.pm()).unwrap();
+        assert!(w.doc.keyframe_data(id, &prop, Frame(10)).is_none());
+    }
+
+    #[test]
+    fn create_clip_undo_redo_is_arena_stable() {
+        let mut w = World::new();
+        let mut h = History::new();
+        h.apply(&mut w.pm(), EditorCommand::CreateClip {
+            index: 0, clip: empty_clip(), id: None,
+        }).unwrap();
+        let cid = w.clip_order[0];
+        h.undo(&mut w.pm()).unwrap();
+        assert!(w.clips.contains_key(cid));       // still in arena
+        assert!(w.clip_order.is_empty());         // just detached
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.clip_order, vec![cid]);      // SAME id re-attached
+    }
+
+    #[test]
+    fn add_clip_key_track_creation_has_exact_inverse() {
+        let mut w = World::new();
+        let node = w.node();
+        let cid = w.clips.insert(empty_clip());
+        w.clip_order.push(cid);
+        let s0 = w.snapshot();
+
+        let mut h = History::new();
+        h.apply(&mut w.pm(), EditorCommand::AddClipKey {
+            clip: cid, node, prop: PropPath::new("opacity"), key: f64_key(0, 0.5),
+        }).unwrap();
+        assert_eq!(w.clips[cid].tracks.len(), 1);
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.snapshot(), s0);             // no empty track left behind
+    }
+
+    #[test]
+    fn move_clip_keys_is_atomic() {
+        let mut w = World::new();
+        let node = w.node();
+        let prop = PropPath::new("opacity");
+        let cid = w.clips.insert(Clip {
+            tracks: vec![Track { node, prop: prop.clone(),
+                                 keys: vec![f64_key(0, 0.0), f64_key(5, 1.0), f64_key(9, 2.0)] }],
+            ..empty_clip()
+        });
+        w.clip_order.push(cid);
+        let s0 = w.snapshot();
+        let mut h = History::new();
+
+        // Intra-batch shuffle 0->5, 5->9 collides with the STATIONARY key at 9.
+        let bad = EditorCommand::MoveClipKeys { moves: vec![
+            ClipKeyMove { clip: cid, node, prop: prop.clone(), from: Frame(0), to: Frame(5) },
+            ClipKeyMove { clip: cid, node, prop: prop.clone(), from: Frame(5), to: Frame(9) },
+        ]};
+        assert!(h.apply(&mut w.pm(), bad).is_err());
+        assert_eq!(w.snapshot(), s0);              // untouched
+
+        let good = EditorCommand::MoveClipKeys { moves: vec![
+            ClipKeyMove { clip: cid, node, prop: prop.clone(), from: Frame(0), to: Frame(3) },
+            ClipKeyMove { clip: cid, node, prop: prop.clone(), from: Frame(5), to: Frame(0) },
+        ]};
+        h.apply(&mut w.pm(), good).unwrap();
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.snapshot(), s0);
+    }
+
+    #[test]
+    fn detach_machine_clears_and_restores_start() {
+        let mut w = World::new();
+        let mid = w.machines.insert(empty_machine());
+        w.machine_order.push(mid);
+        w.start = Some(mid);
+        let mut h = History::new();
+        h.apply(&mut w.pm(), EditorCommand::DetachMachine { id: mid }).unwrap();
+        assert_eq!(w.start, None);                 // invariant held
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.start, Some(mid));            // restored, attach-then-set order
+        assert_eq!(w.machine_order, vec![mid]);
+    }
+
+    #[test]
+    fn replace_machine_drag_coalesces() {
+        let mut w = World::new();
+        let mid = w.machines.insert(empty_machine());
+        w.machine_order.push(mid);
+        let mut h = History::new();
+        h.begin("edit graph");
+        for name in ["b", "c", "d"] {
+            let m = Machine { name: name.into(), ..empty_machine() };
+            h.apply(&mut w.pm(), EditorCommand::ReplaceMachine { id: mid, machine: m }).unwrap();
+        }
+        h.commit();
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.machines[mid].name, "m");     // one drag = one undo
+        assert!(!h.can_undo());
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.machines[mid].name, "d");
+    }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Clone, Debug)]
+        enum GenCmd {
+            AddKey { frame: i64, v: f64 },
+            RemoveKey { frame: i64 },
+            MoveKey { from: i64, to: i64 },
+            SetName(String),
+            Detach,
+            Attach,
+            DocStatic { x: f64 },
+            ReplaceMachineName(String),
+            SetStart(bool),
+        }
+
+        fn arb_cmd() -> impl Strategy<Value = GenCmd> {
+            prop_oneof![
+                (0i64..8, -5.0f64..5.0).prop_map(|(frame, v)| GenCmd::AddKey { frame, v }),
+                (0i64..8).prop_map(|frame| GenCmd::RemoveKey { frame }),
+                (0i64..8, 0i64..8).prop_map(|(from, to)| GenCmd::MoveKey { from, to }),
+                "[a-z]{1,6}".prop_map(GenCmd::SetName),
+                Just(GenCmd::Detach),
+                Just(GenCmd::Attach),
+                (-10.0f64..10.0).prop_map(|x| GenCmd::DocStatic { x }),
+                "[a-z]{1,6}".prop_map(GenCmd::ReplaceMachineName),
+                any::<bool>().prop_map(GenCmd::SetStart),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn interleaved_undo_redo_identity(cmds in proptest::collection::vec(arb_cmd(), 1..24)) {
+                let mut w = World::new();
+                let node = w.node();
+                let cid = w.clips.insert(empty_clip());
+                w.clip_order.push(cid);
+                let mid = w.machines.insert(empty_machine());
+                w.machine_order.push(mid);
+                let prop = PropPath::new("opacity");
+
+                let s0 = w.snapshot();
+                let mut h = History::new();
+                let mut applied = 0usize;
+                for g in cmds {
+                    let cmd = match g {
+                        GenCmd::AddKey { frame, v } => EditorCommand::AddClipKey {
+                            clip: cid, node, prop: prop.clone(), key: f64_key(frame, v) },
+                        GenCmd::RemoveKey { frame } => EditorCommand::RemoveClipKey {
+                            clip: cid, node, prop: prop.clone(), frame: Frame(frame) },
+                        GenCmd::MoveKey { from, to } => EditorCommand::MoveClipKeys { moves: vec![
+                            ClipKeyMove { clip: cid, node, prop: prop.clone(),
+                                          from: Frame(from), to: Frame(to) }] },
+                        GenCmd::SetName(n) => EditorCommand::SetClipMeta {
+                            id: cid, name: Some(n), range: None },
+                        GenCmd::Detach => EditorCommand::DetachClip { id: cid },
+                        GenCmd::Attach => EditorCommand::AttachClip { id: cid, index: 0 },
+                        GenCmd::DocStatic { x } => EditorCommand::SetStatic {
+                            id: node, prop: PropPath::new("transform.position"),
+                            value: Value::DVec2(glam::DVec2::new(x, 0.0)) },
+                        GenCmd::ReplaceMachineName(n) => EditorCommand::ReplaceMachine {
+                            id: mid, machine: Machine { name: n, ..empty_machine() } },
+                        GenCmd::SetStart(on) => EditorCommand::SetStartMachine {
+                            start: on.then_some(mid) },
+                    };
+                    if h.apply(&mut w.pm(), cmd).is_ok() { applied += 1; }
+                }
+                let s_final = w.snapshot();
+                for _ in 0..applied { h.undo(&mut w.pm()).unwrap(); }
+                prop_assert_eq!(w.snapshot(), s0);
+                for _ in 0..applied { h.redo(&mut w.pm()).unwrap(); }
+                prop_assert_eq!(w.snapshot(), s_final);
+            }
+        }
     }
 }

@@ -2925,10 +2925,13 @@ name = "renamite-history"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "proptest",
  "renamite-animation",
  "renamite-geometry",
+ "renamite-machine",
  "renamite-model",
  "serde",
+ "serde_json",
  "slotmap",
  "smallvec",
  "thiserror 2.0.19",
