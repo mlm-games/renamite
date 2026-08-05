@@ -28,6 +28,14 @@ repose_material::material_symbols! {
 
     layers:              '\u{e53b}',
     settings:            '\u{e8b8}',
+
+    visibility:          '\u{e8f4}',
+    visibility_off:      '\u{e8f5}',
+    lock:                '\u{e897}',
+    lock_open:           '\u{e898}',
+    expand_more:         '\u{e5cf}',
+    chevron_right:       '\u{e5cc}',
+    drag_indicator:      '\u{e945}',
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {

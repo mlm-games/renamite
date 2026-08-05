@@ -49,6 +49,7 @@ pub enum EditorCommand {
     MoveNode { id: NodeId, new_parent: Parent, index: usize },
     GroupNodes { ids: Vec<NodeId>, group: NodeId },
     SetNodeFlags { id: NodeId, visible: Option<bool>, locked: Option<bool> },
+    SetNodeName { id: NodeId, name: String },
 
     // properties
     SetStatic { id: NodeId, prop: PropPath, value: Value },
@@ -228,7 +229,7 @@ fn apply_command(
     use EditorCommand::*;
     match cmd {
         InsertNode { .. } | AttachNode { .. } | RemoveNode { .. } | MoveNode { .. }
-        | GroupNodes { .. } | SetNodeFlags { .. } | SetStatic { .. } | AddKeyframe { .. }
+        | GroupNodes { .. } | SetNodeFlags { .. } | SetNodeName { .. } | SetStatic { .. } | AddKeyframe { .. }
         | RemoveKeyframe { .. } | RestoreKeyframe { .. } | MoveKeyframes { .. }
         | SetEasing { .. } | EditAnchors { .. } | ReversePath { .. } => {
             let (node, inv) = apply_document_command(&mut p.document, cmd)?;
@@ -488,6 +489,11 @@ fn apply_document_command(
                 locked: locked.is_some().then_some(old_locked),
             }]))
         }
+        SetNodeName { id, name } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let old = std::mem::replace(&mut n.name, name.clone());
+            Ok((None, vec![SetNodeName { id: *id, name: old }]))
+        }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
             Ok((None, vec![SetStatic { id: *id, prop: prop.clone(), value: old }]))
@@ -568,6 +574,7 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 && moves.iter().zip(nmoves.iter())
                     .all(|(a, b)| a.id == b.id && a.prop == b.prop && a.from == b.from),
         (SetNodeFlags { id, .. }, SetNodeFlags { id: nid, .. }) => *id == *nid,
+        (SetNodeName { id, .. }, SetNodeName { id: nid, .. }) => *id == *nid,
         (AddClipKey { clip, node, prop, key },
          AddClipKey { clip: nc, node: nn, prop: np, key: nk }) =>
             *clip == *nc && *node == *nn && *prop == *np && key.frame == nk.frame,
@@ -817,6 +824,21 @@ mod tests {
         assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::ZERO));
         h.redo(&mut w.pm()).unwrap();
         assert_eq!(w.doc.get_static(id, &prop).unwrap(), Value::DVec2(glam::DVec2::new(10.0, 20.0)));
+    }
+
+    #[test]
+    fn set_name_undo_redo_restores() {
+        let mut w = World::new();
+        let id = w.node();
+        assert_eq!(w.doc.nodes[id].name, "n");
+        let mut h = History::new();
+        h.apply(&mut w.pm(), EditorCommand::SetNodeName { id, name: "renamed".into() }).unwrap();
+        h.commit();
+        assert_eq!(w.doc.nodes[id].name, "renamed");
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.nodes[id].name, "n");
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.nodes[id].name, "renamed");
     }
 
     #[test]

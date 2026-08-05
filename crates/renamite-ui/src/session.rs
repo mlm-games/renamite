@@ -48,6 +48,20 @@ pub struct Session {
     pub renderer: SceneRenderer,
     pub last_tick: Instant,
     pub revision: u64,
+    /// Layers panel: groups whose children are shown (view state, not undoable).
+    pub expanded_layers: std::collections::HashSet<renamite_model::NodeId>,
+    /// Active drag-reorder in the layers panel (view state).
+    pub layer_drag: Option<LayerDragState>,
+    /// Rename-in-progress: node id + draft text (view state).
+    pub renaming: Option<(renamite_model::NodeId, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LayerDragState {
+    pub id: renamite_model::NodeId,
+    pub hover_row: usize,
+    pub before: bool,
+    pub as_child: bool,
 }
 
 impl Session {
@@ -76,6 +90,9 @@ impl Session {
             renderer: SceneRenderer::new(),
             last_tick: Instant::now(),
             revision: 0,
+            expanded_layers: std::collections::HashSet::new(),
+            layer_drag: None,
+            renaming: None,
         }
     }
 
@@ -98,6 +115,7 @@ impl Session {
                             self.selection.nodes = vec![id];
                         }
                     }
+                    self.ensure_selection_visible();
                     self.bump();
                 }
                 ToolOutput::SetPlayhead(f) => {
@@ -106,16 +124,19 @@ impl Session {
                     self.bump();
                 }
                 ToolOutput::SwitchTool(t) => self.active_tool = t,
-                ToolOutput::RequestSelection(ch) => match ch {
-                    renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
-                    renamite_history::SelectionChange::Toggle(id) => {
-                        if let Some(i) = self.selection.nodes.iter().position(|&x| x == id) {
-                            self.selection.nodes.remove(i);
-                        } else {
-                            self.selection.nodes.push(id);
+                ToolOutput::RequestSelection(ch) => {
+                    match ch {
+                        renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
+                        renamite_history::SelectionChange::Toggle(id) => {
+                            if let Some(i) = self.selection.nodes.iter().position(|&x| x == id) {
+                                self.selection.nodes.remove(i);
+                            } else {
+                                self.selection.nodes.push(id);
+                            }
                         }
                     }
-                },
+                    self.ensure_selection_visible();
+                }
                 _ => {}
             }
         }
@@ -125,6 +146,22 @@ impl Session {
         self.engine.reevaluate(&self.file);
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    /// Auto-expand ancestor groups so a selected (possibly nested) node's
+    /// layers row becomes visible. View state only — not undoable.
+    pub fn ensure_selection_visible(&mut self) {
+        for &id in &self.selection.nodes {
+            let mut walk = id;
+            while let Some(n) = self.file.document.nodes.get(walk) {
+                if let Some(p) = n.parent {
+                    self.expanded_layers.insert(p);
+                    walk = p;
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     /// Apply one command; returns the created node id, if any.

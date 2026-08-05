@@ -1,5 +1,7 @@
 //! Shared context for tool behaviors: selection, view transform, snapping.
 
+pub mod layers;
+
 use glam::DVec2;
 use renamite_animation::Frame;
 use renamite_model::{CompId, Document, NodeId};
