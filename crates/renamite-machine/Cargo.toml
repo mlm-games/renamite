@@ -1,6 +1,6 @@
 [package]
 name = "renamite-machine"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Named clips + interactive state machines (inputs, transitions, blends, listeners, events)."

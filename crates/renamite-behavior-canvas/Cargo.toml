@@ -1,6 +1,6 @@
 [package]
 name = "renamite-behavior-canvas"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Canvas tool behaviors: Select, Transform, Pen, PathEdit, shapes."
