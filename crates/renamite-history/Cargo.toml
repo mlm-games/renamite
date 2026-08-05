@@ -13,6 +13,9 @@ thiserror.workspace = true
 renamite-animation.workspace = true
 renamite-model.workspace = true
 renamite-geometry.workspace = true
+renamite-machine.workspace = true
 
 [dev-dependencies]
 glam.workspace = true
+serde_json.workspace = true
+proptest.workspace = true

@@ -4,11 +4,23 @@
 
 use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
 use renamite_geometry::{AnchorEdit, VectorPath};
+use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
     Document, KeyframeData, ModelError, Node, NodeId, Parent, PropMut, PropPath, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+
+/// Borrowed view over everything History may mutate. The editor field-splits
+/// its `RenFile` into this per call; document-only hosts pass scratch stores.
+pub struct ProjectMut<'a> {
+    pub document: &'a mut Document,
+    pub clips: &'a mut ClipMap,
+    pub clip_order: &'a mut Vec<ClipId>,
+    pub machines: &'a mut MachineMap,
+    pub machine_order: &'a mut Vec<MachineId>,
+    pub start_machine: &'a mut Option<MachineId>,
+}
 
 /// Node payload for creation. `id` is None until first apply, then filled so
 /// redo re-attaches the SAME arena nodes.
@@ -52,6 +64,48 @@ pub enum EditorCommand {
     // path editing (applies to key at `frame` if Some, else to base)
     EditAnchors { id: NodeId, frame: Option<Frame>, edits: Vec<AnchorEdit> },
     ReversePath { id: NodeId },
+
+    // clips (arena + order, like nodes)
+    /// `id` is None until first apply, then filled so redo re-attaches the
+    /// SAME arena clip (ClipIds referenced by machines stay valid).
+    CreateClip { index: usize, clip: Clip, id: Option<ClipId> },
+    /// Undo-internal: re-attach an arena clip.
+    AttachClip { id: ClipId, index: usize },
+    /// Detach only - clip stays in the arena for undo. Machines referencing a
+    /// detached clip keep resolving during undo windows; save-time GC decides.
+    DetachClip { id: ClipId },
+    SetClipMeta { id: ClipId, name: Option<String>, range: Option<(Frame, Frame)> },
+
+    // clip tracks & keys (hot path: fine-grained, coalescable)
+    /// Insert-or-replace (carries full easing, so it doubles as restore).
+    /// Creates the (node, prop) track if missing.
+    AddClipKey { clip: ClipId, node: NodeId, prop: PropPath, key: KeyframeData },
+    RemoveClipKey { clip: ClipId, node: NodeId, prop: PropPath, frame: Frame },
+    /// Atomic multi-key drag: validated against the batch's final frame-set,
+    /// then applied two-phase (remove all, insert all). All or nothing.
+    MoveClipKeys { moves: Vec<ClipKeyMove> },
+    CreateClipTrack { clip: ClipId, track: Track },
+    RemoveClipTrack { clip: ClipId, node: NodeId, prop: PropPath },
+    AddClipEvent { clip: ClipId, event: EventKey },
+    RemoveClipEvent { clip: ClipId, frame: Frame, name: String },
+
+    // machines (cold path: coarse-grained, still exactly invertible)
+    CreateMachine { index: usize, machine: Machine, id: Option<MachineId> },
+    AttachMachine { id: MachineId, index: usize },
+    DetachMachine { id: MachineId },
+    /// Whole-value structural edit (graph panel). Coalesces per id, so one
+    /// drag = one undo step. Machines are small value types; this is cheap.
+    ReplaceMachine { id: MachineId, machine: Machine },
+    SetStartMachine { start: Option<MachineId> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClipKeyMove {
+    pub clip: ClipId,
+    pub node: NodeId,
+    pub prop: PropPath,
+    pub from: Frame,
+    pub to: Frame,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +115,16 @@ pub struct KeyframeMove { pub id: NodeId, pub prop: PropPath, pub from: Frame, p
 pub enum EditError {
     #[error(transparent)] Model(#[from] ModelError),
     #[error("path property missing on node")] NotAPath,
+    #[error("clip not found")] MissingClip,
+    #[error("clip not attached")] ClipNotAttached,
+    #[error("clip already attached")] ClipAlreadyAttached,
+    #[error("track missing on clip")] MissingTrack,
+    #[error("track already exists on clip")] TrackExists,
+    #[error("no clip key at frame {0}")] NoClipKey(i64),
+    #[error("clip key already exists at frame {0}")] ClipKeyExists(i64),
+    #[error("machine not found")] MissingMachine,
+    #[error("machine not attached")] MachineNotAttached,
+    #[error("machine already attached")] MachineAlreadyAttached,
 }
 
 /// Result of a single apply (created root id surfaces for selection).
@@ -88,18 +152,22 @@ impl History {
         self.open = Some(AppliedTransaction { label: label.into(), forward: Vec::new(), inverse: Vec::new() });
     }
 
-    pub fn apply(&mut self, doc: &mut Document, mut cmd: EditorCommand) -> Result<Applied, EditError> {
+    pub fn apply(
+        &mut self,
+        p: &mut ProjectMut<'_>,
+        mut cmd: EditorCommand,
+    ) -> Result<Applied, EditError> {
         // Coalesce repeated live-drag edits so one drag = one inverse entry.
         if let Some(t) = &mut self.open {
             if let Some(last) = t.forward.last_mut() {
                 if coalesce(last, &cmd) {
-                    let created = apply_command(doc, &mut cmd)?;
+                    let created = apply_command(p, &mut cmd)?;
                     *last = cmd;
                     return Ok(Applied { created: created.0 });
                 }
             }
         }
-        let (created, inverse) = apply_command(doc, &mut cmd)?;
+        let (created, inverse) = apply_command(p, &mut cmd)?;
         if let Some(t) = &mut self.open {
             t.forward.push(cmd);
             t.inverse.push(inverse);
@@ -123,24 +191,24 @@ impl History {
     }
 
     /// Discard the open transaction, applying its inverses.
-    pub fn cancel(&mut self, doc: &mut Document) -> Result<(), EditError> {
+    pub fn cancel(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
         if let Some(t) = self.open.take() {
-            undo_transaction(doc, &t)?;
+            undo_transaction(p, &t)?;
         }
         Ok(())
     }
 
-    pub fn undo(&mut self, doc: &mut Document) -> Result<(), EditError> {
+    pub fn undo(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
         if let Some(t) = self.undo.pop() {
-            undo_transaction(doc, &t)?;
+            undo_transaction(p, &t)?;
             self.redo.push(t);
         }
         Ok(())
     }
 
-    pub fn redo(&mut self, doc: &mut Document) -> Result<(), EditError> {
+    pub fn redo(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
         if let Some(t) = self.redo.pop() {
-            redo_transaction(doc, &t)?;
+            redo_transaction(p, &t)?;
             self.undo.push(t);
         }
         Ok(())
