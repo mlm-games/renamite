@@ -1,0 +1,23 @@
+[package]
+name = "renamite-render-offscreen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canonical offscreen export through the Repose WGPU renderer."
+
+[dependencies]
+renamite-model.workspace = true
+renamite-render-bridge.workspace = true
+
+repose-core.workspace = true
+repose-render-wgpu = { workspace = true, default-features = false }
+
+wgpu = "30"
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+anyhow.workspace = true
+
+[dev-dependencies]
+renamite-behavior-common.workspace = true
+glam.workspace = true
+kurbo.workspace = true

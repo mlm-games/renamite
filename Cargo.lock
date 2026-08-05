@@ -3270,6 +3270,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "renamite-render-offscreen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam",
+ "image",
+ "kurbo",
+ "pollster",
+ "renamite-behavior-common",
+ "renamite-model",
+ "renamite-render-bridge",
+ "repose-core",
+ "repose-render-wgpu",
+ "wgpu 30.0.0",
+]
+
+[[package]]
 name = "renamite-test-support"
 version = "0.1.0"
 dependencies = [

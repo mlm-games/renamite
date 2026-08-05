@@ -96,7 +96,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 
                 let scene = s.engine.scene().clone();
                 let view = s.viewport.view;
-                s.renderer.paint(&scene, &view, scope);
+                let prepared = s.renderer.prepare(&scene, &view);
+                s.renderer.paint_prepared(&prepared, scope);
             },
         ),
         ViewportControls(session),

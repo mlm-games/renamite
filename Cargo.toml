@@ -17,7 +17,7 @@ repose-material = "0.26"
 repose-canvas = "0.26"
 repose-docking = "0.26"
 repose-platform = "0.26"
-repose-render-wgpu = "0.26"
+repose-render-wgpu = { version = "0.26", default-features = false }
 repose-text = "0.26"
 repose-app = "0.26"
 repose-tree = "0.26"
@@ -67,6 +67,7 @@ renamite-behavior-common = { path = "crates/renamite-behavior-common", version =
 renamite-behavior-canvas = { path = "crates/renamite-behavior-canvas", version = "0.1.0" }
 renamite-behavior-timeline = { path = "crates/renamite-behavior-timeline", version = "0.1.0" }
 renamite-render-bridge = { path = "crates/renamite-render-bridge", version = "0.1.0" }
+renamite-render-offscreen = { path = "crates/renamite-render-offscreen", version = "0.1.0" }
 renamite-ui = { path = "crates/renamite-ui", version = "0.1.0" }
 renamite-platform = { path = "crates/renamite-platform", version = "0.1.0" }
 renamite-io-native = { path = "crates/renamite-io-native", version = "0.1.0" }

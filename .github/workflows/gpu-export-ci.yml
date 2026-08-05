@@ -1,0 +1,33 @@
+name: GPU Export CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: gpu-export-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gpu-export:
+    name: Repose WGPU exporter (llvmpipe)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux dependencies + Mesa software Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev pkg-config libx11-dev libxcb1-dev libxi-dev \
+            libxinerama-dev libxrandr-dev libxcursor-dev libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev mesa-vulkan-drivers
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test offscreen renderer
+        run: cargo test -p renamite-render-offscreen -- --ignored
