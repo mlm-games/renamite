@@ -2890,6 +2890,7 @@ dependencies = [
  "renamite-animation",
  "renamite-behavior-common",
  "renamite-history",
+ "renamite-machine",
  "renamite-model",
  "serde",
  "smallvec",
@@ -3055,6 +3056,7 @@ dependencies = [
 name = "renamite-test-support"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "proptest",
  "renamite-animation",
  "renamite-behavior-canvas",
@@ -3062,6 +3064,7 @@ dependencies = [
  "renamite-behavior-timeline",
  "renamite-geometry",
  "renamite-history",
+ "renamite-machine",
  "renamite-model",
  "serde",
  "serde_json",

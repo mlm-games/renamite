@@ -14,6 +14,8 @@ renamite-geometry.workspace = true
 renamite-behavior-common.workspace = true
 renamite-behavior-canvas.workspace = true
 renamite-behavior-timeline.workspace = true
+renamite-machine.workspace = true
+glam.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 proptest = { version = "1", optional = true }

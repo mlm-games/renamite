@@ -10,6 +10,7 @@ renamite-behavior-common.workspace = true
 renamite-history.workspace = true
 renamite-animation.workspace = true
 renamite-model.workspace = true
+renamite-machine.workspace = true
 glam.workspace = true
 smallvec.workspace = true
 serde.workspace = true

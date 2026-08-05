@@ -1,0 +1,19 @@
+{
+  "name": "clip: drag single clip key left 2 frames",
+  "target": "clip",
+  "nodes": ["box"],
+  "keys": [{ "node": "box", "prop": "opacity", "keys": [[10, 1.0]] }],
+  "rows": [{ "node": "box", "prop": "opacity" }],
+  "layout": { "origin_x": 0.0, "px_per_frame": 10.0, "row_top": 0.0, "row_height": 20.0, "key_tolerance_px": 5.0 },
+  "range": [0, 60],
+  "events": [
+    { "type": "Press",   "x": 100.0, "y": 10.0 },
+    { "type": "Move",    "x": 80.0,  "y": 10.0 },
+    { "type": "Release", "x": 80.0,  "y": 10.0 }
+  ],
+  "expect": {
+    "row_frames": [[8]],
+    "selection": [["box", 8]],
+    "verify_undo": true
+  }
+}

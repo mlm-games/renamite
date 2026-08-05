@@ -791,6 +791,15 @@ impl PropReader for GetKeyOp {
     }
 }
 
+/// Enumeration of keyframe frames (sorted; the source is sorted by invariant).
+struct KeyFramesOp;
+impl PropReader for KeyFramesOp {
+    type Out = Vec<Frame>;
+    fn read<T: PropValue>(self, a: &Animated<T>) -> Vec<Frame> {
+        a.keyframes.iter().map(|k| k.frame).collect()
+    }
+}
+
 
 impl Document {
     fn pm<'a>(&'a mut self, id: NodeId, prop: &PropPath) -> Result<PropMut<'a>, ModelError> {
@@ -845,6 +854,10 @@ impl Document {
     }
     pub fn keyframe_data(&self, id: NodeId, prop: &PropPath, frame: Frame) -> Option<KeyframeData> {
         self.pr(id, prop).ok().and_then(|p| read_prop(p, GetKeyOp(frame)))
+    }
+    /// All keyframe frames on a property, sorted (empty if missing).
+    pub fn key_frames(&self, id: NodeId, prop: &PropPath) -> Vec<Frame> {
+        self.pr(id, prop).map(|p| read_prop(p, KeyFramesOp)).unwrap_or_default()
     }
 }
 

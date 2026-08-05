@@ -1,0 +1,20 @@
+{
+  "name": "drag two keys right by 3 frames, undo restores",
+  "target": "doc",
+  "nodes": ["box"],
+  "keys": [{ "node": "box", "prop": "opacity", "keys": [[0, 0.0], [10, 1.0]] }],
+  "rows": [{ "node": "box", "prop": "opacity" }],
+  "layout": { "origin_x": 0.0, "px_per_frame": 10.0, "row_top": 0.0, "row_height": 20.0, "key_tolerance_px": 5.0 },
+  "range": [0, 60],
+  "events": [
+    { "type": "Press",   "x": 0.0,   "y": 10.0 },
+    { "type": "Press",   "x": 100.0, "y": 10.0, "shift": true },
+    { "type": "Move",    "x": 130.0, "y": 10.0 },
+    { "type": "Release", "x": 130.0, "y": 10.0 }
+  ],
+  "expect": {
+    "row_frames": [[3, 13]],
+    "selection": [["box", 3], ["box", 13]],
+    "verify_undo": true
+  }
+}
