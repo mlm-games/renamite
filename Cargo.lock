@@ -3018,6 +3018,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "renamite-player"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "kurbo",
+ "renamite-animation",
+ "renamite-geometry",
+ "renamite-io-ren",
+ "renamite-machine",
+ "renamite-model",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "renamite-render-bridge"
 version = "0.1.0"
 dependencies = [

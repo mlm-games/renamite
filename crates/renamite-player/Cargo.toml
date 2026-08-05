@@ -1,0 +1,21 @@
+[package]
+name = "renamite-player"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Headless runtime for .ren projects."
+
+[dependencies]
+renamite-model = { path = "../renamite-model" }
+renamite-machine = { path = "../renamite-machine" }
+renamite-animation = { path = "../renamite-animation" }
+renamite-geometry = { path = "../renamite-geometry" }
+renamite-io-ren = { path = "../renamite-io-ren" }
+kurbo.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+# Load .renb (postcard) runtime binaries.
+binary = ["renamite-io-ren/binary"]

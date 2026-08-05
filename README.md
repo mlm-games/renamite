@@ -60,6 +60,7 @@ crates/
   renamite-io-glax/                # Glaxnimate JSON compatibility
   renamite-machine/                # named clips + state machines → Overrides
   renamite-io-ren/                 # .ren (RON project) + .renb (postcard)
+  renamite-player/                 # headless runtime: Engine (+ Player) → tick → Scene
   renamite-platform/               # files, clipboard, autosave backends
   renamite-test-support/           # fixtures, scene snapshots, proptest helpers
 ```
@@ -67,7 +68,7 @@ crates/
 ## Development
 
 ```sh
-cargo check -p renamite-model -p renamite-animation -p renamite-history -p renamite-machine -p renamite-io-ren --target wasm32-unknown-unknown
+cargo check --target wasm32-unknown-unknown
 cargo test --workspace
 cargo build -p renamite-editor --release
 ```
