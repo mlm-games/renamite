@@ -19,7 +19,7 @@ pub enum TimelineTarget {
     Clip(renamite_machine::ClipId),
 }
 
-/// One keyframe, addressed structurally (survives re-render, not undo — the
+/// One keyframe, addressed structurally (survives re-render, not undo - the
 /// host clears/refreshes selection after undo/redo).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KeyRef {
@@ -558,7 +558,7 @@ impl TimelineScrubBehavior {
 /// Maps the unit easing square (x∈[0,1] left→right, y∈[0,1] bottom→top) to px.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct CurveLayout {
-    pub origin: DVec2, // px of (0,0) — bottom-left
+    pub origin: DVec2, // px of (0,0) - bottom-left
     pub size: DVec2,   // px extents (y grows DOWN in screen space)
     pub handle_tolerance_px: f64,
 }

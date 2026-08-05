@@ -96,8 +96,6 @@ impl Engine {
         Ok(e)
     }
 
-    // ---- stepping ----
-
     /// Advance by `dt_secs`, re-evaluate, return events fired this tick.
     pub fn tick(&mut self, project: &RenFile, dt_secs: f64) -> &[String] {
         self.events.clear();
@@ -142,8 +140,6 @@ impl Engine {
             })
             .collect()
     }
-
-    // ---- mode control ----
 
     pub fn play_machine(&mut self, project: &RenFile, id: MachineId) -> bool {
         if !project.machines.contains_key(id) {
@@ -205,8 +201,6 @@ impl Engine {
         }
     }
 
-    // ---- reads ----
-
     pub fn scene(&self) -> &Scene {
         &self.scene
     }
@@ -227,8 +221,6 @@ impl Engine {
             PlayMode::Scrub { frame } => *frame,
         }
     }
-
-    // ---- machine inputs (return false when not applicable) ----
 
     pub fn set_bool(&mut self, project: &RenFile, name: &str, v: bool) -> bool {
         self.with_input(project, name, |inst, i| inst.set_bool(i, v))
@@ -256,8 +248,6 @@ impl Engine {
         }
         false
     }
-
-    // ---- pointer input ----
 
     pub fn pointer_move(&mut self, project: &RenFile, pt: DVec2) {
         let hit = pick(&self.scene, pt);

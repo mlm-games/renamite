@@ -1,0 +1,30 @@
+[package]
+name = "renamite-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI tools for .ren animations: bake, pack, render, validate, diff, new."
+
+[[bin]]
+name = "renamite"
+path = "src/main.rs"
+
+[dependencies]
+renamite-player = { workspace = true, features = ["binary"] }
+renamite-io-ren = { workspace = true, features = ["binary"] }
+renamite-render-bridge.workspace = true
+renamite-render-offscreen.workspace = true
+renamite-model.workspace = true
+renamite-animation.workspace = true
+renamite-behavior-common.workspace = true
+glam.workspace = true
+repose-core.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

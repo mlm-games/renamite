@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/renamite-editor", "crates/*"]
+members = ["apps/renamite-editor", "apps/renamite-cli", "crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -58,6 +58,11 @@ bitflags = { version = "2", features = ["serde"] }
 
 #TODO: replace with rlobkit-dialogs
 rfd = { version = "0.17" }
+
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+pollster = "0.4"
+tempfile = "3"
 
 renamite-animation = { path = "crates/renamite-animation", version = "0.1.0" }
 renamite-geometry = { path = "crates/renamite-geometry", version = "0.1.0" }

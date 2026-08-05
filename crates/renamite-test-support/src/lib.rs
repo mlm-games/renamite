@@ -45,7 +45,7 @@ pub mod timeline_fixture {
         /// "doc" or "clip"
         pub target: String,
         pub nodes: Vec<String>,
-        /// (node name, prop, [frame, value] pairs) — f64 props only, by design.
+        /// (node name, prop, [frame, value] pairs) - f64 props only, by design.
         #[serde(default)]
         pub keys: Vec<KeySpec>,
         pub rows: Vec<RowSpec>,
