@@ -691,7 +691,7 @@ pub enum SelectionChange {
     Toggle(NodeId),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolId {
     Select,
     Transform,

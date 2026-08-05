@@ -3,7 +3,7 @@
 //! `SceneRenderer` owns the lyon tessellators and a mesh cache keyed by
 //! geometry so sub-pixel-stable triangles are reused across frames under zoom.
 
-use kurbo::{PathEl, Shape as KurboShape};
+use kurbo::PathEl;
 use lyon_path::{Path as LyonPath, geom::point};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor,
@@ -84,7 +84,7 @@ impl SceneRenderer {
     }
 
     fn mesh_for(&mut self, item: &SceneItem, tol: f32) -> Option<Arc<VectorMeshData>> {
-        let key = cheap_key(item, tol);
+        let key = mesh_key(item, tol);
         if let Some(m) = self.cache.get(&key) {
             return Some(m.clone());
         }
@@ -182,22 +182,73 @@ fn map_join(j: renamite_model::StrokeJoin) -> lyon_tessellation::LineJoin {
     }
 }
 
-fn cheap_key(item: &SceneItem, tol: f32) -> u64 {
+fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
     use std::hash::{Hash, Hasher};
+
     let mut h = rustc_hash::FxHasher::default();
-    let bb = item.path.bounding_box();
-    bb.x0.to_bits().hash(&mut h);
-    bb.y0.to_bits().hash(&mut h);
-    bb.x1.to_bits().hash(&mut h);
-    bb.y1.to_bits().hash(&mut h);
-    tol.to_bits().hash(&mut h);
+
+    tolerance.to_bits().hash(&mut h);
     item.opacity.to_bits().hash(&mut h);
-    item.paint.color.r.to_bits().hash(&mut h);
-    item.paint.color.g.to_bits().hash(&mut h);
-    item.paint.color.b.to_bits().hash(&mut h);
-    item.paint.color.a.to_bits().hash(&mut h);
-    std::mem::discriminant(&item.kind).hash(&mut h);
+
+    for channel in [
+        item.paint.color.r,
+        item.paint.color.g,
+        item.paint.color.b,
+        item.paint.color.a,
+    ] {
+        channel.to_bits().hash(&mut h);
+    }
+
+    for element in item.path.elements() {
+        match *element {
+            kurbo::PathEl::MoveTo(p) => {
+                0u8.hash(&mut h);
+                hash_point(p, &mut h);
+            }
+            kurbo::PathEl::LineTo(p) => {
+                1u8.hash(&mut h);
+                hash_point(p, &mut h);
+            }
+            kurbo::PathEl::QuadTo(a, b) => {
+                2u8.hash(&mut h);
+                hash_point(a, &mut h);
+                hash_point(b, &mut h);
+            }
+            kurbo::PathEl::CurveTo(a, b, c) => {
+                3u8.hash(&mut h);
+                hash_point(a, &mut h);
+                hash_point(b, &mut h);
+                hash_point(c, &mut h);
+            }
+            kurbo::PathEl::ClosePath => {
+                4u8.hash(&mut h);
+            }
+        }
+    }
+
+    match &item.kind {
+        PaintKind::Fill(rule) => {
+            0u8.hash(&mut h);
+            match rule {
+                FillRule::NonZero => 0u8.hash(&mut h),
+                FillRule::EvenOdd => 1u8.hash(&mut h),
+            }
+        }
+        PaintKind::Stroke(stroke) => {
+            1u8.hash(&mut h);
+            stroke.width.to_bits().hash(&mut h);
+            std::mem::discriminant(&stroke.cap).hash(&mut h);
+            std::mem::discriminant(&stroke.join).hash(&mut h);
+        }
+    }
+
     h.finish()
+}
+
+fn hash_point(point: kurbo::Point, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    point.x.to_bits().hash(h);
+    point.y.to_bits().hash(h);
 }
 
 #[cfg(test)]

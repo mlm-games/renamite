@@ -25,3 +25,4 @@ renamite-render-bridge.workspace = true
 glam.workspace = true
 smallvec.workspace = true
 anyhow.workspace = true
+web-time = "1.1"
