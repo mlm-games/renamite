@@ -3463,7 +3463,6 @@ version = "0.1.0"
 dependencies = [
  "futures-lite",
  "log",
- "rfd",
  "rlobkit-dialogs",
  "wasm-bindgen-futures",
 ]

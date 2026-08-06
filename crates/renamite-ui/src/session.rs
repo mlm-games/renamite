@@ -16,6 +16,7 @@ use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
 use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
+use repose_material::material3::DialogState;
 use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,18 @@ pub struct Session {
     /// Results of async platform dialogs, drained on the UI thread each frame.
     /// Populated from worker threads, so it is `Send + Sync`.
     pub file_ops: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
+    /// Deferred destructive action awaiting the unsaved-changes dialog.
+    pub pending_intent: Option<PendingIntent>,
+    /// Unsaved-changes confirmation dialog (in-app, so it works on every target).
+    pub confirm_dialog: Rc<DialogState>,
+}
+
+/// A destructive action deferred behind the unsaved-changes guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingIntent {
+    New,
+    Open,
+    ImportLottie,
 }
 
 /// A file-lifecycle result produced off-thread by an async platform dialog
@@ -81,7 +94,10 @@ pub enum PendingFileOp {
         message: &'static str,
     },
     /// An async save completed. `path` is `Some` on desktop.
-    SaveDone { path: Option<std::path::PathBuf> },
+    SaveOutcome {
+        ok: bool,
+        path: Option<std::path::PathBuf>,
+    },
     /// An exported frame reached its destination (WASM/Android, no path).
     Exported,
     /// An async file op failed; surface the message.
@@ -141,6 +157,8 @@ impl Session {
             inspector_drag: None,
             status: None,
             file_ops: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            pending_intent: None,
+            confirm_dialog: Rc::new(DialogState::new()),
         }
     }
 
@@ -279,8 +297,12 @@ impl Session {
     /// Apply results queued by async platform dialogs (called once per frame
     /// from the UI). Parsing/serialization already happened off-thread, so this
     /// only installs state.
-    pub fn drain_file_ops(&mut self) {
+    ///
+    /// Returns true when a deferred [`PendingIntent`] should now be run (a
+    /// guard "Save" finished successfully on a non-desktop target).
+    pub fn drain_file_ops(&mut self) -> bool {
         let ops = std::mem::take(&mut *self.file_ops.lock().unwrap());
+        let mut run_intent = false;
         for op in ops {
             match op {
                 PendingFileOp::OpenDone {
@@ -292,9 +314,17 @@ impl Session {
                     self.current_path = path;
                     self.status = Some(message.to_string());
                 }
-                PendingFileOp::SaveDone { path } => {
+                PendingFileOp::SaveOutcome { ok: true, path } => {
                     self.mark_saved(path);
                     self.status = Some("Saved".to_string());
+                    if self.pending_intent.is_some() {
+                        run_intent = true;
+                    }
+                }
+                PendingFileOp::SaveOutcome { ok: false, .. } => {
+                    self.clear_pending_intent();
+                    self.status = Some("Save canceled".to_string());
+                    self.bump();
                 }
                 PendingFileOp::Exported => {
                     self.status = Some("Exported".to_string());
@@ -302,11 +332,32 @@ impl Session {
                     request_frame();
                 }
                 PendingFileOp::Failed { message } => {
+                    self.clear_pending_intent();
                     self.status = Some(format!("Error: {message}"));
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();
                 }
             }
+        }
+        run_intent
+    }
+
+    /// Defer `intent` behind the unsaved-changes dialog and show it.
+    pub fn request_discard(&mut self, intent: PendingIntent) {
+        self.pending_intent = Some(intent);
+        self.confirm_dialog.show();
+        self.bump();
+    }
+
+    /// Take the deferred intent (clearing it).
+    pub fn take_pending_intent(&mut self) -> Option<PendingIntent> {
+        self.pending_intent.take()
+    }
+
+    /// Drop a deferred intent (e.g. the user canceled the guard's Save).
+    pub fn clear_pending_intent(&mut self) {
+        if self.pending_intent.take().is_some() {
+            self.bump();
         }
     }
 

@@ -4,7 +4,7 @@
 //! *target* (not a Cargo feature), with a non-blocking callback API that works
 //! on every platform and a few blocking helpers reserved for desktop. Dialogs
 //! go through `rlobkit-dialogs` so one crate serves every platform (native
-//! `rfd` on desktop, browser/Activity pickers on WASM/Android).
+//! backends on desktop, browser/Activity pickers on WASM/Android).
 
 use std::path::PathBuf;
 
@@ -198,32 +198,6 @@ pub mod dialogs {
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn export_path(title: &str, suggested_name: &str, extensions: &[&str]) -> Option<PathBuf> {
         rlobkit_dialogs::blocking_save_file(title, suggested_name, &extensions.join(","))
-    }
-}
-
-/// Result of a blocking confirm dialog (desktop only).
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Confirm {
-    Yes,
-    No,
-    Cancel,
-}
-
-/// Blocking Yes/No/Cancel dialog (desktop). Used by the unsaved-changes guard.
-/// Non-desktop targets have no blocking message box; the UI guard falls back
-/// to discarding silently.
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-pub fn confirm_yes_no_cancel(title: &str, message: &str) -> Confirm {
-    match rfd::MessageDialog::new()
-        .set_title(title)
-        .set_description(message)
-        .set_buttons(rfd::MessageButtons::YesNoCancel)
-        .show()
-    {
-        rfd::MessageDialogResult::Yes => Confirm::Yes,
-        rfd::MessageDialogResult::No => Confirm::No,
-        _ => Confirm::Cancel,
     }
 }
 

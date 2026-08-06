@@ -6,10 +6,9 @@
 //! desktop, browser/Activity pickers on WASM/Android). The picker callbacks
 //! run on worker threads, so they do all parsing/serialization off-thread and
 //! hand the UI thread ready-to-apply [`PendingFileOp`]s via
-//! [`Session::drain_file_ops`]. Desktop keeps a *synchronous* Save flow so the
-//! blocking unsaved-changes guard stays correct; WASM/Android skip the guard.
+//! [`Session::drain_file_ops`].
 
-use crate::session::{PendingFileOp, SessionRef, default_file};
+use crate::session::{PendingFileOp, PendingIntent, SessionRef, default_file};
 
 use std::path::Path;
 
@@ -70,36 +69,66 @@ fn import_lottie_bytes(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_re
     Ok(renamite_io_ren::RenFile::new(doc, stem))
 }
 
-/// "Save / Discard / Cancel" guard. Desktop shows a blocking dialog and may
-/// run the synchronous save; non-desktop has no blocking message box, so it
-/// proceeds (unsaved changes are discarded).
-fn confirm_discard(session: &SessionRef) -> bool {
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-    {
-        if !session.borrow().dirty {
-            return true;
-        }
-        match renamite_platform::confirm_yes_no_cancel(
-            "Unsaved changes",
-            "You have unsaved changes. Save them before continuing?",
-        ) {
-            renamite_platform::Confirm::Yes => save_document(session),
-            renamite_platform::Confirm::No => true,
-            renamite_platform::Confirm::Cancel => false,
-        }
+fn request_guard(session: &SessionRef, intent: PendingIntent) -> bool {
+    if !session.borrow().dirty {
+        return true;
     }
-    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
-    {
-        let _ = session;
-        true
+    session.borrow_mut().request_discard(intent);
+    false
+}
+
+/// Run the deferred intent (guard was resolved by Save or Discard).
+pub fn run_pending_intent(session: &SessionRef) {
+    let intent = session.borrow_mut().take_pending_intent();
+    match intent {
+        Some(PendingIntent::New) => new_document_inner(session),
+        Some(PendingIntent::Open) => open_document_inner(session),
+        Some(PendingIntent::ImportLottie) => import_lottie_inner(session),
+        None => {}
     }
+}
+
+/// Guard "Save" button: save the document, then run the deferred intent.
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub fn discard_save(session: &SessionRef) {
+    session.borrow().confirm_dialog.dismiss();
+    if save_document(session) {
+        run_pending_intent(session);
+    } else {
+        session.borrow_mut().clear_pending_intent();
+    }
+}
+
+/// Guard "Save" button on non-desktop targets: dispatch the async save; the
+/// deferred intent runs when its `SaveOutcome` drains (or is dropped if the
+/// save is canceled).
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+pub fn discard_save(session: &SessionRef) {
+    session.borrow().confirm_dialog.dismiss();
+    save_document(session);
+}
+
+/// Guard "Discard" button: drop unsaved changes and run the deferred intent.
+pub fn discard_discard(session: &SessionRef) {
+    session.borrow().confirm_dialog.dismiss();
+    run_pending_intent(session);
+}
+
+/// Guard "Cancel" button: abort the deferred action.
+pub fn discard_cancel(session: &SessionRef) {
+    session.borrow().confirm_dialog.dismiss();
+    session.borrow_mut().clear_pending_intent();
 }
 
 /// New document, discarding the current one (after an unsaved guard).
 pub fn new_document(session: &SessionRef) {
-    if !confirm_discard(session) {
+    if !request_guard(session, PendingIntent::New) {
         return;
     }
+    new_document_inner(session);
+}
+
+fn new_document_inner(session: &SessionRef) {
     let mut s = session.borrow_mut();
     let mut file = default_file();
     file.meta.name = "Untitled".into();
@@ -110,9 +139,13 @@ pub fn new_document(session: &SessionRef) {
 
 /// Open `.ren` / `.renb` via an async file dialog (after an unsaved guard).
 pub fn open_document(session: &SessionRef) {
-    if !confirm_discard(session) {
+    if !request_guard(session, PendingIntent::Open) {
         return;
     }
+    open_document_inner(session);
+}
+
+fn open_document_inner(session: &SessionRef) {
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Open project",
@@ -194,17 +227,10 @@ pub fn save_document_as(session: &SessionRef) -> bool {
         &["ren"],
         bytes,
         Box::new(move |outcome| {
-            if outcome.ok {
-                ops.lock()
-                    .unwrap()
-                    .push_back(PendingFileOp::SaveDone { path: None });
-            } else if outcome.path.is_some() {
-                // Desktop would report an fs write failure here; non-desktop
-                // always yields `path: None`, so this is just cancel/error.
-                ops.lock().unwrap().push_back(PendingFileOp::Failed {
-                    message: "Save failed".into(),
-                });
-            }
+            ops.lock().unwrap().push_back(PendingFileOp::SaveOutcome {
+                ok: outcome.ok,
+                path: None,
+            });
             wake_ui();
         }),
     );
@@ -213,9 +239,13 @@ pub fn save_document_as(session: &SessionRef) -> bool {
 
 /// Import a Lottie JSON file via an async picker (after an unsaved guard).
 pub fn import_lottie(session: &SessionRef) {
-    if !confirm_discard(session) {
+    if !request_guard(session, PendingIntent::ImportLottie) {
         return;
     }
+    import_lottie_inner(session);
+}
+
+fn import_lottie_inner(session: &SessionRef) {
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Import Lottie",

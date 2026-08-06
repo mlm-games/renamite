@@ -28,7 +28,9 @@ use symbols::Symbols;
 
 pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
     let session = init_session();
-    session.borrow_mut().drain_file_ops();
+    if session.borrow_mut().drain_file_ops() {
+        file::run_pending_intent(&session);
+    }
 
     Box(Modifier::new().fill_max_size()).child(EditorShell(session))
 }
