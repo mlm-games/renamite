@@ -344,7 +344,7 @@ mod tests {
     use super::*;
     use renamite_animation::Animated;
     use renamite_history::EditorCommand;
-    use renamite_model::{Color, FillRule, Node, Parent};
+    use renamite_model::{Color, FillRule, Node, Parent, StylePaint};
 
     fn doc_with_ellipse_and_rect() -> (Document, NodeId, NodeId) {
         let mut doc = Document::empty();
@@ -366,7 +366,7 @@ mod tests {
         let fill = doc.create_node(Node::new(
             "f",
             NodeKind::Style(StyleKind::Fill {
-                color: Animated::new(Color::BLACK),
+                paint: StylePaint::solid(Color::BLACK),
                 rule: FillRule::NonZero,
             }),
         ));

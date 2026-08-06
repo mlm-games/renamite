@@ -15,7 +15,9 @@ use lyon_tessellation::{
     StrokeTessellator, StrokeVertexConstructor, VertexBuffers,
 };
 use renamite_behavior_common::ViewTransform;
-use renamite_model::{BlendMode as ModelBlendMode, FillRule, PaintKind, Scene, SceneItem};
+use renamite_model::{
+    BlendMode as ModelBlendMode, FillRule, GradientStops, PaintKind, Scene, SceneItem, ScenePaint,
+};
 use repose_canvas::{DrawCommand, DrawScope};
 use repose_core::{
     BlendMode, PaintDesc, Scene as ReposeScene, SceneNode, VectorMeshData, VectorVertex,
@@ -188,16 +190,24 @@ impl SceneRenderer {
         if let Some(m) = self.cache.get(&key) {
             return Some(m.clone());
         }
-        let rgba = [
-            item.paint.color.r as f32,
-            item.paint.color.g as f32,
-            item.paint.color.b as f32,
-            (item.paint.color.a * item.opacity) as f32,
-        ];
         let path = bez_to_lyon(&item.path);
-        let mesh = self.tessellate(&path, &item.kind, rgba, tol)?;
-        self.cache.insert(key, mesh.clone().into());
-        Some(mesh.into())
+        let mesh = match (&item.paint, &item.kind) {
+            (ScenePaint::RadialGradient { center, end, stops }, PaintKind::Fill(_)) => {
+                match radial_fan_mesh(&item.path, *center, *end, stops, item.opacity, tol) {
+                    Some(m) => Arc::new(m),
+                    None => {
+                        let m = self.tessellate(&path, &item.kind, [1.0; 4], tol)?;
+                        colorize_mesh(m, &item.paint, item.opacity)
+                    }
+                }
+            }
+            _ => {
+                let m = self.tessellate(&path, &item.kind, [1.0; 4], tol)?;
+                colorize_mesh(m, &item.paint, item.opacity)
+            }
+        };
+        self.cache.insert(key, mesh.clone());
+        Some(mesh)
     }
 
     fn clip_mesh(&mut self, path: &kurbo::BezPath, tol: f32) -> Option<Arc<VectorMeshData>> {
@@ -249,6 +259,106 @@ impl SceneRenderer {
             indices: buffers.indices.into(),
         })
     }
+}
+
+fn colorize_mesh(mesh: VectorMeshData, paint: &ScenePaint, opacity: f64) -> Arc<VectorMeshData> {
+    if let ScenePaint::Solid(c) = paint {
+        let rgba = [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32];
+        let vertices: Arc<[VectorVertex]> = mesh
+            .vertices
+            .iter()
+            .map(|v| VectorVertex { color: rgba, ..*v })
+            .collect();
+        return Arc::new(VectorMeshData {
+            vertices,
+            indices: mesh.indices,
+        });
+    }
+
+    let vertices: Arc<[VectorVertex]> = mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            let p = glam::DVec2::new(v.pos[0] as f64, v.pos[1] as f64);
+            let c = paint.color_at(p);
+            VectorVertex {
+                pos: v.pos,
+                color: [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32],
+                uv: v.uv,
+            }
+        })
+        .collect();
+
+    Arc::new(VectorMeshData {
+        vertices,
+        indices: mesh.indices,
+    })
+}
+
+fn radial_fan_mesh(
+    path: &kurbo::BezPath,
+    center: glam::DVec2,
+    end: glam::DVec2,
+    stops: &GradientStops,
+    opacity: f64,
+    tol: f32,
+) -> Option<VectorMeshData> {
+    let mut outline: Vec<[f32; 2]> = Vec::new();
+    kurbo::flatten(path.elements().iter().copied(), tol as f64, |el| {
+        if let kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) = el {
+            outline.push([p.x as f32, p.y as f32]);
+        }
+    });
+    if outline.len() < 3 || !point_in_polygon(center, &outline) {
+        return None;
+    }
+
+    let radius = (end - center).length().max(1e-12);
+    let n = outline.len();
+    let mut vertices: Vec<VectorVertex> = Vec::with_capacity(n + 1);
+    let mut indices: Vec<u32> = Vec::with_capacity(n * 3);
+
+    let push = |vertices: &mut Vec<VectorVertex>, p: glam::DVec2| {
+        let c = stops.sample(((p - center).length() / radius).clamp(0.0, 1.0));
+        vertices.push(VectorVertex {
+            pos: [p.x as f32, p.y as f32],
+            color: [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32],
+            uv: [0.0, 0.0],
+        });
+    };
+
+    push(&mut vertices, center);
+    let center_idx = 0u32;
+    for (i, pt) in outline.iter().enumerate() {
+        push(&mut vertices, glam::DVec2::new(pt[0] as f64, pt[1] as f64));
+        let i0 = (i as u32) + 1;
+        let i1 = ((i + 1) % n) as u32 + 1;
+        indices.extend_from_slice(&[center_idx, i0, i1]);
+    }
+
+    Some(VectorMeshData {
+        vertices: vertices.into(),
+        indices: indices.into(),
+    })
+}
+
+/// Ray-casting point-in-polygon test over an x-y ring of outline points.
+fn point_in_polygon(p: glam::DVec2, outline: &[[f32; 2]]) -> bool {
+    let n = outline.len();
+    let (mut j, mut i) = (n - 1, 0usize);
+    let mut inside = false;
+    while i < n {
+        let xi = outline[i][0] as f64;
+        let yi = outline[i][1] as f64;
+        let xj = outline[j][0] as f64;
+        let yj = outline[j][1] as f64;
+        if ((yi > p.y) != (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+        i += 1;
+    }
+    inside
 }
 
 /// Apply a 2x3 affine to every vertex of `mesh`.
@@ -340,14 +450,7 @@ fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
     tolerance.to_bits().hash(&mut h);
     item.opacity.to_bits().hash(&mut h);
 
-    for channel in [
-        item.paint.color.r,
-        item.paint.color.g,
-        item.paint.color.b,
-        item.paint.color.a,
-    ] {
-        channel.to_bits().hash(&mut h);
-    }
+    hash_paint(&item.paint, &mut h);
 
     for element in item.path.elements() {
         match *element {
@@ -441,20 +544,116 @@ fn hash_point(point: kurbo::Point, h: &mut impl std::hash::Hasher) {
     point.y.to_bits().hash(h);
 }
 
+fn hash_paint(paint: &ScenePaint, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    match paint {
+        ScenePaint::Solid(c) => {
+            0u8.hash(h);
+            c.r.to_bits().hash(h);
+            c.g.to_bits().hash(h);
+            c.b.to_bits().hash(h);
+            c.a.to_bits().hash(h);
+        }
+        ScenePaint::LinearGradient { start, end, stops } => {
+            1u8.hash(h);
+            start.x.to_bits().hash(h);
+            start.y.to_bits().hash(h);
+            end.x.to_bits().hash(h);
+            end.y.to_bits().hash(h);
+            hash_stops(stops, h);
+        }
+        ScenePaint::RadialGradient { center, end, stops } => {
+            2u8.hash(h);
+            center.x.to_bits().hash(h);
+            center.y.to_bits().hash(h);
+            end.x.to_bits().hash(h);
+            end.y.to_bits().hash(h);
+            hash_stops(stops, h);
+        }
+    }
+}
+
+fn hash_stops(stops: &GradientStops, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    stops.0.len().hash(h);
+    for s in &stops.0 {
+        s.offset.to_bits().hash(h);
+        s.color.r.to_bits().hash(h);
+        s.color.g.to_bits().hash(h);
+        s.color.b.to_bits().hash(h);
+        s.color.a.to_bits().hash(h);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use kurbo::{Circle, Shape};
-    use renamite_model::{Color, NodeId, Paint, SceneItem};
+    use renamite_model::{Color, GradientStop, GradientStops, NodeId, SceneItem};
+
+    fn solid_item(path: kurbo::BezPath, color: Color) -> SceneItem {
+        SceneItem {
+            path,
+            node: NodeId::default(),
+            style: NodeId::default(),
+            paint: ScenePaint::Solid(color),
+            kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
+            opacity: 1.0,
+            clip: None,
+            blend: renamite_model::BlendMode::Normal,
+        }
+    }
 
     #[test]
     fn circle_tessellates() {
         let mut r = SceneRenderer::new();
+        let item = solid_item(
+            Circle::new((0.0, 0.0), 20.0).to_path(0.1),
+            Color::rgba(1.0, 0.0, 0.0, 1.0),
+        );
+        let m = r.mesh_for(&item, 0.5).unwrap();
+        assert!(m.indices.len() >= 3 && m.indices.len().is_multiple_of(3));
+    }
+
+    #[test]
+    fn solid_mesh_has_uniform_vertex_color() {
+        let mut r = SceneRenderer::new();
+        let item = solid_item(
+            Circle::new((0.0, 0.0), 20.0).to_path(0.1),
+            Color::rgba(1.0, 0.5, 0.25, 0.75),
+        );
+        let m = r.mesh_for(&item, 0.5).unwrap();
+        assert!(m.vertices.len() >= 3);
+        for v in m.vertices.iter() {
+            assert!((v.color[0] - 1.0).abs() < 1e-4);
+            assert!((v.color[1] - 0.5).abs() < 1e-4);
+            assert!((v.color[2] - 0.25).abs() < 1e-4);
+            assert!((v.color[3] - 0.75).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn linear_gradient_vertex_colors_interpolate() {
+        let mut r = SceneRenderer::new();
+        // A circle spanning x 0..=100 on the gradient axis gives vertices all
+        // the way from start (red) to end (blue).
         let item = SceneItem {
-            path: Circle::new((0.0, 0.0), 20.0).to_path(0.1),
+            path: Circle::new((50.0, 50.0), 50.0).to_path(0.1),
             node: NodeId::default(),
-            paint: Paint {
-                color: Color::rgba(1.0, 0.0, 0.0, 1.0),
+            style: NodeId::default(),
+            paint: ScenePaint::LinearGradient {
+                start: glam::DVec2::new(0.0, 50.0),
+                end: glam::DVec2::new(100.0, 50.0),
+                stops: GradientStops(vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgba(1.0, 0.0, 0.0, 1.0),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgba(0.0, 0.0, 1.0, 1.0),
+                    },
+                ]),
             },
             kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
             opacity: 1.0,
@@ -462,7 +661,67 @@ mod tests {
             blend: renamite_model::BlendMode::Normal,
         };
         let m = r.mesh_for(&item, 0.5).unwrap();
-        assert!(m.indices.len() >= 3 && m.indices.len().is_multiple_of(3));
+        let (mut max_r, mut max_b) = (0.0f32, 0.0f32);
+        for v in m.vertices.iter() {
+            max_r = max_r.max(v.color[0]);
+            max_b = max_b.max(v.color[2]);
+        }
+        assert!(
+            (max_r - 1.0).abs() < 0.15,
+            "start side should be pure red, got max r={max_r}"
+        );
+        assert!(
+            (max_b - 1.0).abs() < 0.15,
+            "end side should be pure blue, got max b={max_b}"
+        );
+    }
+
+    #[test]
+    fn radial_gradient_vertex_colors_center_is_opaque() {
+        let mut r = SceneRenderer::new();
+        let item = SceneItem {
+            path: Circle::new((50.0, 50.0), 50.0).to_path(0.1),
+            node: NodeId::default(),
+            style: NodeId::default(),
+            paint: ScenePaint::RadialGradient {
+                center: glam::DVec2::new(50.0, 50.0),
+                end: glam::DVec2::new(100.0, 50.0),
+                stops: GradientStops(vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgba(0.96, 0.42, 0.18, 1.0),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgba(0.96, 0.42, 0.18, 0.0),
+                    },
+                ]),
+            },
+            kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
+            opacity: 1.0,
+            clip: None,
+            blend: renamite_model::BlendMode::Normal,
+        };
+        let m = r.mesh_for(&item, 0.5).unwrap();
+        let mut max_a = 0.0f32;
+        for v in m.vertices.iter() {
+            max_a = max_a.max(v.color[3]);
+        }
+        assert!(
+            (max_a - 1.0).abs() < 0.15,
+            "center vertex should be opaque, got max alpha={max_a}"
+        );
+    }
+
+    #[test]
+    fn cache_key_distinguishes_paints() {
+        let a = solid_item(
+            Circle::new((0.0, 0.0), 20.0).to_path(0.1),
+            Color::rgba(1.0, 0.0, 0.0, 1.0),
+        );
+        let mut b = a.clone();
+        b.paint = ScenePaint::Solid(Color::rgba(0.0, 0.0, 1.0, 1.0));
+        assert_ne!(mesh_key(&a, 0.5), mesh_key(&b, 0.5));
     }
 
     #[test]
@@ -475,9 +734,8 @@ mod tests {
             items: vec![SceneItem {
                 path: Circle::new((5.0, 5.0), 4.0).to_path(0.1),
                 node: NodeId::default(),
-                paint: Paint {
-                    color: Color::BLACK,
-                },
+                style: NodeId::default(),
+                paint: ScenePaint::Solid(Color::BLACK),
                 kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
                 opacity: 1.0,
                 clip: Some(0),

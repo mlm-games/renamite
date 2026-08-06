@@ -385,6 +385,45 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                 }
             }
         }
+        ToolOverlay::GradientLine { start, end, radial } => {
+            let a = view.world_to_screen(*start);
+            let b = view.world_to_screen(*end);
+            if (a - b).length() < 1.0 {
+                return;
+            }
+            // Screen-space quad (VectorOverlay = final device pixels).
+            let dir = b - a;
+            let len = dir.length();
+            let n = DVec2::new(-dir.y / len, dir.x / len);
+            let t = 1.25; // half thickness (px)
+            let c = [
+                th.primary.0 as f32 / 255.0,
+                th.primary.1 as f32 / 255.0,
+                th.primary.2 as f32 / 255.0,
+                1.0,
+            ];
+            let quad = [a + n * t, a - n * t, b - n * t, b + n * t];
+            let mk = |p: DVec2| repose_core::view::VectorVertex {
+                pos: [p.x as f32, p.y as f32],
+                color: c,
+                uv: [0.0, 0.0],
+            };
+            let mesh = repose_core::view::VectorMeshData {
+                vertices: std::sync::Arc::from([
+                    mk(quad[0]),
+                    mk(quad[1]),
+                    mk(quad[2]),
+                    mk(quad[3]),
+                ]),
+                indices: std::sync::Arc::from([0u32, 1, 2, 0, 2, 3]),
+            };
+            scope.draw_vector_overlay(std::sync::Arc::from([mesh]));
+            // Endpoint handles: start = primary, end = tertiary (radial)
+            // or primary (linear).
+            draw_handle_dot(scope, a, th.primary.with_alpha(240));
+            let end_color = if *radial { th.tertiary } else { th.primary };
+            draw_handle_dot(scope, b, end_color.with_alpha(240));
+        }
     }
 }
 

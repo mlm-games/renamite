@@ -215,7 +215,7 @@ mod tests {
     use kurbo::Shape;
     use renamite_behavior_common::ViewTransform;
     use renamite_model::{
-        ClipPath, Color, NodeId, Paint, PaintKind, Scene as ModelScene, SceneItem,
+        ClipPath, Color, NodeId, PaintKind, Scene as ModelScene, SceneItem, ScenePaint,
     };
     use renamite_render_bridge::SceneRenderer;
 
@@ -230,9 +230,8 @@ mod tests {
             items: vec![SceneItem {
                 path: kurbo::Circle::new((0.0, 0.0), 20.0).to_path(0.1),
                 node: NodeId::default(),
-                paint: Paint {
-                    color: Color::rgba(1.0, 0.0, 0.0, 1.0),
-                },
+                style: NodeId::default(),
+                paint: ScenePaint::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0)),
                 kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
                 opacity: 1.0,
                 clip: Some(0),

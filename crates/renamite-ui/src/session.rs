@@ -612,7 +612,9 @@ pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
 /// Default empty document with a seeded ellipse so the artboard isn't blank.
 pub fn default_file() -> RenFile {
     use renamite_animation::Animated;
-    use renamite_model::{Color, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
+    use renamite_model::{
+        Color, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint,
+    };
 
     let mut doc = renamite_model::Document::empty();
     let comp = doc.main;
@@ -630,7 +632,7 @@ pub fn default_file() -> RenFile {
     let fill = doc.create_node(Node::new(
         "Fill",
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
             rule: FillRule::NonZero,
         }),
     ));

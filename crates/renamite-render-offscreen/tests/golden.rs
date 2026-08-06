@@ -10,8 +10,9 @@ use renamite_animation::{Animated, EasingHandle, EasingPreset, Frame, Interpolat
 use renamite_behavior_common::ViewTransform;
 use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
-    Color, Document, FillRule, KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath,
-    ShapeKind, StrokeCap, StrokeJoin, StyleKind, TrimMode, Value, evaluate,
+    Color, Document, FillRule, GradientKind, GradientStop, GradientStops, KeyframeData,
+    ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StrokeCap, StrokeJoin, StyleKind,
+    StylePaint, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::{OffscreenRenderer, fit_view};
@@ -98,8 +99,6 @@ fn check_golden(name: &str, actual_png: &[u8]) {
     }
 }
 
-// ---------------- fixtures ----------------
-
 fn linear_key(frame: i64, value: Value) -> KeyframeData {
     KeyframeData {
         frame: Frame(frame),
@@ -125,7 +124,7 @@ fn fixture_ellipse() -> Document {
     let fill = doc.create_node(Node::new(
         "f",
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
             rule: FillRule::NonZero,
         }),
     ));
@@ -149,7 +148,7 @@ fn fixture_stroke() -> Document {
     let stroke = doc.create_node(Node::new(
         "s",
         NodeKind::Style(StyleKind::Stroke {
-            color: Animated::new(Color::rgba(0.1, 0.3, 0.9, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.1, 0.3, 0.9, 1.0)),
             width: Animated::new(24.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
@@ -202,7 +201,7 @@ fn fixture_bezier_path() -> Document {
     let fill = doc.create_node(Node::new(
         "f",
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::rgba(0.2, 0.7, 0.4, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.2, 0.7, 0.4, 1.0)),
             rule: FillRule::NonZero,
         }),
     ));
@@ -237,7 +236,7 @@ fn fixture_trim_half() -> Document {
     let stroke = doc.create_node(Node::new(
         "s",
         NodeKind::Style(StyleKind::Stroke {
-            color: Animated::new(Color::rgba(0.1, 0.3, 0.9, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.1, 0.3, 0.9, 1.0)),
             width: Animated::new(16.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
@@ -291,7 +290,7 @@ fn fixture_round_corners() -> Document {
     let fill = doc.create_node(Node::new(
         "f",
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::rgba(0.3, 0.6, 0.9, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.3, 0.6, 0.9, 1.0)),
             rule: FillRule::NonZero,
         }),
     ));
@@ -303,7 +302,80 @@ fn fixture_round_corners() -> Document {
     doc
 }
 
-// ---------------- tests ----------------
+/// Rect filled with a linear gradient, left (white) → right (blue).
+fn fixture_linear_gradient() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(240.0, 180.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::Gradient(renamite_model::Gradient {
+                kind: GradientKind::Linear,
+                start: Animated::new(DVec2::new(136.0, 256.0)),
+                end: Animated::new(DVec2::new(376.0, 256.0)),
+                stops: Animated::new(GradientStops(vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgba(1.0, 1.0, 1.0, 1.0),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgba(0.1, 0.2, 0.9, 1.0),
+                    },
+                ])),
+            }),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+    doc
+}
+
+/// Ellipse filled with a radial gradient, center (orange) → edge (transparent).
+fn fixture_radial_gradient() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let shape = doc.create_node(Node::new(
+        "e",
+        NodeKind::Shape(ShapeKind::Ellipse {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(240.0, 240.0)),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::Gradient(renamite_model::Gradient {
+                kind: GradientKind::Radial,
+                start: Animated::new(DVec2::new(256.0, 256.0)),
+                end: Animated::new(DVec2::new(376.0, 256.0)),
+                stops: Animated::new(GradientStops(vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgba(0.96, 0.42, 0.18, 1.0),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgba(0.96, 0.42, 0.18, 0.0),
+                    },
+                ])),
+            }),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+    doc
+}
 
 #[test]
 fn golden_ellipse_fill() {
@@ -365,5 +437,23 @@ fn golden_round_corners() {
     check_golden(
         "round_corners",
         &render_doc(&mut gpu, &fixture_round_corners(), 0.0),
+    );
+}
+
+#[test]
+fn golden_linear_gradient() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "linear_gradient",
+        &render_doc(&mut gpu, &fixture_linear_gradient(), 0.0),
+    );
+}
+
+#[test]
+fn golden_radial_gradient() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "radial_gradient",
+        &render_doc(&mut gpu, &fixture_radial_gradient(), 0.0),
     );
 }

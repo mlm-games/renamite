@@ -7,6 +7,7 @@ description = "Document, nodes, and pure evaluate -> Scene for renamite."
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 slotmap.workspace = true
 kurbo.workspace = true
 glam.workspace = true

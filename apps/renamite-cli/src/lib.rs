@@ -492,7 +492,9 @@ fn cmd_new(output: PathBuf, template: String) -> Result<()> {
 
 fn scaffold_ellipse(name: String) -> RenFile {
     use renamite_animation::Animated;
-    use renamite_model::{Color, Document, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
+    use renamite_model::{
+        Color, Document, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint,
+    };
 
     let mut doc = Document::empty();
     let comp = doc.main;
@@ -509,7 +511,7 @@ fn scaffold_ellipse(name: String) -> RenFile {
     let fill = doc.create_node(Node::new(
         "Fill",
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+            paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
             rule: FillRule::NonZero,
         }),
     ));

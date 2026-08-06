@@ -6,8 +6,8 @@ use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
 use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
-    Document, KeyframeData, ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut,
-    PropPath, Value,
+    Document, GradientKind, GradientStop, GradientStops, KeyframeData, ModelError, ModifierKind,
+    Node, NodeId, NodeKind, Parent, PropMut, PropPath, StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -84,6 +84,25 @@ pub enum EditorCommand {
     SetNodeName {
         id: NodeId,
         name: String,
+    },
+    /// Swap a fill/stroke's paint for a gradient seeded from its current
+    /// solid color. Exact inverse: restore the previous `StylePaint`.
+    ConvertToGradient {
+        id: NodeId,
+        kind: GradientKind,
+        start: glam::DVec2,
+        end: glam::DVec2,
+    },
+    /// Swap a gradient fill/stroke back to a solid using the first stop's
+    /// color. Exact inverse: restore the previous `StylePaint`.
+    ConvertToSolid {
+        id: NodeId,
+    },
+    /// Whole-paint swap (used as the exact inverse of the convert commands).
+    /// Undo-internal surface, but also the generic path for inspector edits.
+    SetPaint {
+        id: NodeId,
+        paint: StylePaint,
     },
     /// Enum-field write (TrimMode is not an `Animated<T>`); same pattern as
     /// `SetNodeName` - whole-field swap, exact inverse.
@@ -388,6 +407,9 @@ fn apply_command(
         | GroupNodes { .. }
         | SetNodeFlags { .. }
         | SetNodeName { .. }
+        | ConvertToGradient { .. }
+        | ConvertToSolid { .. }
+        | SetPaint { .. }
         | SetTrimMode { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
@@ -818,6 +840,71 @@ fn apply_document_command(
             let old = std::mem::replace(&mut n.name, name.clone());
             Ok((None, vec![SetNodeName { id: *id, name: old }]))
         }
+        ConvertToGradient {
+            id,
+            kind,
+            start,
+            end,
+        } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(st) = &mut n.kind else {
+                return Err(ModelError::MissingNode.into());
+            };
+            // Seed both stops with the current solid color so the gradient is
+            // invisible until the tool drags the axis; stops then diverge.
+            let base = st.paint().base_color();
+            let new_paint = StylePaint::Gradient(renamite_model::Gradient {
+                kind: *kind,
+                start: Animated::new(*start),
+                end: Animated::new(*end),
+                stops: Animated::new(GradientStops(vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: base,
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: base,
+                    },
+                ])),
+            });
+            let prev = st.swap_paint(new_paint);
+            Ok((
+                None,
+                vec![SetPaint {
+                    id: *id,
+                    paint: prev,
+                }],
+            ))
+        }
+        ConvertToSolid { id } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(st) = &mut n.kind else {
+                return Err(ModelError::MissingNode.into());
+            };
+            let prev = st.swap_paint(StylePaint::solid(st.paint().base_color()));
+            Ok((
+                None,
+                vec![SetPaint {
+                    id: *id,
+                    paint: prev,
+                }],
+            ))
+        }
+        SetPaint { id, paint } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(st) = &mut n.kind else {
+                return Err(ModelError::MissingNode.into());
+            };
+            let prev = st.swap_paint(paint.clone());
+            Ok((
+                None,
+                vec![SetPaint {
+                    id: *id,
+                    paint: prev,
+                }],
+            ))
+        }
         SetTrimMode { id, mode } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Modifier(ModifierKind::TrimPath { mode: cur, .. }) = &mut n.kind else {
@@ -1173,7 +1260,7 @@ pub enum ToolId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renamite_model::NodeKind;
+    use renamite_model::{NodeKind, StyleKind};
 
     fn f64_key(f: i64, v: f64) -> KeyframeData {
         KeyframeData {
@@ -1324,6 +1411,56 @@ mod tests {
         assert_eq!(
             w.doc.get_static(id, &prop).unwrap(),
             Value::DVec2(glam::DVec2::new(10.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn convert_to_gradient_undo_redo_restores_paint() {
+        use renamite_model::{Color, StylePaint};
+        let mut w = World::new();
+        let id = w.node();
+        w.doc.nodes[id].kind = NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.1, 0.5, 0.9, 1.0)),
+            rule: renamite_model::FillRule::NonZero,
+        });
+        let mut h = History::new();
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::ConvertToGradient {
+                id,
+                kind: GradientKind::Linear,
+                start: glam::DVec2::new(0.0, 0.0),
+                end: glam::DVec2::new(100.0, 0.0),
+            },
+        )
+        .unwrap();
+        h.commit();
+        let NodeKind::Style(st) = &w.doc.nodes[id].kind else {
+            panic!("not a style");
+        };
+        assert!(
+            matches!(st.paint(), StylePaint::Gradient(g) if g.kind == GradientKind::Linear),
+            "should be a linear gradient"
+        );
+        assert_eq!(st.paint().base_color(), Color::rgba(0.1, 0.5, 0.9, 1.0));
+
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Style(st) = &w.doc.nodes[id].kind else {
+            panic!("not a style");
+        };
+        assert_eq!(st.paint().base_color(), Color::rgba(0.1, 0.5, 0.9, 1.0));
+        assert!(
+            matches!(st.paint(), StylePaint::Solid { .. }),
+            "undo restores the solid"
+        );
+
+        h.redo(&mut w.pm()).unwrap();
+        let NodeKind::Style(st) = &w.doc.nodes[id].kind else {
+            panic!("not a style");
+        };
+        assert!(
+            matches!(st.paint(), StylePaint::Gradient(g) if g.kind == GradientKind::Linear),
+            "redo restores the gradient"
         );
     }
 

@@ -3281,6 +3281,7 @@ name = "renamite-behavior-canvas"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "kurbo",
  "renamite-animation",
  "renamite-behavior-common",
  "renamite-geometry",
@@ -3453,6 +3454,7 @@ dependencies = [
  "renamite-animation",
  "renamite-geometry",
  "serde",
+ "serde_json",
  "slotmap",
  "thiserror 2.0.19",
 ]
@@ -3485,6 +3487,7 @@ dependencies = [
 name = "renamite-render-bridge"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "kurbo",
  "lyon_path",
  "lyon_tessellation",
@@ -3539,6 +3542,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glam",
+ "kurbo",
  "renamite-animation",
  "renamite-behavior-canvas",
  "renamite-behavior-common",

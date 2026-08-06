@@ -10,6 +10,7 @@ use renamite_animation::{
     Angle, Animated, AnimatedTransform, EasingHandle, Frame, Interpolation, Tween,
 };
 use renamite_geometry::VectorPath;
+use serde::de::{Deserializer, Error as DeError, Visitor};
 use serde::{Deserialize, Serialize};
 use slotmap::{SlotMap, new_key_type};
 
@@ -129,19 +130,379 @@ pub enum ShapeKind {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One color anchor along a gradient axis. `offset` is in 0..=1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GradientStop {
+    pub offset: f64,
+    pub color: Color,
+}
+
+/// Ordered gradient stops, sampled by `sample`. Kept small (usually 2-4).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GradientStops(pub Vec<GradientStop>);
+
+impl Default for GradientStops {
+    fn default() -> Self {
+        Self(vec![
+            GradientStop {
+                offset: 0.0,
+                color: Color::rgba(1.0, 1.0, 1.0, 1.0),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::rgba(0.0, 0.0, 0.0, 1.0),
+            },
+        ])
+    }
+}
+
+impl GradientStops {
+    /// Sample the gradient at normalized position `t` (clamped to 0..=1).
+    pub fn sample(&self, t: f64) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        let stops = &self.0;
+        if stops.is_empty() {
+            return Color::BLACK;
+        }
+        if t <= stops[0].offset {
+            return stops[0].color;
+        }
+        for w in stops.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if t <= b.offset {
+                let span = (b.offset - a.offset).max(1e-9);
+                let u = ((t - a.offset) / span).clamp(0.0, 1.0);
+                return Color::rgba(
+                    a.color.r + (b.color.r - a.color.r) * u,
+                    a.color.g + (b.color.g - a.color.g) * u,
+                    a.color.b + (b.color.b - a.color.b) * u,
+                    a.color.a + (b.color.a - a.color.a) * u,
+                );
+            }
+        }
+        stops.last().unwrap().color
+    }
+}
+
+impl Tween for GradientStops {
+    fn tween(a: &Self, b: &Self, t: f64) -> Self {
+        if a.0.len() != b.0.len() {
+            return if t < 1.0 { a.clone() } else { b.clone() };
+        }
+        Self(
+            a.0.iter()
+                .zip(&b.0)
+                .map(|(x, y)| GradientStop {
+                    offset: x.offset + (y.offset - x.offset) * t,
+                    color: Color::rgba(
+                        x.color.r + (y.color.r - x.color.r) * t,
+                        x.color.g + (y.color.g - x.color.g) * t,
+                        x.color.b + (y.color.b - x.color.b) * t,
+                        x.color.a + (y.color.a - x.color.a) * t,
+                    ),
+                })
+                .collect(),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GradientKind {
+    Linear,
+    Radial,
+}
+
+/// A gradient in the *node's* local space. The evaluator folds the owning
+/// shape's world transform into `start`/`end` before baking vertex colors.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Gradient {
+    pub kind: GradientKind,
+    /// Linear: start point. Radial: center.
+    pub start: Animated<glam::DVec2>,
+    /// Linear: end point. Radial: circumference point (radius = |end-start|).
+    pub end: Animated<glam::DVec2>,
+    pub stops: Animated<GradientStops>,
+}
+
+/// Paint on a style node: solid color or gradient. Animated so whole-list
+/// keyframes (e.g. stop-color morphs) work through the existing machinery.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StylePaint {
+    Solid { color: Animated<Color> },
+    Gradient(Gradient),
+}
+
+impl StylePaint {
+    pub fn solid(color: Color) -> Self {
+        Self::Solid {
+            color: Animated::new(color),
+        }
+    }
+
+    pub fn linear(start: glam::DVec2, end: glam::DVec2, stops: GradientStops) -> Self {
+        Self::Gradient(Gradient {
+            kind: GradientKind::Linear,
+            start: Animated::new(start),
+            end: Animated::new(end),
+            stops: Animated::new(stops),
+        })
+    }
+
+    pub fn radial(center: glam::DVec2, end: glam::DVec2, stops: GradientStops) -> Self {
+        Self::Gradient(Gradient {
+            kind: GradientKind::Radial,
+            start: Animated::new(center),
+            end: Animated::new(end),
+            stops: Animated::new(stops),
+        })
+    }
+
+    /// Sample the paint into a `ScenePaint` at `frame`.
+    pub fn sample(&self, frame: f64) -> ScenePaint {
+        match self {
+            StylePaint::Solid { color } => ScenePaint::Solid(color.value_at(frame)),
+            StylePaint::Gradient(g) => {
+                let start = g.start.value_at(frame);
+                let end = g.end.value_at(frame);
+                let stops = g.stops.value_at(frame);
+                match g.kind {
+                    GradientKind::Linear => ScenePaint::LinearGradient { start, end, stops },
+                    GradientKind::Radial => ScenePaint::RadialGradient {
+                        center: start,
+                        end,
+                        stops,
+                    },
+                }
+            }
+        }
+    }
+}
+
+impl Tween for StylePaint {
+    fn tween(a: &Self, b: &Self, t: f64) -> Self {
+        match (a, b) {
+            (StylePaint::Solid { color: ca }, StylePaint::Solid { color: cb }) => {
+                StylePaint::Solid {
+                    color: Animated::new(Tween::tween(&ca.base, &cb.base, t)),
+                }
+            }
+            (StylePaint::Gradient(ga), StylePaint::Gradient(gb)) => {
+                StylePaint::Gradient(Gradient {
+                    kind: ga.kind,
+                    start: Animated::new(Tween::tween(&ga.start.base, &gb.start.base, t)),
+                    end: Animated::new(Tween::tween(&ga.end.base, &gb.end.base, t)),
+                    stops: Animated::new(Tween::tween(&ga.stops.base, &gb.stops.base, t)),
+                })
+            }
+            _ => {
+                if t < 1.0 {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
+            }
+        }
+    }
+}
+
+impl StyleKind {
+    /// Replace the paint (fill or stroke), returning the previous one (undo).
+    pub fn swap_paint(&mut self, paint: StylePaint) -> StylePaint {
+        match self {
+            StyleKind::Fill { paint: p, .. } | StyleKind::Stroke { paint: p, .. } => {
+                std::mem::replace(p, paint)
+            }
+        }
+    }
+
+    pub fn paint(&self) -> &StylePaint {
+        match self {
+            StyleKind::Fill { paint, .. } | StyleKind::Stroke { paint, .. } => paint,
+        }
+    }
+}
+
+impl StylePaint {
+    /// For a solid paint: the (possibly keyed) base color. For a gradient:
+    /// the first stop's color (stable handle for conversions).
+    pub fn base_color(&self) -> Color {
+        match self {
+            StylePaint::Solid { color } => color.base,
+            StylePaint::Gradient(g) => g
+                .stops
+                .base
+                .0
+                .first()
+                .map(|s| s.color)
+                .unwrap_or(Color::BLACK),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum StyleKind {
     Fill {
-        color: Animated<Color>,
+        paint: StylePaint,
         rule: FillRule,
     },
     Stroke {
-        color: Animated<Color>,
+        paint: StylePaint,
         width: Animated<f64>,
         cap: StrokeCap,
         join: StrokeJoin,
         dash: Option<AnimatedDash>,
     },
+}
+
+#[derive(Default)]
+struct StyleCompatContent {
+    paint: Option<StylePaint>,
+    color: Option<Animated<Color>>,
+    width: Option<Animated<f64>>,
+    cap: Option<StrokeCap>,
+    join: Option<StrokeJoin>,
+    dash: Option<AnimatedDash>,
+    rule: Option<FillRule>,
+}
+
+impl<'de> Deserialize<'de> for StyleKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        enum StyleTag {
+            Fill,
+            Stroke,
+        }
+
+        struct StyleKindVisitor;
+        impl<'de> Visitor<'de> for StyleKindVisitor {
+            type Value = StyleKind;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a Fill or Stroke style")
+            }
+
+            fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::EnumAccess<'de>,
+            {
+                use serde::de::VariantAccess as _;
+                struct ContentVisitor {
+                    fill: bool,
+                }
+                impl<'de> Visitor<'de> for ContentVisitor {
+                    type Value = StyleCompatContent;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("style variant fields")
+                    }
+                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::MapAccess<'de>,
+                    {
+                        use serde::de::Error as _;
+                        let mut content = StyleCompatContent::default();
+                        while let Some(key) = map.next_key::<String>()? {
+                            match key.as_str() {
+                                "paint" => content.paint = Some(map.next_value()?),
+                                "color" => content.color = Some(map.next_value()?),
+                                "width" => content.width = Some(map.next_value()?),
+                                "cap" => content.cap = Some(map.next_value()?),
+                                "join" => content.join = Some(map.next_value()?),
+                                "dash" => content.dash = Some(map.next_value()?),
+                                "rule" => content.rule = Some(map.next_value()?),
+                                other => {
+                                    return Err(A::Error::unknown_field(
+                                        other,
+                                        &["paint", "color", "width", "cap", "join", "dash", "rule"],
+                                    ));
+                                }
+                            }
+                        }
+                        Ok(content)
+                    }
+                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::SeqAccess<'de>,
+                    {
+                        use serde::de::Error as _;
+                        // Postcard encodes struct-variant content positionally
+                        // (no keys), in derived declaration order.
+                        let mut content = StyleCompatContent {
+                            paint: Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(0, &"paint"))?,
+                            ),
+                            ..Default::default()
+                        };
+                        if self.fill {
+                            content.rule = Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(1, &"rule"))?,
+                            );
+                        } else {
+                            content.width = Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(1, &"width"))?,
+                            );
+                            content.cap = Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(2, &"cap"))?,
+                            );
+                            content.join = Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(3, &"join"))?,
+                            );
+                            content.dash = Some(
+                                seq.next_element()?
+                                    .ok_or_else(|| A::Error::invalid_length(4, &"dash"))?,
+                            );
+                        }
+                        Ok(content)
+                    }
+                }
+                let (tag, content) = data.variant::<StyleTag>()?;
+                let content = match tag {
+                    StyleTag::Fill => {
+                        content.struct_variant(&["paint", "rule"], ContentVisitor { fill: true })?
+                    }
+                    StyleTag::Stroke => content.struct_variant(
+                        &["paint", "width", "cap", "join", "dash"],
+                        ContentVisitor { fill: false },
+                    )?,
+                };
+                let paint = match content.paint {
+                    Some(p) => p,
+                    None => match content.color {
+                        Some(color) => StylePaint::Solid { color },
+                        None => return Err(A::Error::missing_field("paint")),
+                    },
+                };
+                match tag {
+                    StyleTag::Fill => Ok(StyleKind::Fill {
+                        paint,
+                        rule: content
+                            .rule
+                            .ok_or_else(|| A::Error::missing_field("rule"))?,
+                    }),
+                    StyleTag::Stroke => Ok(StyleKind::Stroke {
+                        paint,
+                        width: content
+                            .width
+                            .ok_or_else(|| A::Error::missing_field("width"))?,
+                        cap: content.cap.ok_or_else(|| A::Error::missing_field("cap"))?,
+                        join: content
+                            .join
+                            .ok_or_else(|| A::Error::missing_field("join"))?,
+                        dash: content.dash,
+                    }),
+                }
+            }
+        }
+
+        deserializer.deserialize_enum("StyleKind", &["Fill", "Stroke"], StyleKindVisitor)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -215,6 +576,12 @@ impl Color {
         b: 0.0,
         a: 1.0,
     };
+    pub const WHITE: Self = Self {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
     pub fn rgba(r: f64, g: f64, b: f64, a: f64) -> Self {
         Self { r, g, b, a }
     }
@@ -281,7 +648,13 @@ pub struct SceneItem {
     pub path: BezPath,
     /// The *shape* node that produced this geometry (used for picking).
     pub node: NodeId,
-    pub paint: Paint,
+    /// The style node (Fill/Stroke) whose paint produced this item. Lets the
+    /// gradient tool / inspector target the exact style to edit.
+    pub style: NodeId,
+    /// Resolved paint. Gradient coordinates are in world space (the owning
+    /// shape's local transform is folded in during evaluation), matching the
+    /// vertex positions the renderer bakes colors from.
+    pub paint: ScenePaint,
     pub kind: PaintKind,
     pub opacity: f64,
     pub clip: Option<u32>,
@@ -307,9 +680,41 @@ pub struct DashSample {
     pub offset: f64,
 }
 
+/// Resolved, per-frame paint attached to a scene item. The renderer bakes
+/// this into mesh vertex colors at tessellation time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Paint {
-    pub color: Color,
+pub enum ScenePaint {
+    Solid(Color),
+    LinearGradient {
+        start: glam::DVec2,
+        end: glam::DVec2,
+        stops: GradientStops,
+    },
+    RadialGradient {
+        center: glam::DVec2,
+        end: glam::DVec2,
+        stops: GradientStops,
+    },
+}
+
+impl ScenePaint {
+    /// Color at world-space position `p` (used by vertex baking).
+    pub fn color_at(&self, p: glam::DVec2) -> Color {
+        match self {
+            ScenePaint::Solid(c) => *c,
+            ScenePaint::LinearGradient { start, end, stops } => {
+                let d = *end - *start;
+                let len2 = d.length_squared().max(1e-12);
+                let t = ((p - *start).dot(d) / len2).clamp(0.0, 1.0);
+                stops.sample(t)
+            }
+            ScenePaint::RadialGradient { center, end, stops } => {
+                let r = (*end - *center).length().max(1e-12);
+                let t = ((p - *center).length() / r).clamp(0.0, 1.0);
+                stops.sample(t)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -382,6 +787,42 @@ fn sample_transform(
         ts.skew_axis = ov_f64(ov, id, "transform.skew_axis", ts.skew_axis);
     }
     ts
+}
+
+/// The topmost fill style that paints `shape`: the last Fill style sibling
+/// in the closest ancestor scope that has one. Used by the inspector to edit
+/// a shape's fill (the tool instead tracks the exact style via `SceneItem`).
+pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
+    let mut scope = doc.locate(shape).map(|(p, _)| p)?;
+    loop {
+        let children: Vec<NodeId> = match scope {
+            Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+            Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
+        };
+        if let Some(fill) = children.iter().rev().find(|id| {
+            matches!(
+                doc.nodes.get(**id).map(|n| &n.kind),
+                Some(NodeKind::Style(StyleKind::Fill { .. }))
+            )
+        }) {
+            return Some(*fill);
+        }
+        match scope {
+            Parent::Comp(_) => return None,
+            Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
+        }
+    }
+}
+
+/// The node's own transform as an affine, ignoring group/accumulated
+/// transforms. Gradient handles are authored in this space and folded into
+/// world space with this same affine during evaluation, so the inverse maps
+/// world gradient handles back to local coordinates for editing.
+pub fn node_affine(doc: &Document, id: NodeId, frame: f64) -> Affine {
+    let Some(n) = doc.nodes.get(id) else {
+        return Affine::IDENTITY;
+    };
+    affine_of(&sample_transform(n, id, frame, &Overrides::default()))
 }
 
 fn affine_of(ts: &renamite_animation::TransformSample) -> Affine {
@@ -507,7 +948,7 @@ fn eval_group(
     }
 
     // Pass 1: accumulate shape paths + modifiers, in document order.
-    let mut paths: Vec<(NodeId, BezPath)> = Vec::new();
+    let mut paths: Vec<(NodeId, Affine, BezPath)> = Vec::new();
     for &id in children {
         let Some(n) = doc.nodes.get(id) else { continue };
         if !n.visible {
@@ -515,8 +956,8 @@ fn eval_group(
         }
         match &n.kind {
             NodeKind::Shape(s) => {
-                let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
-                paths.push((id, ntf * shape_path(s, id, frame, ov)));
+                let ntf = affine_of(&sample_transform(n, id, frame, ov));
+                paths.push((id, ntf, tf * ntf * shape_path(s, id, frame, ov)));
             }
             NodeKind::Modifier(m) => apply_modifier(m, id, frame, ov, &mut paths),
             _ => {}
@@ -563,7 +1004,7 @@ fn apply_modifier(
     id: NodeId,
     frame: f64,
     ov: &Overrides,
-    paths: &mut Vec<(NodeId, BezPath)>,
+    paths: &mut Vec<(NodeId, Affine, BezPath)>,
 ) {
     match m {
         ModifierKind::Repeater {
@@ -583,8 +1024,8 @@ fn apply_modifier(
                 for _ in 0..reps {
                     a *= step;
                 }
-                for (id, p) in &original {
-                    paths.push((*id, a * p.clone()));
+                for (id, affine, p) in &original {
+                    paths.push((*id, *affine, a * p.clone()));
                 }
             }
         }
@@ -609,28 +1050,30 @@ fn apply_modifier(
             let originals = std::mem::take(paths);
             match mode {
                 TrimMode::Individually => {
-                    for (id, path) in originals {
+                    for (id, affine, path) in originals {
                         if let Some(trimmed) = trim_path(&path, s, e, o) {
-                            paths.push((id, trimmed));
+                            paths.push((id, affine, trimmed));
                         }
                     }
                 }
                 TrimMode::Simultaneously => {
-                    let lengths: Vec<f64> =
-                        originals.iter().map(|(_, p)| p.perimeter(1e-3)).collect();
+                    let lengths: Vec<f64> = originals
+                        .iter()
+                        .map(|(_, _, p)| p.perimeter(1e-3))
+                        .collect();
                     let total: f64 = lengths.iter().sum();
                     if total <= 1e-9 {
                         return;
                     }
                     let mut cursor = 0.0;
-                    for ((id, path), len) in originals.into_iter().zip(lengths) {
+                    for ((id, affine, path), len) in originals.into_iter().zip(lengths) {
                         let frac = len / total;
                         if frac > 1e-12 {
                             let ps = ((s - cursor) / frac).clamp(0.0, 1.0);
                             let pe = ((e - cursor) / frac).clamp(0.0, 1.0);
                             if pe > ps + 1e-9 {
                                 if let Some(t) = trim_path(&path, ps, pe, o) {
-                                    paths.push((id, t));
+                                    paths.push((id, affine, t));
                                 }
                             }
                         }
@@ -648,7 +1091,7 @@ fn apply_modifier(
                 // geometry: already-curved (Smooth) paths pass through untouched,
                 // while hard cuts (e.g. from a preceding Trim) detect as Corner
                 // and get rounded - Lottie modifier-order semantics.
-                for (_, path) in paths.iter_mut() {
+                for (_, _, path) in paths.iter_mut() {
                     let vp = renamite_geometry::VectorPath::from_bez_path(path);
                     *path = vp.round_corners(r).to_bez_path();
                 }
@@ -780,41 +1223,32 @@ fn append_seg(out: &mut BezPath, seg: &kurbo::PathSeg) {
     }
 }
 
+fn fold_gradient_point(affine: &Affine, local: glam::DVec2) -> glam::DVec2 {
+    let p = *affine * Point::new(local.x, local.y);
+    glam::DVec2::new(p.x, p.y)
+}
+
 fn emit_style(
     st: &StyleKind,
     style_id: NodeId,
     frame: f64,
     ov: &Overrides,
-    paths: &[(NodeId, BezPath)],
+    paths: &[(NodeId, Affine, BezPath)],
     opacity: f64,
     scene: &mut Scene,
 ) {
-    for (node, path) in paths {
-        let item = match st {
-            StyleKind::Fill { color, rule } => SceneItem {
-                path: path.clone(),
-                node: *node,
-                paint: Paint {
-                    color: ov_color(ov, style_id, "fill.color", color.value_at(frame)),
-                },
-                kind: PaintKind::Fill(*rule),
-                opacity,
-                clip: None,
-                blend: BlendMode::Normal,
-            },
+    for (node, affine, path) in paths {
+        let (paint, kind) = match st {
+            StyleKind::Fill { paint, rule } => (paint, PaintKind::Fill(*rule)),
             StyleKind::Stroke {
-                color,
+                paint,
                 width,
                 cap,
                 join,
                 dash,
-            } => SceneItem {
-                path: path.clone(),
-                node: *node,
-                paint: Paint {
-                    color: ov_color(ov, style_id, "stroke.color", color.value_at(frame)),
-                },
-                kind: PaintKind::Stroke(StrokeSample {
+            } => (
+                paint,
+                PaintKind::Stroke(StrokeSample {
                     width: ov_f64(ov, style_id, "stroke.width", width.value_at(frame)).max(0.0),
                     cap: *cap,
                     join: *join,
@@ -823,12 +1257,60 @@ fn emit_style(
                         offset: d.offset.value_at(frame),
                     }),
                 }),
-                opacity,
-                clip: None,
-                blend: BlendMode::Normal,
-            },
+            ),
         };
-        scene.items.push(item);
+
+        let paint = sample_paint_world(paint, frame, affine, ov, style_id);
+
+        scene.items.push(SceneItem {
+            path: path.clone(),
+            node: *node,
+            style: style_id,
+            paint,
+            kind,
+            opacity,
+            clip: None,
+            blend: BlendMode::Normal,
+        });
+    }
+}
+
+fn sample_paint_world(
+    paint: &StylePaint,
+    frame: f64,
+    affine: &Affine,
+    ov: &Overrides,
+    style_id: NodeId,
+) -> ScenePaint {
+    match paint {
+        StylePaint::Solid { color } => {
+            ScenePaint::Solid(ov_color(ov, style_id, "fill.color", color.value_at(frame)))
+        }
+        StylePaint::Gradient(g) => {
+            let kind = g.kind;
+            let start_local = ov_vec2(ov, style_id, "grad.start", g.start.value_at(frame));
+            let end_local = ov_vec2(ov, style_id, "grad.end", g.end.value_at(frame));
+            let stops = ov_stops(ov, style_id, "grad.stops", &g.stops.value_at(frame));
+            match kind {
+                GradientKind::Linear => ScenePaint::LinearGradient {
+                    start: fold_gradient_point(affine, start_local),
+                    end: fold_gradient_point(affine, end_local),
+                    stops,
+                },
+                GradientKind::Radial => ScenePaint::RadialGradient {
+                    center: fold_gradient_point(affine, start_local),
+                    end: fold_gradient_point(affine, end_local),
+                    stops,
+                },
+            }
+        }
+    }
+}
+
+fn ov_stops(ov: &Overrides, id: NodeId, prop: &str, dflt: &GradientStops) -> GradientStops {
+    match ov.get(id, prop) {
+        Some(Value::Stops(s)) => s.clone(),
+        _ => dflt.clone(),
     }
 }
 
@@ -979,6 +1461,10 @@ pub enum Value {
     Path(VectorPath),
     Bool(bool),
     I64(i64),
+    /// Whole gradient stop list (animatable as one unit; v1).
+    Stops(GradientStops),
+    /// Whole style paint (structural swaps like solid<->gradient).
+    Paint(StylePaint),
 }
 
 /// Topmost pickable item under `pt` (world space).
@@ -1130,6 +1616,30 @@ impl PropValue for VectorPath {
         }
     }
 }
+impl PropValue for GradientStops {
+    fn into_value(self) -> Value {
+        Value::Stops(self)
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Stops(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
+    }
+}
+impl PropValue for StylePaint {
+    fn into_value(self) -> Value {
+        Value::Paint(self)
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Paint(p) = v {
+            Some(p.clone())
+        } else {
+            None
+        }
+    }
+}
 
 pub enum PropMut<'a> {
     F64(&'a mut Animated<f64>),
@@ -1137,6 +1647,7 @@ pub enum PropMut<'a> {
     Angle(&'a mut Animated<Angle>),
     Color(&'a mut Animated<Color>),
     Path(&'a mut Animated<VectorPath>),
+    Stops(&'a mut Animated<GradientStops>),
 }
 pub enum PropRef<'a> {
     F64(&'a Animated<f64>),
@@ -1144,6 +1655,7 @@ pub enum PropRef<'a> {
     Angle(&'a Animated<Angle>),
     Color(&'a Animated<Color>),
     Path(&'a Animated<VectorPath>),
+    Stops(&'a Animated<GradientStops>),
 }
 
 pub trait PropVisitor {
@@ -1162,6 +1674,7 @@ pub fn visit_prop<V: PropVisitor>(p: PropMut<'_>, v: V) -> V::Out {
         PropMut::Angle(a) => v.visit(a),
         PropMut::Color(a) => v.visit(a),
         PropMut::Path(a) => v.visit(a),
+        PropMut::Stops(a) => v.visit(a),
     }
 }
 pub fn read_prop<V: PropReader>(p: PropRef<'_>, v: V) -> V::Out {
@@ -1171,6 +1684,7 @@ pub fn read_prop<V: PropReader>(p: PropRef<'_>, v: V) -> V::Out {
         PropRef::Angle(a) => v.read(a),
         PropRef::Color(a) => v.read(a),
         PropRef::Path(a) => v.read(a),
+        PropRef::Stops(a) => v.read(a),
     }
 }
 
@@ -1210,11 +1724,63 @@ impl Node {
             | ("shape.roundness", NodeKind::Shape(ShapeKind::Polygon { roundness, .. })) => {
                 Some(F64(roundness))
             }
-            ("fill.color", NodeKind::Style(StyleKind::Fill { color, .. })) => Some(Color(color)),
-            ("stroke.color", NodeKind::Style(StyleKind::Stroke { color, .. })) => {
-                Some(Color(color))
-            }
+            (
+                "fill.color",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Solid { color },
+                    ..
+                }),
+            ) => Some(Color(color)),
+            (
+                "stroke.color",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Solid { color },
+                    ..
+                }),
+            ) => Some(Color(color)),
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
+            (
+                "grad.start",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.start",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Vec2(&mut g.start)),
+            (
+                "grad.end",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.end",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Vec2(&mut g.end)),
+            (
+                "grad.stops",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.stops",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Stops(&mut g.stops)),
             ("trim.start", NodeKind::Modifier(ModifierKind::TrimPath { start, .. })) => {
                 Some(F64(start))
             }
@@ -1276,11 +1842,63 @@ impl Node {
             | ("shape.roundness", NodeKind::Shape(ShapeKind::Polygon { roundness, .. })) => {
                 Some(F64(roundness))
             }
-            ("fill.color", NodeKind::Style(StyleKind::Fill { color, .. })) => Some(Color(color)),
-            ("stroke.color", NodeKind::Style(StyleKind::Stroke { color, .. })) => {
-                Some(Color(color))
-            }
+            (
+                "fill.color",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Solid { color },
+                    ..
+                }),
+            ) => Some(Color(color)),
+            (
+                "stroke.color",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Solid { color },
+                    ..
+                }),
+            ) => Some(Color(color)),
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
+            (
+                "grad.start",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.start",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Vec2(&g.start)),
+            (
+                "grad.end",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.end",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Vec2(&g.end)),
+            (
+                "grad.stops",
+                NodeKind::Style(StyleKind::Fill {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            )
+            | (
+                "grad.stops",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::Gradient(g),
+                    ..
+                }),
+            ) => Some(Stops(&g.stops)),
             ("trim.start", NodeKind::Modifier(ModifierKind::TrimPath { start, .. })) => {
                 Some(F64(start))
             }
@@ -1579,7 +2197,7 @@ mod tests {
         let fill = doc.create_node(Node::new(
             "f",
             NodeKind::Style(StyleKind::Fill {
-                color: Animated::new(Color::BLACK),
+                paint: StylePaint::solid(Color::BLACK),
                 rule: FillRule::NonZero,
             }),
         ));
@@ -1609,6 +2227,16 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    fn find_fill(doc: &Document) -> NodeId {
+        let mut found = None;
+        for (id, n) in doc.nodes.iter() {
+            if let NodeKind::Style(StyleKind::Fill { .. }) = n.kind {
+                found = Some(id);
+            }
+        }
+        found.unwrap()
+    }
+
     #[test]
     fn pick_hits_center_and_misses_outside() {
         let (doc, shape) = doc_with_ellipse_and_fill();
@@ -1623,6 +2251,75 @@ mod tests {
         let scene = evaluate(&doc, doc.main, 0.0);
         let picked = pick_box(&scene, DVec2::splat(-200.0), DVec2::splat(200.0));
         assert_eq!(picked, vec![shape]);
+    }
+
+    #[test]
+    fn gradient_fill_emits_linear_paint() {
+        let (mut doc, _) = doc_with_ellipse_and_fill();
+        let fill = find_fill(&doc);
+        let NodeKind::Style(st) = &mut doc.nodes[fill].kind else {
+            panic!("fill node missing");
+        };
+        st.swap_paint(StylePaint::linear(
+            DVec2::new(0.0, 0.0),
+            DVec2::new(100.0, 0.0),
+            GradientStops(vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Color::BLACK,
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color::WHITE,
+                },
+            ]),
+        ));
+        let scene = evaluate(&doc, doc.main, 0.0);
+        let item = &scene.items[0];
+        match &item.paint {
+            ScenePaint::LinearGradient { start, end, .. } => {
+                assert!((start.x - 0.0).abs() < 1e-9);
+                assert!((end.x - 100.0).abs() < 1e-9);
+            }
+            other => panic!("expected linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn radial_gradient_keeps_radius_for_identity_transform() {
+        let (mut doc, _) = doc_with_ellipse_and_fill();
+        let fill = find_fill(&doc);
+        let NodeKind::Style(st) = &mut doc.nodes[fill].kind else {
+            panic!("fill node missing");
+        };
+        st.swap_paint(StylePaint::radial(
+            DVec2::new(0.0, 0.0),
+            DVec2::new(120.0, 0.0),
+            GradientStops(vec![GradientStop {
+                offset: 0.0,
+                color: Color::WHITE,
+            }]),
+        ));
+        let scene = evaluate(&doc, doc.main, 0.0);
+        let item = &scene.items[0];
+        match &item.paint {
+            ScenePaint::RadialGradient { center, end, .. } => {
+                assert!((center.x - 0.0).abs() < 1e-9 && (center.y - 0.0).abs() < 1e-9);
+                assert!((end.x - 120.0).abs() < 1e-9, "radius must not degenerate");
+            }
+            other => panic!("expected radial gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scene_items_carry_the_painting_style_and_fill_style_for_resolves() {
+        let (doc, shape) = doc_with_ellipse_and_fill();
+        let fill = find_fill(&doc);
+        assert_eq!(fill_style_for(&doc, shape), Some(fill));
+        let scene = evaluate(&doc, doc.main, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].node, shape);
+        assert_eq!(scene.items[0].style, fill);
     }
 
     #[test]

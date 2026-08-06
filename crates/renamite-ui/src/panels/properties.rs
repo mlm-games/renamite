@@ -5,6 +5,7 @@
 //! pointer drag / click into those helpers. Every edit goes through the shared
 //! `resolve_property_edit` authoring loop (static vs key-at-playhead + record).
 
+use kurbo::{Point as KurboPoint, Shape as _};
 use renamite_animation::{Angle, Frame};
 use renamite_behavior_common::inspect::{
     DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_selection,
@@ -12,8 +13,11 @@ use renamite_behavior_common::inspect::{
 use renamite_behavior_common::modifiers::{
     cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_set_trim_mode,
 };
-use renamite_history::ToolOutput;
-use renamite_model::{NodeId, NodeKind, PropPath, ShapeKind, TrimMode, Value};
+use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
+use renamite_model::{
+    Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
+    StyleKind, StylePaint, TrimMode, Value, fill_style_for, node_affine,
+};
 use repose_core::input::PointerEvent;
 use repose_core::{
     AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
@@ -97,6 +101,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             },
         )],
     )];
+
+    // Single selected node: paint section (solid / linear / radial + axis +
+    // stops) driving the fill style that paints it.
+    if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
+        children.push(v);
+    }
 
     // Single selected shape: offer to add a modifier as its sibling.
     if ids.len() == 1
@@ -489,6 +499,23 @@ fn apply_channel(origin: &Value, channel: usize, f: impl FnOnce(f64) -> f64) -> 
             }
             Value::Color(c)
         }
+        Value::Stops(s) => {
+            // Channel encodes (stop_index * 5 + component) where component
+            // 0 = offset, 1..=4 = r,g,b,a.
+            let mut s = s.clone();
+            let stop = channel / 5;
+            let comp = channel % 5;
+            if let Some(st) = s.0.get_mut(stop) {
+                match comp {
+                    0 => st.offset = f(st.offset).clamp(0.0, 1.0),
+                    1 => st.color.r = f(st.color.r).clamp(0.0, 1.0),
+                    2 => st.color.g = f(st.color.g).clamp(0.0, 1.0),
+                    3 => st.color.b = f(st.color.b).clamp(0.0, 1.0),
+                    _ => st.color.a = f(st.color.a).clamp(0.0, 1.0),
+                }
+            }
+            Value::Stops(s)
+        }
         other => other.clone(),
     }
 }
@@ -657,4 +684,466 @@ fn enum2_segment(
                     }
                 }),
         )
+}
+
+fn paint_style_id(s: &Session, id: NodeId) -> Option<NodeId> {
+    match &s.file.document.nodes.get(id)?.kind {
+        NodeKind::Style(StyleKind::Fill { .. }) => Some(id),
+        NodeKind::Style(_) => None,
+        _ => fill_style_for(&s.file.document, id),
+    }
+}
+
+fn default_axis(s: &Session, shape: NodeId, frame: f64) -> Option<(glam::DVec2, glam::DVec2)> {
+    let r = s
+        .engine
+        .scene()
+        .items
+        .iter()
+        .find(|it| it.node == shape)?
+        .path
+        .bounding_box();
+    let w2l = node_affine(&s.file.document, shape, frame).inverse();
+    let a = w2l * KurboPoint::new(r.x0, r.y0);
+    let b = w2l * KurboPoint::new(r.x1, r.y0);
+    Some((glam::DVec2::new(a.x, a.y), glam::DVec2::new(b.x, b.y)))
+}
+
+fn paint_section(
+    session: SessionRef,
+    ids: &[NodeId],
+    playhead: Frame,
+    record: bool,
+) -> Option<View> {
+    if ids.len() != 1 {
+        return None;
+    }
+    let id = ids[0];
+    let (style_id, paint) = {
+        let s = session.borrow();
+        let style_id = paint_style_id(&s, id)?;
+        let paint = match &s.file.document.nodes.get(style_id)?.kind {
+            NodeKind::Style(st) => st.paint().clone(),
+            _ => return None,
+        };
+        (style_id, paint)
+    };
+    let th = theme();
+    let gradient = match &paint {
+        StylePaint::Gradient(g) => Some(g.clone()),
+        _ => None,
+    };
+    let active_kind = gradient.as_ref().map(|g| g.kind);
+
+    let is_solid = gradient.is_none();
+    let toggle = Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)), // diamond spacer
+        Text("Paint")
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        paint_segment(
+            session.clone(),
+            id,
+            style_id,
+            "Solid",
+            is_solid,
+            PaintTarget::Solid,
+        ),
+        paint_segment(
+            session.clone(),
+            id,
+            style_id,
+            "Linear",
+            active_kind == Some(GradientKind::Linear),
+            PaintTarget::Gradient(GradientKind::Linear),
+        ),
+        paint_segment(
+            session.clone(),
+            id,
+            style_id,
+            "Radial",
+            active_kind == Some(GradientKind::Radial),
+            PaintTarget::Gradient(GradientKind::Radial),
+        ),
+    ));
+
+    let mut children = vec![
+        Text("Fill")
+            .size(theme().typography.label_medium)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 12.0,
+                bottom: 4.0,
+            })),
+        toggle,
+    ];
+
+    match &paint {
+        StylePaint::Solid { .. } => {
+            // Color row bound to the style node's fill.color.
+            let path = PropPath::new("fill.color");
+            children.push(
+                Row(Modifier::new()
+                    .height(36.0)
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(8.0))
+                .child((
+                    Box(Modifier::new().width(32.0)),
+                    Text("Color")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface)
+                        .modifier(Modifier::new().width(96.0)),
+                    Box(Modifier::new().flex_grow(1.0)).child(color_row(
+                        session.clone(),
+                        vec![style_id],
+                        path,
+                        paint.base_color(),
+                        playhead,
+                        record,
+                    )),
+                )),
+            );
+        }
+        StylePaint::Gradient(g) => {
+            children.push(axis_row(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                "Start",
+                "grad.start",
+                g.start.value_at(playhead.0 as f64),
+            ));
+            children.push(axis_row(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                "End",
+                "grad.end",
+                g.end.value_at(playhead.0 as f64),
+            ));
+            children.extend(stop_rows(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                g.stops.value_at(playhead.0 as f64),
+            ));
+            // Add-stop button.
+            children.push(
+                Row(Modifier::new()
+                    .height(32.0)
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(4.0))
+                .child((
+                    CompactIconAction(Symbols::add, "Add stop", {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            let frame = s.playback.head;
+                            let Some(stops) = s
+                                .file
+                                .document
+                                .value_at(style_id, &PropPath::new("grad.stops"), frame)
+                                .ok()
+                            else {
+                                return;
+                            };
+                            let Value::Stops(mut stops) = stops else {
+                                return;
+                            };
+                            let last_color =
+                                stops.0.last().map(|x| x.color).unwrap_or(Color::BLACK);
+                            stops.0.push(GradientStop {
+                                offset: 1.0,
+                                color: last_color,
+                            });
+                            let cmd = resolve_property_edit(
+                                &s.file.document,
+                                style_id,
+                                &PropPath::new("grad.stops"),
+                                Value::Stops(stops),
+                                Frame(frame.round() as i64),
+                                s.record,
+                            );
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Add stop".into()),
+                                ToolOutput::Commands(smallvec![cmd]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    }),
+                    Text("Add stop")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface_variant),
+                )),
+            );
+        }
+    }
+
+    Some(Column(Modifier::new().fill_max_width()).child(children))
+}
+
+#[derive(Clone, Copy)]
+enum PaintTarget {
+    Solid,
+    Gradient(GradientKind),
+}
+
+fn paint_segment(
+    session: SessionRef,
+    shape: NodeId,
+    style_id: NodeId,
+    label: &'static str,
+    active: bool,
+    target: PaintTarget,
+) -> View {
+    let th = theme();
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |_pe: PointerEvent| {
+                        let mut s = session.borrow_mut();
+                        let frame = s.playback.head;
+                        let current = match &s.file.document.nodes.get(style_id).map(|n| &n.kind) {
+                            Some(NodeKind::Style(st)) => st.paint().clone(),
+                            _ => return,
+                        };
+                        // Solid: collapse to the first stop's color. Gradient:
+                        // keep stops+axis when switching kind; seed a default
+                        // axis from the shape bounds when converting from solid.
+                        let cmd = match target {
+                            PaintTarget::Solid => {
+                                Some(EditorCommand::ConvertToSolid { id: style_id })
+                            }
+                            PaintTarget::Gradient(kind) => match (&current, kind) {
+                                (StylePaint::Gradient(g), k) if g.kind == k => None,
+                                (StylePaint::Gradient(g), k) => {
+                                    let mut g = g.clone();
+                                    g.kind = k;
+                                    Some(EditorCommand::SetPaint {
+                                        id: style_id,
+                                        paint: StylePaint::Gradient(g),
+                                    })
+                                }
+                                (StylePaint::Solid { .. }, k) => {
+                                    let (start, end) = default_axis(&s, shape, frame)
+                                        .unwrap_or((glam::DVec2::ZERO, glam::DVec2::new(1.0, 0.0)));
+                                    Some(EditorCommand::ConvertToGradient {
+                                        id: style_id,
+                                        kind: k,
+                                        start,
+                                        end,
+                                    })
+                                }
+                            },
+                        };
+                        if let Some(cmd) = cmd {
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Paint".into()),
+                                ToolOutput::Commands(smallvec![cmd]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    }
+                }),
+        )
+}
+
+fn axis_row(
+    session: SessionRef,
+    style_id: NodeId,
+    playhead: Frame,
+    record: bool,
+    label: &'static str,
+    path: &'static str,
+    v: glam::DVec2,
+) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)),
+        Text(label)
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        Box(Modifier::new().flex_grow(1.0)).child(dvec2_editor(
+            session,
+            vec![style_id],
+            PropPath::new(path),
+            v,
+            playhead,
+            record,
+        )),
+    ))
+}
+
+fn stop_rows(
+    session: SessionRef,
+    style_id: NodeId,
+    playhead: Frame,
+    record: bool,
+    stops: GradientStops,
+) -> Vec<View> {
+    stops
+        .0
+        .iter()
+        .enumerate()
+        .map(|(i, stop)| {
+            let th = theme();
+            let path = PropPath::new("grad.stops");
+            let swatch =
+                Box(Modifier::new()
+                    .width(20.0)
+                    .height(20.0)
+                    .background(repose_core::Color(
+                        (stop.color.r * 255.0) as u8,
+                        (stop.color.g * 255.0) as u8,
+                        (stop.color.b * 255.0) as u8,
+                        (stop.color.a * 255.0) as u8,
+                    )));
+            let base = i * 5;
+            Row(Modifier::new()
+                .height(36.0)
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                })
+                .align_items(AlignItems::CENTER)
+                .gap(4.0))
+            .child((
+                Box(Modifier::new().width(24.0)).child(
+                    Text(format!("{}", i + 1))
+                        .size(th.typography.label_medium)
+                        .color(th.on_surface_variant),
+                ),
+                swatch,
+                scrub_f64_w(
+                    session.clone(),
+                    vec![style_id],
+                    path.clone(),
+                    stop.offset,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    base,
+                    40.0,
+                ),
+                scrub_f64_w(
+                    session.clone(),
+                    vec![style_id],
+                    path.clone(),
+                    stop.color.r,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    base + 1,
+                    40.0,
+                ),
+                scrub_f64_w(
+                    session.clone(),
+                    vec![style_id],
+                    path.clone(),
+                    stop.color.g,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    base + 2,
+                    40.0,
+                ),
+                scrub_f64_w(
+                    session.clone(),
+                    vec![style_id],
+                    path.clone(),
+                    stop.color.b,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    base + 3,
+                    40.0,
+                ),
+                scrub_f64_w(
+                    session.clone(),
+                    vec![style_id],
+                    path,
+                    stop.color.a,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    base + 4,
+                    40.0,
+                ),
+            ))
+        })
+        .collect()
 }

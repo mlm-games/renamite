@@ -378,8 +378,8 @@ mod tests {
         MachineLayer, MachineMap, State, StateKind, Track, Transition,
     };
     use renamite_model::{
-        BlendMode, ClipPath, Color, Document, FillRule, KeyframeData, Node, NodeKind, Paint,
-        PaintKind, Parent, PropPath, SceneItem, ShapeKind, StyleKind, Value,
+        BlendMode, ClipPath, Color, Document, FillRule, KeyframeData, Node, NodeKind, PaintKind,
+        Parent, PropPath, SceneItem, ScenePaint, ShapeKind, StyleKind, StylePaint, Value,
     };
 
     fn rect_kind(size: f64) -> NodeKind {
@@ -391,7 +391,7 @@ mod tests {
     }
     fn fill_kind() -> NodeKind {
         NodeKind::Style(StyleKind::Fill {
-            color: Animated::new(Color::BLACK),
+            paint: StylePaint::solid(Color::BLACK),
             rule: FillRule::NonZero,
         })
     }
@@ -562,9 +562,8 @@ mod tests {
             items: vec![SceneItem {
                 path: big,
                 node: shape,
-                paint: Paint {
-                    color: Color::BLACK,
-                },
+                style: shape,
+                paint: ScenePaint::Solid(Color::BLACK),
                 kind: PaintKind::Fill(FillRule::NonZero),
                 opacity: 1.0,
                 clip: Some(0),
@@ -608,7 +607,11 @@ mod tests {
 
         e.tick(&proj, 0.01);
         let item = &e.scene().items[0];
-        assert_eq!(item.paint.color, red, "edit visible immediately");
+        assert_eq!(
+            item.paint,
+            ScenePaint::Solid(red),
+            "edit visible immediately"
+        );
         assert!(
             (center_x(e.scene()) - 50.0).abs() < 1.0,
             "machine override survived the edit"

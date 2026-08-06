@@ -8,6 +8,7 @@ description = "Scene -> repose DrawScope / VectorMesh conversion with lyon tesse
 [dependencies]
 renamite-model.workspace = true
 renamite-geometry.workspace = true
+glam.workspace = true
 renamite-behavior-common.workspace = true
 kurbo.workspace = true
 lyon_tessellation.workspace = true

@@ -6,6 +6,8 @@
 //! drag = one undo step; Esc cancels the open drag.
 
 use glam::DVec2;
+use kurbo::{Affine, Point};
+
 use renamite_animation::{Angle, Animated, Frame};
 use renamite_behavior_common::{ToolContext, path::path_edit_target};
 use renamite_geometry::{Anchor, AnchorEdit, TangentMode, VectorPath};
@@ -13,8 +15,8 @@ use renamite_history::{
     EditorCommand, NodeTree, OutputVec, SelectionChange, ToolId, ToolOutput, resolve_property_edit,
 };
 use renamite_model::{
-    Color, FillRule, Node, NodeId, NodeKind, Parent, PropPath, ShapeKind, StyleKind, Value,
-    nodes_bounds, pick, pick_box,
+    Color, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
+    StyleKind, StylePaint, Value, node_affine, nodes_bounds, pick, pick_box,
 };
 use smallvec::smallvec;
 use std::f64::consts::{PI, TAU};
@@ -72,6 +74,12 @@ pub enum ToolOverlay {
         path: VectorPath,
         active_anchor: Option<usize>,
     },
+    /// Gradient axis being dragged (world space: start=end handle endpoints).
+    GradientLine {
+        start: DVec2,
+        end: DVec2,
+        radial: bool,
+    },
 }
 
 pub struct ToolSet {
@@ -80,6 +88,7 @@ pub struct ToolSet {
     pub ellipse: ShapeTool,
     pub pen: PenTool,
     pub path_edit: PathEditTool,
+    pub gradient: GradientTool,
 }
 
 impl Default for ToolSet {
@@ -90,6 +99,7 @@ impl Default for ToolSet {
             ellipse: ShapeTool::new(ShapeToolKind::Ellipse),
             pen: PenTool::default(),
             path_edit: PathEditTool::default(),
+            gradient: GradientTool::default(),
         }
     }
 }
@@ -102,7 +112,8 @@ impl ToolSet {
             ToolId::Ellipse => self.ellipse.handle(ctx, ev),
             ToolId::Pen => self.pen.handle(ctx, ev),
             ToolId::PathEdit => self.path_edit.handle(ctx, ev),
-            _ => smallvec![], // Star/Gradient/Fill: not implemented yet
+            ToolId::Gradient => self.gradient.handle(ctx, ev),
+            _ => smallvec![], // Star/Fill: not implemented yet
         }
     }
 
@@ -113,6 +124,7 @@ impl ToolSet {
             ToolId::Ellipse => self.ellipse.overlay(ctx),
             ToolId::Pen => self.pen.overlay(ctx),
             ToolId::PathEdit => self.path_edit.overlay(ctx),
+            ToolId::Gradient => self.gradient.overlay(ctx),
             _ => ToolOverlay::None,
         }
     }
@@ -493,6 +505,237 @@ fn unwrap_continuous(acc: f64, raw: f64) -> f64 {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum GradHandle {
+    Start,
+    End,
+}
+
+#[derive(Default)]
+enum GradState {
+    #[default]
+    Idle,
+    Drag {
+        /// World-space press point (drag-threshold anchor).
+        press: DVec2,
+        /// The style node (Fill/Stroke) whose paint is being edited.
+        style: NodeId,
+        kind: GradientKind,
+        /// Shape-local <-> world (gradient handles are authored in the
+        /// shape's local space and folded with its own affine).
+        l2w: Affine,
+        w2l: Affine,
+        start: DVec2,
+        end: DVec2,
+        active: GradHandle,
+        txn: bool,
+        /// True once ConvertToGradient was emitted (solid -> gradient).
+        converted: bool,
+        /// True once the pointer passed the drag threshold.
+        dragging: bool,
+    },
+}
+
+#[derive(Default)]
+pub struct GradientTool {
+    state: GradState,
+}
+
+impl GradientTool {
+    pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
+        let GradState::Drag {
+            l2w,
+            start,
+            end,
+            kind,
+            dragging,
+            ..
+        } = &self.state
+        else {
+            return ToolOverlay::None;
+        };
+        if !*dragging {
+            return ToolOverlay::None;
+        }
+        let s = *l2w * Point::new(start.x, start.y);
+        let e = *l2w * Point::new(end.x, end.y);
+        ToolOverlay::GradientLine {
+            start: DVec2::new(s.x, s.y),
+            end: DVec2::new(e.x, e.y),
+            radial: *kind == GradientKind::Radial,
+        }
+    }
+
+    pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
+        match ev {
+            CanvasEvent::PointerDown {
+                pos,
+                button: PointerButton::Primary,
+            } => self.press(ctx, pos),
+            CanvasEvent::PointerMove { pos } => self.moved(ctx, pos),
+            CanvasEvent::PointerUp {
+                pos,
+                button: PointerButton::Primary,
+            } => self.release(pos),
+            CanvasEvent::KeyDown(Key::Escape) => self.escape(),
+            _ => smallvec![],
+        }
+    }
+
+    fn press(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let Some(shape) =
+            pick(ctx.scene, pos).filter(|n| !ctx.doc.nodes.get(*n).is_none_or(|x| x.locked))
+        else {
+            return smallvec![];
+        };
+        // Prefer the topmost Fill item for this shape; fall back to stroke.
+        let item = ctx
+            .scene
+            .items
+            .iter()
+            .rev()
+            .find(|it| it.node == shape && matches!(it.kind, PaintKind::Fill(_)))
+            .or_else(|| ctx.scene.items.iter().rev().find(|it| it.node == shape));
+        let Some(item) = item else {
+            return smallvec![];
+        };
+        let style = item.style;
+        let l2w = node_affine(ctx.doc, shape, ctx.playhead.0 as f64);
+        let w2l = l2w.inverse();
+        let local = {
+            let p = w2l * Point::new(pos.x, pos.y);
+            DVec2::new(p.x, p.y)
+        };
+        let frame = ctx.playhead.0 as f64;
+        let existing = ctx.doc.nodes.get(style).and_then(|n| match &n.kind {
+            NodeKind::Style(st) => Some(st.paint().clone()),
+            _ => None,
+        });
+        let (kind, start, end, active, converted) = match existing {
+            Some(StylePaint::Gradient(g)) => {
+                let s = g.start.value_at(frame);
+                let e = g.end.value_at(frame);
+                // Grab whichever handle is nearer the pointer.
+                let ws = {
+                    let p = l2w * Point::new(s.x, s.y);
+                    DVec2::new(p.x, p.y)
+                };
+                let we = {
+                    let p = l2w * Point::new(e.x, e.y);
+                    DVec2::new(p.x, p.y)
+                };
+                let active = if (pos - ws).length() < (pos - we).length() {
+                    GradHandle::Start
+                } else {
+                    GradHandle::End
+                };
+                (g.kind, s, e, active, true)
+            }
+            _ => {
+                let kind = if ctx.modifiers.shift {
+                    GradientKind::Radial
+                } else {
+                    GradientKind::Linear
+                };
+                (kind, local, local, GradHandle::End, false)
+            }
+        };
+        self.state = GradState::Drag {
+            press: pos,
+            style,
+            kind,
+            l2w,
+            w2l,
+            start,
+            end,
+            active,
+            txn: false,
+            converted,
+            dragging: false,
+        };
+        smallvec![ToolOutput::RequestSelection(SelectionChange::Set(vec![
+            shape
+        ]))]
+    }
+
+    fn moved(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let GradState::Drag {
+            press,
+            style,
+            kind,
+            w2l,
+            start,
+            end,
+            active,
+            txn,
+            converted,
+            dragging,
+            ..
+        } = &mut self.state
+        else {
+            return smallvec![];
+        };
+        if (pos - *press).length() < ctx.view.world_tolerance(DRAG_THRESHOLD_PX) {
+            return smallvec![];
+        }
+        *dragging = true;
+        let local = {
+            let p = *w2l * Point::new(pos.x, pos.y);
+            DVec2::new(p.x, p.y)
+        };
+        match active {
+            GradHandle::Start => *start = local,
+            GradHandle::End => *end = local,
+        }
+        let mut out: OutputVec = smallvec![];
+        if !*txn {
+            out.push(ToolOutput::BeginTransaction("Gradient".into()));
+            *txn = true;
+        }
+        if !*converted {
+            // Solid -> gradient: seed the axis so the convert is invisible
+            // until the drag separates the handles; stops hold the base color.
+            out.push(ToolOutput::Commands(smallvec![
+                EditorCommand::ConvertToGradient {
+                    id: *style,
+                    kind: *kind,
+                    start: *start,
+                    end: *end,
+                }
+            ]));
+            *converted = true;
+        } else {
+            let (prop, value) = match active {
+                GradHandle::Start => ("grad.start", *start),
+                GradHandle::End => ("grad.end", *end),
+            };
+            out.push(ToolOutput::Commands(smallvec![resolve_property_edit(
+                ctx.doc,
+                *style,
+                &PropPath::new(prop),
+                Value::DVec2(value),
+                ctx.playhead,
+                ctx.record,
+            )]));
+        }
+        out
+    }
+
+    fn release(&mut self, _pos: DVec2) -> OutputVec {
+        match std::mem::replace(&mut self.state, GradState::Idle) {
+            GradState::Drag { txn: true, .. } => smallvec![ToolOutput::CommitTransaction],
+            _ => smallvec![],
+        }
+    }
+
+    fn escape(&mut self) -> OutputVec {
+        match std::mem::replace(&mut self.state, GradState::Idle) {
+            GradState::Drag { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            _ => smallvec![],
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ShapeToolKind {
     Rect,
     Ellipse,
@@ -575,7 +818,7 @@ impl ShapeTool {
                         NodeTree::leaf(Node::new(
                             "Fill",
                             NodeKind::Style(StyleKind::Fill {
-                                color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+                                paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
                                 rule: FillRule::NonZero,
                             }),
                         )),
@@ -787,7 +1030,7 @@ impl PenTool {
         let fill = Node::new(
             "Fill",
             NodeKind::Style(StyleKind::Fill {
-                color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+                paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
                 rule: FillRule::NonZero,
             }),
         );
@@ -1215,7 +1458,7 @@ mod tests {
     use renamite_animation::Frame;
     use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ViewTransform};
     use renamite_history::{History, ProjectMut};
-    use renamite_model::{Document, Scene, evaluate};
+    use renamite_model::{Document, GradientStops, Scene, evaluate};
 
     struct World {
         doc: Document,
@@ -1243,7 +1486,7 @@ mod tests {
             let fill = doc.create_node(Node::new(
                 "fill",
                 NodeKind::Style(StyleKind::Fill {
-                    color: Animated::new(Color::BLACK),
+                    paint: StylePaint::solid(Color::BLACK),
                     rule: FillRule::NonZero,
                 }),
             ));
@@ -1316,6 +1559,278 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    fn drive_grad(
+        w: &mut World,
+        tool: &mut GradientTool,
+        h: &mut History,
+        ev: CanvasEvent,
+        m: Modifiers,
+    ) {
+        let scene = w.scene();
+        let outs = {
+            let ctx = ToolContext {
+                doc: &w.doc,
+                scene: &scene,
+                comp: w.doc.main,
+                selection: &w.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: m,
+            };
+            tool.handle(&ctx, ev)
+        };
+        for o in outs {
+            match o {
+                ToolOutput::BeginTransaction(l) => h.begin(l),
+                ToolOutput::CommitTransaction => h.commit(),
+                ToolOutput::CancelTransaction => h.cancel(&mut w.pm()).unwrap(),
+                ToolOutput::Commands(cmds) => {
+                    for c in cmds {
+                        h.apply(&mut w.pm(), c).unwrap();
+                    }
+                }
+                ToolOutput::RequestSelection(SelectionChange::Set(n)) => w.selection.nodes = n,
+                _ => {}
+            }
+        }
+    }
+
+    fn fill_style(w: &World) -> NodeId {
+        w.doc.compositions[w.doc.main]
+            .children
+            .iter()
+            .copied()
+            .find(|&id| {
+                matches!(
+                    w.doc.nodes[id].kind,
+                    NodeKind::Style(StyleKind::Fill { .. })
+                )
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn gradient_tool_converts_fill_and_drags_axis() {
+        let (mut w, mut t, mut h) = (World::new(), GradientTool::default(), History::new());
+        let m = Modifiers::none();
+        // Rect spans (75,75)-(125,125). Press near its top-left corner.
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(90.0, 90.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        assert_eq!(w.selection.nodes, vec![w.shape]);
+        let fill = fill_style(&w);
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(110.0, 90.0),
+            },
+            m,
+        );
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(110.0, 90.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        let paint = match &w.doc.nodes[fill].kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => paint.clone(),
+            _ => panic!("style node missing"),
+        };
+        let StylePaint::Gradient(g) = paint else {
+            panic!("expected gradient paint");
+        };
+        assert_eq!(g.kind, GradientKind::Linear);
+        assert_eq!(g.start.value_at(0.0), DVec2::new(90.0, 90.0));
+        assert_eq!(g.end.value_at(0.0), DVec2::new(110.0, 90.0));
+        // Undo restores the exact solid; redo re-applies the gradient.
+        h.undo(&mut w.pm()).unwrap();
+        let paint = match &w.doc.nodes[fill].kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => paint.clone(),
+            _ => panic!("style node missing"),
+        };
+        assert!(matches!(paint, StylePaint::Solid { .. }));
+        h.redo(&mut w.pm()).unwrap();
+        let paint = match &w.doc.nodes[fill].kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => paint.clone(),
+            _ => panic!("style node missing"),
+        };
+        assert!(matches!(paint, StylePaint::Gradient(_)));
+    }
+
+    #[test]
+    fn gradient_tool_reuses_existing_axis_and_drag_is_one_undo() {
+        let (mut w, mut t, mut h) = (World::new(), GradientTool::default(), History::new());
+        let fill = fill_style(&w);
+        let grad = StylePaint::linear(
+            DVec2::new(80.0, 90.0),
+            DVec2::new(120.0, 90.0),
+            GradientStops::default(),
+        );
+        let Some(prev) = w.doc.nodes.get_mut(fill).map(|n| {
+            let NodeKind::Style(st) = &mut n.kind else {
+                unreachable!()
+            };
+            st.swap_paint(grad)
+        }) else {
+            unreachable!()
+        };
+        assert!(matches!(prev, StylePaint::Solid { .. }));
+        let m = Modifiers::none();
+        // Press near the START handle (world (80,90)); move past threshold.
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(81.0, 90.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(70.0, 90.0),
+            },
+            m,
+        );
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(70.0, 90.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        let paint = match &w.doc.nodes[fill].kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => paint.clone(),
+            _ => panic!("style node missing"),
+        };
+        let StylePaint::Gradient(g) = paint else {
+            panic!("expected gradient paint");
+        };
+        assert_eq!(g.start.value_at(0.0), DVec2::new(70.0, 90.0));
+        assert_eq!(g.end.value_at(0.0), DVec2::new(120.0, 90.0));
+    }
+
+    #[test]
+    fn gradient_tool_overlay_and_radial_shift() {
+        let (mut w, mut t, mut h) = (World::new(), GradientTool::default(), History::new());
+        let m = Modifiers {
+            shift: true,
+            alt: false,
+            ctrl: false,
+        };
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(90.0, 90.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        // No overlay before the first move.
+        {
+            let scene = w.scene();
+            let ctx = ToolContext {
+                doc: &w.doc,
+                scene: &scene,
+                comp: w.doc.main,
+                selection: &w.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: m,
+            };
+            assert_eq!(t.overlay(&ctx), ToolOverlay::None);
+        }
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(90.0, 110.0),
+            },
+            m,
+        );
+        // After the move the axis line is shown with radial=true.
+        {
+            let scene = w.scene();
+            let ctx = ToolContext {
+                doc: &w.doc,
+                scene: &scene,
+                comp: w.doc.main,
+                selection: &w.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: m,
+            };
+            assert_eq!(
+                t.overlay(&ctx),
+                ToolOverlay::GradientLine {
+                    start: DVec2::new(90.0, 90.0),
+                    end: DVec2::new(90.0, 110.0),
+                    radial: true,
+                }
+            );
+        }
+        drive_grad(
+            &mut w,
+            &mut t,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(90.0, 110.0),
+                button: PointerButton::Primary,
+            },
+            m,
+        );
+        // Shift forced a radial gradient.
+        let paint = match &w.doc.nodes[fill_style(&w)].kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => paint.clone(),
+            _ => panic!("style node missing"),
+        };
+        let StylePaint::Gradient(g) = paint else {
+            panic!("expected gradient paint");
+        };
+        assert_eq!(g.kind, GradientKind::Radial);
     }
 
     #[test]
@@ -1597,7 +2112,7 @@ mod tests {
             let fill = w.doc.create_node(Node::new(
                 "Fill",
                 NodeKind::Style(StyleKind::Fill {
-                    color: Animated::new(Color::BLACK),
+                    paint: StylePaint::solid(Color::BLACK),
                     rule: FillRule::NonZero,
                 }),
             ));
