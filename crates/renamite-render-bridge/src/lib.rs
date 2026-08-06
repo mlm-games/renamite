@@ -11,8 +11,8 @@
 use kurbo::PathEl;
 use lyon_path::{Path as LyonPath, geom::point};
 use lyon_tessellation::{
-    BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor,
-    StrokeOptions, StrokeTessellator, StrokeVertexConstructor, VertexBuffers,
+    BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, StrokeOptions,
+    StrokeTessellator, StrokeVertexConstructor, VertexBuffers,
 };
 use renamite_behavior_common::ViewTransform;
 use renamite_model::{BlendMode as ModelBlendMode, FillRule, PaintKind, Scene, SceneItem};
@@ -206,8 +206,7 @@ impl SceneRenderer {
             return Some(m.clone());
         }
         let path = bez_to_lyon(path);
-        let mesh =
-            self.tessellate(&path, &PaintKind::Fill(FillRule::NonZero), [1.0; 4], tol)?;
+        let mesh = self.tessellate(&path, &PaintKind::Fill(FillRule::NonZero), [1.0; 4], tol)?;
         self.cache.insert(key, mesh.clone().into());
         Some(mesh.into())
     }
@@ -476,7 +475,9 @@ mod tests {
             items: vec![SceneItem {
                 path: Circle::new((5.0, 5.0), 4.0).to_path(0.1),
                 node: NodeId::default(),
-                paint: Paint { color: Color::BLACK },
+                paint: Paint {
+                    color: Color::BLACK,
+                },
                 kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
                 opacity: 1.0,
                 clip: Some(0),
@@ -494,7 +495,10 @@ mod tests {
             },
         };
         r.paint_prepared(&prepared, &mut scope);
-        assert!(matches!(scope.commands[0], DrawCommand::PushVectorClip { .. }));
+        assert!(matches!(
+            scope.commands[0],
+            DrawCommand::PushVectorClip { .. }
+        ));
         assert!(matches!(scope.commands[1], DrawCommand::VectorMesh { .. }));
         assert!(matches!(scope.commands[2], DrawCommand::PopVectorClip));
 

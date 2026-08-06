@@ -19,7 +19,10 @@ pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
         .max(1e-6);
     ViewTransform {
         scale,
-        offset: glam::DVec2::new((w as f64 - artboard.0 as f64 * scale) * 0.5, (h as f64 - artboard.1 as f64 * scale) * 0.5),
+        offset: glam::DVec2::new(
+            (w as f64 - artboard.0 as f64 * scale) * 0.5,
+            (h as f64 - artboard.1 as f64 * scale) * 0.5,
+        ),
     }
 }
 

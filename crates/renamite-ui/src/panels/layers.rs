@@ -20,11 +20,7 @@ const ROW_GAP: f32 = 2.0;
 pub fn LayersPanel(session: SessionRef) -> View {
     let (rows, selected, expanded, drag, renaming) = {
         let s = session.borrow();
-        let rows = flatten_layers(
-            &s.file.document,
-            s.file.document.main,
-            &s.expanded_layers,
-        );
+        let rows = flatten_layers(&s.file.document, s.file.document.main, &s.expanded_layers);
         (
             rows,
             s.selection.nodes.clone(),
@@ -70,10 +66,8 @@ pub fn LayersPanel(session: SessionRef) -> View {
             .collect::<Vec<_>>(),
     );
 
-    Column(Modifier::new().fill_max_size()).child((
-        PanelHeader(Symbols::layers, "Layers", vec![]),
-        list,
-    ))
+    Column(Modifier::new().fill_max_size())
+        .child((PanelHeader(Symbols::layers, "Layers", vec![]), list))
 }
 
 struct LayerRowState {
@@ -103,106 +97,107 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     let name = row.name.clone();
     let child_count = row.child_count;
 
-    Row(
-        Modifier::new()
-            .height(ROW_HEIGHT)
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: indent,
-                right: 4.0,
-                top: 0.0,
-                bottom: 0.0,
-            })
-            .align_items(AlignItems::CENTER)
-            .gap(2.0)
-            .background(bg)
-            .on_pointer_down({
-                let session = session.clone();
-                let row = row.clone();
-                move |pe: PointerEvent| {
-                    if matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
-                        let mut s = session.borrow_mut();
-                        s.renaming = None;
-                        if pe.modifiers.shift || pe.modifiers.ctrl {
-                            s.apply_outputs(smallvec![ToolOutput::RequestSelection(
-                                toggle_in_selection(row.id)
-                            )]);
-                        } else {
-                            s.apply_outputs(smallvec![ToolOutput::RequestSelection(
-                                select_only(row.id)
-                            )]);
-                        }
-                        s.revision = s.revision.wrapping_add(1);
-                        request_frame();
-                    }
-                }
-            })
-            .on_pointer_move({
-                let session = session.clone();
-                let row = row.clone();
-                move |pe: PointerEvent| {
+    Row(Modifier::new()
+        .height(ROW_HEIGHT)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: indent,
+            right: 4.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(2.0)
+        .background(bg)
+        .on_pointer_down({
+            let session = session.clone();
+            let row = row.clone();
+            move |pe: PointerEvent| {
+                if matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
                     let mut s = session.borrow_mut();
-                    if s.layer_drag.is_none() {
-                        return;
+                    s.renaming = None;
+                    if pe.modifiers.shift || pe.modifiers.ctrl {
+                        s.apply_outputs(smallvec![ToolOutput::RequestSelection(
+                            toggle_in_selection(row.id)
+                        )]);
+                    } else {
+                        s.apply_outputs(smallvec![ToolOutput::RequestSelection(select_only(
+                            row.id
+                        ))]);
                     }
-                    let d = s.layer_drag.as_mut().unwrap();
-                    d.hover_row = index;
-                    d.before = pe.position.y < ROW_HEIGHT * 0.5;
-                    d.as_child = row.kind == LayerKind::Group
-                        && pe.position.x > indent + 48.0;
                     s.revision = s.revision.wrapping_add(1);
                     request_frame();
                 }
-            })
-            .on_pointer_up({
-                let session = session.clone();
-                move |_pe: PointerEvent| {
-                    let mut s = session.borrow_mut();
-                    let Some(drag) = s.layer_drag.take() else {
-                        return;
-                    };
-                    let rows = flatten_layers(
-                        &s.file.document,
-                        s.file.document.main,
-                        &s.expanded_layers,
-                    );
-                    let target = rows.get(drag.hover_row);
-                    let committed = match target {
-                        Some(target) => {
-                            let cyclic =
-                                drag.as_child && is_ancestor(&s.file.document, drag.id, target.id);
-                            !cyclic
-                                && drop_command(drag.id, target, drag.before, drag.as_child)
-                                    .filter(|cmd| !move_is_noop(&s.file.document, cmd))
-                                    .is_some_and(|cmd| {
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction("Reorder layer".into()),
-                                            ToolOutput::Commands(smallvec![cmd]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
-                                        true
-                                    })
-                        }
-                        None => false,
-                    };
-                    if !committed {
-                        s.revision = s.revision.wrapping_add(1);
-                        request_frame();
-                    }
+            }
+        })
+        .on_pointer_move({
+            let session = session.clone();
+            let row = row.clone();
+            move |pe: PointerEvent| {
+                let mut s = session.borrow_mut();
+                if s.layer_drag.is_none() {
+                    return;
                 }
-            })
-            .on_double_click({
-                let session = session.clone();
-                let name = name.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    if !s.file.document.nodes.get(id).map(|n| n.locked).unwrap_or(true) {
-                        s.renaming = Some((id, name.clone()));
-                        request_frame();
+                let d = s.layer_drag.as_mut().unwrap();
+                d.hover_row = index;
+                d.before = pe.position.y < ROW_HEIGHT * 0.5;
+                d.as_child = row.kind == LayerKind::Group && pe.position.x > indent + 48.0;
+                s.revision = s.revision.wrapping_add(1);
+                request_frame();
+            }
+        })
+        .on_pointer_up({
+            let session = session.clone();
+            move |_pe: PointerEvent| {
+                let mut s = session.borrow_mut();
+                let Some(drag) = s.layer_drag.take() else {
+                    return;
+                };
+                let rows =
+                    flatten_layers(&s.file.document, s.file.document.main, &s.expanded_layers);
+                let target = rows.get(drag.hover_row);
+                let committed = match target {
+                    Some(target) => {
+                        let cyclic =
+                            drag.as_child && is_ancestor(&s.file.document, drag.id, target.id);
+                        !cyclic
+                            && drop_command(drag.id, target, drag.before, drag.as_child)
+                                .filter(|cmd| !move_is_noop(&s.file.document, cmd))
+                                .is_some_and(|cmd| {
+                                    s.apply_outputs(smallvec![
+                                        ToolOutput::BeginTransaction("Reorder layer".into()),
+                                        ToolOutput::Commands(smallvec![cmd]),
+                                        ToolOutput::CommitTransaction,
+                                    ]);
+                                    true
+                                })
                     }
+                    None => false,
+                };
+                if !committed {
+                    s.revision = s.revision.wrapping_add(1);
+                    request_frame();
                 }
-            }),
-    )
+            }
+        })
+        .on_double_click({
+            let session = session.clone();
+            let name = name.clone();
+            move || {
+                let mut s = session.borrow_mut();
+                if !s
+                    .file
+                    .document
+                    .nodes
+                    .get(id)
+                    .map(|n| n.locked)
+                    .unwrap_or(true)
+                {
+                    s.renaming = Some((id, name.clone()));
+                    request_frame();
+                }
+            }
+        }))
     .child((
         // Expand chevron (groups only)
         if kind == LayerKind::Group && child_count > 0 {
@@ -230,7 +225,6 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
         } else {
             Box(Modifier::new().width(40.0)) // spacer
         },
-
         // Kind glyph
         AppIcon(
             match kind {
@@ -241,7 +235,6 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             },
             18.0,
         ),
-
         // Name or rename field
         if let Some(draft) = st.rename_draft {
             rename_field(session.clone(), id, draft)
@@ -255,7 +248,6 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 })
                 .modifier(Modifier::new().flex_grow(1.0))
         },
-
         // Visibility
         CompactIconAction(
             if visible {
@@ -267,17 +259,14 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             {
                 let session = session.clone();
                 move || {
-                    session
-                        .borrow_mut()
-                        .apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Visibility".into()),
-                            ToolOutput::Commands(smallvec![cmd_toggle_visible(id, visible)]),
-                            ToolOutput::CommitTransaction,
-                        ]);
+                    session.borrow_mut().apply_outputs(smallvec![
+                        ToolOutput::BeginTransaction("Visibility".into()),
+                        ToolOutput::Commands(smallvec![cmd_toggle_visible(id, visible)]),
+                        ToolOutput::CommitTransaction,
+                    ]);
                 }
             },
         ),
-
         // Lock
         CompactIconAction(
             if locked {
@@ -289,13 +278,11 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             {
                 let session = session.clone();
                 move || {
-                    session
-                        .borrow_mut()
-                        .apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Lock".into()),
-                            ToolOutput::Commands(smallvec![cmd_toggle_locked(id, locked)]),
-                            ToolOutput::CommitTransaction,
-                        ]);
+                    session.borrow_mut().apply_outputs(smallvec![
+                        ToolOutput::BeginTransaction("Lock".into()),
+                        ToolOutput::Commands(smallvec![cmd_toggle_locked(id, locked)]),
+                        ToolOutput::CommitTransaction,
+                    ]);
                 }
             },
         ),
@@ -303,12 +290,10 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
 }
 
 fn rename_field(session: SessionRef, id: renamite_model::NodeId, draft: String) -> View {
-    Row(
-        Modifier::new()
-            .flex_grow(1.0)
-            .gap(2.0)
-            .align_items(AlignItems::CENTER),
-    )
+    Row(Modifier::new()
+        .flex_grow(1.0)
+        .gap(2.0)
+        .align_items(AlignItems::CENTER))
     .child((
         Text(draft.clone())
             .size(theme().typography.body_medium)

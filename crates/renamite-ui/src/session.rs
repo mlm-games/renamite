@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use glam::DVec2;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
-use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
+use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
     TimelineScrubBehavior, TimelineTarget,
@@ -15,9 +15,7 @@ use renamite_model::{PropPath, Value};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
-use repose_core::{
-    animation_driver, request_frame, remember_state_with_key, remember_with_key,
-};
+use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
 use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +90,7 @@ impl Session {
             active_page: PanelPage::Canvas,
             playback: Playback {
                 state: PlayState::Stopped,
-                head: range.0 .0 as f64,
+                head: range.0.0 as f64,
                 loop_mode: LoopMode::Loop,
                 range,
                 dir: 1.0,
@@ -181,7 +179,10 @@ impl Session {
     }
 
     /// Apply one command; returns the created node id, if any.
-    pub fn history_apply(&mut self, cmd: renamite_history::EditorCommand) -> Option<renamite_model::NodeId> {
+    pub fn history_apply(
+        &mut self,
+        cmd: renamite_history::EditorCommand,
+    ) -> Option<renamite_model::NodeId> {
         let his = &mut self.history;
         let file = &mut self.file;
         let mut pm = pm_from(file);
@@ -397,7 +398,17 @@ pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
 
 pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
     let outs = {
-        let Session { file, engine, selection, playback, viewport, tool, active_tool, record, .. } = s;
+        let Session {
+            file,
+            engine,
+            selection,
+            playback,
+            viewport,
+            tool,
+            active_tool,
+            record,
+            ..
+        } = s;
         let ctx = ToolContext {
             doc: &file.document,
             scene: engine.scene(),
@@ -406,7 +417,11 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             playhead: Frame(playback.head as i64),
             record: *record,
             view: viewport.view,
-            snap: SnapConfig { grid: None, anchor: false, guide: false },
+            snap: SnapConfig {
+                grid: None,
+                anchor: false,
+                guide: false,
+            },
             modifiers: m,
         };
         tool.handle(*active_tool, &ctx, ev)
@@ -452,9 +467,7 @@ pub fn default_file() -> RenFile {
 
 /// Register the playback driver once and return the shared session.
 pub fn init_session() -> Rc<RefCell<Session>> {
-    let session = remember_with_key("session", || {
-        RefCell::new(Session::new(default_file()))
-    });
+    let session = remember_with_key("session", || RefCell::new(Session::new(default_file())));
 
     let registered = remember_state_with_key("pb_reg", || false);
     if !*registered.borrow() {

@@ -59,32 +59,26 @@ pub fn EditorShell(session: SessionRef) -> View {
 fn ExpandedWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
-        Box(Modifier::new().width(264.0).fill_max_height()).child(PanelSurface(LayersPanel(
-            session.clone(),
-        ))),
+        Box(Modifier::new().width(264.0).fill_max_height())
+            .child(PanelSurface(LayersPanel(session.clone()))),
         Column(Modifier::new().fill_max_size().weight(1.0).gap(8.0)).child((
-            Box(Modifier::new().weight(1.0).fill_max_width()).child(PanelSurface(ViewportPanel(
-                session.clone(),
-            ))),
-            Box(Modifier::new().height(240.0).fill_max_width()).child(PanelSurface(TimelinePanel(
-                session.clone(),
-            ))),
+            Box(Modifier::new().weight(1.0).fill_max_width())
+                .child(PanelSurface(ViewportPanel(session.clone()))),
+            Box(Modifier::new().height(240.0).fill_max_width())
+                .child(PanelSurface(TimelinePanel(session.clone()))),
         )),
-        Box(Modifier::new().width(320.0).fill_max_height()).child(PanelSurface(PropertiesPanel(
-            session,
-        ))),
+        Box(Modifier::new().width(320.0).fill_max_height())
+            .child(PanelSurface(PropertiesPanel(session))),
     ))
 }
 
 fn MediumWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
-        Box(Modifier::new().weight(1.0).fill_max_height()).child(PanelSurface(ViewportPanel(
-            session.clone(),
-        ))),
-        Box(Modifier::new().width(288.0).fill_max_height()).child(PanelSurface(active_side_panel(
-            session,
-        ))),
+        Box(Modifier::new().weight(1.0).fill_max_height())
+            .child(PanelSurface(ViewportPanel(session.clone()))),
+        Box(Modifier::new().width(288.0).fill_max_height())
+            .child(PanelSurface(active_side_panel(session))),
     ))
 }
 
@@ -115,8 +109,18 @@ fn BottomNavigation(session: SessionRef) -> View {
         selected,
         vec![
             nav_item(session.clone(), PanelPage::Canvas, Symbols::edit, "Canvas"),
-            nav_item(session.clone(), PanelPage::Layers, Symbols::layers, "Layers"),
-            nav_item(session.clone(), PanelPage::Timeline, Symbols::play_arrow, "Animate"),
+            nav_item(
+                session.clone(),
+                PanelPage::Layers,
+                Symbols::layers,
+                "Layers",
+            ),
+            nav_item(
+                session.clone(),
+                PanelPage::Timeline,
+                Symbols::play_arrow,
+                "Animate",
+            ),
             nav_item(session, PanelPage::Inspect, Symbols::settings, "Inspect"),
         ],
         NavigationBarConfig::default(),

@@ -5,7 +5,7 @@ use repose_core::{Modifier, View, theme};
 use repose_ui::{Column, ViewExt};
 
 use crate::components::PanelHeader;
-use crate::session::{dispatch_timeline, map_modifiers, pe_pos, SessionRef};
+use crate::session::{SessionRef, dispatch_timeline, map_modifiers, pe_pos};
 use crate::symbols::Symbols;
 
 pub fn TimelinePanel(session: SessionRef) -> View {
@@ -19,20 +19,26 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                 let session = session.clone();
                 move |pe: PointerEvent| {
                     let mut s = session.borrow_mut();
-                    dispatch_timeline(&mut s, TimelineEvent::Press {
-                        pos: pe_pos(&pe),
-                        modifiers: map_modifiers(&pe),
-                    });
+                    dispatch_timeline(
+                        &mut s,
+                        TimelineEvent::Press {
+                            pos: pe_pos(&pe),
+                            modifiers: map_modifiers(&pe),
+                        },
+                    );
                 }
             })
             .on_pointer_up({
                 let session = session.clone();
                 move |pe: PointerEvent| {
                     let mut s = session.borrow_mut();
-                    dispatch_timeline(&mut s, TimelineEvent::Release {
-                        pos: pe_pos(&pe),
-                        modifiers: map_modifiers(&pe),
-                    });
+                    dispatch_timeline(
+                        &mut s,
+                        TimelineEvent::Release {
+                            pos: pe_pos(&pe),
+                            modifiers: map_modifiers(&pe),
+                        },
+                    );
                 }
             }),
         move |scope| {

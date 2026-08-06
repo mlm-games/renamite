@@ -115,9 +115,7 @@ pub enum Commands {
     },
 
     /// Generate shell completions
-    Completions {
-        shell: clap_complete::Shell,
-    },
+    Completions { shell: clap_complete::Shell },
 }
 
 pub fn run() -> Result<()> {
@@ -137,10 +135,26 @@ where
 
 fn dispatch(command: Commands) -> Result<()> {
     match command {
-        Commands::Bake { input, frames, dt, output } => cmd_bake(input, frames, dt, output),
+        Commands::Bake {
+            input,
+            frames,
+            dt,
+            output,
+        } => cmd_bake(input, frames, dt, output),
         Commands::Render {
+            input,
+            frame,
+            frames,
+            dt,
+            width,
+            height,
+            out,
+            out_dir,
+            prefix,
+            background,
+        } => cmd_render(
             input, frame, frames, dt, width, height, out, out_dir, prefix, background,
-        } => cmd_render(input, frame, frames, dt, width, height, out, out_dir, prefix, background),
+        ),
         Commands::Pack { input, output } => cmd_pack(input, output),
         Commands::Unpack { input, output } => cmd_unpack(input, output),
         Commands::Info { input, json } => cmd_info(input, json),
@@ -157,19 +171,17 @@ fn dispatch(command: Commands) -> Result<()> {
     }
 }
 
-
 fn cmd_bake(input: PathBuf, frames: usize, dt: f64, output: PathBuf) -> Result<()> {
     let text = std::fs::read_to_string(&input)
         .with_context(|| format!("failed to read {}", input.display()))?;
-    let mut player =
-        Player::from_ren_str(&text).with_context(|| format!("failed to load {}", input.display()))?;
+    let mut player = Player::from_ren_str(&text)
+        .with_context(|| format!("failed to load {}", input.display()))?;
     let scenes = player.bake(frames, dt);
     let json = serde_json::to_string_pretty(&scenes)?;
     std::fs::write(&output, json)?;
     println!("Baked {frames} frames -> {}", output.display());
     Ok(())
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn cmd_render(
@@ -289,7 +301,6 @@ fn parse_background(s: &str) -> Result<Option<[u8; 4]>> {
     }
 }
 
-
 fn cmd_pack(input: PathBuf, output: PathBuf) -> Result<()> {
     let text = std::fs::read_to_string(&input)?;
     let mut file: RenFile = renamite_io_ren::open(&text)?;
@@ -307,7 +318,6 @@ fn cmd_unpack(input: PathBuf, output: PathBuf) -> Result<()> {
     println!("Unpacked {} -> {}", input.display(), output.display());
     Ok(())
 }
-
 
 #[derive(Serialize)]
 struct InfoSummary {
@@ -352,8 +362,8 @@ fn cmd_info(input: PathBuf, json: bool) -> Result<()> {
             width: comp.size.0,
             height: comp.size.1,
             fps: comp.rate.fps(),
-            in_frame: comp.range.0 .0,
-            out_frame: comp.range.1 .0,
+            in_frame: comp.range.0.0,
+            out_frame: comp.range.1.0,
         },
     };
 
@@ -376,10 +386,12 @@ fn cmd_info(input: PathBuf, json: bool) -> Result<()> {
     println!("  Name:  {}", summary.main.name);
     println!("  Size:  {}x{}", summary.main.width, summary.main.height);
     println!("  Rate:  {:.2} fps", summary.main.fps);
-    println!("  Range: {} - {}", summary.main.in_frame, summary.main.out_frame);
+    println!(
+        "  Range: {} - {}",
+        summary.main.in_frame, summary.main.out_frame
+    );
     Ok(())
 }
-
 
 fn cmd_validate(input: PathBuf, fix: bool) -> Result<()> {
     let mut file = load_file(&input)?;
@@ -398,7 +410,6 @@ fn cmd_validate(input: PathBuf, fix: bool) -> Result<()> {
     }
     Ok(())
 }
-
 
 fn cmd_diff(a: PathBuf, b: PathBuf, fail_on_diff: bool) -> Result<()> {
     let fa = load_file(&a)?;
@@ -432,7 +443,11 @@ fn diff_values(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
             keys.sort();
             keys.dedup();
             for k in keys {
-                let sub = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let sub = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
                 match (ma.get(k), mb.get(k)) {
                     (Some(av), Some(bv)) => diff_values(&sub, av, bv, out),
                     (Some(_), None) => out.push(format!("- {sub} (removed)")),
@@ -457,7 +472,6 @@ fn diff_values(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
         }
     }
 }
-
 
 fn cmd_new(output: PathBuf, template: String) -> Result<()> {
     let name = name_from_path(&output);
@@ -506,9 +520,11 @@ fn scaffold_ellipse(name: String) -> RenFile {
 }
 
 fn name_from_path(p: &Path) -> String {
-    p.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled").to_string()
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string()
 }
-
 
 fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
     let text = std::fs::read_to_string(&input)?;
@@ -526,7 +542,6 @@ fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
     Ok(())
 }
 
-
 fn load_file(path: &Path) -> Result<RenFile> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     match ext {
@@ -543,14 +558,20 @@ mod tests {
     #[test]
     fn parses_named_colors() {
         assert_eq!(parse_background("transparent").unwrap(), None);
-        assert_eq!(parse_background("white").unwrap(), Some([255, 255, 255, 255]));
+        assert_eq!(
+            parse_background("white").unwrap(),
+            Some([255, 255, 255, 255])
+        );
         assert_eq!(parse_background("black").unwrap(), Some([0, 0, 0, 255]));
     }
 
     #[test]
     fn parses_hex_with_and_without_alpha() {
         assert_eq!(parse_background("#ff0000").unwrap(), Some([255, 0, 0, 255]));
-        assert_eq!(parse_background("00ff0080").unwrap(), Some([0, 255, 0, 0x80]));
+        assert_eq!(
+            parse_background("00ff0080").unwrap(),
+            Some([0, 255, 0, 0x80])
+        );
     }
 
     #[test]
@@ -649,7 +670,10 @@ mod tests {
         .unwrap();
 
         let bytes = std::fs::read(&png).unwrap();
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
+        );
     }
 
     #[test]

@@ -25,18 +25,16 @@ pub fn PanelSurface(content: View) -> View {
 pub fn PanelHeader(symbol: Symbol, title: impl Into<String>, actions: Vec<View>) -> View {
     let title = title.into();
 
-    Row(
-        Modifier::new()
-            .height(48.0)
-            .fill_max_width()
-            .padding_values(repose_core::PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
-            })
-            .align_items(AlignItems::CENTER),
-    )
+    Row(Modifier::new()
+        .height(48.0)
+        .fill_max_width()
+        .padding_values(repose_core::PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER))
     .child((
         AppIcon(symbol, 20.0),
         Text(title)

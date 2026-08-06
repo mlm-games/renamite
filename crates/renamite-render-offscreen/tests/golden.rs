@@ -76,11 +76,10 @@ fn check_golden(name: &str, actual_png: &[u8]) {
     let total = (golden.width() * golden.height()) as f64;
     let mut differing = 0usize;
     for (g, a) in golden.pixels().zip(actual.pixels()) {
-        let over_tol = g
-            .0
-            .iter()
-            .zip(a.0.iter())
-            .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
+        let over_tol =
+            g.0.iter()
+                .zip(a.0.iter())
+                .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
         if over_tol {
             differing += 1;
         }
@@ -214,13 +213,19 @@ fn fixture_bezier_path() -> Document {
 #[test]
 fn golden_ellipse_fill() {
     let Some(mut gpu) = gpu() else { return };
-    check_golden("ellipse_fill", &render_doc(&mut gpu, &fixture_ellipse(), 0.0));
+    check_golden(
+        "ellipse_fill",
+        &render_doc(&mut gpu, &fixture_ellipse(), 0.0),
+    );
 }
 
 #[test]
 fn golden_stroke_round() {
     let Some(mut gpu) = gpu() else { return };
-    check_golden("stroke_round", &render_doc(&mut gpu, &fixture_stroke(), 0.0));
+    check_golden(
+        "stroke_round",
+        &render_doc(&mut gpu, &fixture_stroke(), 0.0),
+    );
 }
 
 #[test]
@@ -235,5 +240,8 @@ fn golden_eased_midpoint_frame30() {
 #[test]
 fn golden_bezier_path() {
     let Some(mut gpu) = gpu() else { return };
-    check_golden("bezier_path", &render_doc(&mut gpu, &fixture_bezier_path(), 0.0));
+    check_golden(
+        "bezier_path",
+        &render_doc(&mut gpu, &fixture_bezier_path(), 0.0),
+    );
 }

@@ -45,7 +45,9 @@ pub fn flatten_layers(
     expanded: &std::collections::HashSet<NodeId>,
 ) -> Vec<LayerRow> {
     let mut out = Vec::new();
-    let Some(c) = doc.compositions.get(comp) else { return out };
+    let Some(c) = doc.compositions.get(comp) else {
+        return out;
+    };
     walk(doc, Parent::Comp(comp), &c.children, 0, expanded, &mut out);
     out
 }
@@ -100,7 +102,11 @@ pub fn cmd_rename(id: NodeId, name: String) -> EditorCommand {
 
 /// Reorder: move `id` to `new_parent` at `index` (clamped by apply).
 pub fn cmd_move(id: NodeId, new_parent: Parent, index: usize) -> EditorCommand {
-    EditorCommand::MoveNode { id, new_parent, index }
+    EditorCommand::MoveNode {
+        id,
+        new_parent,
+        index,
+    }
 }
 
 /// Drop `dragged` onto `target` row.
@@ -144,7 +150,12 @@ pub fn is_ancestor(doc: &Document, ancestor: NodeId, mut node: NodeId) -> bool {
 /// `MoveNode` detaches then attaches (index clamped to the post-detach
 /// length), so indices above the removed slot shift down by one.
 pub fn move_is_noop(doc: &Document, cmd: &EditorCommand) -> bool {
-    let EditorCommand::MoveNode { id, new_parent, index } = cmd else {
+    let EditorCommand::MoveNode {
+        id,
+        new_parent,
+        index,
+    } = cmd
+    else {
         return false;
     };
     let Some((old_parent, old_index)) = doc.locate(*id) else {
@@ -153,7 +164,11 @@ pub fn move_is_noop(doc: &Document, cmd: &EditorCommand) -> bool {
     if old_parent != *new_parent {
         return false;
     }
-    let adjusted = if *index > old_index { *index - 1 } else { *index };
+    let adjusted = if *index > old_index {
+        *index - 1
+    } else {
+        *index
+    };
     adjusted == old_index
 }
 
@@ -168,9 +183,9 @@ pub fn toggle_in_selection(id: NodeId) -> SelectionChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::DVec2;
     use renamite_animation::Animated;
     use renamite_model::{Node, ShapeKind};
-    use glam::DVec2;
 
     fn tree() -> (Document, NodeId, NodeId, NodeId) {
         // comp: [group, lone]
@@ -178,9 +193,13 @@ mod tests {
         let mut doc = Document::empty();
         let c = doc.main;
         let group = doc.create_node(Node::new("G", NodeKind::Group));
-        let child = doc.create_node(Node::new("C", NodeKind::Shape(ShapeKind::Ellipse {
-            pos: Animated::new(DVec2::ZERO), size: Animated::new(DVec2::ONE),
-        })));
+        let child = doc.create_node(Node::new(
+            "C",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::ONE),
+            }),
+        ));
         let lone = doc.create_node(Node::new("L", NodeKind::Group));
         doc.attach(group, Parent::Comp(c), 0).unwrap();
         doc.attach(lone, Parent::Comp(c), 1).unwrap();
@@ -193,7 +212,10 @@ mod tests {
         let (doc, group, _child, lone) = tree();
         let empty = std::collections::HashSet::new();
         let rows = flatten_layers(&doc, doc.main, &empty);
-        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["G", "L"]);
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["G", "L"]
+        );
         assert_eq!(rows[0].id, group);
         assert_eq!(rows[1].id, lone);
         assert_eq!(rows[0].child_count, 1);
@@ -218,7 +240,11 @@ mod tests {
         let target = &rows[0]; // G
         let cmd = drop_command(lone, target, true, false).unwrap();
         match cmd {
-            EditorCommand::MoveNode { id, new_parent, index } => {
+            EditorCommand::MoveNode {
+                id,
+                new_parent,
+                index,
+            } => {
                 assert_eq!(id, lone);
                 assert_eq!(new_parent, Parent::Comp(doc.main));
                 assert_eq!(index, 0);
@@ -268,7 +294,11 @@ mod tests {
         let g_row = rows.iter().find(|r| r.id == group).unwrap();
         let cmd = drop_command(child, g_row, true, false).unwrap();
         match cmd {
-            EditorCommand::MoveNode { id, new_parent, index } => {
+            EditorCommand::MoveNode {
+                id,
+                new_parent,
+                index,
+            } => {
                 assert_eq!(id, child);
                 assert_eq!(new_parent, Parent::Comp(doc.main));
                 assert_eq!(index, 0);

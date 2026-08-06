@@ -71,10 +71,28 @@ pub mod timeline_fixture {
     #[derive(Deserialize)]
     #[serde(tag = "type")]
     pub enum EventSpec {
-        Press { x: f64, y: f64, #[serde(default)] alt: bool, #[serde(default)] shift: bool, #[serde(default)] ctrl: bool },
-        Move { x: f64, y: f64 },
-        Release { x: f64, y: f64 },
-        DoubleClick { x: f64, y: f64 },
+        Press {
+            x: f64,
+            y: f64,
+            #[serde(default)]
+            alt: bool,
+            #[serde(default)]
+            shift: bool,
+            #[serde(default)]
+            ctrl: bool,
+        },
+        Move {
+            x: f64,
+            y: f64,
+        },
+        Release {
+            x: f64,
+            y: f64,
+        },
+        DoubleClick {
+            x: f64,
+            y: f64,
+        },
         Delete,
         Escape,
     }
@@ -148,7 +166,9 @@ pub mod timeline_fixture {
                     let id = w.names[&ks.node];
                     let prop = PropPath::new(ks.prop.clone());
                     for (f, v) in &ks.keys {
-                        w.doc.add_keyframe(id, &prop, Frame(*f), &Value::F64(*v)).unwrap();
+                        w.doc
+                            .add_keyframe(id, &prop, Frame(*f), &Value::F64(*v))
+                            .unwrap();
                     }
                 }
                 TimelineTarget::Doc
@@ -178,7 +198,10 @@ pub mod timeline_fixture {
         let rows: Vec<TimelineRow> = fx
             .rows
             .iter()
-            .map(|r| TimelineRow { node: w.names[&r.node], prop: PropPath::new(r.prop.clone()) })
+            .map(|r| TimelineRow {
+                node: w.names[&r.node],
+                prop: PropPath::new(r.prop.clone()),
+            })
             .collect();
         let original = snapshot_rows(&w, target, &rows);
 
@@ -188,9 +211,19 @@ pub mod timeline_fixture {
 
         for ev in &fx.events {
             let event = match ev {
-                EventSpec::Press { x, y, alt, shift, ctrl } => TimelineEvent::Press {
+                EventSpec::Press {
+                    x,
+                    y,
+                    alt,
+                    shift,
+                    ctrl,
+                } => TimelineEvent::Press {
                     pos: DVec2::new(*x, *y),
-                    modifiers: Modifiers { alt: *alt, shift: *shift, ctrl: *ctrl },
+                    modifiers: Modifiers {
+                        alt: *alt,
+                        shift: *shift,
+                        ctrl: *ctrl,
+                    },
                 },
                 EventSpec::Move { x, y } => TimelineEvent::Move {
                     pos: DVec2::new(*x, *y),
@@ -254,7 +287,13 @@ pub mod timeline_fixture {
                 .selected()
                 .iter()
                 .map(|r| {
-                    let name = w.names.iter().find(|(_, id)| **id == r.node).unwrap().0.clone();
+                    let name = w
+                        .names
+                        .iter()
+                        .find(|(_, id)| **id == r.node)
+                        .unwrap()
+                        .0
+                        .clone();
                     (name, r.frame.0)
                 })
                 .collect();
@@ -266,7 +305,12 @@ pub mod timeline_fixture {
             for _ in 0..applied {
                 history.undo(&mut w.pm()).unwrap();
             }
-            assert_eq!(snapshot_rows(&w, target, &rows), original, "{}: undo restores", fx.name);
+            assert_eq!(
+                snapshot_rows(&w, target, &rows),
+                original,
+                "{}: undo restores",
+                fx.name
+            );
         }
     }
 
@@ -277,7 +321,11 @@ pub mod timeline_fixture {
                 TimelineTarget::Clip(cid) => w
                     .clips
                     .get(cid)
-                    .and_then(|c| c.tracks.iter().find(|t| t.node == row.node && t.prop == row.prop))
+                    .and_then(|c| {
+                        c.tracks
+                            .iter()
+                            .find(|t| t.node == row.node && t.prop == row.prop)
+                    })
                     .map(|t| t.keys.iter().map(|k| k.frame).collect())
                     .unwrap_or_default(),
             })

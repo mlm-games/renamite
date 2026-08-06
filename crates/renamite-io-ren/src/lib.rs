@@ -38,16 +38,23 @@ pub struct RenFile {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Meta {
-    #[serde(default)] pub name: String,
-    #[serde(default)] pub author: String,
-    #[serde(default)] pub generator: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub generator: String,
 }
 
 impl RenFile {
     pub fn new(document: Document, name: impl Into<String>) -> Self {
         Self {
             format_version: CURRENT_VERSION,
-            meta: Meta { name: name.into(), generator: "renamite".into(), ..Default::default() },
+            meta: Meta {
+                name: name.into(),
+                generator: "renamite".into(),
+                ..Default::default()
+            },
             document,
             clips: ClipMap::default(),
             machines: MachineMap::default(),
@@ -66,7 +73,8 @@ impl RenFile {
                 self.clip_order.push(id);
             }
         }
-        self.machine_order.retain(|id| self.machines.contains_key(*id));
+        self.machine_order
+            .retain(|id| self.machines.contains_key(*id));
         let seen: HashSet<_> = self.machine_order.iter().copied().collect();
         for id in self.machines.keys() {
             if !seen.contains(&id) {
@@ -130,8 +138,7 @@ pub enum RenError {
 }
 
 pub fn save(file: &RenFile) -> Result<String, RenError> {
-let cfg = ron::ser::PrettyConfig::default()
-        .struct_names(true); // `Keyframe(frame: ...)`
+    let cfg = ron::ser::PrettyConfig::default().struct_names(true); // `Keyframe(frame: ...)`
     let mut s = String::from("// renamite project: https://github.com/mlm-games/renamite\n");
     s.push_str(&ron::ser::to_string_pretty(file, cfg)?);
     Ok(s)
@@ -152,7 +159,9 @@ pub fn open(text: &str) -> Result<RenFile, RenError> {
 }
 
 fn peek_version(v: &ron::value::Value) -> Option<i64> {
-    let ron::value::Value::Map(map) = v else { return None };
+    let ron::value::Value::Map(map) = v else {
+        return None;
+    };
     match map.get(&ron::value::Value::String("format_version".into())) {
         Some(ron::value::Value::Number(n)) => number_i64(n),
         _ => None,
@@ -162,11 +171,16 @@ fn peek_version(v: &ron::value::Value) -> Option<i64> {
 fn number_i64(n: &ron::value::Number) -> Option<i64> {
     use ron::value::Number::*;
     match n {
-        I8(v) => Some(*v as i64), I16(v) => Some(*v as i64), I32(v) => Some(*v as i64),
+        I8(v) => Some(*v as i64),
+        I16(v) => Some(*v as i64),
+        I32(v) => Some(*v as i64),
         I64(v) => Some(*v),
-        U8(v) => Some(*v as i64), U16(v) => Some(*v as i64), U32(v) => Some(*v as i64),
+        U8(v) => Some(*v as i64),
+        U16(v) => Some(*v as i64),
+        U32(v) => Some(*v as i64),
         U64(v) => Some(*v as i64),
-        F32(v) => Some(v.get() as i64), F64(v) => Some(v.get() as i64),
+        F32(v) => Some(v.get() as i64),
+        F64(v) => Some(v.get() as i64),
         _ => None,
     }
 }
@@ -182,9 +196,13 @@ pub fn save_binary(file: &RenFile) -> Result<Vec<u8>, RenError> {
 #[cfg(feature = "binary")]
 pub fn open_binary(bytes: &[u8]) -> Result<RenFile, RenError> {
     let (magic, rest) = bytes.split_at_checked(8).ok_or(RenError::BadMagic)?;
-    if &magic[..4] != RENB_MAGIC { return Err(RenError::BadMagic); }
+    if &magic[..4] != RENB_MAGIC {
+        return Err(RenError::BadMagic);
+    }
     let version = u32::from_le_bytes(magic[4..8].try_into().unwrap());
-    if version > CURRENT_VERSION { return Err(RenError::UnsupportedVersion(version)); }
+    if version > CURRENT_VERSION {
+        return Err(RenError::UnsupportedVersion(version));
+    }
     let mut file: RenFile = postcard::from_bytes(rest)?;
     file.normalize();
     Ok(file)
@@ -213,7 +231,10 @@ mod tests {
             ..RenFile::new(renamite_model::Document::empty(), "x")
         };
         let text = save(&f).unwrap();
-        assert!(matches!(open(&text), Err(RenError::UnsupportedVersion(999))));
+        assert!(matches!(
+            open(&text),
+            Err(RenError::UnsupportedVersion(999))
+        ));
     }
 
     #[cfg(feature = "binary")]
@@ -273,7 +294,11 @@ mod tests {
                 any_transitions: vec![],
                 states: vec![State {
                     name: "play".into(),
-                    kind: StateKind::Clip { clip: cid, speed: 1.0, loop_mode: LoopMode::Once },
+                    kind: StateKind::Clip {
+                        clip: cid,
+                        speed: 1.0,
+                        loop_mode: LoopMode::Once,
+                    },
                     transitions: vec![],
                 }],
             }],

@@ -70,16 +70,21 @@ mod tests {
         let (doc, id) = doc_with_path();
         let (frame, seed) = path_edit_target(&doc, id, Frame(10), true).unwrap();
         assert_eq!(frame, Some(Frame(10)));
-        assert!(
-            matches!(seed, Some(EditorCommand::AddKeyframe { frame: Frame(10), .. }))
-        );
+        assert!(matches!(
+            seed,
+            Some(EditorCommand::AddKeyframe {
+                frame: Frame(10),
+                ..
+            })
+        ));
     }
 
     #[test]
     fn animated_without_key_at_playhead_seeds() {
         let (mut doc, id) = doc_with_path();
         let prop = PropPath::new("shape.path");
-        doc.add_keyframe(id, &prop, Frame(0), &Value::Path(VectorPath::default())).unwrap();
+        doc.add_keyframe(id, &prop, Frame(0), &Value::Path(VectorPath::default()))
+            .unwrap();
 
         let (frame, seed) = path_edit_target(&doc, id, Frame(5), false).unwrap();
         assert_eq!(frame, Some(Frame(5)));
@@ -90,7 +95,8 @@ mod tests {
     fn animated_with_key_at_playhead_needs_no_seed() {
         let (mut doc, id) = doc_with_path();
         let prop = PropPath::new("shape.path");
-        doc.add_keyframe(id, &prop, Frame(10), &Value::Path(VectorPath::default())).unwrap();
+        doc.add_keyframe(id, &prop, Frame(10), &Value::Path(VectorPath::default()))
+            .unwrap();
 
         let (frame, seed) = path_edit_target(&doc, id, Frame(10), false).unwrap();
         assert_eq!(frame, Some(Frame(10)));

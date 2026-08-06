@@ -53,7 +53,9 @@ impl Platform for NativePlatform {
     fn clipboard_set(&self, _mime: &str, _bytes: Vec<u8>) {}
     fn clipboard_get(&self, _mime: &str, _cb: Callback<Option<Vec<u8>>>) {}
     fn autosave_store(&self) -> Box<dyn KvStore> {
-        Box::new(DirStore { dir: std::path::PathBuf::new() })
+        Box::new(DirStore {
+            dir: std::path::PathBuf::new(),
+        })
     }
     fn now_ms(&self) -> f64 {
         0.0

@@ -35,7 +35,10 @@ pub struct ViewTransform {
 
 impl ViewTransform {
     pub fn identity() -> Self {
-        Self { scale: 1.0, offset: DVec2::ZERO }
+        Self {
+            scale: 1.0,
+            offset: DVec2::ZERO,
+        }
     }
 
     pub fn screen_to_world(&self, p: DVec2) -> DVec2 {
@@ -61,7 +64,11 @@ pub struct Modifiers {
 
 impl Modifiers {
     pub fn none() -> Self {
-        Self { shift: false, alt: false, ctrl: false }
+        Self {
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }
     }
 }
 

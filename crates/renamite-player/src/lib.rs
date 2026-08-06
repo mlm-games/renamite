@@ -12,14 +12,11 @@
 //! plays as a background layer and machine `Overrides` win on top of it -
 //! which `evaluate_with` already guarantees, since overrides beat keyframes.
 
-
 use glam::DVec2;
 use renamite_animation::{FrameRate, LoopMode, PlayState, Playback};
 use renamite_io_ren::RenFile;
 use renamite_machine::{MachineId, MachineInstance, PointerEventKind};
-use renamite_model::{
-    evaluate_with, pick, CompId, NodeId, Overrides, Scene,
-};
+use renamite_model::{CompId, NodeId, Overrides, Scene, evaluate_with, pick};
 
 pub use renamite_model::{nodes_bounds, pick_box};
 
@@ -71,7 +68,7 @@ impl Engine {
             .ok_or(PlayerError::MissingComp)?;
         let playing = Playback {
             state: PlayState::Playing,
-            head: c.range.0 .0 as f64,
+            head: c.range.0.0 as f64,
             loop_mode: LoopMode::Loop,
             range: c.range,
             dir: 1.0,
@@ -109,7 +106,11 @@ impl Engine {
         let dt_frames = dt_secs * self.rate.fps();
 
         let frame = match &mut self.mode {
-            PlayMode::Machine { id, instance, background } => {
+            PlayMode::Machine {
+                id,
+                instance,
+                background,
+            } => {
                 background.advance(dt_secs, self.rate);
                 if let Some(m) = project.machines.get(*id) {
                     let out = instance.tick(m, &project.clips, dt_frames, &mut self.ov);
@@ -197,7 +198,7 @@ impl Engine {
         let range = project.document.compositions[self.comp].range;
         Playback {
             state: PlayState::Playing,
-            head: range.0 .0 as f64,
+            head: range.0.0 as f64,
             loop_mode: LoopMode::Loop,
             range,
             dir: 1.0,
@@ -436,7 +437,10 @@ mod tests {
         });
         let machine = Machine {
             name: "hover".into(),
-            inputs: vec![InputDef { name: "go".into(), kind: InputKind::Bool { default: false } }],
+            inputs: vec![InputDef {
+                name: "go".into(),
+                kind: InputKind::Bool { default: false },
+            }],
             layers: vec![MachineLayer {
                 name: "base".into(),
                 entry: 0,
@@ -449,7 +453,10 @@ mod tests {
                             to: 1,
                             duration: 0.0,
                             exit_time: None,
-                            conditions: vec![Condition::BoolIs { input: 0, value: true }],
+                            conditions: vec![Condition::BoolIs {
+                                input: 0,
+                                value: true,
+                            }],
                         }],
                     },
                     State {
@@ -466,7 +473,10 @@ mod tests {
             listeners: vec![Listener {
                 node: shape,
                 event: PointerEventKind::Enter,
-                action: ListenerAction::SetBool { input: 0, value: true },
+                action: ListenerAction::SetBool {
+                    input: 0,
+                    value: true,
+                },
             }],
         };
         let mut machines = MachineMap::default();
@@ -493,8 +503,12 @@ mod tests {
     fn machine_composites_over_background_timeline() {
         let (mut proj, _, fill) = moving_box();
         let prop = PropPath::new("opacity");
-        proj.document.add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0)).unwrap();
-        proj.document.add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0)).unwrap();
+        proj.document
+            .add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0))
+            .unwrap();
+        proj.document
+            .add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0))
+            .unwrap();
 
         let mut p = Player::new(proj).unwrap();
         assert!(p.set_bool("go", true));
@@ -502,7 +516,10 @@ mod tests {
         p.tick(0.25); // machine time 15 > clip len → clamped x=50; head=30
 
         let item = &p.scene().items[0];
-        assert!((center_x(p.scene()) - 50.0).abs() < 1.0, "machine override applied");
+        assert!(
+            (center_x(p.scene()) - 50.0).abs() < 1.0,
+            "machine override applied"
+        );
         assert!(
             (item.opacity - 0.5).abs() < 0.02,
             "background timeline still animating (opacity={})",
@@ -514,8 +531,12 @@ mod tests {
     fn scrub_locks_frame() {
         let (mut proj, _, fill) = static_box();
         let prop = PropPath::new("opacity");
-        proj.document.add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0)).unwrap();
-        proj.document.add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0)).unwrap();
+        proj.document
+            .add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0))
+            .unwrap();
+        proj.document
+            .add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0))
+            .unwrap();
 
         let mut e = Engine::new(&proj).unwrap();
         e.scrub(&proj, 30.0);
@@ -542,7 +563,9 @@ mod tests {
             items: vec![SceneItem {
                 path: big,
                 node: shape,
-                paint: Paint { color: Color::BLACK },
+                paint: Paint {
+                    color: Color::BLACK,
+                },
                 kind: PaintKind::Fill(FillRule::NonZero),
                 opacity: 1.0,
                 clip: Some(0),

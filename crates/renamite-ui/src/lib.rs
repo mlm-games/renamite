@@ -130,13 +130,55 @@ pub fn ToolRail(session: SessionRef) -> View {
             .background(theme().surface_container),
     )
     .child((
-        tool(session.clone(), ToolId::Select, Symbols::arrow_selector_tool, "Select", selected),
-        tool(session.clone(), ToolId::PathEdit, Symbols::edit, "Edit path", selected),
-        tool(session.clone(), ToolId::Rect, Symbols::rectangle, "Rectangle", selected),
-        tool(session.clone(), ToolId::Ellipse, Symbols::circle, "Ellipse", selected),
-        tool(session.clone(), ToolId::Star, Symbols::star, "Star", selected),
-        tool(session.clone(), ToolId::Gradient, Symbols::gradient, "Gradient", selected),
-        tool(session, ToolId::Fill, Symbols::format_color_fill, "Fill", selected),
+        tool(
+            session.clone(),
+            ToolId::Select,
+            Symbols::arrow_selector_tool,
+            "Select",
+            selected,
+        ),
+        tool(
+            session.clone(),
+            ToolId::PathEdit,
+            Symbols::edit,
+            "Edit path",
+            selected,
+        ),
+        tool(
+            session.clone(),
+            ToolId::Rect,
+            Symbols::rectangle,
+            "Rectangle",
+            selected,
+        ),
+        tool(
+            session.clone(),
+            ToolId::Ellipse,
+            Symbols::circle,
+            "Ellipse",
+            selected,
+        ),
+        tool(
+            session.clone(),
+            ToolId::Star,
+            Symbols::star,
+            "Star",
+            selected,
+        ),
+        tool(
+            session.clone(),
+            ToolId::Gradient,
+            Symbols::gradient,
+            "Gradient",
+            selected,
+        ),
+        tool(
+            session,
+            ToolId::Fill,
+            Symbols::format_color_fill,
+            "Fill",
+            selected,
+        ),
     ))
 }
 

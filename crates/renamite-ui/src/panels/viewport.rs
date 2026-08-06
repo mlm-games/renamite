@@ -3,15 +3,13 @@ use renamite_behavior_canvas::{CanvasEvent, Key, PointerButton, ToolOverlay};
 use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform};
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
-use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::geometry::Rect;
-use repose_core::{
-    Color, FocusRequester, Modifier, View, remember, request_frame, theme,
-};
+use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
+use repose_core::{Color, FocusRequester, Modifier, View, remember, request_frame, theme};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelSurface};
-use crate::session::{dispatch_canvas, map_modifiers, pe_pos, PanelPage, SessionRef};
+use crate::session::{PanelPage, SessionRef, dispatch_canvas, map_modifiers, pe_pos};
 use crate::symbols::Symbols;
 
 pub fn ViewportPanel(session: SessionRef) -> View {
@@ -28,7 +26,9 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_key_event({
                     let session = session.clone();
                     move |ke: KeyEvent| {
-                        let Some(k) = map_key(ke.key) else { return false };
+                        let Some(k) = map_key(ke.key) else {
+                            return false;
+                        };
                         let mut s = session.borrow_mut();
                         if s.active_page == PanelPage::Canvas {
                             dispatch_canvas(&mut s, CanvasEvent::KeyDown(k), Modifiers::none());
@@ -73,7 +73,11 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pos);
-                        dispatch_canvas(&mut s, CanvasEvent::PointerMove { pos: world }, map_modifiers(&pe));
+                        dispatch_canvas(
+                            &mut s,
+                            CanvasEvent::PointerMove { pos: world },
+                            map_modifiers(&pe),
+                        );
                     }
                 })
                 .on_pointer_up({
@@ -127,7 +131,11 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         playhead: renamite_animation::Frame(s.playback.head as i64),
                         record: s.record,
                         view,
-                        snap: SnapConfig { grid: None, anchor: false, guide: false },
+                        snap: SnapConfig {
+                            grid: None,
+                            anchor: false,
+                            guide: false,
+                        },
                         modifiers: Modifiers::none(),
                     };
                     s.tool.overlay(s.active_tool, &ctx)
@@ -139,11 +147,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     ))
 }
 
-fn paint_artboard(
-    scope: &mut DrawScope,
-    comp: &Composition,
-    view: &ViewTransform,
-) {
+fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransform) {
     let th = theme();
     let origin = view.world_to_screen(DVec2::ZERO);
     let width = comp.size.0 as f64 * view.scale;
@@ -168,10 +172,7 @@ fn paint_artboard(
 
     for y in 0..rows {
         for x in 0..cols {
-            let p = view.world_to_screen(DVec2::new(
-                x as f64 * tile_world,
-                y as f64 * tile_world,
-            ));
+            let p = view.world_to_screen(DVec2::new(x as f64 * tile_world, y as f64 * tile_world));
 
             let color = if (x + y) % 2 == 0 {
                 th.surface
@@ -200,57 +201,69 @@ fn paint_artboard(
     let h = height as f32;
 
     scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, 0.0);
-    scope.draw_rect(Rect { x, y: y + h - 1.0, w, h: 1.0 }, border, 0.0);
+    scope.draw_rect(
+        Rect {
+            x,
+            y: y + h - 1.0,
+            w,
+            h: 1.0,
+        },
+        border,
+        0.0,
+    );
     scope.draw_rect(Rect { x, y, w: 1.0, h }, border, 0.0);
-    scope.draw_rect(Rect { x: x + w - 1.0, y, w: 1.0, h }, border, 0.0);
+    scope.draw_rect(
+        Rect {
+            x: x + w - 1.0,
+            y,
+            w: 1.0,
+            h,
+        },
+        border,
+        0.0,
+    );
 }
 
 fn ViewportControls(session: SessionRef) -> View {
     let zoom = session.borrow().viewport.view.scale * 100.0;
 
-    Box(
-        Modifier::new()
-            .absolute()
-            .offset(None, None, Some(16.0), Some(16.0)),
-    )
-    .child(
-        PanelSurface(
-            Row(
-                Modifier::new()
-                    .align_items(repose_core::AlignItems::CENTER)
-                    .gap(2.0)
-                    .padding(4.0),
-            )
-            .child((
-                CompactIconAction(Symbols::zoom_out, "Zoom out", {
-                    let session = session.clone();
-                    move || {
-                        session.borrow_mut().viewport.zoom_centered(1.0 / 1.2);
-                        request_frame();
-                    }
-                }),
-                Text(format!("{zoom:.0}%"))
-                    .size(theme().typography.label_medium)
-                    .color(theme().on_surface_variant)
-                    .modifier(Modifier::new().min_width(52.0)),
-                CompactIconAction(Symbols::zoom_in, "Zoom in", {
-                    let session = session.clone();
-                    move || {
-                        session.borrow_mut().viewport.zoom_centered(1.2);
-                        request_frame();
-                    }
-                }),
-                CompactIconAction(Symbols::fit_screen, "Fit artboard", {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.viewport.fit_pending = true;
-                        request_frame();
-                    }
-                }),
-            )),
-        ),
-    )
+    Box(Modifier::new()
+        .absolute()
+        .offset(None, None, Some(16.0), Some(16.0)))
+    .child(PanelSurface(
+        Row(Modifier::new()
+            .align_items(repose_core::AlignItems::CENTER)
+            .gap(2.0)
+            .padding(4.0))
+        .child((
+            CompactIconAction(Symbols::zoom_out, "Zoom out", {
+                let session = session.clone();
+                move || {
+                    session.borrow_mut().viewport.zoom_centered(1.0 / 1.2);
+                    request_frame();
+                }
+            }),
+            Text(format!("{zoom:.0}%"))
+                .size(theme().typography.label_medium)
+                .color(theme().on_surface_variant)
+                .modifier(Modifier::new().min_width(52.0)),
+            CompactIconAction(Symbols::zoom_in, "Zoom in", {
+                let session = session.clone();
+                move || {
+                    session.borrow_mut().viewport.zoom_centered(1.2);
+                    request_frame();
+                }
+            }),
+            CompactIconAction(Symbols::fit_screen, "Fit artboard", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.viewport.fit_pending = true;
+                    request_frame();
+                }
+            }),
+        )),
+    ))
 }
 
 fn map_button(pe: &PointerEvent) -> PointerButton {
@@ -296,7 +309,12 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
         }
-        ToolOverlay::Selection { min, max, rotate, scale } => {
+        ToolOverlay::Selection {
+            min,
+            max,
+            rotate,
+            scale,
+        } => {
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
             for p in [rotate, scale] {
@@ -338,7 +356,10 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                 scope.draw_rect(rect, primary.with_alpha(180), 3.0);
             }
         }
-        ToolOverlay::PathHandles { path, active_anchor } => {
+        ToolOverlay::PathHandles {
+            path,
+            active_anchor,
+        } => {
             for (i, a) in path.anchors.iter().enumerate() {
                 let sp = view.world_to_screen(a.pos);
                 let rect = Rect {

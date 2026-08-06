@@ -36,10 +36,10 @@ pub struct TimelineRow {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TimelineLayout {
-    pub origin_x: f64,       // px of frame 0
-    pub px_per_frame: f64,   // > 0
-    pub row_top: f64,        // px of first row's top edge
-    pub row_height: f64,     // > 0
+    pub origin_x: f64,     // px of frame 0
+    pub px_per_frame: f64, // > 0
+    pub row_top: f64,      // px of first row's top edge
+    pub row_height: f64,   // > 0
     pub key_tolerance_px: f64,
 }
 
@@ -98,7 +98,11 @@ fn row_key_frames(ctx: &TimelineCtx, row: &TimelineRow) -> Vec<Frame> {
         TimelineTarget::Clip(cid) => ctx
             .clips
             .get(cid)
-            .and_then(|c| c.tracks.iter().find(|t| t.node == row.node && t.prop == row.prop))
+            .and_then(|c| {
+                c.tracks
+                    .iter()
+                    .find(|t| t.node == row.node && t.prop == row.prop)
+            })
             .map(|t| t.keys.iter().map(|k| k.frame).collect())
             .unwrap_or_default(),
     }
@@ -109,7 +113,10 @@ fn key_data(ctx: &TimelineCtx, r: &KeyRef) -> Option<KeyframeData> {
         TimelineTarget::Doc => ctx.doc.keyframe_data(r.node, &r.prop, r.frame),
         TimelineTarget::Clip(cid) => {
             let c = ctx.clips.get(cid)?;
-            let t = c.tracks.iter().find(|t| t.node == r.node && t.prop == r.prop)?;
+            let t = c
+                .tracks
+                .iter()
+                .find(|t| t.node == r.node && t.prop == r.prop)?;
             let i = t.keys.binary_search_by_key(&r.frame, |k| k.frame).ok()?;
             Some(t.keys[i].clone())
         }
@@ -125,18 +132,33 @@ fn hit_key(ctx: &TimelineCtx, pos: DVec2) -> Option<KeyRef> {
         .map(|f| (f, (ctx.layout.frame_to_x(f.0 as f64) - pos.x).abs()))
         .filter(|(_, d)| *d <= tol)
         .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(frame, _)| KeyRef { node: row.node, prop: row.prop.clone(), frame })
+        .map(|(frame, _)| KeyRef {
+            node: row.node,
+            prop: row.prop.clone(),
+            frame,
+        })
 }
 
 enum KeyState {
     Idle,
     /// Pressed on a key; may become a drag or resolve as a click on release.
-    Pending { press: DVec2, key: KeyRef },
+    Pending {
+        press: DVec2,
+        key: KeyRef,
+    },
     /// Dragging the selection. `origins` are the frames at drag start;
     /// `delta` is the total applied so far. Incremental moves are emitted per
     /// change; `txn` marks whether BeginTransaction has been emitted.
-    Dragging { press: DVec2, origins: Vec<KeyRef>, delta: i64, txn: bool },
-    BoxSelect { start: DVec2, current: DVec2 },
+    Dragging {
+        press: DVec2,
+        origins: Vec<KeyRef>,
+        delta: i64,
+        txn: bool,
+    },
+    BoxSelect {
+        start: DVec2,
+        current: DVec2,
+    },
 }
 
 pub struct TimelineKeyframeBehavior {
@@ -148,7 +170,10 @@ const DRAG_THRESHOLD_PX: f64 = 3.0;
 
 impl Default for TimelineKeyframeBehavior {
     fn default() -> Self {
-        Self { state: KeyState::Idle, selected: Vec::new() }
+        Self {
+            state: KeyState::Idle,
+            selected: Vec::new(),
+        }
     }
 }
 
@@ -225,7 +250,10 @@ impl TimelineKeyframeBehavior {
                 if !m.shift && !m.ctrl {
                     self.selected.clear();
                 }
-                self.state = KeyState::BoxSelect { start: pos, current: pos };
+                self.state = KeyState::BoxSelect {
+                    start: pos,
+                    current: pos,
+                };
                 smallvec![]
             }
         }
@@ -236,13 +264,23 @@ impl TimelineKeyframeBehavior {
             KeyState::Pending { press, .. } => {
                 if (pos - *press).length() >= DRAG_THRESHOLD_PX {
                     let origins = self.selected.clone();
-                    self.state = KeyState::Dragging { press: *press, origins, delta: 0, txn: false };
+                    self.state = KeyState::Dragging {
+                        press: *press,
+                        origins,
+                        delta: 0,
+                        txn: false,
+                    };
                     // fall through into drag handling on the same event
                     return self.on_move(ctx, pos);
                 }
                 smallvec![]
             }
-            KeyState::Dragging { press, origins, delta, txn } => {
+            KeyState::Dragging {
+                press,
+                origins,
+                delta,
+                txn,
+            } => {
                 let raw = ((pos.x - press.x) / ctx.layout.px_per_frame).round() as i64;
                 let clamped = clamp_delta(ctx, origins, raw);
                 let want = snap_valid_delta(ctx, origins, clamped);
@@ -254,7 +292,9 @@ impl TimelineKeyframeBehavior {
                     out.push(ToolOutput::BeginTransaction("Move keyframes".into()));
                     *txn = true;
                 }
-                out.push(ToolOutput::Commands(smallvec![move_cmd(ctx, origins, *delta, want)]));
+                out.push(ToolOutput::Commands(smallvec![move_cmd(
+                    ctx, origins, *delta, want
+                )]));
                 *delta = want;
                 out
             }
@@ -269,7 +309,12 @@ impl TimelineKeyframeBehavior {
     fn on_release(&mut self, ctx: &TimelineCtx, _pos: DVec2, m: Modifiers) -> OutputVec {
         let state = std::mem::replace(&mut self.state, KeyState::Idle);
         match state {
-            KeyState::Dragging { origins, delta, txn, .. } => {
+            KeyState::Dragging {
+                origins,
+                delta,
+                txn,
+                ..
+            } => {
                 // Selection follows the keys to their new frames.
                 if delta != 0 {
                     self.selected = origins
@@ -316,16 +361,26 @@ impl TimelineKeyframeBehavior {
         if hit_key(ctx, pos).is_some() {
             return smallvec![]; // double-click on a key: reserved (curve editor focus)
         }
-        let Some(row_i) = ctx.layout.y_to_row(pos.y) else { return smallvec![] };
-        let Some(row) = ctx.rows.get(row_i) else { return smallvec![] };
+        let Some(row_i) = ctx.layout.y_to_row(pos.y) else {
+            return smallvec![];
+        };
+        let Some(row) = ctx.rows.get(row_i) else {
+            return smallvec![];
+        };
         let frame = Frame(
             ctx.layout
                 .x_to_frame(pos.x)
                 .round()
-                .clamp(ctx.range.0 .0 as f64, ctx.range.1 .0 as f64) as i64,
+                .clamp(ctx.range.0.0 as f64, ctx.range.1.0 as f64) as i64,
         );
-        let Some(cmd) = add_key_cmd(ctx, row, frame) else { return smallvec![] };
-        self.selected = vec![KeyRef { node: row.node, prop: row.prop.clone(), frame }];
+        let Some(cmd) = add_key_cmd(ctx, row, frame) else {
+            return smallvec![];
+        };
+        self.selected = vec![KeyRef {
+            node: row.node,
+            prop: row.prop.clone(),
+            frame,
+        }];
         smallvec![
             ToolOutput::BeginTransaction("Add keyframe".into()),
             ToolOutput::Commands(smallvec![cmd]),
@@ -375,8 +430,8 @@ fn clamp_delta(ctx: &TimelineCtx, origins: &[KeyRef], want: i64) -> i64 {
     let mut lo = i64::MIN;
     let mut hi = i64::MAX;
     for r in origins {
-        lo = lo.max(ctx.range.0 .0 - r.frame.0);
-        hi = hi.min(ctx.range.1 .0 - r.frame.0);
+        lo = lo.max(ctx.range.0.0 - r.frame.0);
+        hi = hi.min(ctx.range.1.0 - r.frame.0);
     }
     want.clamp(lo, hi)
 }
@@ -388,9 +443,16 @@ fn delta_valid(ctx: &TimelineCtx, origins: &[KeyRef], delta: i64) -> bool {
     let moving: HashSet<&KeyRef> = origins.iter().collect();
     for r in origins {
         let dest = Frame(r.frame.0 + delta);
-        let row = TimelineRow { node: r.node, prop: r.prop.clone() };
+        let row = TimelineRow {
+            node: r.node,
+            prop: r.prop.clone(),
+        };
         for f in row_key_frames(ctx, &row) {
-            let candidate = KeyRef { node: r.node, prop: r.prop.clone(), frame: f };
+            let candidate = KeyRef {
+                node: r.node,
+                prop: r.prop.clone(),
+                frame: f,
+            };
             if f == dest && !moving.contains(&candidate) {
                 return false;
             }
@@ -466,7 +528,12 @@ fn cycle_easing_cmd(ctx: &TimelineCtx, r: &KeyRef) -> Option<EditorCommand> {
             clip: cid,
             node: r.node,
             prop: r.prop.clone(),
-            key: KeyframeData { interpolation, ease_out, ease_in, ..k },
+            key: KeyframeData {
+                interpolation,
+                ease_out,
+                ease_in,
+                ..k
+            },
         },
     })
 }
@@ -478,7 +545,12 @@ fn add_key_cmd(ctx: &TimelineCtx, row: &TimelineRow, frame: Frame) -> Option<Edi
     match ctx.target {
         TimelineTarget::Doc => {
             let value = ctx.doc.value_at(row.node, &row.prop, frame.0 as f64).ok()?;
-            Some(EditorCommand::AddKeyframe { id: row.node, prop: row.prop.clone(), frame, value })
+            Some(EditorCommand::AddKeyframe {
+                id: row.node,
+                prop: row.prop.clone(),
+                frame,
+                value,
+            })
         }
         TimelineTarget::Clip(cid) => {
             let value = nearest_clip_value(ctx, cid, row, frame)
@@ -488,7 +560,13 @@ fn add_key_cmd(ctx: &TimelineCtx, row: &TimelineRow, frame: Frame) -> Option<Edi
                 clip: cid,
                 node: row.node,
                 prop: row.prop.clone(),
-                key: KeyframeData { frame, value, interpolation, ease_out, ease_in },
+                key: KeyframeData {
+                    frame,
+                    value,
+                    interpolation,
+                    ease_out,
+                    ease_in,
+                },
             })
         }
     }
@@ -501,7 +579,10 @@ fn nearest_clip_value(
     frame: Frame,
 ) -> Option<Value> {
     let c = ctx.clips.get(cid)?;
-    let t = c.tracks.iter().find(|t| t.node == row.node && t.prop == row.prop)?;
+    let t = c
+        .tracks
+        .iter()
+        .find(|t| t.node == row.node && t.prop == row.prop)?;
     t.keys
         .iter()
         .min_by_key(|k| (k.frame.0 - frame.0).abs())
@@ -518,7 +599,11 @@ fn box_pick(ctx: &TimelineCtx, min: DVec2, max: DVec2) -> Vec<KeyRef> {
         for f in row_key_frames(ctx, row) {
             let x = ctx.layout.frame_to_x(f.0 as f64);
             if x >= min.x && x <= max.x {
-                out.push(KeyRef { node: row.node, prop: row.prop.clone(), frame: f });
+                out.push(KeyRef {
+                    node: row.node,
+                    prop: row.prop.clone(),
+                    frame: f,
+                });
             }
         }
     }
@@ -537,7 +622,7 @@ impl TimelineScrubBehavior {
                 .layout
                 .x_to_frame(x)
                 .round()
-                .clamp(ctx.range.0 .0 as f64, ctx.range.1 .0 as f64);
+                .clamp(ctx.range.0.0 as f64, ctx.range.1.0 as f64);
             smallvec![ToolOutput::SetPlayhead(f)]
         };
         match ev {
@@ -565,10 +650,16 @@ pub struct CurveLayout {
 
 impl CurveLayout {
     pub fn to_px(&self, x: f64, y: f64) -> DVec2 {
-        DVec2::new(self.origin.x + x * self.size.x, self.origin.y - y * self.size.y)
+        DVec2::new(
+            self.origin.x + x * self.size.x,
+            self.origin.y - y * self.size.y,
+        )
     }
     pub fn to_unit(&self, p: DVec2) -> (f64, f64) {
-        ((p.x - self.origin.x) / self.size.x, (self.origin.y - p.y) / self.size.y)
+        (
+            (p.x - self.origin.x) / self.size.x,
+            (self.origin.y - p.y) / self.size.y,
+        )
     }
 }
 
@@ -592,12 +683,20 @@ pub struct EasingCurveBehavior {
 
 impl EasingCurveBehavior {
     pub fn new(layout: CurveLayout) -> Self {
-        Self { segment: None, layout, state: CurveState::Idle }
+        Self {
+            segment: None,
+            layout,
+            state: CurveState::Idle,
+        }
     }
 
     pub fn handle(&mut self, ctx: &TimelineCtx, ev: TimelineEvent) -> OutputVec {
-        let Some(seg) = self.segment.clone() else { return smallvec![] };
-        let Some(k) = key_data(ctx, &seg) else { return smallvec![] };
+        let Some(seg) = self.segment.clone() else {
+            return smallvec![];
+        };
+        let Some(k) = key_data(ctx, &seg) else {
+            return smallvec![];
+        };
 
         match ev {
             TimelineEvent::Press { pos, .. } => {
@@ -621,12 +720,16 @@ impl EasingCurveBehavior {
                     return smallvec![];
                 };
                 let (x, y) = self.layout.to_unit(pos);
-                let h = EasingHandle { x: x.clamp(0.0, 1.0), y }; // x clamped, y free (anticipate/overshoot)
+                let h = EasingHandle {
+                    x: x.clamp(0.0, 1.0),
+                    y,
+                }; // x clamped, y free (anticipate/overshoot)
                 let (ease_out, ease_in) = match handle {
                     CurveHandle::Out => (h, k.ease_in),
                     CurveHandle::In => (k.ease_out, h),
                 };
-                let cmd = set_easing_cmd(ctx, &seg, &k, Interpolation::CubicBezier, ease_out, ease_in);
+                let cmd =
+                    set_easing_cmd(ctx, &seg, &k, Interpolation::CubicBezier, ease_out, ease_in);
                 let mut out: OutputVec = smallvec![];
                 if !*txn {
                     out.push(ToolOutput::BeginTransaction("Edit easing".into()));
@@ -679,7 +782,12 @@ fn set_easing_cmd(
             clip: cid,
             node: r.node,
             prop: r.prop.clone(),
-            key: KeyframeData { interpolation, ease_out, ease_in, ..k.clone() },
+            key: KeyframeData {
+                interpolation,
+                ease_out,
+                ease_in,
+                ..k.clone()
+            },
         },
     }
 }
@@ -745,7 +853,13 @@ mod tests {
             id
         }
         fn doc_key(&mut self, node: NodeId, frame: i64, v: f64) {
-            self.doc.add_keyframe(node, &PropPath::new("opacity"), Frame(frame), &Value::F64(v))
+            self.doc
+                .add_keyframe(
+                    node,
+                    &PropPath::new("opacity"),
+                    Frame(frame),
+                    &Value::F64(v),
+                )
                 .unwrap();
         }
         fn clip(&mut self, node: NodeId, keys: Vec<(i64, f64)>) -> ClipId {
@@ -772,9 +886,18 @@ mod tests {
     }
     impl Harness {
         fn new() -> Self {
-            Self { w: World::new(), h: History::new(), applied: 0 }
+            Self {
+                w: World::new(),
+                h: History::new(),
+                applied: 0,
+            }
         }
-        fn run(&mut self, b: &mut TimelineKeyframeBehavior, target: TimelineTarget, ev: TimelineEvent) {
+        fn run(
+            &mut self,
+            b: &mut TimelineKeyframeBehavior,
+            target: TimelineTarget,
+            ev: TimelineEvent,
+        ) {
             let ctx = ctx_for(&self.w, target);
             self.route(b.handle(&ctx, ev));
         }
@@ -825,10 +948,23 @@ mod tests {
         let node = hrn.w.node();
         hrn.w.doc_key(node, 10, 1.0);
         let mut b = TimelineKeyframeBehavior::default();
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Press {
-            pos: DVec2::new(100.0, 10.0), modifiers: Modifiers { shift: false, alt: true, ctrl: false },
-        });
-        let k = hrn.w.doc.keyframe_data(node, &PropPath::new("opacity"), Frame(10)).unwrap();
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Press {
+                pos: DVec2::new(100.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: true,
+                    ctrl: false,
+                },
+            },
+        );
+        let k = hrn
+            .w
+            .doc
+            .keyframe_data(node, &PropPath::new("opacity"), Frame(10))
+            .unwrap();
         assert_eq!(
             (k.interpolation, k.ease_out, k.ease_in),
             EasingPreset::EaseIn.segment()
@@ -843,9 +979,17 @@ mod tests {
         let mut b = TimelineKeyframeBehavior::default();
         let ctx = ctx_for(&w, TimelineTarget::Clip(cid));
         // Alt+press emits a Cycle-easing transaction immediately (selection untouched).
-        let out = b.handle(&ctx, TimelineEvent::Press {
-            pos: DVec2::new(100.0, 10.0), modifiers: Modifiers { shift: false, alt: true, ctrl: false },
-        });
+        let out = b.handle(
+            &ctx,
+            TimelineEvent::Press {
+                pos: DVec2::new(100.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: true,
+                    ctrl: false,
+                },
+            },
+        );
         let mut cmd = None;
         for o in out {
             if let ToolOutput::Commands(cs) = o {
@@ -870,18 +1014,58 @@ mod tests {
         }
         let mut b = TimelineKeyframeBehavior::default();
         b.selected = vec![
-            KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(0) },
-            KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(5) },
+            KeyRef {
+                node,
+                prop: PropPath::new("opacity"),
+                frame: Frame(0),
+            },
+            KeyRef {
+                node,
+                prop: PropPath::new("opacity"),
+                frame: Frame(5),
+            },
         ];
         // Shift-select both, then drag right; 0->4/5->9 collides with stationary 9 → sticks at +3.
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Press {
-            pos: DVec2::new(0.0, 10.0), modifiers: Modifiers { shift: false, alt: false, ctrl: false },
-        });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Press {
-            pos: DVec2::new(50.0, 10.0), modifiers: Modifiers { shift: true, alt: false, ctrl: false },
-        });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Move { pos: DVec2::new(90.0, 10.0), modifiers: Modifiers::none() });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Release { pos: DVec2::new(90.0, 10.0), modifiers: Modifiers::none() });
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Press {
+                pos: DVec2::new(0.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                },
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Press {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers {
+                    shift: true,
+                    alt: false,
+                    ctrl: false,
+                },
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Move {
+                pos: DVec2::new(90.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Release {
+                pos: DVec2::new(90.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
         assert_eq!(hrn.frames(node), vec![Frame(3), Frame(8), Frame(9)]);
     }
 
@@ -891,12 +1075,35 @@ mod tests {
         let node = hrn.w.node();
         hrn.w.doc_key(node, 1, 0.5);
         let mut b = TimelineKeyframeBehavior::default();
-        b.selected = vec![KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(1) }];
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Press {
-            pos: DVec2::new(10.0, 10.0), modifiers: Modifiers::none(),
-        });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Move { pos: DVec2::new(10.0 - 50.0, 10.0), modifiers: Modifiers::none() });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Release { pos: DVec2::new(10.0 - 50.0, 10.0), modifiers: Modifiers::none() });
+        b.selected = vec![KeyRef {
+            node,
+            prop: PropPath::new("opacity"),
+            frame: Frame(1),
+        }];
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Press {
+                pos: DVec2::new(10.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Move {
+                pos: DVec2::new(10.0 - 50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Release {
+                pos: DVec2::new(10.0 - 50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
         assert_eq!(hrn.frames(node), vec![Frame(0)]); // clamped at range.0
     }
 
@@ -906,12 +1113,32 @@ mod tests {
         let node = hrn.w.node();
         hrn.w.doc_key(node, 0, 0.0);
         let mut b = TimelineKeyframeBehavior::default();
-        b.selected = vec![KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(0) }];
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Press {
-            pos: DVec2::new(0.0, 10.0), modifiers: Modifiers::none(),
-        });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::Move { pos: DVec2::new(50.0, 10.0), modifiers: Modifiers::none() });
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::KeyDown(TimelineKey::Escape));
+        b.selected = vec![KeyRef {
+            node,
+            prop: PropPath::new("opacity"),
+            frame: Frame(0),
+        }];
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Press {
+                pos: DVec2::new(0.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::Move {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::KeyDown(TimelineKey::Escape),
+        );
         assert_eq!(hrn.frames(node), vec![Frame(0)]); // transaction cancelled = no-op
         assert!(!hrn.h.can_undo());
     }
@@ -926,9 +1153,27 @@ mod tests {
         let mut b = TimelineKeyframeBehavior::default();
         let ctx = ctx_for(&w, TimelineTarget::Doc);
         // Box-select frames 1..5 (x in [10,50]) row 0 → picks 2 and 4.
-        b.handle(&ctx, TimelineEvent::Press { pos: DVec2::new(0.0, 10.0), modifiers: Modifiers::none() });
-        b.handle(&ctx, TimelineEvent::Move { pos: DVec2::new(50.0, 10.0), modifiers: Modifiers::none() });
-        b.handle(&ctx, TimelineEvent::Release { pos: DVec2::new(50.0, 10.0), modifiers: Modifiers::none() });
+        b.handle(
+            &ctx,
+            TimelineEvent::Press {
+                pos: DVec2::new(0.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        b.handle(
+            &ctx,
+            TimelineEvent::Move {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        b.handle(
+            &ctx,
+            TimelineEvent::Release {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
         assert_eq!(b.selected.len(), 2);
         // Press + Drag to select 6 and 8, but simple check: frames picked are 2 and 4.
         let got: Vec<i64> = b.selected.iter().map(|r| r.frame.0).collect();
@@ -942,14 +1187,40 @@ mod tests {
         w.doc_key(node, 4, 0.0);
         let mut b = TimelineKeyframeBehavior::default();
         let ctx = ctx_for(&w, TimelineTarget::Doc);
-        b.handle(&ctx, TimelineEvent::Press {
-            pos: DVec2::new(40.0, 10.0), modifiers: Modifiers { shift: false, alt: false, ctrl: true },
-        });
+        b.handle(
+            &ctx,
+            TimelineEvent::Press {
+                pos: DVec2::new(40.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: false,
+                    ctrl: true,
+                },
+            },
+        );
         assert_eq!(b.selected.len(), 1);
-        b.handle(&ctx, TimelineEvent::Release { pos: DVec2::new(40.0, 10.0), modifiers: Modifiers { shift: false, alt: false, ctrl: true } });
-        b.handle(&ctx, TimelineEvent::Press {
-            pos: DVec2::new(40.0, 10.0), modifiers: Modifiers { shift: false, alt: false, ctrl: true },
-        });
+        b.handle(
+            &ctx,
+            TimelineEvent::Release {
+                pos: DVec2::new(40.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: false,
+                    ctrl: true,
+                },
+            },
+        );
+        b.handle(
+            &ctx,
+            TimelineEvent::Press {
+                pos: DVec2::new(40.0, 10.0),
+                modifiers: Modifiers {
+                    shift: false,
+                    alt: false,
+                    ctrl: true,
+                },
+            },
+        );
         assert!(b.selected.is_empty());
     }
 
@@ -962,10 +1233,22 @@ mod tests {
         }
         let mut b = TimelineKeyframeBehavior::default();
         b.selected = vec![
-            KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(0) },
-            KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(10) },
+            KeyRef {
+                node,
+                prop: PropPath::new("opacity"),
+                frame: Frame(0),
+            },
+            KeyRef {
+                node,
+                prop: PropPath::new("opacity"),
+                frame: Frame(10),
+            },
         ];
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::KeyDown(TimelineKey::Delete));
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::KeyDown(TimelineKey::Delete),
+        );
         assert!(hrn.frames(node).is_empty());
         hrn.h.undo(&mut hrn.w.pm()).unwrap(); // one transaction = one undo
         assert_eq!(hrn.frames(node), vec![Frame(0), Frame(10)]);
@@ -979,9 +1262,25 @@ mod tests {
         hrn.w.doc_key(node, 10, 0.0);
         let mut b = TimelineKeyframeBehavior::default();
         // Double-click at frame 5: value should equal evaluated value_at(5).
-        let expect = hrn.w.doc.value_at(node, &PropPath::new("opacity"), 5.0).unwrap();
-        hrn.run(&mut b, TimelineTarget::Doc, TimelineEvent::DoubleClick { pos: DVec2::new(50.0, 10.0), modifiers: Modifiers::none() });
-        let got = hrn.w.doc.keyframe_data(node, &PropPath::new("opacity"), Frame(5)).unwrap().value;
+        let expect = hrn
+            .w
+            .doc
+            .value_at(node, &PropPath::new("opacity"), 5.0)
+            .unwrap();
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::DoubleClick {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        let got = hrn
+            .w
+            .doc
+            .keyframe_data(node, &PropPath::new("opacity"), Frame(5))
+            .unwrap()
+            .value;
         assert_eq!(got, expect);
     }
 
@@ -995,17 +1294,32 @@ mod tests {
             clips: &w.clips,
             target: TimelineTarget::Doc,
             rows: &[],
-            layout: TimelineLayout { px_per_frame: 1.0, ..LAYOUT },
+            layout: TimelineLayout {
+                px_per_frame: 1.0,
+                ..LAYOUT
+            },
             range: (Frame(0), Frame(10)),
             playhead: 0.0,
         };
-        let out = b.handle(&ctx, TimelineEvent::Press { pos: DVec2::new(105.0, 40.0), modifiers: Modifiers::none() });
+        let out = b.handle(
+            &ctx,
+            TimelineEvent::Press {
+                pos: DVec2::new(105.0, 40.0),
+                modifiers: Modifiers::none(),
+            },
+        );
         let f = out.iter().find_map(|o| match o {
             ToolOutput::SetPlayhead(f) => Some(*f),
             _ => None,
         });
         assert_eq!(f, Some(10.0)); // clamped to range
-        let out = b.handle(&ctx, TimelineEvent::Move { pos: DVec2::new(3.6, 40.0), modifiers: Modifiers::none() });
+        let out = b.handle(
+            &ctx,
+            TimelineEvent::Move {
+                pos: DVec2::new(3.6, 40.0),
+                modifiers: Modifiers::none(),
+            },
+        );
         let f = out.iter().find_map(|o| match o {
             ToolOutput::SetPlayhead(f) => Some(*f),
             _ => None,
@@ -1024,9 +1338,16 @@ mod tests {
             handle_tolerance_px: 10.0,
         };
         let mut b = EasingCurveBehavior::new(layout);
-        b.segment = Some(KeyRef { node, prop: PropPath::new("opacity"), frame: Frame(0) });
+        b.segment = Some(KeyRef {
+            node,
+            prop: PropPath::new("opacity"),
+            frame: Frame(0),
+        });
         // Grab the ease_out handle (Linear out = {1/3, 1/3}) at its px position.
-        let press = TimelineEvent::Press { pos: layout.to_px(1.0 / 3.0, 1.0 / 3.0), modifiers: Modifiers::none() };
+        let press = TimelineEvent::Press {
+            pos: layout.to_px(1.0 / 3.0, 1.0 / 3.0),
+            modifiers: Modifiers::none(),
+        };
         {
             let ctx = ctx_for(&hrn.w, TimelineTarget::Clip(cid));
             hrn.route(b.handle(&ctx, press));
@@ -1034,12 +1355,24 @@ mod tests {
         // Move to unit x=1.4 → clamped to 1.0; y=-1.3 (anticipate/overshoot) preserved.
         {
             let ctx = ctx_for(&hrn.w, TimelineTarget::Clip(cid));
-            let out = b.handle(&ctx, TimelineEvent::Move { pos: DVec2::new(140.0, 130.0), modifiers: Modifiers::none() });
+            let out = b.handle(
+                &ctx,
+                TimelineEvent::Move {
+                    pos: DVec2::new(140.0, 130.0),
+                    modifiers: Modifiers::none(),
+                },
+            );
             hrn.route(out);
         }
         {
             let ctx = ctx_for(&hrn.w, TimelineTarget::Clip(cid));
-            let out = b.handle(&ctx, TimelineEvent::Release { pos: DVec2::new(140.0, 130.0), modifiers: Modifiers::none() });
+            let out = b.handle(
+                &ctx,
+                TimelineEvent::Release {
+                    pos: DVec2::new(140.0, 130.0),
+                    modifiers: Modifiers::none(),
+                },
+            );
             hrn.route(out);
         }
         let k = hrn.w.clips[cid]

@@ -20,9 +20,7 @@ pub fn wasm_start() -> Result<(), JsValue> {
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "C" fn android_main(
-    android_app: winit::platform::android::activity::AndroidApp,
-) {
+pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
