@@ -242,13 +242,12 @@ impl Engine {
         name: &str,
         f: impl FnOnce(&mut MachineInstance, usize),
     ) -> bool {
-        if let PlayMode::Machine { id, instance, .. } = &mut self.mode {
-            if let Some(m) = project.machines.get(*id) {
-                if let Some(i) = MachineInstance::input_index(m, name) {
-                    f(instance, i);
-                    return true;
-                }
-            }
+        if let PlayMode::Machine { id, instance, .. } = &mut self.mode
+            && let Some(m) = project.machines.get(*id)
+            && let Some(i) = MachineInstance::input_index(m, name)
+        {
+            f(instance, i);
+            return true;
         }
         false
     }
@@ -292,10 +291,10 @@ impl Engine {
     }
 
     fn route(&mut self, project: &RenFile, node: NodeId, kind: PointerEventKind) {
-        if let PlayMode::Machine { id, instance, .. } = &mut self.mode {
-            if let Some(m) = project.machines.get(*id) {
-                instance.pointer_event(m, node, kind);
-            }
+        if let PlayMode::Machine { id, instance, .. } = &mut self.mode
+            && let Some(m) = project.machines.get(*id)
+        {
+            instance.pointer_event(m, node, kind);
         }
     }
 }

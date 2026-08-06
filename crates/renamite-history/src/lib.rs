@@ -300,14 +300,13 @@ impl History {
         mut cmd: EditorCommand,
     ) -> Result<Applied, EditError> {
         // Coalesce repeated live-drag edits so one drag = one inverse entry.
-        if let Some(t) = &mut self.open {
-            if let Some(last) = t.forward.last_mut() {
-                if coalesce(last, &cmd) {
-                    let created = apply_command(p, &mut cmd)?;
-                    *last = cmd;
-                    return Ok(Applied { created: created.0 });
-                }
-            }
+        if let Some(t) = &mut self.open
+            && let Some(last) = t.forward.last_mut()
+            && coalesce(last, &cmd)
+        {
+            let created = apply_command(p, &mut cmd)?;
+            *last = cmd;
+            return Ok(Applied { created: created.0 });
         }
         let (created, inverse) = apply_command(p, &mut cmd)?;
         if let Some(t) = &mut self.open {
@@ -326,11 +325,11 @@ impl History {
 
     /// Close the open transaction and make it undoable.
     pub fn commit(&mut self) {
-        if let Some(t) = self.open.take() {
-            if !t.forward.is_empty() {
-                self.undo.push(t);
-                self.redo.clear();
-            }
+        if let Some(t) = self.open.take()
+            && !t.forward.is_empty()
+        {
+            self.undo.push(t);
+            self.redo.clear();
         }
     }
 
@@ -390,7 +389,7 @@ fn apply_command(
         | SetEasing { .. }
         | EditAnchors { .. }
         | ReversePath { .. } => {
-            let (node, inv) = apply_document_command(&mut p.document, cmd)?;
+            let (node, inv) = apply_document_command(p.document, cmd)?;
             Ok((node, inv))
         }
 

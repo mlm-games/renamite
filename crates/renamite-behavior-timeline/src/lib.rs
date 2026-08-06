@@ -992,13 +992,13 @@ mod tests {
         );
         let mut cmd = None;
         for o in out {
-            if let ToolOutput::Commands(cs) = o {
-                if let EditorCommand::AddClipKey { clip, key, .. } = &cs[0] {
-                    assert_eq!(*clip, cid);
-                    assert_eq!(key.frame, Frame(10));
-                    assert_eq!(key.value, Value::F64(1.0)); // value preserved
-                    cmd = Some(());
-                }
+            if let ToolOutput::Commands(cs) = o
+                && let EditorCommand::AddClipKey { clip, key, .. } = &cs[0]
+            {
+                assert_eq!(*clip, cid);
+                assert_eq!(key.frame, Frame(10));
+                assert_eq!(key.value, Value::F64(1.0)); // value preserved
+                cmd = Some(());
             }
         }
         assert!(cmd.is_some(), "expected an AddClipKey command");

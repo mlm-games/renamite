@@ -366,7 +366,7 @@ impl MachineInstance {
                 .find(|tr| transition_ready(tr, &self.inputs, norm));
             if let Some(tr) = fired.cloned() {
                 consume_triggers(&tr, &mut self.inputs);
-                rt.fade = (tr.duration > 0.0).then(|| Fade {
+                rt.fade = (tr.duration > 0.0).then_some(Fade {
                     from: rt.current,
                     from_time: rt.time,
                     t: 0.0,
@@ -446,10 +446,10 @@ fn normalized_time(state: &State, clips: &ClipMap, time: f64) -> f64 {
 }
 
 fn transition_ready(tr: &Transition, inputs: &[InputValue], norm: f64) -> bool {
-    if let Some(et) = tr.exit_time {
-        if norm < et {
-            return false;
-        }
+    if let Some(et) = tr.exit_time
+        && norm < et
+    {
+        return false;
     }
     if tr.conditions.is_empty() && tr.exit_time.is_none() {
         return false;
@@ -477,10 +477,10 @@ fn transition_ready(tr: &Transition, inputs: &[InputValue], norm: f64) -> bool {
 
 fn consume_triggers(tr: &Transition, inputs: &mut [InputValue]) {
     for c in &tr.conditions {
-        if let Condition::Triggered { input } = c {
-            if let Some(InputValue::Trigger { fired }) = inputs.get_mut(*input) {
-                *fired = false;
-            }
+        if let Condition::Triggered { input } = c
+            && let Some(InputValue::Trigger { fired }) = inputs.get_mut(*input)
+        {
+            *fired = false;
         }
     }
 }

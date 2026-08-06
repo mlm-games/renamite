@@ -81,10 +81,10 @@ impl RenFile {
                 self.machine_order.push(id);
             }
         }
-        if let Some(s) = self.start_machine {
-            if !self.machines.contains_key(s) {
-                self.start_machine = None;
-            }
+        if let Some(s) = self.start_machine
+            && !self.machines.contains_key(s)
+        {
+            self.start_machine = None;
         }
     }
 
@@ -93,10 +93,10 @@ impl RenFile {
     pub fn garbage_collect(&mut self) {
         let live_m: HashSet<_> = self.machine_order.iter().copied().collect();
         self.machines.retain(|id, _| live_m.contains(&id));
-        if let Some(s) = self.start_machine {
-            if !self.machines.contains_key(s) {
-                self.start_machine = None;
-            }
+        if let Some(s) = self.start_machine
+            && !self.machines.contains_key(s)
+        {
+            self.start_machine = None;
         }
         let mut live_c: HashSet<_> = self.clip_order.iter().copied().collect();
         for m in self.machines.values() {
