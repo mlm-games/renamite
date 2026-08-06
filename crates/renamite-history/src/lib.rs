@@ -6,7 +6,8 @@ use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
 use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
-    Document, KeyframeData, ModelError, Node, NodeId, Parent, PropMut, PropPath, Value,
+    Document, KeyframeData, ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut,
+    PropPath, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -83,6 +84,12 @@ pub enum EditorCommand {
     SetNodeName {
         id: NodeId,
         name: String,
+    },
+    /// Enum-field write (TrimMode is not an `Animated<T>`); same pattern as
+    /// `SetNodeName` - whole-field swap, exact inverse.
+    SetTrimMode {
+        id: NodeId,
+        mode: renamite_model::TrimMode,
     },
 
     // properties
@@ -381,6 +388,7 @@ fn apply_command(
         | GroupNodes { .. }
         | SetNodeFlags { .. }
         | SetNodeName { .. }
+        | SetTrimMode { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
         | RemoveKeyframe { .. }
@@ -809,6 +817,14 @@ fn apply_document_command(
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let old = std::mem::replace(&mut n.name, name.clone());
             Ok((None, vec![SetNodeName { id: *id, name: old }]))
+        }
+        SetTrimMode { id, mode } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Modifier(ModifierKind::TrimPath { mode: cur, .. }) = &mut n.kind else {
+                return Err(ModelError::MissingNode.into()); // wrong node kind
+            };
+            let old = std::mem::replace(cur, *mode);
+            Ok((None, vec![SetTrimMode { id: *id, mode: old }]))
         }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
@@ -1331,6 +1347,39 @@ mod tests {
         assert_eq!(w.doc.nodes[id].name, "n");
         h.redo(&mut w.pm()).unwrap();
         assert_eq!(w.doc.nodes[id].name, "renamed");
+    }
+
+    #[test]
+    fn set_trim_mode_undo_redo_round_trips() {
+        let mut w = World::new();
+        let id = w.node();
+        w.doc.nodes[id].kind = NodeKind::Modifier(ModifierKind::TrimPath {
+            start: Animated::new(0.0),
+            end: Animated::new(1.0),
+            offset: Animated::new(0.0),
+            mode: renamite_model::TrimMode::Individually,
+        });
+        let mut h = History::new();
+        let cmd = EditorCommand::SetTrimMode {
+            id,
+            mode: renamite_model::TrimMode::Simultaneously,
+        };
+        h.apply(&mut w.pm(), cmd).unwrap();
+        h.commit();
+        let NodeKind::Modifier(ModifierKind::TrimPath { mode, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a trim path");
+        };
+        assert_eq!(*mode, renamite_model::TrimMode::Simultaneously);
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Modifier(ModifierKind::TrimPath { mode, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a trim path");
+        };
+        assert_eq!(*mode, renamite_model::TrimMode::Individually);
+        h.redo(&mut w.pm()).unwrap();
+        let NodeKind::Modifier(ModifierKind::TrimPath { mode, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a trim path");
+        };
+        assert_eq!(*mode, renamite_model::TrimMode::Simultaneously);
     }
 
     #[test]

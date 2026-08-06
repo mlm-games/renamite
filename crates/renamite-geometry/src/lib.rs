@@ -257,6 +257,75 @@ impl VectorPath {
         Ok(())
     }
 
+    /// Round every Corner anchor by pulling back `radius` along both adjacent
+    /// edges and joining with a smooth curve (quarter-circle-ish cubic
+    /// approximation, k=0.5523 scaled by the pullback distance).
+    pub fn round_corners(&self, radius: f64) -> VectorPath {
+        if radius <= 1e-9 || self.anchors.len() < 3 {
+            return self.clone();
+        }
+        let n = self.anchors.len();
+        let seg_count = if self.closed { n } else { n.saturating_sub(1) };
+        if seg_count < 2 {
+            return self.clone();
+        }
+
+        let mut out = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            let a = self.anchors[i];
+            if a.mode != TangentMode::Corner {
+                out.push(a);
+                continue;
+            }
+            // Skip endpoints of an open path - nothing to round into.
+            let has_prev = self.closed || i > 0;
+            let has_next = self.closed || i + 1 < n;
+            if !has_prev || !has_next {
+                out.push(a);
+                continue;
+            }
+            let prev = self.anchors[(i + n - 1) % n];
+            let next = self.anchors[(i + 1) % n];
+
+            let to_prev = prev.pos - a.pos;
+            let to_next = next.pos - a.pos;
+            let (len_prev, len_next) = (to_prev.length(), to_next.length());
+            if len_prev < 1e-9 || len_next < 1e-9 {
+                out.push(a);
+                continue;
+            }
+            // Cap pullback at 45% of the shorter adjacent edge so two rounded
+            // corners on a short edge can't cross each other.
+            let r = radius.min(len_prev * 0.45).min(len_next * 0.45);
+            let dir_prev = to_prev / len_prev;
+            let dir_next = to_next / len_next;
+
+            let p_in = a.pos + dir_prev * r; // pullback toward prev
+            let p_out = a.pos + dir_next * r; // pullback toward next
+
+            // Cubic handle length for a circular-ish arc (standard
+            // 4/3*tan(θ/4) ≈ 0.5523 for a quarter turn).
+            const K: f64 = 0.5523;
+            out.push(Anchor {
+                pos: p_in,
+                tan_in: DVec2::ZERO, // outer side of the corner stays sharp
+                tan_out: -dir_prev * (r * K),
+                mode: TangentMode::Smooth,
+            });
+            out.push(Anchor {
+                pos: p_out,
+                tan_in: -dir_next * (r * K),
+                tan_out: DVec2::ZERO,
+                mode: TangentMode::Smooth,
+            });
+        }
+
+        VectorPath {
+            anchors: out,
+            closed: self.closed,
+        }
+    }
+
     /// Reverse direction (Trim Path needs this). Swaps in/out tangents.
     pub fn reverse(&mut self) {
         self.anchors.reverse();
@@ -445,5 +514,90 @@ mod tests {
         assert!(s.nearest_segment(DVec2::ZERO).is_none());
         s.anchors.push(Anchor::corner(DVec2::ZERO));
         assert!(s.nearest_segment(DVec2::ZERO).is_none());
+    }
+}
+
+#[cfg(test)]
+mod round_corner_tests {
+    use super::*;
+
+    fn square() -> VectorPath {
+        VectorPath {
+            closed: true,
+            anchors: vec![
+                Anchor::corner(DVec2::new(0.0, 0.0)),
+                Anchor::corner(DVec2::new(100.0, 0.0)),
+                Anchor::corner(DVec2::new(100.0, 100.0)),
+                Anchor::corner(DVec2::new(0.0, 100.0)),
+            ],
+        }
+    }
+
+    #[test]
+    fn zero_radius_is_identity() {
+        let s = square();
+        assert_eq!(s.round_corners(0.0), s);
+    }
+
+    #[test]
+    fn rounding_doubles_anchor_count_on_all_corners() {
+        let s = square();
+        let r = s.round_corners(10.0);
+        assert_eq!(r.anchors.len(), 8);
+        assert!(r.closed);
+    }
+
+    #[test]
+    fn pullback_points_lie_on_original_edges() {
+        let s = square();
+        let r = s.round_corners(10.0);
+        for p in r.anchors.iter().map(|a| a.pos) {
+            let on_edge = (p.x - 0.0).abs() < 1e-6
+                || (p.x - 100.0).abs() < 1e-6
+                || (p.y - 0.0).abs() < 1e-6
+                || (p.y - 100.0).abs() < 1e-6;
+            assert!(on_edge, "point {p:?} must lie on an original edge");
+        }
+    }
+
+    #[test]
+    fn radius_clamped_on_tiny_shape() {
+        let mut tiny = square();
+        for a in &mut tiny.anchors {
+            a.pos *= 0.1; // 10x10 square
+        }
+        let r = tiny.round_corners(100.0); // absurdly large radius
+        for a in &r.anchors {
+            assert!(a.pos.x >= -0.01 && a.pos.x <= 10.01);
+            assert!(a.pos.y >= -0.01 && a.pos.y <= 10.01);
+        }
+    }
+
+    #[test]
+    fn smooth_anchors_pass_through_unrounded() {
+        let mut s = square();
+        s.anchors[0].mode = TangentMode::Smooth;
+        s.anchors[0].tan_in = DVec2::new(-5.0, 0.0);
+        s.anchors[0].tan_out = DVec2::new(5.0, 0.0);
+        let r = s.round_corners(10.0);
+        // 1 unrounded (kept as-is) + 3 corners x2 = 7 anchors total.
+        assert_eq!(r.anchors.len(), 7);
+    }
+
+    #[test]
+    fn open_path_does_not_round_endpoints() {
+        let open = VectorPath {
+            closed: false,
+            anchors: vec![
+                Anchor::corner(DVec2::new(0.0, 0.0)),
+                Anchor::corner(DVec2::new(50.0, 0.0)),
+                Anchor::corner(DVec2::new(50.0, 50.0)),
+            ],
+        };
+        let r = open.round_corners(5.0);
+        // Endpoint 0 and endpoint 2 (last) untouched; only middle corner rounds.
+        assert_eq!(r.anchors.len(), 4); // 1 + 2 + 1
+        assert_eq!(r.anchors[0].pos, DVec2::new(0.0, 0.0));
+        assert_eq!(r.anchors.last().unwrap().pos, DVec2::new(50.0, 50.0));
     }
 }

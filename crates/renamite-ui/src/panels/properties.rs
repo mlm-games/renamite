@@ -9,8 +9,11 @@ use renamite_animation::{Angle, Frame};
 use renamite_behavior_common::inspect::{
     DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_selection,
 };
+use renamite_behavior_common::modifiers::{
+    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_set_trim_mode,
+};
 use renamite_history::ToolOutput;
-use renamite_model::{NodeId, PropPath, Value};
+use renamite_model::{NodeId, NodeKind, PropPath, ShapeKind, TrimMode, Value};
 use repose_core::input::PointerEvent;
 use repose_core::{
     AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
@@ -95,6 +98,13 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         )],
     )];
 
+    // Single selected shape: offer to add a modifier as its sibling.
+    if ids.len() == 1
+        && let Some(v) = add_modifier_row(session.clone(), ids[0])
+    {
+        children.push(v);
+    }
+
     for (section, props) in sections {
         children.push(
             Text(section)
@@ -130,6 +140,14 @@ fn PropRowView(
 ) -> View {
     let th = theme();
     let path = row.desc.path.clone();
+
+    // Enum fields (TrimMode) aren't Animated<T>: render a dedicated toggle row
+    // instead of the generic scrub + diamond layout.
+    if let PropKind::Enum2 { a_label, b_label } = &row.desc.kind
+        && let Value::I64(v) = &row.value
+    {
+        return enum2_row(session, ids, row.desc.label, *v as usize, a_label, b_label);
+    }
 
     Row(Modifier::new()
         .height(36.0)
@@ -473,4 +491,170 @@ fn apply_channel(origin: &Value, channel: usize, f: impl FnOnce(f64) -> f64) -> 
         }
         other => other.clone(),
     }
+}
+
+/// Row of "Add <modifier>" buttons shown when exactly one shape is selected.
+/// Trim Path applies to any shape; Round Corners is gated to rect/path (the
+/// corner-bearing shapes - ellipse/star/polygon have their own roundness).
+fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
+    let th = theme();
+    let can_round = {
+        let s = session.borrow();
+        match &s.file.document.nodes.get(id)?.kind {
+            NodeKind::Shape(ShapeKind::Rect { .. }) | NodeKind::Shape(ShapeKind::Path(_)) => true,
+            NodeKind::Shape(_) => false,
+            _ => return None,
+        }
+    };
+    let add_trim = Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+        CompactIconAction(Symbols::add, "Add Trim Path", {
+            let session = session.clone();
+            move || {
+                let mut s = session.borrow_mut();
+                if let Some(cmd) = cmd_add_trim_path_after(&s.file.document, id) {
+                    s.apply_outputs(smallvec![
+                        ToolOutput::BeginTransaction("Add Trim Path".into()),
+                        ToolOutput::Commands(smallvec![cmd]),
+                        ToolOutput::CommitTransaction,
+                    ]);
+                }
+            }
+        }),
+        Text("Trim Path")
+            .size(th.typography.body_medium)
+            .color(th.on_surface_variant),
+    ));
+    let mut buttons = vec![add_trim];
+    if can_round {
+        buttons.push(
+            Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+                CompactIconAction(Symbols::add, "Add Round Corners", {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        if let Some(cmd) = cmd_add_round_corners_after(&s.file.document, id, 10.0) {
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Add Round Corners".into()),
+                                ToolOutput::Commands(smallvec![cmd]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    }
+                }),
+                Text("Round Corners")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface_variant),
+            )),
+        );
+    }
+    Some(
+        Row(Modifier::new()
+            .height(40.0)
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 0.0,
+                bottom: 0.0,
+            })
+            .align_items(AlignItems::CENTER)
+            .gap(12.0))
+        .child((
+            Text("Add modifier")
+                .size(th.typography.label_medium)
+                .color(th.on_surface_variant),
+            Box(Modifier::new().flex_grow(1.0))
+                .child(Row(Modifier::new().gap(12.0)).child(buttons)),
+        )),
+    )
+}
+
+/// Two-segment toggle for `PropKind::Enum2` (diamond-less, non-animatable).
+fn enum2_row(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    label: &'static str,
+    current: usize,
+    a_label: &'static str,
+    b_label: &'static str,
+) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)), // diamond spacer
+        Text(label)
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        enum2_segment(session.clone(), ids.clone(), current, 0, a_label),
+        enum2_segment(session, ids, current, 1, b_label),
+    ))
+}
+
+fn enum2_segment(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    current: usize,
+    index: usize,
+    label: &'static str,
+) -> View {
+    let th = theme();
+    let active = current == index;
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    let ids = ids.clone();
+                    move |_pe: PointerEvent| {
+                        let mut s = session.borrow_mut();
+                        // Enum2 is only wired to TrimMode today: 0 -> Individually,
+                        // 1 -> Simultaneously.
+                        let mode = if index == 1 {
+                            TrimMode::Simultaneously
+                        } else {
+                            TrimMode::Individually
+                        };
+                        let cmds: Vec<_> = ids
+                            .iter()
+                            .filter_map(|&id| cmd_set_trim_mode(&s.file.document, id, mode))
+                            .collect();
+                        if cmds.is_empty() {
+                            return;
+                        }
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Trim mode".into()),
+                            ToolOutput::Commands(cmds.into()),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+        )
 }

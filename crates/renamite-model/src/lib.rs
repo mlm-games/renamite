@@ -588,7 +588,12 @@ fn apply_modifier(
                 }
             }
         }
-        ModifierKind::TrimPath { start, end, offset, mode } => {
+        ModifierKind::TrimPath {
+            start,
+            end,
+            offset,
+            mode,
+        } => {
             let mut s = ov_f64(ov, id, "trim.start", start.value_at(frame)).clamp(0.0, 1.0);
             let mut e = ov_f64(ov, id, "trim.end", end.value_at(frame)).clamp(0.0, 1.0);
             if s > e {
@@ -611,10 +616,8 @@ fn apply_modifier(
                     }
                 }
                 TrimMode::Simultaneously => {
-                    let lengths: Vec<f64> = originals
-                        .iter()
-                        .map(|(_, p)| p.perimeter(1e-3))
-                        .collect();
+                    let lengths: Vec<f64> =
+                        originals.iter().map(|(_, p)| p.perimeter(1e-3)).collect();
                     let total: f64 = lengths.iter().sum();
                     if total <= 1e-9 {
                         return;
@@ -636,8 +639,22 @@ fn apply_modifier(
                 }
             }
         }
-        // v0.4: RoundCorners, OffsetPath, ZigZag, InflateDeflate - passthrough
-        // until then.
+        ModifierKind::RoundCorners { radius } => {
+            let r = ov_f64(ov, id, "round.radius", radius.value_at(frame)).max(0.0);
+            if r > 1e-9 {
+                // RoundCorners needs anchor-level data, so round-trip each
+                // flattened path back through `VectorPath` before rounding.
+                // `from_bez_path` re-detects tangent modes from the flattened
+                // geometry: already-curved (Smooth) paths pass through untouched,
+                // while hard cuts (e.g. from a preceding Trim) detect as Corner
+                // and get rounded - Lottie modifier-order semantics.
+                for (_, path) in paths.iter_mut() {
+                    let vp = renamite_geometry::VectorPath::from_bez_path(path);
+                    *path = vp.round_corners(r).to_bez_path();
+                }
+            }
+        }
+        // v0.4: OffsetPath, ZigZag, InflateDeflate - passthrough until then.
         _ => {}
     }
 }

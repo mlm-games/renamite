@@ -21,6 +21,12 @@ pub enum PropKind {
     Angle, // degrees
     Color,
     Bool,
+    /// Two-state toggle (e.g. TrimMode). Value is serialized as `Value::I64`
+    /// 0|1; the Properties panel routes the click to the right field.
+    Enum2 {
+        a_label: &'static str,
+        b_label: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +64,21 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
     descriptors_for(&node.kind)
         .into_iter()
         .filter_map(|desc| {
+            // `trim.mode` is a plain enum field, not an `Animated<T>` - the
+            // generic value_at path can't resolve it. Synthesize the row from
+            // the node directly (value encoded as `Value::I64` 0|1).
+            if desc.path.as_str() == "trim.mode" {
+                let mode = match &node.kind {
+                    NodeKind::Modifier(ModifierKind::TrimPath { mode, .. }) => *mode,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(mode as i64),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
             let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
             let animated = doc.property_is_animated(id, &desc.path);
             let diamond = diamond_state(doc, id, &desc.path, playhead, animated);
@@ -179,6 +200,27 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                         min: None,
                         max: None,
                         step: 0.01,
+                    },
+                ));
+                d.push(pd(
+                    "Trim",
+                    "Mode",
+                    "trim.mode",
+                    PropKind::Enum2 {
+                        a_label: "Individually",
+                        b_label: "Simultaneously",
+                    },
+                ));
+            }
+            ModifierKind::RoundCorners { .. } => {
+                d.push(pd(
+                    "Round Corners",
+                    "Radius",
+                    "round.radius",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
                     },
                 ));
             }
@@ -424,5 +466,48 @@ mod tests {
             false,
         );
         assert_eq!(cmds.len(), 1, "fill has no shape.size");
+    }
+
+    #[test]
+    fn trim_path_lists_mode_enum_row() {
+        use renamite_animation::Animated;
+        use renamite_model::TrimMode;
+        let mut doc = Document::empty();
+        let trim = doc.create_node(Node::new(
+            "t",
+            NodeKind::Modifier(ModifierKind::TrimPath {
+                start: Animated::new(0.0),
+                end: Animated::new(1.0),
+                offset: Animated::new(0.0),
+                mode: TrimMode::Individually,
+            }),
+        ));
+        doc.attach(trim, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, trim, Frame(0));
+        let mode = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "trim.mode")
+            .expect("mode row");
+        assert!(matches!(mode.desc.kind, PropKind::Enum2 { .. }));
+        assert_eq!(mode.value, Value::I64(0));
+    }
+
+    #[test]
+    fn round_corners_lists_radius() {
+        use renamite_animation::Animated;
+        let mut doc = Document::empty();
+        let rc = doc.create_node(Node::new(
+            "rc",
+            NodeKind::Modifier(ModifierKind::RoundCorners {
+                radius: Animated::new(28.0),
+            }),
+        ));
+        doc.attach(rc, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, rc, Frame(0));
+        let radius = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "round.radius")
+            .expect("radius row");
+        assert_eq!(radius.value, Value::F64(28.0));
     }
 }

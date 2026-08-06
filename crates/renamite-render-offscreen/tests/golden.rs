@@ -76,11 +76,10 @@ fn check_golden(name: &str, actual_png: &[u8]) {
     let total = (golden.width() * golden.height()) as f64;
     let mut differing = 0usize;
     for (g, a) in golden.pixels().zip(actual.pixels()) {
-        let over_tol = g
-            .0
-            .iter()
-            .zip(a.0.iter())
-            .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
+        let over_tol =
+            g.0.iter()
+                .zip(a.0.iter())
+                .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
         if over_tol {
             differing += 1;
         }
@@ -267,6 +266,43 @@ fn fixture_trim_animated() -> Document {
     doc
 }
 
+/// Rect with a RoundCorners modifier applied before the fill - pins the
+/// anchor-level rounding round-trip (from_bez_path -> round_corners ->
+/// to_bez_path) through the modifier pipeline.
+fn fixture_round_corners() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(200.0, 140.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let round = doc.create_node(Node::new(
+        "rc",
+        NodeKind::Modifier(ModifierKind::RoundCorners {
+            radius: Animated::new(28.0),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            color: Animated::new(Color::rgba(0.3, 0.6, 0.9, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+
+    doc.attach(shape, Parent::Node(group), 0).unwrap();
+    doc.attach(round, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
 // ---------------- tests ----------------
 
 #[test]
@@ -308,7 +344,10 @@ fn golden_bezier_path() {
 #[test]
 fn golden_trim_half() {
     let Some(mut gpu) = gpu() else { return };
-    check_golden("trim_half", &render_doc(&mut gpu, &fixture_trim_half(), 0.0));
+    check_golden(
+        "trim_half",
+        &render_doc(&mut gpu, &fixture_trim_half(), 0.0),
+    );
 }
 
 #[test]
@@ -317,5 +356,14 @@ fn golden_trim_animated_midpoint() {
     check_golden(
         "trim_anim_mid",
         &render_doc(&mut gpu, &fixture_trim_animated(), 30.0),
+    );
+}
+
+#[test]
+fn golden_round_corners() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "round_corners",
+        &render_doc(&mut gpu, &fixture_round_corners(), 0.0),
     );
 }
