@@ -1,5 +1,6 @@
 //! Shared context for tool behaviors: selection, view transform, snapping.
 
+pub mod fill;
 pub mod inspect;
 pub mod layers;
 pub mod modifiers;
@@ -91,4 +92,6 @@ pub struct ToolContext<'a> {
     pub view: ViewTransform,
     pub snap: SnapConfig,
     pub modifiers: Modifiers,
+    /// Current paint used by the Fill tool (set from Properties or a future picker).
+    pub current_paint: &'a renamite_model::StylePaint,
 }

@@ -71,6 +71,8 @@ pub struct Session {
     pub pending_intent: Option<PendingIntent>,
     /// Unsaved-changes confirmation dialog (in-app, so it works on every target).
     pub confirm_dialog: Rc<DialogState>,
+    /// Current paint used by the Fill tool (and, later, newly created shapes).
+    pub current_paint: renamite_model::StylePaint,
 }
 
 /// A destructive action deferred behind the unsaved-changes guard.
@@ -159,6 +161,9 @@ impl Session {
             file_ops: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             pending_intent: None,
             confirm_dialog: Rc::new(DialogState::new()),
+            current_paint: renamite_model::StylePaint::solid(
+                renamite_model::Color::rgba(0.96, 0.42, 0.18, 1.0),
+            ),
         }
     }
 
@@ -583,6 +588,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             tool,
             active_tool,
             record,
+            current_paint,
             ..
         } = s;
         let ctx = ToolContext {
@@ -599,6 +605,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
                 guide: false,
             },
             modifiers: m,
+            current_paint,
         };
         tool.handle(*active_tool, &ctx, ev)
     };

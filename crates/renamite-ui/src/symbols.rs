@@ -26,6 +26,7 @@ repose_material::material_symbols! {
     star:                '\u{f09a}',
     gradient:            '\u{e3e9}',
     format_color_fill:   '\u{e23a}',
+    palette:             '\u{e40a}',
 
     fit_screen:          '\u{ea10}',
     zoom_in:             '\u{e8ff}',

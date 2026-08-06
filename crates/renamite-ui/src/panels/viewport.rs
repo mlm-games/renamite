@@ -137,6 +137,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             guide: false,
                         },
                         modifiers: Modifiers::none(),
+                        current_paint: &s.current_paint,
                     };
                     s.tool.overlay(s.active_tool, &ctx)
                 };

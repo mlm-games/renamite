@@ -11,7 +11,7 @@ use glam::DVec2;
 use kurbo::{Affine, Point};
 
 use renamite_animation::{Angle, Animated, Frame};
-use renamite_behavior_common::{ToolContext, path::path_edit_target};
+use renamite_behavior_common::{ToolContext, fill::cmd_fill_shape, path::path_edit_target};
 use renamite_geometry::{Anchor, AnchorEdit, TangentMode, VectorPath};
 use renamite_history::{
     EditorCommand, NodeTree, OutputVec, SelectionChange, ToolId, ToolOutput, resolve_property_edit,
@@ -101,6 +101,7 @@ pub struct ToolSet {
     pub pen: PenTool,
     pub path_edit: PathEditTool,
     pub gradient: GradientTool,
+    pub fill: FillTool,
 }
 
 impl Default for ToolSet {
@@ -113,6 +114,7 @@ impl Default for ToolSet {
             pen: PenTool::default(),
             path_edit: PathEditTool::default(),
             gradient: GradientTool::default(),
+            fill: FillTool::default(),
         }
     }
 }
@@ -127,7 +129,7 @@ impl ToolSet {
             ToolId::Pen => self.pen.handle(ctx, ev),
             ToolId::PathEdit => self.path_edit.handle(ctx, ev),
             ToolId::Gradient => self.gradient.handle(ctx, ev),
-            _ => smallvec![], // Fill: not implemented yet
+            ToolId::Fill => self.fill.handle(ctx, ev),
         }
     }
 
@@ -140,7 +142,7 @@ impl ToolSet {
             ToolId::Pen => self.pen.overlay(ctx),
             ToolId::PathEdit => self.path_edit.overlay(ctx),
             ToolId::Gradient => self.gradient.overlay(ctx),
-            _ => ToolOverlay::None,
+            ToolId::Fill => self.fill.overlay(ctx),
         }
     }
 }
@@ -745,6 +747,43 @@ impl GradientTool {
     fn escape(&mut self) -> OutputVec {
         match std::mem::replace(&mut self.state, GradState::Idle) {
             GradState::Drag { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            _ => smallvec![],
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct FillTool;
+
+impl FillTool {
+    pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
+        ToolOverlay::None
+    }
+
+    pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
+        match ev {
+            CanvasEvent::PointerDown {
+                pos,
+                button: PointerButton::Primary,
+            } => {
+                let Some(shape) = pick(ctx.scene, pos) else {
+                    return smallvec![];
+                };
+
+                if ctx.doc.nodes.get(shape).is_none_or(|n| n.locked) {
+                    return smallvec![];
+                }
+
+                let Some(cmd) = cmd_fill_shape(ctx.doc, shape, ctx.current_paint.clone()) else {
+                    return smallvec![];
+                };
+
+                smallvec![
+                    ToolOutput::BeginTransaction("Fill".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]
+            }
             _ => smallvec![],
         }
     }
@@ -1594,6 +1633,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: m,
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -1643,6 +1683,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: m,
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -1674,6 +1715,109 @@ mod tests {
                 )
             })
             .unwrap()
+    }
+
+    #[test]
+    fn fill_tool_replaces_following_fill_paint_and_is_undoable() {
+        let mut w = World::new();
+        let mut h = History::new();
+        let mut tool = FillTool::default();
+
+        let new_paint = StylePaint::solid(Color::rgba(0.0, 1.0, 0.0, 1.0));
+        let scene = w.scene();
+        let ctx = ToolContext {
+            doc: &w.doc,
+            scene: &scene,
+            comp: w.doc.main,
+            selection: &w.selection,
+            playhead: Frame(0),
+            record: false,
+            view: ViewTransform::identity(),
+            snap: SnapConfig {
+                grid: None,
+                anchor: false,
+                guide: false,
+            },
+            modifiers: Modifiers::none(),
+            current_paint: &new_paint,
+        };
+
+        let outs = tool.handle(
+            &ctx,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+        );
+        drop(scene);
+
+        for out in outs {
+            match out {
+                ToolOutput::BeginTransaction(l) => h.begin(l),
+                ToolOutput::CommitTransaction => h.commit(),
+                ToolOutput::Commands(cmds) => {
+                    for cmd in cmds {
+                        h.apply(&mut w.pm(), cmd).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let fill = w.doc.compositions[w.doc.main]
+            .children
+            .iter()
+            .copied()
+            .find(|&id| {
+                matches!(
+                    w.doc.nodes[id].kind,
+                    NodeKind::Style(StyleKind::Fill { .. })
+                )
+            })
+            .unwrap();
+
+        let NodeKind::Style(StyleKind::Fill { paint, .. }) = &w.doc.nodes[fill].kind else {
+            panic!()
+        };
+        assert_eq!(paint.base_color(), Color::rgba(0.0, 1.0, 0.0, 1.0));
+
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Style(StyleKind::Fill { paint, .. }) = &w.doc.nodes[fill].kind else {
+            panic!()
+        };
+        assert_eq!(paint.base_color(), Color::BLACK);
+    }
+
+    #[test]
+    fn fill_tool_does_nothing_on_empty_space() {
+        let w = World::new();
+        let mut tool = FillTool::default();
+        let paint = StylePaint::solid(Color::WHITE);
+        let scene = w.scene();
+        let ctx = ToolContext {
+            doc: &w.doc,
+            scene: &scene,
+            comp: w.doc.main,
+            selection: &w.selection,
+            playhead: Frame(0),
+            record: false,
+            view: ViewTransform::identity(),
+            snap: SnapConfig {
+                grid: None,
+                anchor: false,
+                guide: false,
+            },
+            modifiers: Modifiers::none(),
+            current_paint: &paint,
+        };
+        let outs = tool.handle(
+            &ctx,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(10_000.0, 10_000.0),
+                button: PointerButton::Primary,
+            },
+        );
+        assert!(outs.is_empty());
     }
 
     #[test]
@@ -1832,6 +1976,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: m,
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             assert_eq!(t.overlay(&ctx), ToolOverlay::None);
         }
@@ -1861,6 +2006,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: m,
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             assert_eq!(
                 t.overlay(&ctx),
@@ -2077,6 +2223,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: Modifiers::none(),
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -2130,6 +2277,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: m,
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -2272,6 +2420,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: Modifiers::none(),
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -2382,6 +2531,7 @@ mod tests {
                         guide: false,
                     },
                     modifiers: m,
+                    current_paint: &StylePaint::solid(Color::BLACK),
                 };
                 tool.handle(&ctx, ev)
             };
@@ -2418,6 +2568,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: Modifiers::none(),
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -2490,6 +2641,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: Modifiers::none(),
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(&ctx, ev)
         };
@@ -2557,6 +2709,7 @@ mod tests {
                 guide: false,
             },
             modifiers: Modifiers::none(),
+            current_paint: &StylePaint::solid(Color::BLACK),
         };
         // First click-drag: anchor 0 becomes smooth/symmetric immediately.
         tool.handle(
@@ -2608,6 +2761,7 @@ mod tests {
                 guide: false,
             },
             modifiers: Modifiers::none(),
+            current_paint: &StylePaint::solid(Color::BLACK),
         };
         tool.handle(
             &ctx,
@@ -2745,6 +2899,7 @@ mod tests {
                     guide: false,
                 },
                 modifiers: Modifiers::none(),
+                current_paint: &StylePaint::solid(Color::BLACK),
             };
             tool.handle(
                 &ctx,

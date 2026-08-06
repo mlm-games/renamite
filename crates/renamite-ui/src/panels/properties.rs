@@ -909,6 +909,41 @@ fn paint_section(
         }
     }
 
+    children.push(
+        Row(Modifier::new()
+            .height(32.0)
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 0.0,
+                bottom: 0.0,
+            })
+            .align_items(AlignItems::CENTER)
+            .gap(8.0))
+        .child((
+            Box(Modifier::new().width(32.0)),
+            Text("Swatch")
+                .size(th.typography.body_medium)
+                .color(th.on_surface)
+                .modifier(Modifier::new().width(96.0)),
+            CompactIconAction(Symbols::palette, "Use as fill paint", {
+                let session = session.clone();
+                let paint = paint.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.current_paint = paint.clone();
+                    s.status = Some("Current fill paint updated".into());
+                    s.revision = s.revision.wrapping_add(1);
+                    request_frame();
+                }
+            }),
+            Text("Use as current fill")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+        )),
+    );
+
     Some(Column(Modifier::new().fill_max_width()).child(children))
 }
 
