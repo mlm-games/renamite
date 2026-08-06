@@ -3150,6 +3150,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "renamite-animation",
+ "renamite-geometry",
  "renamite-history",
  "renamite-model",
  "serde",

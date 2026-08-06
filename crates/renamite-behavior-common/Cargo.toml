@@ -11,3 +11,6 @@ renamite-history.workspace = true
 renamite-animation.workspace = true
 glam.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+renamite-geometry.workspace = true

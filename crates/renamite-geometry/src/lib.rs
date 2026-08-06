@@ -138,6 +138,41 @@ impl VectorPath {
         out
     }
 
+    /// Return `(segment_index, t_param, distance)` for the nearest cubic segment.
+    pub fn nearest_segment(&self, point: DVec2) -> Option<(usize, f64, f64)> {
+        if self.anchors.len() < 2 {
+            return None;
+        }
+
+        let q = pt(point);
+        let n = self.anchors.len();
+        let seg_count = self.segment_count();
+
+        let mut best_seg = 0usize;
+        let mut best_t = 0.0;
+        let mut best_dist = f64::MAX;
+
+        for i in 0..seg_count {
+            let a = &self.anchors[i];
+            let b = &self.anchors[(i + 1) % n];
+            let cubic = CubicBez::new(
+                pt(a.pos),
+                pt(a.pos + a.tan_out),
+                pt(b.pos + b.tan_in),
+                pt(b.pos),
+            );
+            let hit = cubic.nearest(q, 1e-6);
+            let dist = hit.distance_sq.sqrt();
+            if dist < best_dist {
+                best_seg = i;
+                best_t = hit.t;
+                best_dist = dist;
+            }
+        }
+
+        Some((best_seg, best_t, best_dist))
+    }
+
     pub fn hit_test(&self, p: DVec2, tol: f64) -> Option<PathHit> {
         let path = self.to_bez_path();
         let q = pt(p);
@@ -295,5 +330,22 @@ mod tests {
         s.insert_anchor_at(0, 0.5).unwrap();
         assert_eq!(s.anchors.len(), 5);
         assert!((s.anchors[1].pos - DVec2::new(5.0, 0.0)).length() < 1e-9);
+    }
+
+    #[test]
+    fn nearest_segment_finds_closest_cubic() {
+        let s = square();
+        let (seg, t, dist) = s.nearest_segment(DVec2::new(5.0, -5.0)).unwrap();
+        assert_eq!(seg, 0); // top edge (y = 0)
+        assert!((dist - 5.0).abs() < 1e-6);
+        assert!(t > 0.3 && t < 0.7);
+    }
+
+    #[test]
+    fn nearest_segment_requires_two_anchors() {
+        let mut s = VectorPath::default();
+        assert!(s.nearest_segment(DVec2::ZERO).is_none());
+        s.anchors.push(Anchor::corner(DVec2::ZERO));
+        assert!(s.nearest_segment(DVec2::ZERO).is_none());
     }
 }

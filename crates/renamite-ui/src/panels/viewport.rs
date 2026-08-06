@@ -285,5 +285,64 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
         }
+        ToolOverlay::PenPreview { anchors, hover, .. } => {
+            for a in anchors {
+                let sp = view.world_to_screen(a.pos);
+                let rect = Rect {
+                    x: sp.x as f32 - 4.0,
+                    y: sp.y as f32 - 4.0,
+                    w: 8.0,
+                    h: 8.0,
+                };
+                scope.draw_rect(rect, th.surface, 0.0);
+                scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
+            }
+            if let Some(h) = hover {
+                let sp = view.world_to_screen(*h);
+                let rect = Rect {
+                    x: sp.x as f32 - 3.0,
+                    y: sp.y as f32 - 3.0,
+                    w: 6.0,
+                    h: 6.0,
+                };
+                scope.draw_rect(rect, primary.with_alpha(180), 3.0);
+            }
+        }
+        ToolOverlay::PathHandles { path, active_anchor } => {
+            for (i, a) in path.anchors.iter().enumerate() {
+                let sp = view.world_to_screen(a.pos);
+                let rect = Rect {
+                    x: sp.x as f32 - 4.0,
+                    y: sp.y as f32 - 4.0,
+                    w: 8.0,
+                    h: 8.0,
+                };
+                if *active_anchor == Some(i) {
+                    scope.draw_rect(rect, primary, 1.0);
+                } else {
+                    scope.draw_rect(rect, th.surface, 0.0);
+                    scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
+                }
+
+                if a.tan_in.length_squared() > 1e-12 {
+                    let tip = view.world_to_screen(a.pos + a.tan_in);
+                    draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
+                }
+                if a.tan_out.length_squared() > 1e-12 {
+                    let tip = view.world_to_screen(a.pos + a.tan_out);
+                    draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
+                }
+            }
+        }
     }
+}
+
+fn draw_handle_dot(scope: &mut DrawScope, tip: DVec2, color: Color) {
+    let rect = Rect {
+        x: tip.x as f32 - 2.5,
+        y: tip.y as f32 - 2.5,
+        w: 5.0,
+        h: 5.0,
+    };
+    scope.draw_rect(rect, color, 5.0);
 }
