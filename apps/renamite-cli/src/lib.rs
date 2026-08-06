@@ -114,6 +114,26 @@ pub enum Commands {
         duration: f64,
     },
 
+    /// Export a .ren/.renb project to Lottie JSON.
+    ExportLottie {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Fail if the exporter emitted compatibility warnings.
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Convert Lottie JSON to a Renamite project.
+    ImportLottie {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Fail if unsupported objects were skipped.
+        #[arg(long)]
+        strict: bool,
+    },
+
     /// Generate shell completions
     Completions { shell: clap_complete::Shell },
 }
@@ -162,6 +182,12 @@ fn dispatch(command: Commands) -> Result<()> {
         Commands::Diff { a, b, fail_on_diff } => cmd_diff(a, b, fail_on_diff),
         Commands::New { output, template } => cmd_new(output, template),
         Commands::Play { input, duration } => cmd_play(input, duration),
+        Commands::ExportLottie { input, output, strict } => {
+            cmd_export_lottie(input, output, strict)
+        }
+        Commands::ImportLottie { input, output, strict } => {
+            cmd_import_lottie(input, output, strict)
+        }
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
@@ -541,6 +567,54 @@ fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
         }
     }
     println!("Done. Final head: {:.2}", player.head());
+    Ok(())
+}
+
+fn cmd_export_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
+    let file = load_file(&input)?;
+    let report = renamite_io_lottie::export_with_report(&file.document)?;
+    if strict && !report.warnings.is_empty() {
+        for warning in &report.warnings {
+            eprintln!("warning at {}: {}", warning.path, warning.message);
+        }
+        bail!(
+            "Lottie export produced {} compatibility warning(s)",
+            report.warnings.len()
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    std::fs::write(&output, serde_json::to_vec_pretty(&report.value)?)?;
+    println!("Exported {} -> {}", input.display(), output.display());
+    Ok(())
+}
+
+fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
+    let value: Value = serde_json::from_slice(&std::fs::read(&input)?)?;
+    let report = renamite_io_lottie::import_with_report(&value)?;
+    if strict && !report.warnings.is_empty() {
+        for warning in &report.warnings {
+            eprintln!("warning at {}: {}", warning.path, warning.message);
+        }
+        bail!(
+            "Lottie import produced {} compatibility warning(s)",
+            report.warnings.len()
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    let file = RenFile::new(report.value, name_from_path(&input));
+    match output.extension().and_then(|extension| extension.to_str()) {
+        Some("renb") => {
+            std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?;
+        }
+        _ => {
+            std::fs::write(&output, renamite_io_ren::save(&file)?)?;
+        }
+    }
+    println!("Imported {} -> {}", input.display(), output.display());
     Ok(())
 }
 

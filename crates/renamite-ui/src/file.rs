@@ -61,12 +61,65 @@ fn parse_ren(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile
 
 fn import_lottie_bytes(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile> {
     let json: serde_json::Value = serde_json::from_slice(data)?;
-    let doc = renamite_io_lottie::import(&json)?;
+    let report = renamite_io_lottie::import_with_report(&json)?;
+    if !report.warnings.is_empty() {
+        eprintln!(
+            "Lottie import completed with {} warning(s)",
+            report.warnings.len()
+        );
+    }
     let stem = Path::new(name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Imported".into());
-    Ok(renamite_io_ren::RenFile::new(doc, stem))
+    Ok(renamite_io_ren::RenFile::new(report.value, stem))
+}
+
+/// Export the current document to Lottie JSON via the OS save picker
+/// (non-blocking, works on every target).
+pub fn export_lottie(session: &SessionRef) {
+    let suggested = format!("{}.json", document_stem(session));
+    let report = {
+        let borrowed = session.borrow();
+        renamite_io_lottie::export_with_report(&borrowed.file.document)
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            report_error(session, error);
+            return;
+        }
+    };
+    if !report.warnings.is_empty() {
+        eprintln!(
+            "Lottie export completed with {} warning(s)",
+            report.warnings.len()
+        );
+    }
+    let bytes = match serde_json::to_vec_pretty(&report.value) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            report_error(session, error);
+            return;
+        }
+    };
+    let ops = session.borrow().file_ops.clone();
+    renamite_platform::dialogs::save_bytes(
+        "Export Lottie",
+        suggested,
+        &["json"],
+        bytes,
+        Box::new(move |outcome| {
+            if outcome.ok {
+                ops.lock().unwrap().push_back(PendingFileOp::Exported);
+            } else {
+                ops.lock().unwrap().push_back(PendingFileOp::Failed {
+                    message: "Lottie export cancelled or failed".into(),
+                });
+            }
+            wake_ui();
+        }),
+    );
 }
 
 fn request_guard(session: &SessionRef, intent: PendingIntent) -> bool {

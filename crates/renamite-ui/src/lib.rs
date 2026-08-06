@@ -99,6 +99,10 @@ pub fn AppTopBar(session: SessionRef) -> View {
                 let session = session.clone();
                 move || file::import_lottie(&session)
             }),
+            CompactIconAction(Symbols::file_download, "Export Lottie", {
+                let session = session.clone();
+                move || file::export_lottie(&session)
+            }),
             CompactIconAction(Symbols::image, "Export PNG", {
                 let session = session.clone();
                 move || file::export_png(&session)

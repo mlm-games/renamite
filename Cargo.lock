@@ -3329,6 +3329,7 @@ dependencies = [
  "pollster",
  "renamite-animation",
  "renamite-behavior-common",
+ "renamite-io-lottie",
  "renamite-io-ren",
  "renamite-model",
  "renamite-player",
@@ -3387,6 +3388,7 @@ dependencies = [
 name = "renamite-io-lottie"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "renamite-animation",
  "renamite-geometry",
  "renamite-model",

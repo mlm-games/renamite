@@ -3,17 +3,21 @@ name = "renamite-io-lottie"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lottie (.json / .tgs) import and export for renamite."
+description = "Lottie JSON import and export for renamite."
 
 [dependencies]
 renamite-model.workspace = true
 renamite-animation.workspace = true
 renamite-geometry.workspace = true
+glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+# Native-only reference rendering remains optional.
 velato = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
 
 [features]
+default = []
 ref-render = ["dep:velato", "dep:vello"]

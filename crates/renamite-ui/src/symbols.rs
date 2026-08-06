@@ -16,6 +16,7 @@ repose_material::material_symbols! {
     more_vert:           '\u{e5d4}',
     add:                 '\u{e145}',
     file_upload:         '\u{e2c6}',
+    file_download:       '\u{e2c4}',
     image:               '\u{e3f4}',
 
     arrow_selector_tool: '\u{f82f}',
