@@ -8,7 +8,9 @@ description = "Canonical offscreen export through the Repose WGPU renderer."
 [dependencies]
 renamite-model.workspace = true
 renamite-render-bridge.workspace = true
+renamite-behavior-common.workspace = true
 
+glam.workspace = true
 repose-core.workspace = true
 repose-render-wgpu = { workspace = true, default-features = false }
 
@@ -18,6 +20,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow.workspace = true
 
 [dev-dependencies]
+renamite-model.workspace = true
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
 renamite-behavior-common.workspace = true
 glam.workspace = true
 kurbo.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

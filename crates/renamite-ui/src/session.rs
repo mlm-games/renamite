@@ -387,7 +387,15 @@ pub fn map_button(pe: &PointerEvent) -> PointerButton {
     }
 }
 
-pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent) {
+pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
+    Modifiers {
+        shift: pe.modifiers.shift,
+        ctrl: pe.modifiers.ctrl,
+        alt: pe.modifiers.alt,
+    }
+}
+
+pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
     let outs = {
         let Session { file, engine, selection, playback, viewport, tool, active_tool, record, .. } = s;
         let ctx = ToolContext {
@@ -399,7 +407,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent) {
             record: *record,
             view: viewport.view,
             snap: SnapConfig { grid: None, anchor: false, guide: false },
-            modifiers: Modifiers::none(), // TODO: map from PointerEvent when Repose exposes them
+            modifiers: m,
         };
         tool.handle(*active_tool, &ctx, ev)
     };

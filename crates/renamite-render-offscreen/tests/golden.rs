@@ -1,0 +1,239 @@
+//! Golden-image tests: fixture docs (built in code) → Player/evaluate →
+//! SceneRenderer → OffscreenRenderer → PNG, compared against committed
+//! goldens with per-channel tolerance.
+//!
+//! Regenerate: RENAMITE_BLESS=1 cargo test -p renamite-render-offscreen --test golden
+//! Skips (with a warning) when no WGPU adapter is available.
+
+use glam::DVec2;
+use renamite_animation::{Animated, EasingHandle, EasingPreset, Frame, Interpolation};
+use renamite_behavior_common::ViewTransform;
+use renamite_geometry::{Anchor, VectorPath};
+use renamite_model::{
+    Color, Document, FillRule, KeyframeData, Node, NodeKind, Parent, PropPath, ShapeKind,
+    StrokeCap, StrokeJoin, StyleKind, Value, evaluate,
+};
+use renamite_render_bridge::SceneRenderer;
+use renamite_render_offscreen::{OffscreenRenderer, fit_view};
+use std::path::PathBuf;
+
+const SIZE: u32 = 256;
+/// Per-channel deviation below this is "same pixel".
+const CHANNEL_TOL: i16 = 8;
+/// Fraction of pixels allowed to exceed CHANNEL_TOL (AA variance headroom).
+const MAX_DIFF_FRACTION: f64 = 0.005;
+
+fn goldens_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens")
+}
+
+fn gpu() -> Option<OffscreenRenderer> {
+    match OffscreenRenderer::new_blocking(SIZE, SIZE, 4) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("skipping golden test: {e}");
+            None
+        }
+    }
+}
+
+fn render_doc(gpu: &mut OffscreenRenderer, doc: &Document, frame: f64) -> Vec<u8> {
+    let comp = doc.main;
+    let comp_size = doc.compositions[comp].size;
+    let scene = evaluate(doc, comp, frame);
+    let view: ViewTransform = fit_view(comp_size, SIZE, SIZE);
+    let mut bridge = SceneRenderer::new();
+    let prepared = bridge.prepare(&scene, &view);
+    let mut repose = repose_core::Scene::default();
+    bridge.append_repose_scene(&prepared, &mut repose);
+    gpu.render_png(&repose, Some([1.0, 1.0, 1.0, 1.0]))
+        .expect("render")
+}
+
+fn check_golden(name: &str, actual_png: &[u8]) {
+    let path = goldens_dir().join(format!("{name}.png"));
+    let bless = std::env::var("RENAMITE_BLESS").is_ok();
+
+    if bless || !path.exists() {
+        std::fs::create_dir_all(goldens_dir()).unwrap();
+        std::fs::write(&path, actual_png).unwrap();
+        if !bless {
+            panic!("{name}: golden did not exist; wrote initial golden. Re-run to verify.");
+        }
+        return;
+    }
+
+    let golden = image::load_from_memory(&std::fs::read(&path).unwrap())
+        .unwrap()
+        .to_rgba8();
+    let actual = image::load_from_memory(actual_png).unwrap().to_rgba8();
+    assert_eq!(
+        golden.dimensions(),
+        actual.dimensions(),
+        "{name}: size changed"
+    );
+
+    let total = (golden.width() * golden.height()) as f64;
+    let mut differing = 0usize;
+    for (g, a) in golden.pixels().zip(actual.pixels()) {
+        let over_tol = g
+            .0
+            .iter()
+            .zip(a.0.iter())
+            .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
+        if over_tol {
+            differing += 1;
+        }
+    }
+    let fraction = differing as f64 / total;
+    if fraction > MAX_DIFF_FRACTION {
+        // Dump actual + diff for CI artifact inspection.
+        let actual_path = goldens_dir().join(format!("{name}.actual.png"));
+        std::fs::write(&actual_path, actual_png).unwrap();
+        panic!(
+            "{name}: {differing} px ({:.3}%) differ beyond tol (limit {:.3}%). \
+             Actual written to {}. Bless with RENAMITE_BLESS=1 if intentional.",
+            fraction * 100.0,
+            MAX_DIFF_FRACTION * 100.0,
+            actual_path.display(),
+        );
+    }
+}
+
+fn linear_key(frame: i64, value: Value) -> KeyframeData {
+    KeyframeData {
+        frame: Frame(frame),
+        value,
+        interpolation: Interpolation::Linear,
+        ease_out: EasingHandle::LINEAR_OUT,
+        ease_in: EasingHandle::LINEAR_IN,
+    }
+}
+
+/// Centered orange ellipse - the basic fill path.
+fn fixture_ellipse() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let (w, h) = doc.compositions[comp].size;
+    let shape = doc.create_node(Node::new(
+        "e",
+        NodeKind::Shape(ShapeKind::Ellipse {
+            pos: Animated::new(DVec2::new(w as f64 / 2.0, h as f64 / 2.0)),
+            size: Animated::new(DVec2::new(240.0, 160.0)),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            color: Animated::new(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+    doc
+}
+
+/// Rect with a wide round-capped stroke - the stroke tessellation path.
+fn fixture_stroke() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(200.0, 200.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let stroke = doc.create_node(Node::new(
+        "s",
+        NodeKind::Style(StyleKind::Stroke {
+            color: Animated::new(Color::rgba(0.1, 0.3, 0.9, 1.0)),
+            width: Animated::new(24.0),
+            cap: StrokeCap::Round,
+            join: StrokeJoin::Round,
+            dash: None,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(stroke, Parent::Comp(comp), 1).unwrap();
+    doc
+}
+
+/// Position animated 100→400 over 60 frames with EaseInOut, sampled at 30 -
+/// pins the cubic-bezier easing solve, not just endpoints.
+fn fixture_eased_midpoint() -> Document {
+    let mut doc = fixture_ellipse();
+    let shape = doc.compositions[doc.main].children[0];
+    let prop = PropPath::new("transform.position");
+    let (i, o, e) = EasingPreset::EaseInOut.segment();
+    let mut k0 = linear_key(0, Value::DVec2(DVec2::new(-150.0, 0.0)));
+    k0.interpolation = i;
+    k0.ease_out = o;
+    k0.ease_in = e;
+    doc.restore_keyframe(shape, &prop, &k0).unwrap();
+    doc.restore_keyframe(
+        shape,
+        &prop,
+        &linear_key(60, Value::DVec2(DVec2::new(150.0, 0.0))),
+    )
+    .unwrap();
+    doc
+}
+
+/// A pen-style path with symmetric tangents - pins bezier flattening.
+fn fixture_bezier_path() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let path = VectorPath {
+        closed: true,
+        anchors: vec![
+            Anchor::symmetric(DVec2::new(256.0, 100.0), DVec2::new(90.0, 0.0)),
+            Anchor::symmetric(DVec2::new(400.0, 256.0), DVec2::new(0.0, 90.0)),
+            Anchor::symmetric(DVec2::new(256.0, 412.0), DVec2::new(-90.0, 0.0)),
+            Anchor::symmetric(DVec2::new(112.0, 256.0), DVec2::new(0.0, -90.0)),
+        ],
+    };
+    let shape = doc.create_node(Node::new(
+        "p",
+        NodeKind::Shape(ShapeKind::Path(Animated::new(path))),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            color: Animated::new(Color::rgba(0.2, 0.7, 0.4, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+    doc
+}
+
+#[test]
+fn golden_ellipse_fill() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("ellipse_fill", &render_doc(&mut gpu, &fixture_ellipse(), 0.0));
+}
+
+#[test]
+fn golden_stroke_round() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("stroke_round", &render_doc(&mut gpu, &fixture_stroke(), 0.0));
+}
+
+#[test]
+fn golden_eased_midpoint_frame30() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "eased_mid_f30",
+        &render_doc(&mut gpu, &fixture_eased_midpoint(), 30.0),
+    );
+}
+
+#[test]
+fn golden_bezier_path() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("bezier_path", &render_doc(&mut gpu, &fixture_bezier_path(), 0.0));
+}

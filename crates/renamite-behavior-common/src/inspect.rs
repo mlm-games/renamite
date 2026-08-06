@@ -226,8 +226,6 @@ fn pd(section: &'static str, label: &'static str, path: &str, kind: PropKind) ->
     }
 }
 
-// ----- commands -----
-
 /// Drag/type a new value (static or key at playhead via record rule).
 pub fn cmd_set_value(
     doc: &Document,

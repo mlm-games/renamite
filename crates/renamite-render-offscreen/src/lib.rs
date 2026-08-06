@@ -8,8 +8,20 @@
 //! ([`OffscreenRenderer::render_png`]).
 
 use anyhow::Context;
+use renamite_behavior_common::ViewTransform;
 use repose_core::Scene;
 use repose_render_wgpu::WgpuSceneRenderer;
+
+/// Build a `ViewTransform` that letterboxes `artboard` into a `w×h` frame.
+pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
+    let scale = (w as f64 / artboard.0.max(1) as f64)
+        .min(h as f64 / artboard.1.max(1) as f64)
+        .max(1e-6);
+    ViewTransform {
+        scale,
+        offset: glam::DVec2::new((w as f64 - artboard.0 as f64 * scale) * 0.5, (h as f64 - artboard.1 as f64 * scale) * 0.5),
+    }
+}
 
 pub struct OffscreenRenderer {
     renderer: WgpuSceneRenderer,
@@ -25,6 +37,11 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
+    /// Blocking convenience wrapper around [`OffscreenRenderer::new`].
+    pub fn new_blocking(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
+        pollster::block_on(Self::new(width, height, msaa))
+    }
+
     /// Create a headless renderer-sized target. Adapter lookup happens
     /// without a compatible surface; failure is returned, not a panic.
     pub async fn new(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {

@@ -30,4 +30,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test offscreen renderer
-        run: cargo test -p renamite-render-offscreen -- --ignored
+        run: |
+          cargo test -p renamite-render-offscreen
+          cargo test -p renamite-render-offscreen -- --ignored
+
+      - name: upload golden diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-actuals
+          path: crates/renamite-render-offscreen/tests/goldens/*.actual.png
+          if-no-files-found: ignore

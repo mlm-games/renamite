@@ -1,4 +1,3 @@
-use renamite_behavior_common::Modifiers;
 use renamite_behavior_timeline::{TimelineEvent, TimelineLayout};
 use repose_canvas::Canvas;
 use repose_core::input::PointerEvent;
@@ -6,7 +5,7 @@ use repose_core::{Modifier, View, theme};
 use repose_ui::{Column, ViewExt};
 
 use crate::components::PanelHeader;
-use crate::session::{dispatch_timeline, pe_pos, SessionRef};
+use crate::session::{dispatch_timeline, map_modifiers, pe_pos, SessionRef};
 use crate::symbols::Symbols;
 
 pub fn TimelinePanel(session: SessionRef) -> View {
@@ -22,7 +21,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                     let mut s = session.borrow_mut();
                     dispatch_timeline(&mut s, TimelineEvent::Press {
                         pos: pe_pos(&pe),
-                        modifiers: Modifiers::none(),
+                        modifiers: map_modifiers(&pe),
                     });
                 }
             })
@@ -32,7 +31,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                     let mut s = session.borrow_mut();
                     dispatch_timeline(&mut s, TimelineEvent::Release {
                         pos: pe_pos(&pe),
-                        modifiers: Modifiers::none(),
+                        modifiers: map_modifiers(&pe),
                     });
                 }
             }),

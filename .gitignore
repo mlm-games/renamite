@@ -1,2 +1,3 @@
 target/
 dist/
+crates/renamite-render-offscreen/tests/goldens/*.actual.png

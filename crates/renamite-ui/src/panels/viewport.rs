@@ -1,25 +1,41 @@
 use glam::DVec2;
-use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolOverlay};
+use renamite_behavior_canvas::{CanvasEvent, Key, PointerButton, ToolOverlay};
 use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform};
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
-use repose_core::input::{PointerEvent, PointerEventKind};
-use repose_core::{Color, Modifier, View, request_frame, theme};
+use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::geometry::Rect;
+use repose_core::{
+    Color, FocusRequester, Modifier, View, remember, request_frame, theme,
+};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelSurface};
-use crate::session::{dispatch_canvas, pe_pos, SessionRef};
+use crate::session::{dispatch_canvas, map_modifiers, pe_pos, PanelPage, SessionRef};
 use crate::symbols::Symbols;
 
 pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
+    let focus = remember(FocusRequester::new);
 
     Column(Modifier::new().fill_max_size()).child((
         Canvas(
             Modifier::new()
                 .fill_max_size()
                 .background(theme().surface_container_lowest)
+                .focusable(true)
+                .focus_requester((*focus).clone())
+                .on_key_event({
+                    let session = session.clone();
+                    move |ke: KeyEvent| {
+                        let Some(k) = map_key(ke.key) else { return false };
+                        let mut s = session.borrow_mut();
+                        if s.active_page == PanelPage::Canvas {
+                            dispatch_canvas(&mut s, CanvasEvent::KeyDown(k), Modifiers::none());
+                        }
+                        true
+                    }
+                })
                 .on_pointer_down({
                     let session = session.clone();
                     move |pe: PointerEvent| {
@@ -32,6 +48,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
 
+                        focus.request_focus();
                         let world = s.viewport.view.screen_to_world(pos);
                         dispatch_canvas(
                             &mut s,
@@ -39,6 +56,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 pos: world,
                                 button: map_button(&pe),
                             },
+                            map_modifiers(&pe),
                         );
                     }
                 })
@@ -55,7 +73,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pos);
-                        dispatch_canvas(&mut s, CanvasEvent::PointerMove { pos: world });
+                        dispatch_canvas(&mut s, CanvasEvent::PointerMove { pos: world }, map_modifiers(&pe));
                     }
                 })
                 .on_pointer_up({
@@ -76,6 +94,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 pos: world,
                                 button: map_button(&pe),
                             },
+                            map_modifiers(&pe),
                         );
                     }
                 }),
@@ -243,6 +262,17 @@ fn map_button(pe: &PointerEvent) -> PointerButton {
         },
         _ => PointerButton::Primary,
     }
+}
+
+/// Map the subset of Repose keys the canvas tools understand.
+fn map_key(code: repose_core::input::Key) -> Option<Key> {
+    Some(match code {
+        repose_core::input::Key::Escape => Key::Escape,
+        repose_core::input::Key::Enter => Key::Enter,
+        repose_core::input::Key::Delete => Key::Delete,
+        repose_core::input::Key::Backspace => Key::Backspace,
+        _ => return None,
+    })
 }
 
 fn to_screen_rect(min: DVec2, max: DVec2, view: &ViewTransform) -> Rect {
