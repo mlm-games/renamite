@@ -148,7 +148,50 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 d.push(pd("Shape", "Size", "shape.size", PropKind::DVec2));
                 d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
             }
-            ShapeKind::Star { .. } | ShapeKind::Polygon { .. } => {
+            ShapeKind::Star { .. } => {
+                d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Shape",
+                    "Points",
+                    "shape.points",
+                    PropKind::F64 {
+                        min: Some(3.0),
+                        max: Some(64.0),
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Shape",
+                    "Outer radius",
+                    "shape.outer_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Shape",
+                    "Inner radius",
+                    "shape.inner_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Shape",
+                    "Roundness",
+                    "shape.roundness",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 0.5,
+                    },
+                ));
+            }
+            ShapeKind::Polygon { .. } => {
                 d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
                 d.push(pd(
                     "Shape",

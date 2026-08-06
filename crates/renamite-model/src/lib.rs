@@ -2227,6 +2227,32 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    #[test]
+    fn five_point_star_is_closed_with_10_corners() {
+        let p = star_path(DVec2::ZERO, 5, Some(20.0), 50.0);
+        assert!(matches!(
+            p.elements().last(),
+            Some(kurbo::PathEl::ClosePath)
+        ));
+        let lines = p
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::LineTo(_) | kurbo::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(lines, 10);
+    }
+
+    #[test]
+    fn polygon_six_points() {
+        let p = star_path(DVec2::ZERO, 6, None, 40.0);
+        let verts = p
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_) | kurbo::PathEl::LineTo(_)))
+            .count();
+        assert_eq!(verts, 6);
+    }
+
     fn find_fill(doc: &Document) -> NodeId {
         let mut found = None;
         for (id, n) in doc.nodes.iter() {

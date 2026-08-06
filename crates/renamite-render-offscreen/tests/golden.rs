@@ -133,6 +133,33 @@ fn fixture_ellipse() -> Document {
     doc
 }
 
+fn fixture_star() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let (w, h) = doc.compositions[comp].size;
+    let shape = doc.create_node(Node::new(
+        "st",
+        NodeKind::Shape(ShapeKind::Star {
+            pos: Animated::new(DVec2::new(w as f64 / 2.0, h as f64 / 2.0)),
+            points: Animated::new(5.0),
+            inner_r: Animated::new(48.0),
+            outer_r: Animated::new(110.0),
+            roundness: Animated::new(0.0),
+            kind: renamite_model::StarKind::Star,
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+    doc
+}
+
 /// Rect with a wide round-capped stroke - the stroke tessellation path.
 fn fixture_stroke() -> Document {
     let mut doc = Document::empty();
@@ -384,6 +411,12 @@ fn golden_ellipse_fill() {
         "ellipse_fill",
         &render_doc(&mut gpu, &fixture_ellipse(), 0.0),
     );
+}
+
+#[test]
+fn golden_star() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("star_fill", &render_doc(&mut gpu, &fixture_star(), 0.0));
 }
 
 #[test]

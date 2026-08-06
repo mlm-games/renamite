@@ -1,5 +1,5 @@
 use glam::DVec2;
-use renamite_behavior_canvas::{CanvasEvent, Key, PointerButton, ToolOverlay};
+use renamite_behavior_canvas::{CanvasEvent, Key, PointerButton, ShapePreviewKind, ToolOverlay};
 use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform};
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
@@ -329,9 +329,11 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                 scope.draw_rect_stroke(rect, primary, 2.0, 1.0);
             }
         }
-        ToolOverlay::ShapePreview { min, max, .. } => {
+        ToolOverlay::ShapePreview { min, max, kind } => {
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+            let pts = star_preview_pts(*min, *max, *kind, view);
+            draw_polyline_overlay(scope, &pts, primary.with_alpha(180));
         }
         ToolOverlay::PenPreview { anchors, hover, .. } => {
             for a in anchors {
@@ -435,4 +437,84 @@ fn draw_handle_dot(scope: &mut DrawScope, tip: DVec2, color: Color) {
         h: 5.0,
     };
     scope.draw_rect(rect, color, 5.0);
+}
+
+fn star_preview_pts(
+    min: DVec2,
+    max: DVec2,
+    kind: ShapePreviewKind,
+    view: &ViewTransform,
+) -> Vec<DVec2> {
+    let (points, star) = match kind {
+        ShapePreviewKind::Star => (5.0f64, true),
+        ShapePreviewKind::Polygon => (6.0f64, false),
+        _ => return vec![],
+    };
+    let center = (min + max) * 0.5;
+    let outer = (max.x - min.x).abs().min((max.y - min.y).abs()) * 0.5;
+    let inner = outer * 0.4;
+    let pts = points.round().max(3.0) as usize;
+    let n = if star { pts * 2 } else { pts };
+    let step = std::f64::consts::TAU / pts as f64;
+    let base = -std::f64::consts::FRAC_PI_2;
+    let mut out = Vec::with_capacity(n + 1);
+    for k in 0..n {
+        let ang = if star {
+            step * 0.5 * k as f64
+        } else {
+            step * k as f64
+        };
+        let r = if star && k % 2 == 1 { inner } else { outer };
+        out.push(view.world_to_screen(DVec2::new(
+            center.x + r * (base + ang).cos(),
+            center.y + r * (base + ang).sin(),
+        )));
+    }
+    if let Some(&first) = out.first() {
+        out.push(first);
+    }
+    out
+}
+
+/// Thin screen-space polyline via VectorOverlay quads (final device pixels).
+fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
+    if pts.len() < 2 {
+        return;
+    }
+    let t = 1.0; // half thickness (px)
+    let c = [
+        color.0 as f32 / 255.0,
+        color.1 as f32 / 255.0,
+        color.2 as f32 / 255.0,
+        color.3 as f32 / 255.0,
+    ];
+    let mut vertices = Vec::with_capacity(pts.len() * 2);
+    let mut indices = Vec::with_capacity((pts.len() - 1) * 6);
+    for pair in pts.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        let dir = b - a;
+        let len = dir.length();
+        if len < 1e-6 {
+            continue;
+        }
+        let n = DVec2::new(-dir.y / len, dir.x / len);
+        let base = vertices.len() as u32;
+        for p in [a + n * t, a - n * t, b - n * t, b + n * t] {
+            vertices.push(repose_core::view::VectorVertex {
+                pos: [p.x as f32, p.y as f32],
+                color: c,
+                uv: [0.0, 0.0],
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    if indices.is_empty() {
+        return;
+    }
+    let mesh = repose_core::view::VectorMeshData {
+        vertices: std::sync::Arc::from(vertices),
+        indices: std::sync::Arc::from(indices),
+    };
+    scope.draw_vector_overlay(std::sync::Arc::from([mesh]));
 }

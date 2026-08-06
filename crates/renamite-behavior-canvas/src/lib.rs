@@ -1,8 +1,10 @@
 //! Canvas tools: Select/Transform (click, drag-move, rotate/scale handles,
-//! rubber band, delete) and Rect/Ellipse creation. Pure state machines:
+//! rubber band, delete) and Rect/Ellipse/Star creation. Pure state machines:
 //! world-space events in, EditorCommands out. Behavior reference (clean-room,
 //! observed): rotation handle preserves direction and multiple full turns;
-//! Shift snaps rotation to 15° and constrains shapes to square/circle;
+//! Shift snaps rotation to 15° and constrains shapes to square/circle
+//! (Shift on the star tool draws a regular polygon instead; Alt on the star
+//! tool draws from center with 6 points instead of 5);
 //! drag = one undo step; Esc cancels the open drag.
 
 use glam::DVec2;
@@ -16,7 +18,7 @@ use renamite_history::{
 };
 use renamite_model::{
     Color, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
-    StyleKind, StylePaint, Value, node_affine, nodes_bounds, pick, pick_box,
+    StarKind, StyleKind, StylePaint, Value, node_affine, nodes_bounds, pick, pick_box,
 };
 use smallvec::smallvec;
 use std::f64::consts::{PI, TAU};
@@ -63,7 +65,7 @@ pub enum ToolOverlay {
     ShapePreview {
         min: DVec2,
         max: DVec2,
-        ellipse: bool,
+        kind: ShapePreviewKind,
     },
     PenPreview {
         anchors: Vec<Anchor>,
@@ -82,10 +84,20 @@ pub enum ToolOverlay {
     },
 }
 
+/// Which primitive a drag is previewing (shapes an extra rubber-band outline).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapePreviewKind {
+    Rect,
+    Ellipse,
+    Star,
+    Polygon,
+}
+
 pub struct ToolSet {
     pub select: SelectTool,
     pub rect: ShapeTool,
     pub ellipse: ShapeTool,
+    pub star: ShapeTool,
     pub pen: PenTool,
     pub path_edit: PathEditTool,
     pub gradient: GradientTool,
@@ -97,6 +109,7 @@ impl Default for ToolSet {
             select: SelectTool::default(),
             rect: ShapeTool::new(ShapeToolKind::Rect),
             ellipse: ShapeTool::new(ShapeToolKind::Ellipse),
+            star: ShapeTool::new(ShapeToolKind::Star),
             pen: PenTool::default(),
             path_edit: PathEditTool::default(),
             gradient: GradientTool::default(),
@@ -110,10 +123,11 @@ impl ToolSet {
             ToolId::Select | ToolId::Transform => self.select.handle(ctx, ev),
             ToolId::Rect => self.rect.handle(ctx, ev),
             ToolId::Ellipse => self.ellipse.handle(ctx, ev),
+            ToolId::Star => self.star.handle(ctx, ev),
             ToolId::Pen => self.pen.handle(ctx, ev),
             ToolId::PathEdit => self.path_edit.handle(ctx, ev),
             ToolId::Gradient => self.gradient.handle(ctx, ev),
-            _ => smallvec![], // Star/Fill: not implemented yet
+            _ => smallvec![], // Fill: not implemented yet
         }
     }
 
@@ -122,6 +136,7 @@ impl ToolSet {
             ToolId::Select | ToolId::Transform => self.select.overlay(ctx),
             ToolId::Rect => self.rect.overlay(ctx),
             ToolId::Ellipse => self.ellipse.overlay(ctx),
+            ToolId::Star => self.star.overlay(ctx),
             ToolId::Pen => self.pen.overlay(ctx),
             ToolId::PathEdit => self.path_edit.overlay(ctx),
             ToolId::Gradient => self.gradient.overlay(ctx),
@@ -739,6 +754,8 @@ impl GradientTool {
 pub enum ShapeToolKind {
     Rect,
     Ellipse,
+    Star,
+    Polygon,
 }
 
 pub struct ShapeTool {
@@ -758,10 +775,20 @@ impl ShapeTool {
                 ToolOverlay::ShapePreview {
                     min,
                     max,
-                    ellipse: self.kind == ShapeToolKind::Ellipse,
+                    kind: self.preview_kind(ctx),
                 }
             }
             None => ToolOverlay::None,
+        }
+    }
+
+    fn preview_kind(&self, ctx: &ToolContext) -> ShapePreviewKind {
+        match self.kind {
+            ShapeToolKind::Rect => ShapePreviewKind::Rect,
+            ShapeToolKind::Ellipse => ShapePreviewKind::Ellipse,
+            ShapeToolKind::Star if ctx.modifiers.shift => ShapePreviewKind::Polygon,
+            ShapeToolKind::Star => ShapePreviewKind::Star,
+            ShapeToolKind::Polygon => ShapePreviewKind::Polygon,
         }
     }
 
@@ -794,6 +821,7 @@ impl ShapeTool {
                     return smallvec![];
                 }
                 let center = (min + max) * 0.5;
+                let outer = size.x.min(size.y).abs() * 0.5;
                 let (name, shape) = match self.kind {
                     ShapeToolKind::Rect => (
                         "Rectangle",
@@ -808,6 +836,37 @@ impl ShapeTool {
                         ShapeKind::Ellipse {
                             pos: Animated::new(center),
                             size: Animated::new(size),
+                        },
+                    ),
+                    // Shift turns the star tool into a regular polygon.
+                    ShapeToolKind::Star if ctx.modifiers.shift => (
+                        "Polygon",
+                        ShapeKind::Polygon {
+                            pos: Animated::new(center),
+                            points: Animated::new(6.0),
+                            outer_r: Animated::new(outer),
+                            roundness: Animated::new(0.0),
+                        },
+                    ),
+                    // Alt = 6-point star instead of 5.
+                    ShapeToolKind::Star => (
+                        "Star",
+                        ShapeKind::Star {
+                            pos: Animated::new(center),
+                            points: Animated::new(if ctx.modifiers.alt { 6.0 } else { 5.0 }),
+                            inner_r: Animated::new(outer * 0.4),
+                            outer_r: Animated::new(outer),
+                            roundness: Animated::new(0.0),
+                            kind: StarKind::Star,
+                        },
+                    ),
+                    ShapeToolKind::Polygon => (
+                        "Polygon",
+                        ShapeKind::Polygon {
+                            pos: Animated::new(center),
+                            points: Animated::new(6.0),
+                            outer_r: Animated::new(outer),
+                            roundness: Animated::new(0.0),
                         },
                     ),
                 };
@@ -2051,6 +2110,183 @@ mod tests {
         let group = &w.doc.nodes[comp.children[0]];
         assert_eq!(group.children.len(), 2); // shape + fill
         h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.compositions[w.doc.main].children.len(), before);
+    }
+
+    fn shape_drag(tool: &mut ShapeTool, w: &World, m: Modifiers) -> Vec<ToolOutput> {
+        let scene = w.scene();
+        let mut mk = |ev| {
+            let ctx = ToolContext {
+                doc: &w.doc,
+                scene: &scene,
+                comp: w.doc.main,
+                selection: &w.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: m,
+            };
+            tool.handle(&ctx, ev)
+        };
+        let mut all: Vec<ToolOutput> = vec![];
+        all.extend(mk(CanvasEvent::PointerDown {
+            pos: DVec2::new(200.0, 200.0),
+            button: PointerButton::Primary,
+        }));
+        all.extend(mk(CanvasEvent::PointerMove {
+            pos: DVec2::new(280.0, 280.0),
+        }));
+        all.extend(mk(CanvasEvent::PointerUp {
+            pos: DVec2::new(280.0, 280.0),
+            button: PointerButton::Primary,
+        }));
+        drop(scene);
+        all
+    }
+
+    fn apply_all(w: &mut World, h: &mut History, all: Vec<ToolOutput>) {
+        for o in all {
+            match o {
+                ToolOutput::BeginTransaction(l) => h.begin(l),
+                ToolOutput::CommitTransaction => h.commit(),
+                ToolOutput::Commands(cmds) => {
+                    for c in cmds {
+                        h.apply(&mut w.pm(), c).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn star_tool_creates_group_with_star_and_fill() {
+        let mut w = World::new();
+        let mut h = History::new();
+        let mut tool = ShapeTool::new(ShapeToolKind::Star);
+        let before = w.doc.compositions[w.doc.main].children.len();
+        let all = shape_drag(&mut tool, &w, Modifiers::none());
+        assert!(
+            all.iter()
+                .any(|o| matches!(o, ToolOutput::SwitchTool(ToolId::Select)))
+        );
+        apply_all(&mut w, &mut h, all);
+        let comp = &w.doc.compositions[w.doc.main];
+        assert_eq!(comp.children.len(), before + 1);
+        let group = &w.doc.nodes[comp.children[0]];
+        assert_eq!(group.children.len(), 2); // shape + fill
+        match &w.doc.nodes[group.children[0]].kind {
+            NodeKind::Shape(ShapeKind::Star {
+                points,
+                kind,
+                outer_r,
+                inner_r,
+                ..
+            }) => {
+                assert_eq!(*kind, StarKind::Star);
+                assert!((points.base - 5.0).abs() < 1e-9);
+                assert!(outer_r.base > inner_r.base);
+            }
+            other => panic!("expected Star, got {other:?}"),
+        }
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.compositions[w.doc.main].children.len(), before);
+    }
+
+    #[test]
+    fn star_tool_shift_makes_polygon() {
+        let mut w = World::new();
+        let mut h = History::new();
+        let mut tool = ShapeTool::new(ShapeToolKind::Star);
+        let before = w.doc.compositions[w.doc.main].children.len();
+        let all = shape_drag(
+            &mut tool,
+            &w,
+            Modifiers {
+                shift: true,
+                ..Modifiers::none()
+            },
+        );
+        apply_all(&mut w, &mut h, all);
+        let comp = &w.doc.compositions[w.doc.main];
+        assert_eq!(comp.children.len(), before + 1);
+        let group = &w.doc.nodes[comp.children[0]];
+        match &w.doc.nodes[group.children[0]].kind {
+            NodeKind::Shape(ShapeKind::Polygon {
+                points, outer_r, ..
+            }) => {
+                assert!((points.base - 6.0).abs() < 1e-9);
+                assert!(outer_r.base > 0.0);
+            }
+            other => panic!("expected Polygon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn star_tool_alt_makes_6_point_star() {
+        let mut w = World::new();
+        let mut h = History::new();
+        let mut tool = ShapeTool::new(ShapeToolKind::Star);
+        let all = shape_drag(
+            &mut tool,
+            &w,
+            Modifiers {
+                alt: true,
+                ..Modifiers::none()
+            },
+        );
+        apply_all(&mut w, &mut h, all);
+        let comp = &w.doc.compositions[w.doc.main];
+        let group = &w.doc.nodes[comp.children[0]];
+        match &w.doc.nodes[group.children[0]].kind {
+            NodeKind::Shape(ShapeKind::Star { points, .. }) => {
+                assert!((points.base - 6.0).abs() < 1e-9);
+            }
+            other => panic!("expected Star, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn star_tool_tiny_drag_cancels() {
+        let w = World::new();
+        let mut tool = ShapeTool::new(ShapeToolKind::Star);
+        let before = w.doc.compositions[w.doc.main].children.len();
+        let scene = w.scene();
+        let mut mk = |ev| {
+            let ctx = ToolContext {
+                doc: &w.doc,
+                scene: &scene,
+                comp: w.doc.main,
+                selection: &w.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: Modifiers::none(),
+            };
+            tool.handle(&ctx, ev)
+        };
+        mk(CanvasEvent::PointerDown {
+            pos: DVec2::new(200.0, 200.0),
+            button: PointerButton::Primary,
+        });
+        mk(CanvasEvent::PointerMove {
+            pos: DVec2::new(200.5, 200.5),
+        });
+        mk(CanvasEvent::PointerUp {
+            pos: DVec2::new(200.5, 200.5),
+            button: PointerButton::Primary,
+        });
+        drop(scene);
         assert_eq!(w.doc.compositions[w.doc.main].children.len(), before);
     }
 
