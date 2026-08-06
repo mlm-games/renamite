@@ -12,6 +12,7 @@ pub fn desktop_main() -> anyhow::Result<()> {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(start)]
 pub fn wasm_start() -> Result<(), JsValue> {
+    renamite_ui::init_wasm();
     repose_platform::web::run_web_app(
         renamite_ui::app,
         repose_platform::web::WebOptions::new(None),

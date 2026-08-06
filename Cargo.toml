@@ -56,7 +56,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 rustc-hash = "2.1"
 bitflags = { version = "2", features = ["serde"] }
 
-#TODO: replace with rlobkit-dialogs
+rlobkit-dialogs = "0.5"
 rfd = { version = "0.17" }
 
 clap = { version = "4.5", features = ["derive"] }

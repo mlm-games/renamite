@@ -32,6 +32,11 @@ pub type SessionRef = Rc<RefCell<Session>>;
 /// Shared editor session (single-threaded UI).
 pub struct Session {
     pub file: RenFile,
+    /// Where the current document was last saved to (None = never / "Untitled").
+    pub current_path: Option<std::path::PathBuf>,
+    /// True when edits since the last save exist. Undo/redo to a saved state
+    /// does NOT clear this automatically (no saved snapshot tracking yet).
+    pub dirty: bool,
     pub history: History,
     pub engine: Engine,
     pub selection: Selection,
@@ -56,6 +61,31 @@ pub struct Session {
     pub record: bool,
     /// Active pointer-drag on a Properties number field (view state).
     pub inspector_drag: Option<InspectorDrag>,
+    /// Transient status message (last file action result / error).
+    pub status: Option<String>,
+    /// Results of async platform dialogs, drained on the UI thread each frame.
+    /// Populated from worker threads, so it is `Send + Sync`.
+    pub file_ops: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
+}
+
+/// A file-lifecycle result produced off-thread by an async platform dialog
+/// (`renamite_platform::dialogs`), applied to the session during the next
+/// frame by [`Session::drain_file_ops`].
+pub enum PendingFileOp {
+    /// Install a freshly read project (Open or Import Lottie). `path` is
+    /// `Some` for a real filesystem open (desktop), `None` for name+bytes
+    /// (WASM/Android) or imported documents (always unsaved).
+    OpenDone {
+        file: Box<RenFile>,
+        path: Option<std::path::PathBuf>,
+        message: &'static str,
+    },
+    /// An async save completed. `path` is `Some` on desktop.
+    SaveDone { path: Option<std::path::PathBuf> },
+    /// An exported frame reached its destination (WASM/Android, no path).
+    Exported,
+    /// An async file op failed; surface the message.
+    Failed { message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +112,8 @@ impl Session {
         let range = file.document.compositions[file.document.main].range;
         Self {
             file,
+            current_path: None,
+            dirty: false,
             history: History::new(),
             engine,
             selection: Selection::default(),
@@ -107,6 +139,8 @@ impl Session {
             renaming: None,
             record: false,
             inspector_drag: None,
+            status: None,
+            file_ops: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         }
     }
 
@@ -116,10 +150,12 @@ impl Session {
                 ToolOutput::BeginTransaction(l) => self.history.begin(l),
                 ToolOutput::CommitTransaction => {
                     self.history.commit();
+                    self.dirty = true;
                     self.bump();
                 }
                 ToolOutput::CancelTransaction => {
                     apply_cmd(&mut self.history, &mut self.file, None);
+                    self.dirty = true;
                     self.bump();
                 }
                 ToolOutput::Commands(cmds) => {
@@ -186,7 +222,92 @@ impl Session {
         let his = &mut self.history;
         let file = &mut self.file;
         let mut pm = pm_from(file);
-        his.apply(&mut pm, cmd).ok().and_then(|a| a.created)
+        match his.apply(&mut pm, cmd) {
+            Ok(a) => {
+                self.dirty = true;
+                a.created
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Serialize a clean copy of the project as `.ren` text bytes. The live
+    /// in-memory project is NOT garbage collected (undo relies on detached
+    /// arena entries staying alive); only the save-time snapshot is pruned.
+    pub fn save_snapshot(&self) -> anyhow::Result<Vec<u8>> {
+        let mut file = self.file.clone();
+        file.normalize();
+        file.garbage_collect();
+        Ok(renamite_io_ren::save(&file)?.into_bytes())
+    }
+
+    /// Serialize a clean copy of the project as `.renb` binary bytes.
+    pub fn pack_snapshot(&self) -> anyhow::Result<Vec<u8>> {
+        let mut file = self.file.clone();
+        file.normalize();
+        file.garbage_collect();
+        Ok(renamite_io_ren::save_binary(&file)?)
+    }
+
+    /// Load a fresh project, resetting all session view state and undo history.
+    pub fn replace_file(&mut self, file: RenFile) {
+        self.file = file;
+        self.history = History::new();
+        self.engine = Engine::new(&self.file).expect("valid project");
+        self.selection.nodes.clear();
+        self.keys = Default::default();
+        self.scrub = Default::default();
+        self.record = false;
+        self.expanded_layers.clear();
+        self.layer_drag = None;
+        self.renaming = None;
+        self.inspector_drag = None;
+        self.viewport.fit_pending = true;
+        self.dirty = false;
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Record that the current document was written to `path` (or cleared).
+    pub fn mark_saved(&mut self, path: Option<std::path::PathBuf>) {
+        self.current_path = path;
+        self.dirty = false;
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Apply results queued by async platform dialogs (called once per frame
+    /// from the UI). Parsing/serialization already happened off-thread, so this
+    /// only installs state.
+    pub fn drain_file_ops(&mut self) {
+        let ops = std::mem::take(&mut *self.file_ops.lock().unwrap());
+        for op in ops {
+            match op {
+                PendingFileOp::OpenDone {
+                    file,
+                    path,
+                    message,
+                } => {
+                    self.replace_file(*file);
+                    self.current_path = path;
+                    self.status = Some(message.to_string());
+                }
+                PendingFileOp::SaveDone { path } => {
+                    self.mark_saved(path);
+                    self.status = Some("Saved".to_string());
+                }
+                PendingFileOp::Exported => {
+                    self.status = Some("Exported".to_string());
+                    self.revision = self.revision.wrapping_add(1);
+                    request_frame();
+                }
+                PendingFileOp::Failed { message } => {
+                    self.status = Some(format!("Error: {message}"));
+                    self.revision = self.revision.wrapping_add(1);
+                    request_frame();
+                }
+            }
+        }
     }
 
     /// Called by the `animation_driver` tick each frame. Returns true while playing.
@@ -363,14 +484,18 @@ pub fn undo_cmd(s: &mut Session) {
     let his = &mut s.history;
     let file = &mut s.file;
     let mut pm = pm_from(file);
-    let _ = his.undo(&mut pm);
+    if his.undo(&mut pm).is_ok() {
+        s.dirty = true;
+    }
 }
 
 pub fn redo_cmd(s: &mut Session) {
     let his = &mut s.history;
     let file = &mut s.file;
     let mut pm = pm_from(file);
-    let _ = his.redo(&mut pm);
+    if his.redo(&mut pm).is_ok() {
+        s.dirty = true;
+    }
 }
 
 fn pe_to_dvec(pe: &PointerEvent) -> DVec2 {

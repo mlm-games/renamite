@@ -1,0 +1,12 @@
+[build]
+target = "index.html"
+no_default_features = true
+no_sri = true
+
+[watch]
+ignore = ["./target", "./dist"]
+
+# SharedArrayBuffer (wasm threads / web-workers export) requires cross-origin
+# isolation.
+[serve]
+headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp" }

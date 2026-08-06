@@ -19,10 +19,15 @@ renamite-model.workspace = true
 renamite-history.workspace = true
 renamite-animation.workspace = true
 renamite-player.workspace = true
-renamite-io-ren.workspace = true
+renamite-io-ren = { workspace = true, features = ["binary"] }
+renamite-io-lottie.workspace = true
 renamite-machine.workspace = true
 renamite-render-bridge.workspace = true
+renamite-platform.workspace = true
+renamite-render-offscreen.workspace = true
+web-workers = "0.2"
 glam.workspace = true
 smallvec.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 web-time = "1.1"

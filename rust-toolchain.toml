@@ -1,2 +1,4 @@
 [toolchain]
-channel = "1.93"   # or "beta" to track Repose; keep CI matrix explicit
+# Nightly is required for `build-std` (wasm atomics / worker threads).
+channel = "nightly-2026-07-02"
+components = ["rust-src", "rustfmt", "clippy"]

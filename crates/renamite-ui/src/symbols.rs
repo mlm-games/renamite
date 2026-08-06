@@ -11,8 +11,12 @@ repose_material::material_symbols! {
     play_arrow:          '\u{e037}',
     pause:               '\u{e034}',
     save:                '\u{e161}',
+    save_as:             '\u{e171}',
     folder_open:         '\u{e2c8}',
     more_vert:           '\u{e5d4}',
+    add:                 '\u{e145}',
+    file_upload:         '\u{e2c6}',
+    image:               '\u{e3f4}',
 
     arrow_selector_tool: '\u{f82f}',
     edit:                '\u{f097}',
@@ -40,7 +44,6 @@ repose_material::material_symbols! {
     radio_button_unchecked: '\u{e836}',
     stop_circle:            '\u{ef71}',
     fiber_manual_record:    '\u{eb61}',
-    add:                    '\u{e145}',
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {
