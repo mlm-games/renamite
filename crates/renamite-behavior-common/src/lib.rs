@@ -2,6 +2,7 @@
 
 pub mod inspect;
 pub mod layers;
+pub mod modifiers;
 pub mod path;
 
 use glam::DVec2;

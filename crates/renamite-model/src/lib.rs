@@ -150,6 +150,8 @@ pub enum ModifierKind {
         start: Animated<f64>,
         end: Animated<f64>,
         offset: Animated<f64>,
+        #[serde(default)]
+        mode: TrimMode,
     },
     Repeater {
         copies: Animated<f64>,
@@ -170,6 +172,16 @@ pub enum ModifierKind {
     InflateDeflate {
         amount: Animated<f64>,
     },
+}
+
+/// How Trim distributes [start, end] across multiple accumulated paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrimMode {
+    /// Each path is trimmed to [start, end] of its own perimeter.
+    #[default]
+    Individually,
+    /// The concatenation of all paths is treated as one arc-length domain.
+    Simultaneously,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -576,9 +588,178 @@ fn apply_modifier(
                 }
             }
         }
-        // v0.4: TrimPath (arclen param), RoundCorners, OffsetPath, ZigZag,
-        // InflateDeflate - passthrough until then.
+        ModifierKind::TrimPath { start, end, offset, mode } => {
+            let mut s = ov_f64(ov, id, "trim.start", start.value_at(frame)).clamp(0.0, 1.0);
+            let mut e = ov_f64(ov, id, "trim.end", end.value_at(frame)).clamp(0.0, 1.0);
+            if s > e {
+                std::mem::swap(&mut s, &mut e);
+            }
+            let o = ov_f64(ov, id, "trim.offset", offset.value_at(frame)).rem_euclid(1.0);
+
+            if (e - s).abs() < 1e-9 {
+                paths.clear();
+                return;
+            }
+
+            let originals = std::mem::take(paths);
+            match mode {
+                TrimMode::Individually => {
+                    for (id, path) in originals {
+                        if let Some(trimmed) = trim_path(&path, s, e, o) {
+                            paths.push((id, trimmed));
+                        }
+                    }
+                }
+                TrimMode::Simultaneously => {
+                    let lengths: Vec<f64> = originals
+                        .iter()
+                        .map(|(_, p)| p.perimeter(1e-3))
+                        .collect();
+                    let total: f64 = lengths.iter().sum();
+                    if total <= 1e-9 {
+                        return;
+                    }
+                    let mut cursor = 0.0;
+                    for ((id, path), len) in originals.into_iter().zip(lengths) {
+                        let frac = len / total;
+                        if frac > 1e-12 {
+                            let ps = ((s - cursor) / frac).clamp(0.0, 1.0);
+                            let pe = ((e - cursor) / frac).clamp(0.0, 1.0);
+                            if pe > ps + 1e-9 {
+                                if let Some(t) = trim_path(&path, ps, pe, o) {
+                                    paths.push((id, t));
+                                }
+                            }
+                        }
+                        cursor += frac;
+                    }
+                }
+            }
+        }
+        // v0.4: RoundCorners, OffsetPath, ZigZag, InflateDeflate - passthrough
+        // until then.
         _ => {}
+    }
+}
+
+fn trim_path(path: &BezPath, s: f64, e: f64, offset: f64) -> Option<BezPath> {
+    use kurbo::ParamCurveArclen;
+
+    if (e - s).abs() < 1e-9 {
+        return None;
+    }
+
+    let segments: Vec<kurbo::PathSeg> = path.segments().collect();
+    if segments.is_empty() {
+        return None;
+    }
+    let lengths: Vec<f64> = segments.iter().map(|seg| seg.arclen(1e-3)).collect();
+    let total: f64 = lengths.iter().sum();
+    if total <= 1e-9 {
+        return None;
+    }
+
+    let s_offset = s + offset;
+    let e_offset = e + offset;
+    // Wrap decision in the PRE-modulo domain: the interval touches/crosses 1.0.
+    // (Comparing the rem_euclid'd `a` vs `b` is unreliable near the seam where
+    // FP noise flips `<` and silently empties the span.)
+    let wraps = s_offset < 1.0 && e_offset >= 1.0;
+    let a = s_offset.rem_euclid(1.0);
+    let b = e_offset.rem_euclid(1.0);
+
+    let mut out = BezPath::new();
+    let mut last_end: Option<Point> = None;
+    if wraps {
+        // Wraps: [a, 1] then [0, b]. (a == b arises when e - s covers the
+        // whole domain after offset; both halves together emit the full path.)
+        emit_range(&segments, &lengths, total, a, 1.0, &mut out, &mut last_end);
+        emit_range(&segments, &lengths, total, 0.0, b, &mut out, &mut last_end);
+    } else {
+        emit_range(&segments, &lengths, total, a, b, &mut out, &mut last_end);
+    }
+
+    if out.elements().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn emit_range(
+    segments: &[kurbo::PathSeg],
+    lengths: &[f64],
+    total: f64,
+    a: f64,
+    b: f64,
+    out: &mut BezPath,
+    last_end: &mut Option<Point>,
+) {
+    use kurbo::ParamCurve;
+
+    let a_len = a * total;
+    let b_len = b * total;
+    let mut cursor = 0.0;
+
+    for (seg, &len) in segments.iter().zip(lengths) {
+        let seg_start = cursor;
+        let seg_end = cursor + len;
+        cursor = seg_end;
+
+        if seg_end <= a_len {
+            continue;
+        }
+        if seg_start >= b_len {
+            break;
+        }
+
+        let t0 = if seg_start < a_len {
+            arclen_to_t(seg, a_len - seg_start)
+        } else {
+            0.0
+        };
+        let t1 = if seg_end > b_len {
+            arclen_to_t(seg, b_len - seg_start)
+        } else {
+            1.0
+        };
+        if t1 <= t0 + 1e-9 {
+            continue;
+        }
+
+        let sub = seg.subsegment(t0..t1);
+        let start_pt = sub.start();
+        // Continuity check: new subpath (MoveTo break / wrap seam) → move_to.
+        let connected = last_end
+            .map(|p| (p - start_pt).hypot() < 1e-6)
+            .unwrap_or(false);
+        if !connected {
+            out.move_to(start_pt);
+        }
+        append_seg(out, &sub);
+        *last_end = Some(sub.end());
+    }
+}
+
+fn arclen_to_t(seg: &kurbo::PathSeg, target: f64) -> f64 {
+    use kurbo::{ParamCurve, ParamCurveArclen};
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..24 {
+        let mid = 0.5 * (lo + hi);
+        if seg.subsegment(0.0..mid).arclen(1e-3) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+fn append_seg(out: &mut BezPath, seg: &kurbo::PathSeg) {
+    match seg {
+        kurbo::PathSeg::Line(l) => out.line_to(l.p1),
+        kurbo::PathSeg::Quad(q) => out.quad_to(q.p1, q.p2),
+        kurbo::PathSeg::Cubic(c) => out.curve_to(c.p1, c.p2, c.p3),
     }
 }
 
@@ -1436,5 +1617,81 @@ mod tests {
             min.x <= 0.0 && max.x >= 0.0,
             "bounds must cover the ellipse center"
         );
+    }
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+    use kurbo::Shape;
+
+    fn line() -> BezPath {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((100.0, 0.0));
+        p
+    }
+
+    #[test]
+    fn trim_first_quarter_of_line() {
+        let out = trim_path(&line(), 0.0, 0.25, 0.0).unwrap();
+        let bb = out.bounding_box();
+        assert!((bb.x1 - 25.0).abs() < 0.5, "x1={}", bb.x1);
+        assert!(bb.x0.abs() < 0.5);
+    }
+
+    #[test]
+    fn trim_second_half_of_line() {
+        let out = trim_path(&line(), 0.5, 1.0, 0.0).unwrap();
+        let bb = out.bounding_box();
+        assert!((bb.x0 - 50.0).abs() < 0.5 && (bb.x1 - 100.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn trim_zero_length_returns_none() {
+        assert!(trim_path(&line(), 0.5, 0.5, 0.0).is_none());
+    }
+
+    #[test]
+    fn trim_offset_shifts_range() {
+        let a = trim_path(&line(), 0.0, 0.5, 0.0).unwrap();
+        let b = trim_path(&line(), 0.0, 0.5, 0.5).unwrap();
+        assert!((a.bounding_box().x1 - 50.0).abs() < 0.5);
+        assert!(
+            (b.bounding_box().x0 - 50.0).abs() < 0.5,
+            "offset must shift to second half"
+        );
+    }
+
+    #[test]
+    fn trim_wraps_when_offset_pushes_past_end() {
+        // [0, 0.5] + offset 0.75 → [0.75, 1] ∪ [0, 0.25]: both ends, gap in middle.
+        let out = trim_path(&line(), 0.0, 0.5, 0.75).unwrap();
+        let bb = out.bounding_box();
+        assert!(bb.x0 < 1.0 && bb.x1 > 99.0, "both ends present");
+        // Two disconnected subpaths → two MoveTo elements.
+        let moves = out
+            .elements()
+            .iter()
+            .filter(|el| matches!(el, kurbo::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(moves, 2);
+    }
+
+    #[test]
+    fn trim_quarter_of_closed_square_is_one_side() {
+        let sq = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0).to_path(0.1);
+        let out = trim_path(&sq, 0.0, 0.25, 0.0).unwrap();
+        let bb = out.bounding_box();
+        // One side of the square: long in one axis, ~zero in the other.
+        assert!(bb.width().min(bb.height()) < 1.0);
+        assert!((bb.width().max(bb.height()) - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn full_range_with_offset_emits_whole_path() {
+        let out = trim_path(&line(), 0.0, 1.0, 0.3).unwrap();
+        let bb = out.bounding_box();
+        assert!(bb.x0 < 0.5 && bb.x1 > 99.5);
     }
 }

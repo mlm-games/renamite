@@ -10,8 +10,8 @@ use renamite_animation::{Animated, EasingHandle, EasingPreset, Frame, Interpolat
 use renamite_behavior_common::ViewTransform;
 use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
-    Color, Document, FillRule, KeyframeData, Node, NodeKind, Parent, PropPath, ShapeKind,
-    StrokeCap, StrokeJoin, StyleKind, Value, evaluate,
+    Color, Document, FillRule, KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath,
+    ShapeKind, StrokeCap, StrokeJoin, StyleKind, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::{OffscreenRenderer, fit_view};
@@ -76,17 +76,17 @@ fn check_golden(name: &str, actual_png: &[u8]) {
     let total = (golden.width() * golden.height()) as f64;
     let mut differing = 0usize;
     for (g, a) in golden.pixels().zip(actual.pixels()) {
-        let over_tol =
-            g.0.iter()
-                .zip(a.0.iter())
-                .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
+        let over_tol = g
+            .0
+            .iter()
+            .zip(a.0.iter())
+            .any(|(&gc, &ac)| (gc as i16 - ac as i16).abs() > CHANNEL_TOL);
         if over_tol {
             differing += 1;
         }
     }
     let fraction = differing as f64 / total;
     if fraction > MAX_DIFF_FRACTION {
-        // Dump actual + diff for CI artifact inspection.
         let actual_path = goldens_dir().join(format!("{name}.actual.png"));
         std::fs::write(&actual_path, actual_png).unwrap();
         panic!(
@@ -98,6 +98,8 @@ fn check_golden(name: &str, actual_png: &[u8]) {
         );
     }
 }
+
+// ---------------- fixtures ----------------
 
 fn linear_key(frame: i64, value: Value) -> KeyframeData {
     KeyframeData {
@@ -210,6 +212,63 @@ fn fixture_bezier_path() -> Document {
     doc
 }
 
+/// Square stroke trimmed to the first half of its perimeter.
+fn fixture_trim_half() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(200.0, 200.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let trim = doc.create_node(Node::new(
+        "t",
+        NodeKind::Modifier(ModifierKind::TrimPath {
+            start: Animated::new(0.0),
+            end: Animated::new(0.5),
+            offset: Animated::new(0.0),
+            mode: TrimMode::Individually,
+        }),
+    ));
+    let stroke = doc.create_node(Node::new(
+        "s",
+        NodeKind::Style(StyleKind::Stroke {
+            color: Animated::new(Color::rgba(0.1, 0.3, 0.9, 1.0)),
+            width: Animated::new(16.0),
+            cap: StrokeCap::Round,
+            join: StrokeJoin::Round,
+            dash: None,
+        }),
+    ));
+
+    doc.attach(shape, Parent::Node(group), 0).unwrap();
+    doc.attach(trim, Parent::Node(group), 1).unwrap();
+    doc.attach(stroke, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+/// `end` animated 0 → 1 over 60 frames; sampled at 30 pins the animated read
+/// path through Animated::value_at at a non-boundary frame.
+fn fixture_trim_animated() -> Document {
+    let mut doc = fixture_trim_half();
+    let group = doc.compositions[doc.main].children[0];
+    let trim = doc.nodes[group].children[1];
+    let prop = PropPath::new("trim.end");
+    doc.add_keyframe(trim, &prop, Frame(0), &Value::F64(0.0))
+        .unwrap();
+    doc.add_keyframe(trim, &prop, Frame(60), &Value::F64(1.0))
+        .unwrap();
+    doc
+}
+
+// ---------------- tests ----------------
+
 #[test]
 fn golden_ellipse_fill() {
     let Some(mut gpu) = gpu() else { return };
@@ -243,5 +302,20 @@ fn golden_bezier_path() {
     check_golden(
         "bezier_path",
         &render_doc(&mut gpu, &fixture_bezier_path(), 0.0),
+    );
+}
+
+#[test]
+fn golden_trim_half() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("trim_half", &render_doc(&mut gpu, &fixture_trim_half(), 0.0));
+}
+
+#[test]
+fn golden_trim_animated_midpoint() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "trim_anim_mid",
+        &render_doc(&mut gpu, &fixture_trim_animated(), 30.0),
     );
 }
