@@ -9,8 +9,12 @@ use repose_core::{Color, FocusRequester, Modifier, View, remember, request_frame
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelSurface};
-use crate::session::{PanelPage, SessionRef, dispatch_canvas, map_modifiers, pe_pos};
+use crate::session::{
+    ContextMenuSource, ContextMenuState, PanelPage, SessionRef, dispatch_canvas, map_modifiers,
+    pe_pos,
+};
 use crate::symbols::Symbols;
+use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
 
 pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
@@ -41,6 +45,38 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |pe: PointerEvent| {
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
+
+                        if map_button(&pe) == PointerButton::Secondary {
+                            // Right-click: pick/select under cursor, then menu.
+                            focus.request_focus();
+                            let world = s.viewport.view.screen_to_world(pos);
+                            let scene = s.engine.scene().clone();
+                            if let Some(id) = renamite_model::pick(&scene, world) {
+                                if !s.selection.nodes.contains(&id) {
+                                    s.selection.nodes = vec![id];
+                                }
+                            } else if !pe.modifiers.shift {
+                                s.selection.nodes.clear();
+                            }
+                            let paint = s.current_paint.clone();
+                            let entries = {
+                                let ctx = MenuContext {
+                                    doc: &s.file.document,
+                                    selection: &s.selection.nodes,
+                                    comp: s.file.document.main,
+                                    world_pos: Some(world),
+                                    has_clipboard: s.clipboard.is_some(),
+                                    current_paint: &paint,
+                                };
+                                canvas_menu(&ctx)
+                            };
+                            s.open_context_menu(ContextMenuState {
+                                screen_pos: pos,
+                                entries,
+                                source: ContextMenuSource::Canvas { world },
+                            });
+                            return;
+                        }
 
                         if map_button(&pe) == PointerButton::Middle {
                             s.viewport.begin_pan(pos);

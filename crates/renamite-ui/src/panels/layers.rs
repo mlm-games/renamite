@@ -11,8 +11,9 @@ use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::SessionRef;
+use crate::session::{ContextMenuSource, ContextMenuState, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
+use renamite_behavior_common::context_menu::{MenuContext, layers_menu};
 
 const ROW_HEIGHT: f32 = 40.0;
 const ROW_GAP: f32 = 2.0;
@@ -113,8 +114,32 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             let session = session.clone();
             let row = row.clone();
             move |pe: PointerEvent| {
+                let mut s = session.borrow_mut();
+                if matches!(pe.event, PointerEventKind::Down(PointerButton::Secondary)) {
+                    // Right-click: select the row if needed, then open the menu.
+                    if !s.selection.nodes.contains(&row.id) {
+                        s.selection.nodes = vec![row.id];
+                    }
+                    let paint = s.current_paint.clone();
+                    let entries = {
+                        let ctx = MenuContext {
+                            doc: &s.file.document,
+                            selection: &s.selection.nodes,
+                            comp: s.file.document.main,
+                            world_pos: None,
+                            has_clipboard: s.clipboard.is_some(),
+                            current_paint: &paint,
+                        };
+                        layers_menu(&ctx, row.id)
+                    };
+                    s.open_context_menu(ContextMenuState {
+                        screen_pos: glam::DVec2::new(pe.position.x as f64, pe.position.y as f64),
+                        entries,
+                        source: ContextMenuSource::Layers { row: row.id },
+                    });
+                    return;
+                }
                 if matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
-                    let mut s = session.borrow_mut();
                     s.renaming = None;
                     if pe.modifiers.shift || pe.modifiers.ctrl {
                         s.apply_outputs(smallvec![ToolOutput::RequestSelection(

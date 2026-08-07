@@ -1,6 +1,7 @@
 //! Shared context for tool behaviors: selection, view transform, snapping.
 
 pub mod color;
+pub mod context_menu;
 pub mod fill;
 pub mod inspect;
 pub mod layers;

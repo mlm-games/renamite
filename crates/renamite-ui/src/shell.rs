@@ -1,7 +1,7 @@
 use repose_core::{JustifyContent, Modifier, PaddingValues, View, remember_with_key, theme};
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
-    Scaffold, ScaffoldConfig, TextButton,
+    Scaffold, ScaffoldConfig, Surface, SurfaceConfig, TextButton,
 };
 use repose_ui::overlay::OverlayHandle;
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
@@ -11,6 +11,7 @@ use crate::components::PanelSurface;
 use crate::panels::{LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel};
 use crate::session::{PanelPage, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
+use renamite_behavior_common::context_menu::MenuEntry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellClass {
@@ -60,11 +61,109 @@ pub fn EditorShell(session: SessionRef) -> View {
 
     let confirm = discard_dialog(session.clone(), (*overlay).clone());
     let picker = color_picker_overlay(session.clone());
+    let menu = context_menu_overlay(session.clone());
 
     overlay.host(
         Modifier::new().fill_max_size(),
-        ZStack(Modifier::new().fill_max_size()).child((scaffold, picker, confirm)),
+        ZStack(Modifier::new().fill_max_size()).child((scaffold, picker, menu, confirm)),
     )
+}
+
+fn context_menu_overlay(session: SessionRef) -> View {
+    let Some(menu) = session.borrow().context_menu.clone() else {
+        return ZStack(Modifier::new());
+    };
+    let th = theme();
+    let entries = menu.entries.clone();
+    let session_close = session.clone();
+    let session_entries = session.clone();
+
+    ZStack(Modifier::new().fill_max_size()).child((
+        // Transparent scrim: any click outside closes the menu.
+        Box(Modifier::new().fill_max_size().on_pointer_down(move |_| {
+            session_close.borrow_mut().close_context_menu();
+        })),
+        Box(Modifier::new()
+            .absolute()
+            .offset(None, Some(56.0), Some(16.0), None))
+        .child(Surface(
+            SurfaceConfig {
+                modifier: Modifier::new().width(220.0).padding(4.0),
+                color: th.surface_container_high,
+                content_color: th.on_surface,
+                shape_radius: 8.0,
+                border: Some((1.0, th.outline_variant)),
+                ..Default::default()
+            },
+            move || {
+                Column(Modifier::new().fill_max_width().gap(2.0))
+                    .child(render_menu_entries(session_entries.clone(), &entries))
+            },
+        )),
+    ))
+}
+
+fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> {
+    let th = theme();
+    entries
+        .iter()
+        .flat_map(|e| match e {
+            MenuEntry::Separator => {
+                vec![Box(Modifier::new()
+                    .height(1.0)
+                    .fill_max_width()
+                    .background(th.outline_variant))]
+            }
+            MenuEntry::Action {
+                id, label, enabled, ..
+            } => {
+                let action = id.clone();
+                let en = *enabled;
+                vec![
+                    Box(Modifier::new()
+                        .height(36.0)
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 12.0,
+                            top: 0.0,
+                            bottom: 0.0,
+                        })
+                        .align_items(repose_core::AlignItems::CENTER)
+                        .on_pointer_down({
+                            let session = session.clone();
+                            move |_| {
+                                if en {
+                                    session.borrow_mut().run_menu_action(action.clone());
+                                }
+                            }
+                        }))
+                    .child(
+                        Text(*label).size(th.typography.body_medium).color(if en {
+                            th.on_surface
+                        } else {
+                            th.on_surface_variant
+                        }),
+                    ),
+                ]
+            }
+            MenuEntry::Submenu { label, children } => {
+                let mut views = vec![
+                    Text(*label)
+                        .size(th.typography.label_small)
+                        .color(th.on_surface_variant)
+                        .modifier(Modifier::new().padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 8.0,
+                            top: 8.0,
+                            bottom: 2.0,
+                        })),
+                ];
+                views.extend(render_menu_entries(session.clone(), children));
+                views
+            }
+        })
+        .collect()
 }
 
 /// Transparent-to-closem modal layer containing the color picker popover,

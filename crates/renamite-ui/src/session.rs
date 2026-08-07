@@ -17,6 +17,7 @@ use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
 use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
 use repose_material::material3::DialogState;
+use smallvec::{SmallVec, smallvec};
 use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,10 @@ pub struct Session {
     pub swatches: renamite_behavior_common::color::SwatchHistory,
     /// The currently open color picker popover, if any.
     pub open_picker: Option<OpenPicker>,
+    /// The currently open context menu popover, if any.
+    pub context_menu: Option<ContextMenuState>,
+    /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
+    pub clipboard: Option<Vec<renamite_history::NodeTree>>,
 }
 
 /// A destructive action deferred behind the unsaved-changes guard.
@@ -156,6 +161,21 @@ pub enum PickerTarget {
     },
 }
 
+/// An open context-menu popover: its screen anchor, entries, and source.
+#[derive(Clone, Debug)]
+pub struct ContextMenuState {
+    /// Screen-space anchor for the popover (clamped by the overlay).
+    pub screen_pos: DVec2,
+    pub entries: Vec<renamite_behavior_common::context_menu::MenuEntry>,
+    pub source: ContextMenuSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ContextMenuSource {
+    Layers { row: renamite_model::NodeId },
+    Canvas { world: DVec2 },
+}
+
 impl Session {
     pub fn new(file: RenFile) -> Self {
         let engine = Engine::new(&file).expect("project");
@@ -198,6 +218,8 @@ impl Session {
             )),
             swatches: renamite_behavior_common::color::SwatchHistory::new(12),
             open_picker: None,
+            context_menu: None,
+            clipboard: None,
         }
     }
 
@@ -246,6 +268,196 @@ impl Session {
                 }
                 _ => {}
             }
+        }
+    }
+
+    pub fn open_context_menu(&mut self, menu: ContextMenuState) {
+        self.context_menu = Some(menu);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn close_context_menu(&mut self) {
+        if self.context_menu.is_none() {
+            return;
+        }
+        self.context_menu = None;
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Run a menu action. Host-side actions (Rename, clipboard ops, Duplicate)
+    /// are handled here; everything else routes to the pure dispatcher.
+    pub fn run_menu_action(&mut self, action: renamite_behavior_common::context_menu::MenuAction) {
+        use renamite_behavior_common::context_menu::{
+            MenuAction, MenuContext, dispatch_menu_action,
+        };
+
+        match &action {
+            MenuAction::Rename => {
+                if let Some(ContextMenuState {
+                    source: ContextMenuSource::Layers { row },
+                    ..
+                }) = &self.context_menu
+                {
+                    let name = self
+                        .file
+                        .document
+                        .nodes
+                        .get(*row)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_default();
+                    self.renaming = Some((*row, name));
+                }
+                self.close_context_menu();
+                return;
+            }
+            MenuAction::Copy | MenuAction::Cut => {
+                let cut = matches!(action, MenuAction::Cut);
+                self.clipboard_from_selection(cut);
+                self.close_context_menu();
+                return;
+            }
+            MenuAction::Paste => {
+                self.paste_clipboard();
+                self.close_context_menu();
+                return;
+            }
+            MenuAction::Duplicate => {
+                self.duplicate_selection();
+                self.close_context_menu();
+                return;
+            }
+            _ => {}
+        }
+
+        let world = self.context_menu.as_ref().and_then(|m| match m.source {
+            ContextMenuSource::Canvas { world } => Some(world),
+            ContextMenuSource::Layers { .. } => None,
+        });
+        let paint = self.current_paint.clone();
+        let outs = {
+            let ctx = MenuContext {
+                doc: &self.file.document,
+                selection: &self.selection.nodes,
+                comp: self.file.document.main,
+                world_pos: world,
+                has_clipboard: self.clipboard.is_some(),
+                current_paint: &paint,
+            };
+            dispatch_menu_action(&ctx, &action)
+        };
+        self.close_context_menu();
+        self.apply_outputs(outs.into());
+    }
+
+    fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
+        let sel = &self.selection.nodes;
+        sel.iter()
+            .copied()
+            .filter(|&id| {
+                !sel.iter().any(|&anc| {
+                    let mut p = self.file.document.nodes.get(id).and_then(|n| n.parent);
+                    while let Some(par) = p {
+                        if par == anc {
+                            return true;
+                        }
+                        p = self.file.document.nodes.get(par).and_then(|n| n.parent);
+                    }
+                    false
+                })
+            })
+            .collect()
+    }
+
+    fn tree_of(&self, id: renamite_model::NodeId) -> renamite_history::NodeTree {
+        let children: Vec<renamite_model::NodeId> = self
+            .file
+            .document
+            .nodes
+            .get(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        let node = self.file.document.nodes.get(id).cloned().unwrap();
+        renamite_history::NodeTree {
+            node,
+            id: None,
+            children: children.iter().map(|&c| self.tree_of(c)).collect(),
+        }
+    }
+
+    fn clipboard_from_selection(&mut self, cut: bool) {
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            return;
+        }
+        self.clipboard = Some(roots.iter().map(|&id| self.tree_of(id)).collect());
+        if cut {
+            let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = roots
+                .iter()
+                .map(|&id| renamite_history::EditorCommand::RemoveNode { id })
+                .collect();
+            self.apply_outputs(smallvec![
+                ToolOutput::BeginTransaction("Cut".into()),
+                ToolOutput::Commands(cmds),
+                ToolOutput::CommitTransaction,
+                ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![])),
+            ]);
+        }
+    }
+
+    fn insert_trees(
+        &mut self,
+        trees: Vec<renamite_history::NodeTree>,
+        offset: DVec2,
+        label: &str,
+    ) -> Vec<renamite_model::NodeId> {
+        let mut created = Vec::new();
+        self.history.begin(label.to_owned());
+        for mut t in trees {
+            nudge_tree(&mut t, offset);
+            if let Some(id) = self.history_apply(renamite_history::EditorCommand::InsertNode {
+                parent: renamite_model::Parent::Comp(self.file.document.main),
+                index: 0,
+                tree: t,
+            }) {
+                created.push(id);
+            }
+        }
+        self.history.commit();
+        self.dirty = true;
+        created
+    }
+
+    fn paste_clipboard(&mut self) {
+        let Some(trees) = self.clipboard.clone() else {
+            return;
+        };
+        if trees.is_empty() {
+            return;
+        }
+        let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Paste");
+        if !created.is_empty() {
+            self.selection.nodes = created;
+            self.ensure_selection_visible();
+            self.bump();
+        }
+    }
+
+    fn duplicate_selection(&mut self) {
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            return;
+        }
+        let created = self.insert_trees(
+            roots.iter().map(|&id| self.tree_of(id)).collect(),
+            DVec2::new(20.0, 20.0),
+            "Duplicate",
+        );
+        if !created.is_empty() {
+            self.selection.nodes = created;
+            self.ensure_selection_visible();
+            self.bump();
         }
     }
 
@@ -871,6 +1083,10 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
 
 pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
     pe_to_dvec(pe)
+}
+
+fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {
+    tree.node.transform.position.base += d;
 }
 
 /// Default empty document with a seeded ellipse so the artboard isn't blank.

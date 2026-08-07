@@ -76,6 +76,15 @@ pub enum EditorCommand {
         ids: Vec<NodeId>,
         group: NodeId,
     },
+    /// Atomic "group selection": create a fresh Group node at `parent` and
+    /// reparent `ids` into it, all in one undo step. `group` is None until
+    /// first apply, then filled so undo/redo reuse the same arena node.
+    GroupSelection {
+        ids: Vec<NodeId>,
+        parent: Parent,
+        index: usize,
+        group: Option<NodeId>,
+    },
     SetNodeFlags {
         id: NodeId,
         visible: Option<bool>,
@@ -444,6 +453,7 @@ fn apply_command(
         | RemoveNode { .. }
         | MoveNode { .. }
         | GroupNodes { .. }
+        | GroupSelection { .. }
         | SetNodeFlags { .. }
         | SetNodeName { .. }
         | SetTextContent { .. }
@@ -852,6 +862,49 @@ fn apply_document_command(
                 })
                 .collect();
             Ok((None, inverse))
+        }
+        GroupSelection {
+            ids,
+            parent,
+            index,
+            group,
+        } => {
+            let originals: Vec<(NodeId, Parent, usize)> = ids
+                .iter()
+                .filter_map(|&id| doc.locate(id).map(|(p, i)| (id, p, i)))
+                .collect();
+            if originals.len() != ids.len() {
+                return Err(ModelError::NotAttached.into());
+            }
+            let gid = match *group {
+                Some(g) => g,
+                None => {
+                    let g = doc.create_node(Node::new("Group", NodeKind::Group));
+                    *group = Some(g);
+                    g
+                }
+            };
+            if !doc.nodes.contains_key(gid) {
+                return Err(ModelError::MissingNode.into());
+            }
+            if doc.locate(gid).is_none() {
+                doc.attach(gid, *parent, *index)?;
+            }
+            for &id in ids.iter() {
+                doc.detach(id)?;
+                doc.attach(id, Parent::Node(gid), usize::MAX)?;
+            }
+            // Undo order matters: move ids back to their original parents
+            // FIRST, then detach the (now empty) group. Since undo applies
+            // the inverse list in reverse order, put the RemoveNode first so
+            // it runs last.
+            let mut inverse = vec![RemoveNode { id: gid }];
+            inverse.extend(originals.into_iter().map(|(id, parent, index)| MoveNode {
+                id,
+                new_parent: parent,
+                index,
+            }));
+            Ok((Some(gid), inverse))
         }
         SetNodeFlags {
             id,
@@ -1444,6 +1497,40 @@ mod tests {
         assert_eq!(w.doc.locate(id), Some((Parent::Comp(w.doc.main), 0)));
         h.redo(&mut w.pm()).unwrap();
         assert!(w.doc.locate(id).is_none());
+    }
+
+    #[test]
+    fn group_selection_undo_redo() {
+        let mut w = World::new();
+        let comp = Parent::Comp(w.doc.main);
+        let a = w.node();
+        let b = w.node();
+        let mut h = History::new();
+        let created = h
+            .apply(
+                &mut w.pm(),
+                EditorCommand::GroupSelection {
+                    ids: vec![a, b],
+                    parent: comp,
+                    index: 0,
+                    group: None,
+                },
+            )
+            .unwrap()
+            .created
+            .unwrap();
+        h.commit();
+        assert!(w.doc.locate(created).is_some(), "group attached");
+        assert_eq!(w.doc.nodes[created].children.len(), 2);
+        assert_eq!(w.doc.locate(a), Some((Parent::Node(created), 0)));
+        assert_eq!(w.doc.locate(b), Some((Parent::Node(created), 1)));
+        h.undo(&mut w.pm()).unwrap();
+        assert!(w.doc.locate(created).is_none(), "group detached on undo");
+        assert_eq!(w.doc.locate(a).map(|(p, _)| p), Some(comp));
+        assert_eq!(w.doc.locate(b).map(|(p, _)| p), Some(comp));
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.locate(a), Some((Parent::Node(created), 0)));
+        assert_eq!(w.doc.locate(b), Some((Parent::Node(created), 1)));
     }
 
     #[test]
