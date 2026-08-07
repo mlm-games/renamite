@@ -361,14 +361,36 @@ impl History {
         Ok(Applied { created })
     }
 
-    /// Close the open transaction and make it undoable.
+    /// Close the open transaction and make it undoable. Consecutive
+    /// transactions with the same label whose boundary commands coalesce
+    /// (e.g. one `SetTextContent` per keystroke under "Edit text") fold into
+    /// a single undo step.
     pub fn commit(&mut self) {
-        if let Some(t) = self.open.take()
-            && !t.forward.is_empty()
-        {
-            self.undo.push(t);
-            self.redo.clear();
+        let Some(t) = self.open.take() else {
+            return;
+        };
+        if t.forward.is_empty() {
+            return;
         }
+        let merge = self.undo.last().is_some_and(|prev| {
+            prev.label == t.label
+                && prev
+                    .forward
+                    .last()
+                    .zip(t.forward.first())
+                    .is_some_and(|(a, b)| {
+                        let mut a = a.clone();
+                        coalesce(&mut a, b)
+                    })
+        });
+        if merge {
+            let prev = self.undo.last_mut().expect("merge requires a prior entry");
+            prev.forward.extend(t.forward);
+            prev.inverse.extend(t.inverse);
+        } else {
+            self.undo.push(t);
+        }
+        self.redo.clear();
     }
 
     /// Discard the open transaction, applying its inverses.
@@ -862,7 +884,7 @@ fn apply_document_command(
         SetTextContent { id, text } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Text(t) = &mut n.kind else {
-                return Err(ModelError::MissingNode.into());
+                return Err(ModelError::WrongNodeKind("Text").into());
             };
             let old = std::mem::replace(&mut t.text, text.clone());
             Ok((None, vec![SetTextContent { id: *id, text: old }]))
@@ -875,7 +897,7 @@ fn apply_document_command(
         } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Style(st) = &mut n.kind else {
-                return Err(ModelError::MissingNode.into());
+                return Err(ModelError::WrongNodeKind("Style").into());
             };
             // Seed both stops with the current solid color so the gradient is
             // invisible until the tool drags the axis; stops then diverge.
@@ -907,7 +929,7 @@ fn apply_document_command(
         ConvertToSolid { id } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Style(st) = &mut n.kind else {
-                return Err(ModelError::MissingNode.into());
+                return Err(ModelError::WrongNodeKind("Style").into());
             };
             let prev = st.swap_paint(StylePaint::solid(st.paint().base_color()));
             Ok((
@@ -921,7 +943,7 @@ fn apply_document_command(
         SetPaint { id, paint } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Style(st) = &mut n.kind else {
-                return Err(ModelError::MissingNode.into());
+                return Err(ModelError::WrongNodeKind("Style").into());
             };
             let prev = st.swap_paint(paint.clone());
             Ok((
@@ -935,7 +957,7 @@ fn apply_document_command(
         SetTrimMode { id, mode } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Modifier(ModifierKind::TrimPath { mode: cur, .. }) = &mut n.kind else {
-                return Err(ModelError::MissingNode.into()); // wrong node kind
+                return Err(ModelError::WrongNodeKind("Trim Path modifier").into());
             };
             let old = std::mem::replace(cur, *mode);
             Ok((None, vec![SetTrimMode { id: *id, mode: old }]))
@@ -944,7 +966,7 @@ fn apply_document_command(
             let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
 
             let NodeKind::Style(StyleKind::Stroke { dash: current, .. }) = &mut node.kind else {
-                return Err(ModelError::MissingNode.into());
+                return Err(ModelError::WrongNodeKind("Stroke").into());
             };
 
             let old = std::mem::replace(current, dash.clone());
@@ -1574,6 +1596,46 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_edit_text_transactions_share_one_undo_step() {
+        let mut w = World::new();
+        let id = w.node();
+        w.doc.nodes[id].kind = NodeKind::Text(renamite_model::TextNode {
+            text: "Text".into(),
+            size: Animated::new(48.0),
+            align: Default::default(),
+            font: None,
+        });
+        let mut h = History::new();
+        for text in ["a", "ab", "abc"] {
+            h.begin("Edit text");
+            h.apply(
+                &mut w.pm(),
+                EditorCommand::SetTextContent {
+                    id,
+                    text: text.into(),
+                },
+            )
+            .unwrap();
+            h.commit();
+        }
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "abc");
+        // One undo unwinds all three keystrokes back to the pre-edit value.
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "Text");
+        h.redo(&mut w.pm()).unwrap();
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "abc");
+    }
+
+    #[test]
     fn set_text_content_wrong_kind_is_error() {
         let mut w = World::new();
         let id = w.node(); // group node, not text
@@ -1587,7 +1649,10 @@ mod tests {
                 },
             )
             .err();
-        assert!(matches!(err, Some(EditError::Model(ModelError::MissingNode))));
+        assert!(matches!(
+            err,
+            Some(EditError::Model(ModelError::WrongNodeKind("Text")))
+        ));
     }
 
     #[test]

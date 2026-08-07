@@ -376,7 +376,12 @@ impl Exporter<'_> {
                     ));
                 }
                 let font = renamite_text::FontRef::for_family(text.font.as_deref());
-                let outline = renamite_text::shape_text(&font, &text.text, text.size.base, text.align);
+                let outline = renamite_text::shape_text(
+                    &font,
+                    &text.text,
+                    text.size.base.max(0.1),
+                    text.align,
+                );
                 let item = json!({
                     "ty": "sh",
                     "nm": node.name,
@@ -706,10 +711,6 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
     }
 }
 
-/// Convert a `kurbo::BezPath` (from text shaping) into Lottie's multi-contour
-/// path shape format (`v`/`i`/`o` as contour arrays, `c` as a bool per
-/// contour). Quadratic segments are elevated to cubics since Lottie only has
-/// cubic tangents.
 fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
     let mut closed: Vec<bool> = Vec::new();
     let mut vertices: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -744,24 +745,24 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
                 prev = [p.x, p.y];
             }
             kurbo::PathEl::QuadTo(c, p) => {
+                // Elevate to an equivalent cubic (k = 2/3 along each segment).
                 let c1 = [
                     prev[0] + 2.0 / 3.0 * (c.x - prev[0]),
                     prev[1] + 2.0 / 3.0 * (c.y - prev[1]),
                 ];
-                let c2 = [
-                    p.x + 2.0 / 3.0 * (c.x - p.x),
-                    p.y + 2.0 / 3.0 * (c.y - p.y),
-                ];
-                v.push([p.x, p.y]);
-                i.push(c2);
-                o.push(c1);
-                prev = [p.x, p.y];
+                let c2 = [p.x + 2.0 / 3.0 * (c.x - p.x), p.y + 2.0 / 3.0 * (c.y - p.y)];
+                push_curve(&mut v, &mut i, &mut o, &mut prev, c1, c2, [p.x, p.y]);
             }
             kurbo::PathEl::CurveTo(c1, c2, p) => {
-                v.push([p.x, p.y]);
-                i.push([c2.x, c2.y]);
-                o.push([c1.x, c1.y]);
-                prev = [p.x, p.y];
+                push_curve(
+                    &mut v,
+                    &mut i,
+                    &mut o,
+                    &mut prev,
+                    [c1.x, c1.y],
+                    [c2.x, c2.y],
+                    [p.x, p.y],
+                );
             }
             kurbo::PathEl::ClosePath => {
                 contour_closed = true;
@@ -780,4 +781,131 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
         "i": ins,
         "o": outs
     })
+}
+
+fn push_curve(
+    v: &mut Vec<[f64; 2]>,
+    i: &mut Vec<[f64; 2]>,
+    o: &mut Vec<[f64; 2]>,
+    prev: &mut [f64; 2],
+    c1: [f64; 2],
+    c2: [f64; 2],
+    p: [f64; 2],
+) {
+    if let Some(out) = o.last_mut() {
+        *out = [c1[0] - prev[0], c1[1] - prev[1]];
+    }
+    v.push(p);
+    i.push([c2[0] - p[0], c2[1] - p[1]]);
+    o.push([0.0, 0.0]);
+    *prev = p;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kurbo::BezPath;
+    use renamite_model::Parent;
+
+    fn pts<'a>(v: &'a Value, key: &str) -> &'a Vec<Value> {
+        v.get(key).unwrap().as_array().unwrap()
+    }
+
+    fn approx_pt(a: &Value, x: f64, y: f64) {
+        let a = a.as_array().unwrap();
+        assert!(
+            (a[0].as_f64().unwrap() - x).abs() < 1e-9 && (a[1].as_f64().unwrap() - y).abs() < 1e-9,
+            "expected [{x}, {y}], got {a:?}"
+        );
+    }
+
+    #[test]
+    fn curve_tangents_are_relative_to_their_vertex() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((10.0, 5.0), (20.0, 20.0), (30.0, 0.0));
+        path.line_to((30.0, 40.0));
+        path.close_path();
+        let v = bezpath_to_lottie_path(&path);
+
+        assert_eq!(v["c"], json!([true]));
+        assert_eq!(v["v"], json!([[[0.0, 0.0], [30.0, 0.0], [30.0, 40.0]]]));
+        // Out tangent of vertex 0 = c1 - prev = (10,5) - (0,0).
+        assert_eq!(pts(&v, "o")[0][0], json!([10.0, 5.0]));
+        // In tangent of vertex 1 = c2 - p = (20,20) - (30,0).
+        assert_eq!(pts(&v, "i")[0][1], json!([-10.0, 20.0]));
+        // The trailing line segment carries zero tangents on both ends.
+        assert_eq!(pts(&v, "i")[0][0], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "o")[0][1], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "i")[0][2], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "o")[0][2], json!([0.0, 0.0]));
+    }
+
+    #[test]
+    fn multiple_contours_emit_flat_open_contour() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.move_to((20.0, 0.0));
+        path.quad_to((25.0, 10.0), (30.0, 0.0));
+        let v = bezpath_to_lottie_path(&path);
+
+        assert_eq!(v["c"], json!([false, false]));
+        assert_eq!(
+            v["v"],
+            json!([[[0.0, 0.0], [10.0, 0.0]], [[20.0, 0.0], [30.0, 0.0]]])
+        );
+        // Elevated quadratic: c1 = prev + 2/3*(c - prev) = (20+10/3, 0+20/3);
+        // tangents are the offsets, so o = 2/3*(c - prev), i = 2/3*(c - p).
+        approx_pt(&pts(&v, "o")[1][0], 2.0 / 3.0 * 5.0, 2.0 / 3.0 * 10.0);
+        approx_pt(&pts(&v, "i")[1][1], 2.0 / 3.0 * -5.0, 2.0 / 3.0 * 10.0);
+    }
+
+    #[test]
+    fn text_outline_exports_as_compound_path() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Text Group", NodeKind::Group));
+        let text = doc.create_node(Node::new(
+            "Text",
+            NodeKind::Text(renamite_model::TextNode {
+                text: "O".into(),
+                size: renamite_animation::Animated::new(48.0),
+                align: Default::default(),
+                font: None,
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(renamite_model::Color::rgba(0.0, 0.0, 0.0, 1.0)),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let value = crate::export(&doc).unwrap();
+        let path_json = value
+            .pointer("/layers/0/shapes/0/ks/k")
+            .expect("baked text path present");
+        assert_eq!(path_json["c"].as_array().unwrap().len() >= 1, true);
+        assert_eq!(
+            path_json["v"].as_array().unwrap().len(),
+            path_json["c"].as_array().unwrap().len(),
+            "one vertex contour per closed-flag contour"
+        );
+        // Every vertex carries a matching pair of tangent offsets.
+        for ((vs, ins), outs) in path_json["v"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(path_json["i"].as_array().unwrap().iter())
+            .zip(path_json["o"].as_array().unwrap().iter())
+        {
+            assert_eq!(vs.as_array().unwrap().len(), ins.as_array().unwrap().len());
+            assert_eq!(vs.as_array().unwrap().len(), outs.as_array().unwrap().len());
+        }
+    }
 }

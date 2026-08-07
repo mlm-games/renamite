@@ -100,8 +100,7 @@ mod tests {
     use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
     use renamite_model::{
         Color, FillRule, GradientStop, GradientStops, ModifierKind, Node, NodeKind, Parent,
-        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TextAlign, TextNode, TrimMode,
-        Value,
+        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value,
     };
 
     fn visible_shape_doc() -> Document {

@@ -8,5 +8,5 @@ description = "Pure text -> BezPath shaping (ttf-parser). No UI, no GPU, wasm-cl
 [dependencies]
 kurbo.workspace = true
 serde.workspace = true
-ttf-parser = "0.25"
+ttf-parser.workspace = true
 thiserror.workspace = true

@@ -1449,6 +1449,8 @@ pub enum Parent {
 pub enum ModelError {
     #[error("node not found")]
     MissingNode,
+    #[error("node kind mismatch (expected {0})")]
+    WrongNodeKind(&'static str),
     #[error("composition not found")]
     MissingComp,
     #[error("no property at path {0}")]

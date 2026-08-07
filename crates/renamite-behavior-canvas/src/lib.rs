@@ -3120,6 +3120,9 @@ mod tests {
         assert_eq!(paint.base_color(), Color::rgba(0.1, 0.8, 0.3, 1.0));
 
         history.undo(&mut world.pm()).unwrap();
-        assert_eq!(world.doc.compositions[world.doc.main].children.len(), before);
+        assert_eq!(
+            world.doc.compositions[world.doc.main].children.len(),
+            before
+        );
     }
 }

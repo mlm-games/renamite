@@ -55,7 +55,8 @@ impl FontRef {
     }
 
     /// The bundled default face (registered under its family name too, so
-    /// `for_family(Some("Noto Sans"))` and `for_family(None)` agree).
+    /// `for_family(Some("Noto Sans"))` and `for_family(None)` agree). Shares
+    /// the default's single allocated copy of the bytes.
     pub fn default_font() -> Self {
         Self {
             data: default_font_data().clone(),
@@ -141,11 +142,6 @@ pub fn registered_families() -> Vec<String> {
     names
 }
 
-#[cfg(test)]
-fn clear_registered_fonts() {
-    registry().lock().unwrap().fonts.clear();
-}
-
 /// Collects glyph outline segments into a `BezPath`. Font coordinates are
 /// y-up with the baseline at y = 0; the canvas is y-down, so `dy` holds the
 /// baseline and the y axis is flipped.
@@ -158,24 +154,43 @@ struct PathSink {
 
 impl OutlineBuilder for PathSink {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.path
-            .move_to((self.dx + x as f64 * self.scale, self.dy - y as f64 * self.scale));
+        self.path.move_to((
+            self.dx + x as f64 * self.scale,
+            self.dy - y as f64 * self.scale,
+        ));
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        self.path
-            .line_to((self.dx + x as f64 * self.scale, self.dy - y as f64 * self.scale));
+        self.path.line_to((
+            self.dx + x as f64 * self.scale,
+            self.dy - y as f64 * self.scale,
+        ));
     }
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
         self.path.quad_to(
-            (self.dx + x1 as f64 * self.scale, self.dy - y1 as f64 * self.scale),
-            (self.dx + x as f64 * self.scale, self.dy - y as f64 * self.scale),
+            (
+                self.dx + x1 as f64 * self.scale,
+                self.dy - y1 as f64 * self.scale,
+            ),
+            (
+                self.dx + x as f64 * self.scale,
+                self.dy - y as f64 * self.scale,
+            ),
         );
     }
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
         self.path.curve_to(
-            (self.dx + x1 as f64 * self.scale, self.dy - y1 as f64 * self.scale),
-            (self.dx + x2 as f64 * self.scale, self.dy - y2 as f64 * self.scale),
-            (self.dx + x as f64 * self.scale, self.dy - y as f64 * self.scale),
+            (
+                self.dx + x1 as f64 * self.scale,
+                self.dy - y1 as f64 * self.scale,
+            ),
+            (
+                self.dx + x2 as f64 * self.scale,
+                self.dy - y2 as f64 * self.scale,
+            ),
+            (
+                self.dx + x as f64 * self.scale,
+                self.dy - y as f64 * self.scale,
+            ),
         );
     }
     fn close(&mut self) {
@@ -190,9 +205,8 @@ pub fn shape_text(font: &FontRef, text: &str, size: f64, align: TextAlign) -> Be
     let face = font.face();
     let upem = face.units_per_em() as f64;
     let scale = size / upem.max(1.0);
-    let line_height = (face.ascender() as f64 - face.descender() as f64
-        + face.line_gap() as f64)
-        * scale;
+    let line_height =
+        (face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64) * scale;
     let mut out = BezPath::new();
     for (line_idx, line) in text.split('\n').enumerate() {
         let baseline = line_idx as f64 * line_height;
@@ -285,7 +299,6 @@ mod tests {
 
     #[test]
     fn for_family_unknown_falls_back_to_default() {
-        clear_registered_fonts();
         let font = FontRef::for_family(Some("Definitely Not A Font"));
         let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
         assert!(!p.elements().is_empty());
@@ -293,7 +306,6 @@ mod tests {
 
     #[test]
     fn register_font_data_keys_by_family_and_resolves() {
-        clear_registered_fonts();
         let name = register_font_data(DEFAULT_FONT.to_vec()).expect("valid font registers");
         assert_eq!(
             name,

@@ -114,9 +114,9 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     }
 
     // Single selected text: multiline field editing its content via
-    // SetTextContent. One begin/commit transaction per keystroke (coalescing
-    // would fold repeats within a single open transaction, but TextField here
-    // exposes no focus callbacks to bracket them).
+    // SetTextContent. One begin/commit transaction per keystroke; the history
+    // layer folds consecutive same-label "Edit text" transactions on the same
+    // node into a single undo step, so typing stays one undo.
     if ids.len() == 1
         && let Some(section) = text_section(session.clone(), ids[0])
     {
@@ -730,56 +730,77 @@ fn enum2_segment(
 }
 
 fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
-    let content = {
+    let (text_id, content) = {
         let session = session.borrow();
-        match &session.file.document.nodes.get(id)?.kind {
-            NodeKind::Text(t) => t.text.clone(),
+        let doc = &session.file.document;
+        match &doc.nodes.get(id)?.kind {
+            NodeKind::Text(t) => (id, t.text.clone()),
+            // The text tool wraps Text + Fill in a group, and the session
+            // auto-selects the group it created; editing a group that holds
+            // exactly one Text child edits that text.
+            NodeKind::Group => {
+                let children = doc.nodes.get(id)?.children.clone();
+                let mut text_ids = children.into_iter().filter(|cid| {
+                    matches!(
+                        doc.nodes.get(*cid).map(|n| &n.kind),
+                        Some(NodeKind::Text(_))
+                    )
+                });
+                let text_id = text_ids.next()?;
+                if text_ids.next().is_some() {
+                    return None;
+                }
+                let NodeKind::Text(t) = &doc.nodes.get(text_id)?.kind else {
+                    return None;
+                };
+                (text_id, t.text.clone())
+            }
             _ => return None,
         }
     };
     let th = theme();
     Some(
-        Column(Modifier::new().fill_max_width())
-            .child((
-                Text("Text")
-                    .size(th.typography.label_medium)
-                    .color(th.on_surface_variant)
-                    .modifier(Modifier::new().padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 12.0,
-                        top: 12.0,
-                        bottom: 4.0,
-                    })),
-                Row(Modifier::new()
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 4.0,
-                    }))
-                .child(TextField(
-                    Modifier::new().fill_max_width(),
-                    content,
-                    {
-                        let session = session.clone();
-                        move |text: String| {
-                            let mut s = session.borrow_mut();
-                            s.apply_outputs(smallvec![
-                                ToolOutput::BeginTransaction("Edit text".into()),
-                                ToolOutput::Commands(smallvec![
-                                    EditorCommand::SetTextContent { id, text }
-                                ]),
-                                ToolOutput::CommitTransaction,
-                            ]);
-                        }
-                    },
-                    TextFieldConfig {
-                        single_line: false,
-                        ..Default::default()
-                    },
-                )),
+        Column(Modifier::new().fill_max_width()).child((
+            Text("Text")
+                .size(th.typography.label_medium)
+                .color(th.on_surface_variant)
+                .modifier(Modifier::new().padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 12.0,
+                    top: 12.0,
+                    bottom: 4.0,
+                })),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 0.0,
+                    bottom: 4.0,
+                }))
+            .child(TextField(
+                Modifier::new().fill_max_width(),
+                content,
+                {
+                    let session = session.clone();
+                    move |text: String| {
+                        let mut s = session.borrow_mut();
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Edit text".into()),
+                            ToolOutput::Commands(smallvec![EditorCommand::SetTextContent {
+                                id: text_id,
+                                text
+                            }]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                },
+                TextFieldConfig {
+                    single_line: false,
+                    ..Default::default()
+                },
             )),
+        )),
     )
 }
 
