@@ -101,6 +101,10 @@ pub fn AppTopBar(session: SessionRef) -> View {
                 let session = session.clone();
                 move || file::import_lottie(&session)
             }),
+            CompactIconAction(Symbols::font_download, "Import Font", {
+                let session = session.clone();
+                move || file::import_font(&session)
+            }),
             CompactIconAction(Symbols::file_download, "Export Lottie", {
                 let session = session.clone();
                 move || file::export_lottie(&session)

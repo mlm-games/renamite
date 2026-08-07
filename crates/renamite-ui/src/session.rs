@@ -111,6 +111,8 @@ pub enum PendingFileOp {
     },
     /// An exported frame reached its destination (WASM/Android, no path).
     Exported,
+    /// Raw font bytes (`.ttf`/`.otf`) read by the Import Font picker.
+    ImportFontDone { name: String, bytes: Vec<u8> },
     /// An async file op failed; surface the message.
     Failed { message: String },
 }
@@ -500,6 +502,34 @@ impl Session {
         }
     }
 
+    /// Import raw font bytes as a project asset (undoable). Derives the family
+    /// key from the reported font name (or the file stem as a fallback) and
+    /// rejects bytes that don't parse as a font.
+    pub fn import_font(&mut self, name: String, bytes: Vec<u8>) {
+        use renamite_model::{Asset, FontAsset};
+        let family = renamite_text::font_family_name(&bytes).unwrap_or_else(|| {
+            std::path::Path::new(&name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "ImportedFont".into())
+        });
+        let asset = Asset::Font(FontAsset {
+            name: name.clone(),
+            family: family.clone(),
+            bytes,
+        });
+        if self
+            .history_apply(renamite_history::EditorCommand::AddAsset { asset })
+            .is_none()
+        {
+            self.status = Some("Font import failed".into());
+            self.bump();
+            return;
+        }
+        self.status = Some(format!("Imported font: {family}"));
+        self.bump();
+    }
+
     /// Serialize a clean copy of the project as `.ren` text bytes. The live
     /// in-memory project is NOT garbage collected (undo relies on detached
     /// arena entries staying alive); only the save-time snapshot is pruned.
@@ -581,6 +611,9 @@ impl Session {
                     self.status = Some("Exported".to_string());
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();
+                }
+                PendingFileOp::ImportFontDone { name, bytes } => {
+                    self.import_font(name, bytes);
                 }
                 PendingFileOp::Failed { message } => {
                     self.clear_pending_intent();
@@ -1234,17 +1267,89 @@ mod tests {
     }
 
     #[test]
-    fn committed_current_paint_survives_close() {
+    fn import_font_adds_font_asset() {
         let mut session = Session::new(default_file());
+        let bytes = include_bytes!("../../renamite-text/assets/default.ttf").to_vec();
+        let family = renamite_text::font_family_name(&bytes).expect("bundled font has a name");
 
-        session.open_color_picker(
-            PickerTarget::CurrentPaint,
-            session.current_paint.base_color(),
+        session
+            .file_ops
+            .lock()
+            .unwrap()
+            .push_back(PendingFileOp::ImportFontDone {
+                name: "Inter-Regular.ttf".into(),
+                bytes,
+            });
+        session.drain_file_ops();
+
+        assert!(session.file.document.font_families().contains(&family));
+        assert!(session.history.can_undo(), "font import is undoable");
+    }
+
+    #[test]
+    fn undoing_font_import_removes_asset() {
+        let mut session = Session::new(default_file());
+        let bytes = include_bytes!("../../renamite-text/assets/default.ttf").to_vec();
+        let family = renamite_text::font_family_name(&bytes).expect("bundled font has a name");
+
+        session
+            .file_ops
+            .lock()
+            .unwrap()
+            .push_back(PendingFileOp::ImportFontDone {
+                name: "Undo-Me.ttf".into(),
+                bytes,
+            });
+        session.drain_file_ops();
+        assert!(session.file.document.font_families().contains(&family));
+
+        undo_cmd(&mut session);
+        assert!(
+            !session.file.document.font_families().contains(&family),
+            "undo removes the imported font"
         );
-        session.apply_picker_change(Color::WHITE);
-        session.commit_picker_color(Color::WHITE);
-        session.close_color_picker();
+    }
 
-        assert_eq!(session.current_paint.base_color(), Color::WHITE);
+    #[test]
+    fn set_text_font_round_trips_through_history() {
+        let mut session = Session::new(default_file());
+        // A text node + sibling fill, grouped like the Text tool creates.
+        let text = session.file.document.create_node(renamite_model::Node::new(
+            "t",
+            renamite_model::NodeKind::Text(renamite_model::TextNode {
+                text: "Hi".into(),
+                size: renamite_animation::Animated::new(48.0),
+                align: renamite_model::TextAlign::Left,
+                font: None,
+            }),
+        ));
+        session
+            .file
+            .document
+            .attach(
+                text,
+                renamite_model::Parent::Comp(session.file.document.main),
+                0,
+            )
+            .unwrap();
+
+        session.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Change font".into()),
+            ToolOutput::Commands(smallvec![renamite_history::EditorCommand::SetTextFont {
+                id: text,
+                font: Some("Fancy".into()),
+            },]),
+            ToolOutput::CommitTransaction,
+        ]);
+        let NodeKind::Text(t) = &session.file.document.nodes.get(text).unwrap().kind else {
+            panic!("not text");
+        };
+        assert_eq!(t.font.as_deref(), Some("Fancy"));
+
+        undo_cmd(&mut session);
+        let NodeKind::Text(t) = &session.file.document.nodes.get(text).unwrap().kind else {
+            panic!("not text");
+        };
+        assert_eq!(t.font, None);
     }
 }

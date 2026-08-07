@@ -25,6 +25,7 @@ renamite-machine.workspace = true
 renamite-render-bridge.workspace = true
 renamite-platform.workspace = true
 renamite-render-offscreen.workspace = true
+renamite-text.workspace = true
 web-workers = "0.2"
 glam.workspace = true
 kurbo.workspace = true

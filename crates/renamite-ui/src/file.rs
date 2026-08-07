@@ -345,6 +345,40 @@ fn import_lottie_inner(session: &SessionRef) {
     );
 }
 
+/// Read `.ttf` / `.otf` bytes into the project as a font asset (undoable).
+/// The family key is derived by `Session::import_font` from the font itself.
+pub fn import_font(session: &SessionRef) {
+    let ops = { session.borrow().file_ops.clone() };
+    renamite_platform::dialogs::pick_open_file(
+        "Import Font",
+        &["ttf", "otf"],
+        Box::new(move |picked| {
+            let op = match picked {
+                None => None,
+                Some(PickedFile::Path(path)) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Font".into());
+                    match std::fs::read(&path) {
+                        Ok(bytes) => Some(PendingFileOp::ImportFontDone { name, bytes }),
+                        Err(e) => Some(PendingFileOp::Failed {
+                            message: format!("Font import failed: {e}"),
+                        }),
+                    }
+                }
+                Some(PickedFile::Bytes { name, data }) => {
+                    Some(PendingFileOp::ImportFontDone { name, bytes: data })
+                }
+            };
+            if let Some(op) = op {
+                ops.lock().unwrap().push_back(op);
+            }
+            wake_ui();
+        }),
+    );
+}
+
 /// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_ren(session: &SessionRef, path: &Path) -> bool {

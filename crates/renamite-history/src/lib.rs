@@ -6,8 +6,8 @@ use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
 use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
-    Document, GradientKind, GradientStop, GradientStops, KeyframeData, ModelError, ModifierKind,
-    Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind, StylePaint, Value,
+    Asset, AssetId, Document, GradientKind, GradientStop, GradientStops, KeyframeData, ModelError,
+    ModifierKind, Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind, StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -99,6 +99,21 @@ pub enum EditorCommand {
     SetTextContent {
         id: NodeId,
         text: String,
+    },
+    /// Whole-field swap of a text node's font family key (`TextNode.font`).
+    /// Exact inverse: restore the previous family (or `None` = bundled
+    /// default). Coalesces per node, like `SetTextContent`.
+    SetTextFont {
+        id: NodeId,
+        font: Option<String>,
+    },
+    /// Insert a project asset (font/image bytes). Exact inverse: remove it.
+    AddAsset {
+        asset: Asset,
+    },
+    /// Detach a project asset by its arena id. Exact inverse: re-insert it.
+    RemoveAsset {
+        id: AssetId,
     },
     /// Swap a fill/stroke's paint for a gradient seeded from its current
     /// solid color. Exact inverse: restore the previous `StylePaint`.
@@ -457,6 +472,9 @@ fn apply_command(
         | SetNodeFlags { .. }
         | SetNodeName { .. }
         | SetTextContent { .. }
+        | SetTextFont { .. }
+        | AddAsset { .. }
+        | RemoveAsset { .. }
         | ConvertToGradient { .. }
         | ConvertToSolid { .. }
         | SetPaint { .. }
@@ -942,6 +960,22 @@ fn apply_document_command(
             let old = std::mem::replace(&mut t.text, text.clone());
             Ok((None, vec![SetTextContent { id: *id, text: old }]))
         }
+        SetTextFont { id, font } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Text(t) = &mut n.kind else {
+                return Err(ModelError::WrongNodeKind("Text").into());
+            };
+            let old = std::mem::replace(&mut t.font, font.clone());
+            Ok((None, vec![SetTextFont { id: *id, font: old }]))
+        }
+        AddAsset { asset } => {
+            let id = doc.assets.insert(asset.clone());
+            Ok((None, vec![RemoveAsset { id }]))
+        }
+        RemoveAsset { id } => {
+            let asset = doc.assets.remove(*id).ok_or(ModelError::MissingNode)?;
+            Ok((None, vec![AddAsset { asset }]))
+        }
         ConvertToGradient {
             id,
             kind,
@@ -1208,6 +1242,7 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
         (SetNodeFlags { id, .. }, SetNodeFlags { id: nid, .. }) => *id == *nid,
         (SetNodeName { id, .. }, SetNodeName { id: nid, .. }) => *id == *nid,
         (SetTextContent { id, .. }, SetTextContent { id: nid, .. }) => *id == *nid,
+        (SetTextFont { id, .. }, SetTextFont { id: nid, .. }) => *id == *nid,
         (
             AddClipKey {
                 clip,
@@ -1376,7 +1411,8 @@ pub enum ToolId {
 mod tests {
     use super::*;
     use renamite_model::{
-        AnimatedDash, Color, NodeKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
+        AnimatedDash, Asset, Color, FontAsset, NodeKind, StrokeCap, StrokeJoin, StyleKind,
+        StylePaint, TextNode,
     };
 
     fn f64_key(f: i64, v: f64) -> KeyframeData {
@@ -1563,6 +1599,81 @@ mod tests {
             w.doc.get_static(id, &prop).unwrap(),
             Value::DVec2(glam::DVec2::new(10.0, 20.0))
         );
+    }
+
+    #[test]
+    fn set_text_font_undo_redo_round_trips() {
+        let mut world = World::new();
+        let id = world.node();
+        world.doc.nodes[id].kind = NodeKind::Text(TextNode {
+            text: "Hi".into(),
+            size: Animated::new(48.0),
+            align: renamite_model::TextAlign::Left,
+            font: None,
+        });
+
+        let mut history = History::new();
+        history
+            .apply(
+                &mut world.pm(),
+                EditorCommand::SetTextFont {
+                    id,
+                    font: Some("Inter".into()),
+                },
+            )
+            .unwrap();
+        history.commit();
+
+        let NodeKind::Text(text) = &world.doc.nodes[id].kind else {
+            panic!("not text");
+        };
+        assert_eq!(text.font.as_deref(), Some("Inter"));
+
+        history.undo(&mut world.pm()).unwrap();
+        let NodeKind::Text(text) = &world.doc.nodes[id].kind else {
+            panic!("not text");
+        };
+        assert_eq!(text.font, None);
+
+        history.redo(&mut world.pm()).unwrap();
+        let NodeKind::Text(text) = &world.doc.nodes[id].kind else {
+            panic!("not text");
+        };
+        assert_eq!(text.font.as_deref(), Some("Inter"));
+    }
+
+    #[test]
+    fn add_remove_asset_undo_redo_round_trips() {
+        let mut world = World::new();
+        let mut history = History::new();
+        let asset = Asset::Font(FontAsset {
+            name: "Inter-Regular.ttf".into(),
+            family: "Inter Regular".into(),
+            bytes: vec![1, 2, 3, 4],
+        });
+
+        // Apply AddAsset; the asset lands in the arena immediately.
+        history
+            .apply(
+                &mut world.pm(),
+                EditorCommand::AddAsset {
+                    asset: asset.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(world.doc.assets.len(), 1);
+        assert_eq!(world.doc.font_families(), vec!["Inter Regular"]);
+        let id = world.doc.assets.iter().next().unwrap().0;
+        history.commit();
+
+        history.undo(&mut world.pm()).unwrap();
+        assert_eq!(world.doc.assets.len(), 0);
+
+        history.redo(&mut world.pm()).unwrap();
+        // slotmap reinserts at a fresh key, but the family is intact.
+        assert_eq!(world.doc.assets.len(), 1);
+        assert_eq!(world.doc.font_families(), vec!["Inter Regular"]);
+        assert_ne!(world.doc.assets.iter().next().unwrap().0, id);
     }
 
     #[test]

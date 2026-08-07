@@ -375,13 +375,31 @@ impl Exporter<'_> {
                         "animated `text.size` bakes to its base value on export",
                     ));
                 }
-                let font = renamite_text::FontRef::for_family(text.font.as_deref());
-                let outline = renamite_text::shape_text(
-                    &font,
-                    &text.text,
-                    text.size.base.max(0.1),
-                    text.align,
-                );
+                let outline = if let Some((_, font)) = text
+                    .font
+                    .as_deref()
+                    .and_then(|f| self.document.font_asset_for_family(f))
+                {
+                    renamite_text::shape_text_from_bytes(
+                        &font.bytes,
+                        &text.text,
+                        text.size.base.max(0.1),
+                        text.align,
+                    )
+                    .unwrap_or_else(|_| {
+                        renamite_text::shape_text_default(
+                            &text.text,
+                            text.size.base.max(0.1),
+                            text.align,
+                        )
+                    })
+                } else {
+                    renamite_text::shape_text_default(
+                        &text.text,
+                        text.size.base.max(0.1),
+                        text.align,
+                    )
+                };
                 let item = json!({
                     "ty": "sh",
                     "nm": node.name,

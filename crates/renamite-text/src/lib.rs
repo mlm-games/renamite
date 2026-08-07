@@ -198,6 +198,23 @@ impl OutlineBuilder for PathSink {
     }
 }
 
+/// Shape `text` from raw font bytes (TTF/OTF). Errors if the bytes are not a
+/// parseable font; callers should fall back to the bundled default.
+pub fn shape_text_from_bytes(
+    bytes: &[u8],
+    text: &str,
+    size: f64,
+    align: TextAlign,
+) -> Result<BezPath, TextError> {
+    let font = FontRef::parse(bytes)?;
+    Ok(shape_text(&font, text, size, align))
+}
+
+/// Shape `text` with the bundled default face.
+pub fn shape_text_default(text: &str, size: f64, align: TextAlign) -> BezPath {
+    shape_text(&FontRef::default_font(), text, size, align)
+}
+
 /// Shape `text` at `size` (px per em) into one combined outline path.
 ///
 /// Origin: (0, 0) is the first line's baseline start; lines advance downward.

@@ -225,6 +225,29 @@ mod tests {
     }
 
     #[test]
+    fn font_assets_survive_save_and_load() {
+        use renamite_model::{Asset, Document, FontAsset};
+        let mut doc = Document::empty();
+        doc.assets.insert(Asset::Font(FontAsset {
+            name: "Inter-Regular.ttf".into(),
+            family: "Inter".into(),
+            bytes: vec![0, 1, 2, 3, 4, 5],
+        }));
+        let f = RenFile::new(doc, "fonts");
+        let back = open(&save(&f).unwrap()).unwrap();
+        assert_eq!(back.document.assets.len(), 1);
+        let (_, asset) = back.document.assets.iter().next().unwrap();
+        match asset {
+            Asset::Font(font) => {
+                assert_eq!(font.name, "Inter-Regular.ttf");
+                assert_eq!(font.family, "Inter");
+                assert_eq!(font.bytes, vec![0, 1, 2, 3, 4, 5]);
+            }
+            other => panic!("expected a font asset, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn future_version_rejected() {
         let f = RenFile {
             format_version: 999,

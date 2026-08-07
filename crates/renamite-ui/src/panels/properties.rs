@@ -730,11 +730,11 @@ fn enum2_segment(
 }
 
 fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
-    let (text_id, content) = {
+    let (text_id, content, font, fonts) = {
         let session = session.borrow();
         let doc = &session.file.document;
         match &doc.nodes.get(id)?.kind {
-            NodeKind::Text(t) => (id, t.text.clone()),
+            NodeKind::Text(t) => (id, t.text.clone(), t.font.clone(), doc.font_families()),
             // The text tool wraps Text + Fill in a group, and the session
             // auto-selects the group it created; editing a group that holds
             // exactly one Text child edits that text.
@@ -753,12 +753,32 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                 let NodeKind::Text(t) = &doc.nodes.get(text_id)?.kind else {
                     return None;
                 };
-                (text_id, t.text.clone())
+                (text_id, t.text.clone(), t.font.clone(), doc.font_families())
             }
             _ => return None,
         }
     };
     let th = theme();
+
+    // Font-family chips: "Default" (None) plus every embedded project font.
+    let mut chips: Vec<View> = vec![font_chip(
+        session.clone(),
+        text_id,
+        "Default".to_string(),
+        None,
+        font.is_none(),
+    )];
+    for family in fonts {
+        let active = font.as_deref() == Some(family.as_str());
+        chips.push(font_chip(
+            session.clone(),
+            text_id,
+            family.clone(),
+            Some(family),
+            active,
+        ));
+    }
+
     Some(
         Column(Modifier::new().fill_max_width()).child((
             Text("Text")
@@ -800,8 +820,73 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                     ..Default::default()
                 },
             )),
+            Text("Font")
+                .size(th.typography.body_medium)
+                .color(th.on_surface)
+                .modifier(Modifier::new().padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 8.0,
+                    bottom: 4.0,
+                })),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 0.0,
+                    bottom: 4.0,
+                })
+                .gap(6.0))
+            .child(chips),
         )),
     )
+}
+
+/// One selectable font-family chip in the text properties section.
+fn font_chip(
+    session: SessionRef,
+    text_id: NodeId,
+    label: String,
+    family: Option<String>,
+    active: bool,
+) -> View {
+    let th = theme();
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |_| {
+                        let mut s = session.borrow_mut();
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Change font".into()),
+                            ToolOutput::Commands(smallvec![EditorCommand::SetTextFont {
+                                id: text_id,
+                                font: family.clone(),
+                            }]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+        )
 }
 
 fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {

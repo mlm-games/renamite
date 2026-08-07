@@ -700,9 +700,22 @@ pub enum BlendMode {
     Multiply,
     Screen,
 }
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Asset {
     Image,
+    Font(FontAsset),
+}
+
+/// A project font: the user-visible name, the logical family key text nodes
+/// reference, and the raw TTF/OTF bytes (saved/loaded inside the project).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FontAsset {
+    /// Display name in the UI (e.g. "Inter-Regular.ttf").
+    pub name: String,
+    /// Logical family key that `TextNode.font` references.
+    pub family: String,
+    /// Raw TTF/OTF bytes.
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1036,8 +1049,17 @@ fn eval_group(
             NodeKind::Text(t) => {
                 let ntf = affine_of(&sample_transform(n, id, frame, ov));
                 let size = ov_f64(ov, id, "text.size", t.size.value_at(frame)).max(0.1);
-                let font = renamite_text::FontRef::for_family(t.font.as_deref());
-                let outline = renamite_text::shape_text(&font, &t.text, size, t.align);
+                // Prefer an embedded project font by family.
+                let outline = if let Some((_, font)) =
+                    t.font.as_deref().and_then(|f| doc.font_asset_for_family(f))
+                {
+                    renamite_text::shape_text_from_bytes(&font.bytes, &t.text, size, t.align)
+                        .unwrap_or_else(|_| {
+                            renamite_text::shape_text_default(&t.text, size, t.align)
+                        })
+                } else {
+                    renamite_text::shape_text_default(&t.text, size, t.align)
+                };
                 paths.push(ShapeEntry {
                     node: id,
                     affine: ntf,
@@ -1564,6 +1586,30 @@ impl Document {
             mark(self, r, &mut live);
         }
         self.nodes.retain(|id, _| live.contains(&id));
+    }
+
+    /// The font asset whose family matches `family`, if the project has one.
+    /// Surfaces the `AssetId` (for removal) alongside the asset.
+    pub fn font_asset_for_family(&self, family: &str) -> Option<(AssetId, &FontAsset)> {
+        self.assets.iter().find_map(|(id, asset)| match asset {
+            Asset::Font(font) if font.family == family => Some((id, font)),
+            _ => None,
+        })
+    }
+
+    /// Sorted, deduplicated family keys of every font asset in the project.
+    pub fn font_families(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .assets
+            .iter()
+            .filter_map(|(_, asset)| match asset {
+                Asset::Font(font) => Some(font.family.clone()),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 }
 
@@ -2486,6 +2532,106 @@ mod tests {
         assert_eq!(scene.items.len(), 1);
         assert!(!scene.items[0].path.elements().is_empty());
         assert_eq!(scene.items[0].node, text);
+    }
+
+    #[test]
+    fn font_asset_lookup_finds_family() {
+        let mut doc = Document::empty();
+        let id = doc.assets.insert(Asset::Font(FontAsset {
+            name: "Test".into(),
+            family: "test".into(),
+            bytes: vec![1, 2, 3],
+        }));
+
+        let found = doc.font_asset_for_family("test").unwrap();
+        assert_eq!(found.0, id);
+        assert_eq!(found.1.family, "test");
+        assert!(doc.font_asset_for_family("missing").is_none());
+    }
+
+    #[test]
+    fn font_families_sorted_and_deduped() {
+        let mut doc = Document::empty();
+        doc.assets.insert(Asset::Font(FontAsset {
+            name: "B".into(),
+            family: "zeta".into(),
+            bytes: vec![],
+        }));
+        doc.assets.insert(Asset::Font(FontAsset {
+            name: "A".into(),
+            family: "alpha".into(),
+            bytes: vec![],
+        }));
+        doc.assets.insert(Asset::Font(FontAsset {
+            name: "dup".into(),
+            family: "alpha".into(),
+            bytes: vec![],
+        }));
+        assert_eq!(doc.font_families(), vec!["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn text_prefers_project_font_family() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        let font_bytes = include_bytes!("../../renamite-text/assets/default.ttf").to_vec();
+        doc.assets.insert(Asset::Font(FontAsset {
+            name: "Default Test Font".into(),
+            family: "testfont".into(),
+            bytes: font_bytes,
+        }));
+
+        let text = doc.create_node(Node::new(
+            "t",
+            NodeKind::Text(TextNode {
+                text: "Hello".into(),
+                size: Animated::new(48.0),
+                align: TextAlign::Left,
+                font: Some("testfont".into()),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Comp(comp), 0).unwrap();
+        doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert!(!scene.items[0].path.elements().is_empty());
+    }
+
+    #[test]
+    fn text_with_unknown_family_falls_back_to_default() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let text = doc.create_node(Node::new(
+            "t",
+            NodeKind::Text(TextNode {
+                text: "Hello".into(),
+                size: Animated::new(48.0),
+                align: TextAlign::Left,
+                font: Some("not-a-font-family".into()),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Comp(comp), 0).unwrap();
+        doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert!(!scene.items[0].path.elements().is_empty());
     }
 
     #[test]
