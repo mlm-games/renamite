@@ -229,6 +229,13 @@ pub fn ToolRail(session: SessionRef) -> View {
         ),
         tool(
             session.clone(),
+            ToolId::Text,
+            Symbols::text_fields,
+            "Text",
+            selected,
+        ),
+        tool(
+            session.clone(),
             ToolId::Gradient,
             Symbols::gradient,
             "Gradient",

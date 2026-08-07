@@ -218,6 +218,18 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
         NodeKind::Style(StyleKind::Fill { .. }) => {
             d.push(pd("Fill", "Color", "fill.color", PropKind::Color));
         }
+        NodeKind::Text(_) => {
+            d.push(pd(
+                "Text",
+                "Size",
+                "text.size",
+                PropKind::F64 {
+                    min: Some(1.0),
+                    max: None,
+                    step: 1.0,
+                },
+            ));
+        }
         NodeKind::Style(StyleKind::Stroke { .. }) => {
             d.push(pd("Stroke", "Color", "stroke.color", PropKind::Color));
             d.push(pd(
@@ -569,5 +581,29 @@ mod tests {
             .find(|r| r.desc.path.as_str() == "round.radius")
             .expect("radius row");
         assert_eq!(radius.value, Value::F64(28.0));
+    }
+
+    #[test]
+    fn text_lists_size_prop() {
+        use renamite_animation::Animated;
+        use renamite_model::{TextAlign, TextNode};
+        let mut doc = Document::empty();
+        let t = doc.create_node(Node::new(
+            "t",
+            NodeKind::Text(TextNode {
+                text: "Hi".into(),
+                size: Animated::new(64.0),
+                align: TextAlign::Left,
+                font: None,
+            }),
+        ));
+        doc.attach(t, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, t, Frame(0));
+        let size = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "text.size")
+            .expect("size row");
+        assert_eq!(size.value, Value::F64(64.0));
+        assert!(matches!(size.desc.kind, PropKind::F64 { .. }));
     }
 }

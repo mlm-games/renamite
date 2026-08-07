@@ -100,7 +100,8 @@ mod tests {
     use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
     use renamite_model::{
         Color, FillRule, GradientStop, GradientStops, ModifierKind, Node, NodeKind, Parent,
-        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TrimMode, Value,
+        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TextAlign, TextNode, TrimMode,
+        Value,
     };
 
     fn visible_shape_doc() -> Document {
@@ -489,5 +490,97 @@ mod tests {
         let text = serde_json::to_string(&exported).unwrap();
         assert!(text.contains("\"eo\""));
         assert!(text.contains("\"so\""));
+    }
+
+    #[test]
+    fn text_bakes_to_path_outline() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Text Group", NodeKind::Group));
+        let text = doc.create_node(Node::new(
+            "Text",
+            NodeKind::Text(TextNode {
+                text: "Hi".into(),
+                size: Animated::new(48.0),
+                align: TextAlign::Left,
+                font: None,
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let report = export_with_report(&doc).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|w| !w.message.contains("animated `text.size`")),
+            "static text must not warn about size: {:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("baked to path outlines")),
+            "text bake must be surfaced: {:?}",
+            report.warnings
+        );
+        let layers = report.value["layers"].as_array().unwrap();
+        let shapes = layers[0]["shapes"].as_array().unwrap();
+        let serialized = serde_json::to_string(&shapes).unwrap();
+        assert!(serialized.contains("\"ty\":\"sh\""));
+        assert!(serialized.contains("\"ty\":\"fl\""));
+        assert!(serialized.contains("\"v\":[["));
+    }
+
+    #[test]
+    fn animated_text_size_warns_and_bakes_base() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Text Group", NodeKind::Group));
+        let text = doc.create_node(Node::new(
+            "Text",
+            NodeKind::Text(TextNode {
+                text: "Pulse".into(),
+                size: Animated::new(48.0),
+                align: TextAlign::Center,
+                font: None,
+            }),
+        ));
+        doc.attach(text, Parent::Node(group), 0).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+        doc.add_keyframe(
+            text,
+            &PropPath::new("text.size"),
+            Frame(0),
+            &Value::F64(48.0),
+        )
+        .unwrap();
+        doc.add_keyframe(
+            text,
+            &PropPath::new("text.size"),
+            Frame(60),
+            &Value::F64(96.0),
+        )
+        .unwrap();
+
+        let report = export_with_report(&doc).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("text.size")),
+            "animated size must warn, got {:?}",
+            report.warnings
+        );
     }
 }

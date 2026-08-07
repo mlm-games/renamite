@@ -10,6 +10,7 @@ use renamite_animation::{
     Angle, Animated, AnimatedTransform, EasingHandle, Frame, Interpolation, Tween,
 };
 use renamite_geometry::{VectorPath, dash_bez_path};
+pub use renamite_text::TextAlign;
 use serde::de::{Deserializer, Error as DeError, Visitor};
 use serde::{Deserialize, Serialize};
 use slotmap::{SlotMap, new_key_type};
@@ -606,9 +607,22 @@ pub struct TimeMap {
     pub stretch: f64,
 }
 
+fn default_text_size() -> Animated<f64> {
+    Animated::new(48.0)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TextNode {
     pub text: String,
+    /// Em size in document units. The one animatable text property (strings
+    /// aren't tweenable, so content/align/font are whole-field structural).
+    #[serde(default = "default_text_size")]
+    pub size: Animated<f64>,
+    #[serde(default)]
+    pub align: TextAlign,
+    /// Reserved for document-embedded fonts; `None` = bundled default.
+    #[serde(default)]
+    pub font: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1017,6 +1031,18 @@ fn eval_group(
                     affine: ntf,
                     opacity: 1.0,
                     path: tf * ntf * shape_path(s, id, frame, ov),
+                });
+            }
+            NodeKind::Text(t) => {
+                let ntf = affine_of(&sample_transform(n, id, frame, ov));
+                let size = ov_f64(ov, id, "text.size", t.size.value_at(frame)).max(0.1);
+                let font = renamite_text::FontRef::default_font();
+                let outline = renamite_text::shape_text(&font, &t.text, size, t.align);
+                paths.push(ShapeEntry {
+                    node: id,
+                    affine: ntf,
+                    opacity: 1.0,
+                    path: tf * ntf * outline,
                 });
             }
             NodeKind::Modifier(m) => apply_modifier(m, id, frame, ov, &mut paths),
@@ -1859,6 +1885,7 @@ impl Node {
             | ("shape.roundness", NodeKind::Shape(ShapeKind::Polygon { roundness, .. })) => {
                 Some(F64(roundness))
             }
+            ("text.size", NodeKind::Text(t)) => Some(F64(&mut t.size)),
             (
                 "fill.color",
                 NodeKind::Style(StyleKind::Fill {
@@ -2001,6 +2028,7 @@ impl Node {
             | ("shape.roundness", NodeKind::Shape(ShapeKind::Polygon { roundness, .. })) => {
                 Some(F64(roundness))
             }
+            ("text.size", NodeKind::Text(t)) => Some(F64(&t.size)),
             (
                 "fill.color",
                 NodeKind::Style(StyleKind::Fill {
@@ -2428,6 +2456,34 @@ mod tests {
             }
         }
         found.unwrap()
+    }
+
+    #[test]
+    fn text_node_evaluates_to_scene_items() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let text = doc.create_node(Node::new(
+            "t",
+            NodeKind::Text(TextNode {
+                text: "Hi".into(),
+                size: Animated::new(64.0),
+                align: TextAlign::Left,
+                font: None,
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Comp(comp), 0).unwrap();
+        doc.attach(fill, Parent::Comp(comp), 1).unwrap();
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert!(!scene.items[0].path.elements().is_empty());
+        assert_eq!(scene.items[0].node, text);
     }
 
     #[test]

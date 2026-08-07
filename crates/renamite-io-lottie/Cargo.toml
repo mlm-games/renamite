@@ -7,8 +7,10 @@ description = "Lottie JSON import and export for renamite."
 
 [dependencies]
 renamite-model.workspace = true
+renamite-text.workspace = true
 renamite-animation.workspace = true
 renamite-geometry.workspace = true
+kurbo.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true

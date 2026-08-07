@@ -3389,9 +3389,11 @@ name = "renamite-io-lottie"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "kurbo",
  "renamite-animation",
  "renamite-geometry",
  "renamite-model",
+ "renamite-text",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -3455,6 +3457,7 @@ dependencies = [
  "kurbo",
  "renamite-animation",
  "renamite-geometry",
+ "renamite-text",
  "serde",
  "serde_json",
  "slotmap",
@@ -3536,6 +3539,16 @@ dependencies = [
  "renamite-model",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "renamite-text"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "serde",
+ "thiserror 2.0.19",
+ "ttf-parser",
 ]
 
 [[package]]

@@ -24,6 +24,7 @@ repose_material::material_symbols! {
     rectangle:           '\u{eb54}',
     circle:              '\u{ef4a}',
     star:                '\u{f09a}',
+    text_fields:         '\u{e262}',
     gradient:            '\u{e3e9}',
     format_color_fill:   '\u{e23a}',
     palette:             '\u{e40a}',

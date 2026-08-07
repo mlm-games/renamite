@@ -364,6 +364,43 @@ impl Exporter<'_> {
             NodeKind::Modifier(modifier) => {
                 modifier_json(&node.name, modifier).into_iter().collect()
             }
+            NodeKind::Text(text) => {
+                self.warnings.push(LottieWarning::new(
+                    format!("node/{id:?}"),
+                    "text baked to path outlines (Lottie text layers not yet emitted)",
+                ));
+                if !text.size.keyframes.is_empty() {
+                    self.warnings.push(LottieWarning::new(
+                        format!("node/{id:?}"),
+                        "animated `text.size` bakes to its base value on export",
+                    ));
+                }
+                let font = renamite_text::FontRef::default_font();
+                let outline = renamite_text::shape_text(&font, &text.text, text.size.base, text.align);
+                let item = json!({
+                    "ty": "sh",
+                    "nm": node.name,
+                    "d": 1,
+                    "ks": { "a": 0, "k": bezpath_to_lottie_path(&outline) }
+                });
+                if transform_owner == Some(id)
+                    || transform_is_identity(&node.transform, &node.opacity)
+                {
+                    vec![item]
+                } else {
+                    vec![json!({
+                        "ty": "gr",
+                        "nm": node.name,
+                        "it": [
+                            item,
+                            group_transform_json(
+                                &node.transform,
+                                &node.opacity
+                            )
+                        ]
+                    })]
+                }
+            }
             other => {
                 self.warnings.push(LottieWarning::new(
                     format!("node/{id:?}"),
@@ -667,4 +704,80 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Precomp { .. } => "precomposition",
         NodeKind::Mask(_) => "mask",
     }
+}
+
+/// Convert a `kurbo::BezPath` (from text shaping) into Lottie's multi-contour
+/// path shape format (`v`/`i`/`o` as contour arrays, `c` as a bool per
+/// contour). Quadratic segments are elevated to cubics since Lottie only has
+/// cubic tangents.
+fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
+    let mut closed: Vec<bool> = Vec::new();
+    let mut vertices: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut ins: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut outs: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut v: Vec<[f64; 2]> = Vec::new();
+    let mut i: Vec<[f64; 2]> = Vec::new();
+    let mut o: Vec<[f64; 2]> = Vec::new();
+    let mut prev = [0.0, 0.0];
+    let mut contour_closed = false;
+    let mut in_contour = false;
+    for el in path.elements() {
+        match el {
+            kurbo::PathEl::MoveTo(p) => {
+                if in_contour {
+                    closed.push(contour_closed);
+                    vertices.push(std::mem::take(&mut v));
+                    ins.push(std::mem::take(&mut i));
+                    outs.push(std::mem::take(&mut o));
+                }
+                v.push([p.x, p.y]);
+                i.push([0.0, 0.0]);
+                o.push([0.0, 0.0]);
+                prev = [p.x, p.y];
+                contour_closed = false;
+                in_contour = true;
+            }
+            kurbo::PathEl::LineTo(p) => {
+                v.push([p.x, p.y]);
+                i.push([0.0, 0.0]);
+                o.push([0.0, 0.0]);
+                prev = [p.x, p.y];
+            }
+            kurbo::PathEl::QuadTo(c, p) => {
+                let c1 = [
+                    prev[0] + 2.0 / 3.0 * (c.x - prev[0]),
+                    prev[1] + 2.0 / 3.0 * (c.y - prev[1]),
+                ];
+                let c2 = [
+                    p.x + 2.0 / 3.0 * (c.x - p.x),
+                    p.y + 2.0 / 3.0 * (c.y - p.y),
+                ];
+                v.push([p.x, p.y]);
+                i.push(c2);
+                o.push(c1);
+                prev = [p.x, p.y];
+            }
+            kurbo::PathEl::CurveTo(c1, c2, p) => {
+                v.push([p.x, p.y]);
+                i.push([c2.x, c2.y]);
+                o.push([c1.x, c1.y]);
+                prev = [p.x, p.y];
+            }
+            kurbo::PathEl::ClosePath => {
+                contour_closed = true;
+            }
+        }
+    }
+    if in_contour {
+        closed.push(contour_closed);
+        vertices.push(std::mem::take(&mut v));
+        ins.push(std::mem::take(&mut i));
+        outs.push(std::mem::take(&mut o));
+    }
+    json!({
+        "c": closed,
+        "v": vertices,
+        "i": ins,
+        "o": outs
+    })
 }

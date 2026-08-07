@@ -12,7 +12,7 @@ use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
     AnimatedDash, Color, Document, FillRule, GradientKind, GradientStop, GradientStops,
     KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StrokeCap, StrokeJoin,
-    StyleKind, StylePaint, TrimMode, Value, evaluate,
+    StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::{OffscreenRenderer, fit_view};
@@ -489,6 +489,42 @@ fn golden_radial_gradient() {
         "radial_gradient",
         &render_doc(&mut gpu, &fixture_radial_gradient(), 0.0),
     );
+}
+
+/// Text shaped to outlines (bundled Noto Sans) with a sibling fill, positioned
+/// via the node transform - pins the shaping -> BezPath -> tessellation path
+/// for text.
+fn fixture_text() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+    let text = doc.create_node(Node::new(
+        "t",
+        NodeKind::Text(TextNode {
+            text: "Hello".into(),
+            size: Animated::new(140.0),
+            align: TextAlign::Left,
+            font: None,
+        }),
+    ));
+    doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.08, 0.08, 0.08, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(text, Parent::Node(group), 0).unwrap();
+    doc.attach(fill, Parent::Node(group), 1).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+#[test]
+fn golden_text() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden("text_hello", &render_doc(&mut gpu, &fixture_text(), 0.0));
 }
 
 /// A horizontal line with a round-capped dashed stroke - pins the dash ->

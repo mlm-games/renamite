@@ -98,6 +98,7 @@ pub struct ToolSet {
     pub rect: ShapeTool,
     pub ellipse: ShapeTool,
     pub star: ShapeTool,
+    pub text: TextTool,
     pub pen: PenTool,
     pub path_edit: PathEditTool,
     pub gradient: GradientTool,
@@ -111,6 +112,7 @@ impl Default for ToolSet {
             rect: ShapeTool::new(ShapeToolKind::Rect),
             ellipse: ShapeTool::new(ShapeToolKind::Ellipse),
             star: ShapeTool::new(ShapeToolKind::Star),
+            text: TextTool,
             pen: PenTool::default(),
             path_edit: PathEditTool::default(),
             gradient: GradientTool::default(),
@@ -126,6 +128,7 @@ impl ToolSet {
             ToolId::Rect => self.rect.handle(ctx, ev),
             ToolId::Ellipse => self.ellipse.handle(ctx, ev),
             ToolId::Star => self.star.handle(ctx, ev),
+            ToolId::Text => self.text.handle(ctx, ev),
             ToolId::Pen => self.pen.handle(ctx, ev),
             ToolId::PathEdit => self.path_edit.handle(ctx, ev),
             ToolId::Gradient => self.gradient.handle(ctx, ev),
@@ -139,6 +142,7 @@ impl ToolSet {
             ToolId::Rect => self.rect.overlay(ctx),
             ToolId::Ellipse => self.ellipse.overlay(ctx),
             ToolId::Star => self.star.overlay(ctx),
+            ToolId::Text => self.text.overlay(ctx),
             ToolId::Pen => self.pen.overlay(ctx),
             ToolId::PathEdit => self.path_edit.overlay(ctx),
             ToolId::Gradient => self.gradient.overlay(ctx),
@@ -788,6 +792,61 @@ impl FillTool {
             }
             _ => smallvec![],
         }
+    }
+}
+
+/// Click-to-place text. Creates a Text node + sibling Fill in a group, with
+/// the click point as the text baseline via the node's own transform.
+#[derive(Default)]
+pub struct TextTool;
+
+impl TextTool {
+    pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
+        ToolOverlay::None
+    }
+
+    pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
+        let CanvasEvent::PointerDown {
+            pos,
+            button: PointerButton::Primary,
+        } = ev
+        else {
+            return smallvec![];
+        };
+        let mut text_node = Node::new(
+            "Text",
+            NodeKind::Text(renamite_model::TextNode {
+                text: "Text".into(),
+                size: Animated::new(48.0),
+                align: renamite_model::TextAlign::Left,
+                font: None,
+            }),
+        );
+        // Place the baseline at the click point via the node's own transform.
+        text_node.transform.position = Animated::new(pos);
+        let tree = NodeTree::with_children(
+            Node::new("Text", NodeKind::Group),
+            vec![
+                NodeTree::leaf(text_node),
+                NodeTree::leaf(Node::new(
+                    "Fill",
+                    NodeKind::Style(StyleKind::Fill {
+                        paint: ctx.current_paint.snapshot(ctx.playhead.0 as f64),
+                        rule: FillRule::NonZero,
+                    }),
+                )),
+            ],
+        );
+        smallvec![
+            ToolOutput::BeginTransaction("Create text".into()),
+            ToolOutput::Commands(smallvec![EditorCommand::InsertNode {
+                parent: Parent::Comp(ctx.comp),
+                index: 0,
+                tree,
+            }]),
+            ToolOutput::CommitTransaction,
+            ToolOutput::SwitchTool(ToolId::Select),
+        ]
     }
 }
 
@@ -2989,5 +3048,78 @@ mod tests {
         };
 
         assert_eq!(paint.base_color(), Color::rgba(0.1, 0.8, 0.3, 1.0));
+    }
+
+    #[test]
+    fn text_tool_creates_group_with_text_and_fill() {
+        let mut world = World::new();
+        let mut history = History::new();
+        let mut tool = TextTool::default();
+        let before = world.doc.compositions[world.doc.main].children.len();
+
+        let scene = world.scene();
+        let current = StylePaint::solid(Color::rgba(0.1, 0.8, 0.3, 1.0));
+        let outs = {
+            let ctx = ToolContext {
+                doc: &world.doc,
+                scene: &scene,
+                comp: world.doc.main,
+                selection: &world.selection,
+                playhead: Frame(0),
+                record: false,
+                view: ViewTransform::identity(),
+                snap: SnapConfig {
+                    grid: None,
+                    anchor: false,
+                    guide: false,
+                },
+                modifiers: Modifiers::none(),
+                current_paint: &current,
+            };
+            tool.handle(
+                &ctx,
+                CanvasEvent::PointerDown {
+                    pos: DVec2::new(100.0, 200.0),
+                    button: PointerButton::Primary,
+                },
+            )
+        };
+        drop(scene);
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, ToolOutput::SwitchTool(ToolId::Select)))
+        );
+        apply_all(&mut world, &mut history, outs.into_vec());
+
+        let comp = &world.doc.compositions[world.doc.main];
+        assert_eq!(comp.children.len(), before + 1);
+        let group = &world.doc.nodes[comp.children[0]];
+        assert_eq!(group.children.len(), 2); // text + fill
+
+        let NodeKind::Text(text) = &world.doc.nodes[group.children[0]].kind else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.text, "Text");
+        let transform = &world.doc.nodes[group.children[0]].transform;
+        assert_eq!(transform.position.base, DVec2::new(100.0, 200.0));
+
+        let fill = group
+            .children
+            .iter()
+            .copied()
+            .find(|id| {
+                matches!(
+                    world.doc.nodes[*id].kind,
+                    NodeKind::Style(StyleKind::Fill { .. })
+                )
+            })
+            .unwrap();
+        let NodeKind::Style(StyleKind::Fill { paint, .. }) = &world.doc.nodes[fill].kind else {
+            panic!("expected fill");
+        };
+        assert_eq!(paint.base_color(), Color::rgba(0.1, 0.8, 0.3, 1.0));
+
+        history.undo(&mut world.pm()).unwrap();
+        assert_eq!(world.doc.compositions[world.doc.main].children.len(), before);
     }
 }

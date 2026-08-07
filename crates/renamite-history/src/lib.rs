@@ -85,6 +85,12 @@ pub enum EditorCommand {
         id: NodeId,
         name: String,
     },
+    /// Whole-string swap (strings aren't tweenable). Coalesces per node so
+    /// continuous typing = one undo step.
+    SetTextContent {
+        id: NodeId,
+        text: String,
+    },
     /// Swap a fill/stroke's paint for a gradient seeded from its current
     /// solid color. Exact inverse: restore the previous `StylePaint`.
     ConvertToGradient {
@@ -418,6 +424,7 @@ fn apply_command(
         | GroupNodes { .. }
         | SetNodeFlags { .. }
         | SetNodeName { .. }
+        | SetTextContent { .. }
         | ConvertToGradient { .. }
         | ConvertToSolid { .. }
         | SetPaint { .. }
@@ -852,6 +859,14 @@ fn apply_document_command(
             let old = std::mem::replace(&mut n.name, name.clone());
             Ok((None, vec![SetNodeName { id: *id, name: old }]))
         }
+        SetTextContent { id, text } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Text(t) = &mut n.kind else {
+                return Err(ModelError::MissingNode.into());
+            };
+            let old = std::mem::replace(&mut t.text, text.clone());
+            Ok((None, vec![SetTextContent { id: *id, text: old }]))
+        }
         ConvertToGradient {
             id,
             kind,
@@ -1117,6 +1132,7 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
         }
         (SetNodeFlags { id, .. }, SetNodeFlags { id: nid, .. }) => *id == *nid,
         (SetNodeName { id, .. }, SetNodeName { id: nid, .. }) => *id == *nid,
+        (SetTextContent { id, .. }, SetTextContent { id: nid, .. }) => *id == *nid,
         (
             AddClipKey {
                 clip,
@@ -1276,6 +1292,7 @@ pub enum ToolId {
     Rect,
     Ellipse,
     Star,
+    Text,
     Gradient,
     Fill,
 }
@@ -1509,6 +1526,68 @@ mod tests {
         assert_eq!(w.doc.nodes[id].name, "n");
         h.redo(&mut w.pm()).unwrap();
         assert_eq!(w.doc.nodes[id].name, "renamed");
+    }
+
+    #[test]
+    fn set_text_content_undo_redo_and_coalesces_per_node() {
+        let mut w = World::new();
+        let id = w.node();
+        w.doc.nodes[id].kind = NodeKind::Text(renamite_model::TextNode {
+            text: "Text".into(),
+            size: Animated::new(48.0),
+            align: Default::default(),
+            font: None,
+        });
+        let mut h = History::new();
+        h.begin("Edit text");
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetTextContent {
+                id,
+                text: "Hello".into(),
+            },
+        )
+        .unwrap();
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetTextContent {
+                id,
+                text: "Hello!".into(),
+            },
+        )
+        .unwrap();
+        h.commit();
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "Hello!");
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "Text");
+        h.redo(&mut w.pm()).unwrap();
+        let NodeKind::Text(t) = &w.doc.nodes[id].kind else {
+            panic!("expected text");
+        };
+        assert_eq!(t.text, "Hello!");
+    }
+
+    #[test]
+    fn set_text_content_wrong_kind_is_error() {
+        let mut w = World::new();
+        let id = w.node(); // group node, not text
+        let mut h = History::new();
+        let err = h
+            .apply(
+                &mut w.pm(),
+                EditorCommand::SetTextContent {
+                    id,
+                    text: "x".into(),
+                },
+            )
+            .err();
+        assert!(matches!(err, Some(EditError::Model(ModelError::MissingNode))));
     }
 
     #[test]

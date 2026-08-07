@@ -14,3 +14,4 @@ glam.workspace = true
 thiserror.workspace = true
 renamite-animation.workspace = true
 renamite-geometry.workspace = true
+renamite-text.workspace = true

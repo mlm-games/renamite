@@ -27,7 +27,8 @@ use repose_core::{
     AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
-    IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
+    IconButton, IconButtonConfig, TextField, TextFieldConfig, TooltipBox, TooltipConfig,
+    TooltipState,
 };
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
@@ -110,6 +111,16 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     // stops) driving the fill style that paints it.
     if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
         children.push(v);
+    }
+
+    // Single selected text: multiline field editing its content via
+    // SetTextContent. One begin/commit transaction per keystroke (coalescing
+    // would fold repeats within a single open transaction, but TextField here
+    // exposes no focus callbacks to bracket them).
+    if ids.len() == 1
+        && let Some(section) = text_section(session.clone(), ids[0])
+    {
+        children.push(section);
     }
 
     // Single selected stroke: dash section (offset, dash/gap values, enable /
@@ -718,6 +729,60 @@ fn enum2_segment(
         )
 }
 
+fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let content = {
+        let session = session.borrow();
+        match &session.file.document.nodes.get(id)?.kind {
+            NodeKind::Text(t) => t.text.clone(),
+            _ => return None,
+        }
+    };
+    let th = theme();
+    Some(
+        Column(Modifier::new().fill_max_width())
+            .child((
+                Text("Text")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant)
+                    .modifier(Modifier::new().padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 12.0,
+                        top: 12.0,
+                        bottom: 4.0,
+                    })),
+                Row(Modifier::new()
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 4.0,
+                    }))
+                .child(TextField(
+                    Modifier::new().fill_max_width(),
+                    content,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            let mut s = session.borrow_mut();
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Edit text".into()),
+                                ToolOutput::Commands(smallvec![
+                                    EditorCommand::SetTextContent { id, text }
+                                ]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    },
+                    TextFieldConfig {
+                        single_line: false,
+                        ..Default::default()
+                    },
+                )),
+            )),
+    )
+}
+
 fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {
     match &session.file.document.nodes.get(selected)?.kind {
         NodeKind::Style(StyleKind::Fill { .. }) | NodeKind::Style(StyleKind::Stroke { .. }) => {
@@ -725,6 +790,15 @@ fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {
         }
 
         NodeKind::Shape(_) => session
+            .engine
+            .scene()
+            .items
+            .iter()
+            .rev()
+            .find(|item| item.node == selected)
+            .map(|item| item.style),
+
+        NodeKind::Text(_) => session
             .engine
             .scene()
             .items

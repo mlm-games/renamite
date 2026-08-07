@@ -1,0 +1,12 @@
+[package]
+name = "renamite-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure text -> BezPath shaping (ttf-parser). No UI, no GPU, wasm-clean."
+
+[dependencies]
+kurbo.workspace = true
+serde.workspace = true
+ttf-parser = "0.25"
+thiserror.workspace = true

@@ -32,6 +32,7 @@ glam = { version = "0.33", default-features = false, features = [
 lyon_tessellation = "1.0.20"
 lyon_path = "1.0"
 linesweeper = "0.4"
+ttf-parser = "0.25"
 
 # CI/reference only
 vello = { version = "0.9" }
@@ -65,6 +66,7 @@ tempfile = "3"
 
 renamite-animation = { path = "crates/renamite-animation", version = "0.1.0" }
 renamite-geometry = { path = "crates/renamite-geometry", version = "0.1.0" }
+renamite-text = { path = "crates/renamite-text", version = "0.1.0" }
 renamite-model = { path = "crates/renamite-model", version = "0.1.0" }
 renamite-history = { path = "crates/renamite-history", version = "0.1.0" }
 renamite-behavior-common = { path = "crates/renamite-behavior-common", version = "0.1.0" }
