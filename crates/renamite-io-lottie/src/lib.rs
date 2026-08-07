@@ -443,4 +443,51 @@ mod tests {
         assert!(serialized.contains("\"n\":\"g\""));
         assert!(serialized.contains("\"n\":\"o\""));
     }
+
+    #[test]
+    fn repeater_falloff_round_trips() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{ "ty": 4, "ind": 1, "nm": "L", "ks": {}, "shapes": [
+                { "ty": "rp", "nm": "Rep",
+                  "c": {"a": 0, "k": 4},
+                  "o": {"a": 0, "k": 0},
+                  "tr": {
+                      "p": {"a": 0, "k": [30, 0]},
+                      "so": {"a": 0, "k": 100},
+                      "eo": {"a": 0, "k": 25}
+                  } }
+            ]}]
+        });
+
+        let report = import_with_report(&lottie).unwrap();
+        assert!(
+            report.warnings.is_empty(),
+            "so/eo must no longer warn: {:?}",
+            report.warnings
+        );
+
+        let layer = report.value.compositions[report.value.main].children[0];
+        let rep = report.value.nodes[layer].children[0];
+        let NodeKind::Modifier(ModifierKind::Repeater {
+            start_opacity,
+            end_opacity,
+            ..
+        }) = &report.value.nodes[rep].kind
+        else {
+            panic!("expected repeater")
+        };
+        assert!((start_opacity.base - 1.0).abs() < 1e-9);
+        assert!((end_opacity.base - 0.25).abs() < 1e-9);
+
+        let exported = export(&report.value).unwrap();
+        let text = serde_json::to_string(&exported).unwrap();
+        assert!(text.contains("\"eo\""));
+        assert!(text.contains("\"so\""));
+    }
 }

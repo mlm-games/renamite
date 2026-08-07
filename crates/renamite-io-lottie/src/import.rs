@@ -463,24 +463,24 @@ impl Importer {
                     radius: import_scalar(item.get("r").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
-            "rp" => {
-                if item.pointer("/tr/so").is_some() || item.pointer("/tr/eo").is_some() {
-                    self.warnings.push(LottieWarning::new(
-                        path,
-                        "repeater start/end opacity is not represented by the Renamite model",
-                    ));
-                }
-                Some(ImportTree::leaf(Node::new(
-                    item_name(item, "Repeater"),
-                    NodeKind::Modifier(ModifierKind::Repeater {
-                        copies: import_scalar(item.get("c").unwrap_or(&Value::Null), 1.0, 1.0),
-                        offset: import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0, 0.0),
-                        transform: import_repeater_transform(
-                            item.get("tr").unwrap_or(&Value::Null),
-                        ),
-                    }),
-                )))
-            }
+            "rp" => Some(ImportTree::leaf(Node::new(
+                item_name(item, "Repeater"),
+                NodeKind::Modifier(ModifierKind::Repeater {
+                    copies: import_scalar(item.get("c").unwrap_or(&Value::Null), 1.0, 1.0),
+                    offset: import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0, 0.0),
+                    transform: import_repeater_transform(item.get("tr").unwrap_or(&Value::Null)),
+                    start_opacity: import_scalar(
+                        item.pointer("/tr/so").unwrap_or(&Value::Null),
+                        1.0 / 100.0,
+                        1.0,
+                    ),
+                    end_opacity: import_scalar(
+                        item.pointer("/tr/eo").unwrap_or(&Value::Null),
+                        1.0 / 100.0,
+                        1.0,
+                    ),
+                }),
+            ))),
             unsupported => {
                 self.warnings.push(LottieWarning::new(
                     path,

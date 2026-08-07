@@ -11,7 +11,7 @@ use renamite_behavior_common::inspect::{
     DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_selection,
 };
 use renamite_behavior_common::modifiers::{
-    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_set_trim_mode,
+    cmd_add_repeater_after, cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_set_trim_mode,
 };
 use renamite_behavior_common::stroke::{
     cmd_add_stroke_dash_pair, cmd_disable_stroke_dash, cmd_enable_stroke_dash,
@@ -586,6 +586,26 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             )),
         );
     }
+    buttons.push(
+        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+            CompactIconAction(Symbols::add, "Add Repeater", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    if let Some(cmd) = cmd_add_repeater_after(&s.file.document, id) {
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Add Repeater".into()),
+                            ToolOutput::Commands(smallvec![cmd]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }
+            }),
+            Text("Repeater")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+        )),
+    );
     Some(
         Row(Modifier::new()
             .height(40.0)

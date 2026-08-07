@@ -540,3 +540,50 @@ fn golden_dashed_stroke() {
         &render_doc(&mut gpu, &fixture_dashed_stroke(), 0.0),
     );
 }
+
+fn fixture_repeater_falloff() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(90.0, 256.0)),
+            size: Animated::new(DVec2::new(60.0, 120.0)),
+            rounded: Animated::new(8.0),
+        }),
+    ));
+    let mut step = renamite_animation::AnimatedTransform::identity();
+    step.position = Animated::new(DVec2::new(70.0, 0.0));
+    let rep = doc.create_node(Node::new(
+        "rp",
+        NodeKind::Modifier(ModifierKind::Repeater {
+            copies: Animated::new(5.0),
+            offset: Animated::new(0.0),
+            transform: step,
+            start_opacity: Animated::new(1.0),
+            end_opacity: Animated::new(0.15),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.9, 0.3, 0.2, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(shape, Parent::Node(group), 0).unwrap();
+    doc.attach(rep, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+#[test]
+fn golden_repeater_falloff() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "repeater_falloff",
+        &render_doc(&mut gpu, &fixture_repeater_falloff(), 0.0),
+    );
+}

@@ -595,6 +595,8 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
             copies,
             offset,
             transform,
+            start_opacity,
+            end_opacity,
         } => Some(json!({
             "ty": "rp",
             "nm": name,
@@ -605,8 +607,8 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
                 "p": export_vec2(&transform.position),
                 "s": export_vec2(&transform.scale),
                 "r": export_angle(&transform.rotation),
-                "so": { "a": 0, "k": 100.0 },
-                "eo": { "a": 0, "k": 100.0 },
+                "so": export_scalar(start_opacity, 100.0),
+                "eo": export_scalar(end_opacity, 100.0),
                 "sk": export_scalar(&transform.skew, 1.0),
                 "sa": export_scalar(&transform.skew_axis, 1.0)
             }

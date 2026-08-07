@@ -1,6 +1,6 @@
 //! Command builders for adding shape modifiers to a group.
 
-use renamite_animation::Animated;
+use renamite_animation::{Animated, AnimatedTransform};
 use renamite_history::{EditorCommand, NodeTree};
 use renamite_model::{Document, ModifierKind, Node, NodeId, NodeKind, Parent, TrimMode};
 
@@ -55,6 +55,28 @@ pub fn cmd_add_round_corners_after(
             "Round Corners",
             NodeKind::Modifier(ModifierKind::RoundCorners {
                 radius: Animated::new(radius),
+            }),
+        )),
+    })
+}
+
+/// Append a Repeater as a sibling immediately after `after`. Defaults to
+/// 3 copies stepped +50px in x with no opacity falloff.
+pub fn cmd_add_repeater_after(doc: &Document, after: NodeId) -> Option<EditorCommand> {
+    let (parent, index) = doc.locate(after)?;
+    let mut step = AnimatedTransform::identity();
+    step.position = Animated::new(glam::DVec2::new(50.0, 0.0));
+    Some(EditorCommand::InsertNode {
+        parent,
+        index: index + 1,
+        tree: NodeTree::leaf(Node::new(
+            "Repeater",
+            NodeKind::Modifier(ModifierKind::Repeater {
+                copies: Animated::new(3.0),
+                offset: Animated::new(0.0),
+                transform: step,
+                start_opacity: Animated::new(1.0),
+                end_opacity: Animated::new(1.0),
             }),
         )),
     })

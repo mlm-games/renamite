@@ -549,6 +549,11 @@ impl<'de> Deserialize<'de> for StyleKind {
     }
 }
 
+/// Serde default for a scalar animation pinned to a constant `1.0`.
+fn animated_one() -> Animated<f64> {
+    Animated::new(1.0)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ModifierKind {
     TrimPath {
@@ -562,6 +567,12 @@ pub enum ModifierKind {
         copies: Animated<f64>,
         offset: Animated<f64>,
         transform: AnimatedTransform,
+        /// Opacity of the first copy (0..=1). Lottie `so` / 100.
+        #[serde(default = "animated_one")]
+        start_opacity: Animated<f64>,
+        /// Opacity of the last copy (0..=1). Lottie `eo` / 100.
+        #[serde(default = "animated_one")]
+        end_opacity: Animated<f64>,
     },
     RoundCorners {
         radius: Animated<f64>,
@@ -992,7 +1003,7 @@ fn eval_group(
     }
 
     // Pass 1: accumulate shape paths + modifiers, in document order.
-    let mut paths: Vec<(NodeId, Affine, BezPath)> = Vec::new();
+    let mut paths: Vec<ShapeEntry> = Vec::new();
     for &id in children {
         let Some(n) = doc.nodes.get(id) else { continue };
         if !n.visible {
@@ -1001,7 +1012,12 @@ fn eval_group(
         match &n.kind {
             NodeKind::Shape(s) => {
                 let ntf = affine_of(&sample_transform(n, id, frame, ov));
-                paths.push((id, ntf, tf * ntf * shape_path(s, id, frame, ov)));
+                paths.push(ShapeEntry {
+                    node: id,
+                    affine: ntf,
+                    opacity: 1.0,
+                    path: tf * ntf * shape_path(s, id, frame, ov),
+                });
             }
             NodeKind::Modifier(m) => apply_modifier(m, id, frame, ov, &mut paths),
             _ => {}
@@ -1043,33 +1059,69 @@ fn eval_group(
     }
 }
 
+/// One accumulated shape path in pass 1 of group evaluation, carrying the
+/// shape's local affine (gradient folding) and a per-copy opacity factor
+/// (repeater falloff) that rides along until style emission.
+#[derive(Clone)]
+struct ShapeEntry {
+    node: NodeId,
+    affine: Affine,
+    opacity: f64,
+    path: BezPath,
+}
+
 fn apply_modifier(
     m: &ModifierKind,
     id: NodeId,
     frame: f64,
     ov: &Overrides,
-    paths: &mut Vec<(NodeId, Affine, BezPath)>,
+    paths: &mut Vec<ShapeEntry>,
 ) {
     match m {
         ModifierKind::Repeater {
             copies,
             offset,
             transform,
+            start_opacity,
+            end_opacity,
         } => {
             let count = ov_f64(ov, id, "repeater.copies", copies.value_at(frame))
                 .round()
                 .max(0.0) as usize;
             let off = ov_f64(ov, id, "repeater.offset", offset.value_at(frame));
+            let so = ov_f64(
+                ov,
+                id,
+                "repeater.start_opacity",
+                start_opacity.value_at(frame),
+            )
+            .clamp(0.0, 1.0);
+            let eo =
+                ov_f64(ov, id, "repeater.end_opacity", end_opacity.value_at(frame)).clamp(0.0, 1.0);
             let step = affine_of(&transform.sample(frame));
             let original = std::mem::take(paths);
-            for i in 0..count.max(1) {
+            let n = count.max(1);
+            for i in 0..n {
+                // Linear falloff: first copy = so, last copy = eo.
+                let t = if n <= 1 {
+                    0.0
+                } else {
+                    i as f64 / (n - 1) as f64
+                };
+                let copy_opacity = so + (eo - so) * t;
+
                 let mut a = Affine::IDENTITY;
                 let reps = (i as f64 + off).max(0.0) as usize;
                 for _ in 0..reps {
                     a *= step;
                 }
-                for (id, affine, p) in &original {
-                    paths.push((*id, *affine, a * p.clone()));
+                for e in &original {
+                    paths.push(ShapeEntry {
+                        node: e.node,
+                        affine: e.affine,
+                        opacity: e.opacity * copy_opacity,
+                        path: a * e.path.clone(),
+                    });
                 }
             }
         }
@@ -1094,31 +1146,34 @@ fn apply_modifier(
             let originals = std::mem::take(paths);
             match mode {
                 TrimMode::Individually => {
-                    for (id, affine, path) in originals {
-                        if let Some(trimmed) = trim_path(&path, s, e, o) {
-                            paths.push((id, affine, trimmed));
+                    for entry in originals {
+                        if let Some(trimmed) = trim_path(&entry.path, s, e, o) {
+                            paths.push(ShapeEntry {
+                                path: trimmed,
+                                ..entry
+                            });
                         }
                     }
                 }
                 TrimMode::Simultaneously => {
                     let lengths: Vec<f64> = originals
                         .iter()
-                        .map(|(_, _, p)| p.perimeter(1e-3))
+                        .map(|entry| entry.path.perimeter(1e-3))
                         .collect();
                     let total: f64 = lengths.iter().sum();
                     if total <= 1e-9 {
                         return;
                     }
                     let mut cursor = 0.0;
-                    for ((id, affine, path), len) in originals.into_iter().zip(lengths) {
+                    for (entry, len) in originals.into_iter().zip(lengths) {
                         let frac = len / total;
                         if frac > 1e-12 {
                             let ps = ((s - cursor) / frac).clamp(0.0, 1.0);
                             let pe = ((e - cursor) / frac).clamp(0.0, 1.0);
                             if pe > ps + 1e-9
-                                && let Some(t) = trim_path(&path, ps, pe, o)
+                                && let Some(t) = trim_path(&entry.path, ps, pe, o)
                             {
-                                paths.push((id, affine, t));
+                                paths.push(ShapeEntry { path: t, ..entry });
                             }
                         }
                         cursor += frac;
@@ -1135,9 +1190,9 @@ fn apply_modifier(
                 // geometry: already-curved (Smooth) paths pass through untouched,
                 // while hard cuts (e.g. from a preceding Trim) detect as Corner
                 // and get rounded - Lottie modifier-order semantics.
-                for (_, _, path) in paths.iter_mut() {
-                    let vp = renamite_geometry::VectorPath::from_bez_path(path);
-                    *path = vp.round_corners(r).to_bez_path();
+                for entry in paths.iter_mut() {
+                    let vp = renamite_geometry::VectorPath::from_bez_path(&entry.path);
+                    entry.path = vp.round_corners(r).to_bez_path();
                 }
             }
         }
@@ -1277,11 +1332,11 @@ fn emit_style(
     style_id: NodeId,
     frame: f64,
     ov: &Overrides,
-    paths: &[(NodeId, Affine, BezPath)],
+    paths: &[ShapeEntry],
     opacity: f64,
     scene: &mut Scene,
 ) {
-    for (node, affine, path) in paths {
+    for e in paths {
         let (paint, kind) = match st {
             StyleKind::Fill { paint, rule } => (paint, PaintKind::Fill(*rule)),
             StyleKind::Stroke {
@@ -1304,15 +1359,15 @@ fn emit_style(
             ),
         };
 
-        let paint = sample_paint_world(paint, frame, affine, ov, style_id);
+        let paint = sample_paint_world(paint, frame, &e.affine, ov, style_id);
 
         scene.items.push(SceneItem {
-            path: path.clone(),
-            node: *node,
+            path: e.path.clone(),
+            node: e.node,
             style: style_id,
             paint,
             kind,
-            opacity,
+            opacity: opacity * e.opacity,
             clip: None,
             blend: BlendMode::Normal,
         });
@@ -1874,6 +1929,14 @@ impl Node {
             ("repeater.offset", NodeKind::Modifier(ModifierKind::Repeater { offset, .. })) => {
                 Some(F64(offset))
             }
+            (
+                "repeater.start_opacity",
+                NodeKind::Modifier(ModifierKind::Repeater { start_opacity, .. }),
+            ) => Some(F64(start_opacity)),
+            (
+                "repeater.end_opacity",
+                NodeKind::Modifier(ModifierKind::Repeater { end_opacity, .. }),
+            ) => Some(F64(end_opacity)),
             ("round.radius", NodeKind::Modifier(ModifierKind::RoundCorners { radius })) => {
                 Some(F64(radius))
             }
@@ -2008,6 +2071,14 @@ impl Node {
             ("repeater.offset", NodeKind::Modifier(ModifierKind::Repeater { offset, .. })) => {
                 Some(F64(offset))
             }
+            (
+                "repeater.start_opacity",
+                NodeKind::Modifier(ModifierKind::Repeater { start_opacity, .. }),
+            ) => Some(F64(start_opacity)),
+            (
+                "repeater.end_opacity",
+                NodeKind::Modifier(ModifierKind::Repeater { end_opacity, .. }),
+            ) => Some(F64(end_opacity)),
             ("round.radius", NodeKind::Modifier(ModifierKind::RoundCorners { radius })) => {
                 Some(F64(radius))
             }
@@ -2535,6 +2606,93 @@ mod tests {
             doc.value_at(stroke, &PropPath::new("stroke.dash.1"), 0.0,)
                 .unwrap(),
             Value::F64(4.0),
+        );
+    }
+
+    #[test]
+    fn repeater_falloff_fades_copies_linearly() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("g", NodeKind::Group));
+        let shape = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(30.0, 30.0)),
+                size: Animated::new(DVec2::splat(40.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let mut step = AnimatedTransform::identity();
+        step.position = Animated::new(DVec2::new(60.0, 0.0));
+        let rep = doc.create_node(Node::new(
+            "rp",
+            NodeKind::Modifier(ModifierKind::Repeater {
+                copies: Animated::new(3.0),
+                offset: Animated::new(0.0),
+                transform: step,
+                start_opacity: Animated::new(1.0),
+                end_opacity: Animated::new(0.2),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(shape, Parent::Node(group), 0).unwrap();
+        doc.attach(rep, Parent::Node(group), 1).unwrap();
+        doc.attach(fill, Parent::Node(group), 2).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 3);
+        let ops: Vec<f64> = scene.items.iter().map(|i| i.opacity).collect();
+        assert!((ops[0] - 1.0).abs() < 1e-9);
+        assert!(
+            (ops[1] - 0.6).abs() < 1e-9,
+            "midpoint of 1.0..0.2, got {}",
+            ops[1]
+        );
+        assert!((ops[2] - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn repeater_opacity_props_are_addressable() {
+        let mut doc = Document::empty();
+        let id = doc.create_node(Node::new(
+            "rp",
+            NodeKind::Modifier(ModifierKind::Repeater {
+                copies: Animated::new(2.0),
+                offset: Animated::new(0.0),
+                transform: AnimatedTransform::identity(),
+                start_opacity: Animated::new(1.0),
+                end_opacity: Animated::new(0.25),
+            }),
+        ));
+
+        doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("repeater.start_opacity"), 0.0)
+                .unwrap(),
+            Value::F64(1.0),
+        );
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("repeater.end_opacity"), 0.0)
+                .unwrap(),
+            Value::F64(0.25),
+        );
+
+        doc.set_static(id, &PropPath::new("repeater.end_opacity"), &Value::F64(0.5))
+            .unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("repeater.end_opacity"), 0.0)
+                .unwrap(),
+            Value::F64(0.5),
         );
     }
 }
