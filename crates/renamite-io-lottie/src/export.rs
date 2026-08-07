@@ -375,7 +375,7 @@ impl Exporter<'_> {
                         "animated `text.size` bakes to its base value on export",
                     ));
                 }
-                let font = renamite_text::FontRef::default_font();
+                let font = renamite_text::FontRef::for_family(text.font.as_deref());
                 let outline = renamite_text::shape_text(&font, &text.text, text.size.base, text.align);
                 let item = json!({
                     "ty": "sh",

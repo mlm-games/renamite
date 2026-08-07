@@ -1036,7 +1036,7 @@ fn eval_group(
             NodeKind::Text(t) => {
                 let ntf = affine_of(&sample_transform(n, id, frame, ov));
                 let size = ov_f64(ov, id, "text.size", t.size.value_at(frame)).max(0.1);
-                let font = renamite_text::FontRef::default_font();
+                let font = renamite_text::FontRef::for_family(t.font.as_deref());
                 let outline = renamite_text::shape_text(&font, &t.text, size, t.align);
                 paths.push(ShapeEntry {
                     node: id,

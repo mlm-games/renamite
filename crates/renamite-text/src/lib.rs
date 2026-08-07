@@ -5,8 +5,18 @@
 //! ligatures — documented limits, not silent wrongness. Deterministic: the
 //! same input always yields the same path, so goldens and CLI renders match
 //! the editor exactly.
+//!
+//! A process-wide family-name registry (like repose's `repose_text`) maps
+//! logical family names to raw font bytes: [`register_font_data`] stores a
+//! font keyed by the name its own name table reports, [`font_family_name`]
+//! extracts that name, and [`FontRef::for_family`] resolves a
+//! `TextNode.font` value to a face, falling back to the bundled default.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use kurbo::BezPath;
+use ttf_parser::name::name_id;
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 /// Bundled fallback face (OFL-licensed; see `assets/OFL.txt`).
@@ -27,22 +37,113 @@ pub enum TextAlign {
     Right,
 }
 
-/// A parsed font face, borrowed from a byte slice (a font file or the
-/// bundled default). Cheap to construct; the parse is a table scan only.
-pub struct FontRef<'a> {
-    face: Face<'a>,
+/// A parsed font face, owning its bytes. Cheap to clone (an `Arc` bump); the
+/// face table scan happens once per `face()` call.
+#[derive(Clone)]
+pub struct FontRef {
+    data: Arc<[u8]>,
 }
 
-impl<'a> FontRef<'a> {
-    pub fn parse(data: &'a [u8]) -> Result<Self, TextError> {
+impl FontRef {
+    /// Parse and own a copy of `data`. Validates the face up front so
+    /// [`FontRef::face`] can be infallible afterward.
+    pub fn parse(data: &[u8]) -> Result<Self, TextError> {
+        Face::parse(data, 0).map_err(|_| TextError::BadFont)?;
         Ok(Self {
-            face: Face::parse(data, 0).map_err(|_| TextError::BadFont)?,
+            data: Arc::from(data),
         })
     }
 
+    /// The bundled default face (registered under its family name too, so
+    /// `for_family(Some("Noto Sans"))` and `for_family(None)` agree).
     pub fn default_font() -> Self {
-        Self::parse(DEFAULT_FONT).expect("bundled font is valid")
+        Self {
+            data: default_font_data().clone(),
+        }
     }
+
+    /// Resolve the font for a logical family name (`TextNode.font`), falling
+    /// back to the bundled default when the name is absent or unknown.
+    pub fn for_family(name: Option<&str>) -> Self {
+        match name.and_then(|n| registry().lock().unwrap().fonts.get(n).cloned()) {
+            Some(data) => Self { data },
+            None => Self::default_font(),
+        }
+    }
+
+    /// The parsed face, borrowing this instance. Never fails: every
+    /// constructor validates the data.
+    pub fn face(&self) -> Face<'_> {
+        Face::parse(&self.data, 0).expect("font data validated at construction")
+    }
+}
+
+fn default_font_data() -> &'static Arc<[u8]> {
+    static DEFAULT: OnceLock<Arc<[u8]>> = OnceLock::new();
+    DEFAULT.get_or_init(|| Arc::from(DEFAULT_FONT))
+}
+
+struct Registry {
+    fonts: HashMap<String, Arc<[u8]>>,
+}
+
+fn registry() -> &'static Mutex<Registry> {
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut fonts = HashMap::new();
+        let default = default_font_data().clone();
+        if let Some(name) = font_family_name(&default) {
+            fonts.insert(name, default);
+        }
+        Mutex::new(Registry { fonts })
+    })
+}
+
+/// Extract the family name from raw font bytes: typographic family
+/// (`name id 16`) first, standard family (`name id 1`) as fallback. Mirrors
+/// `repose_text::font_family_name`.
+pub fn font_family_name(bytes: &[u8]) -> Option<String> {
+    let face = Face::parse(bytes, 0).ok()?;
+    let mut fallback = None;
+    for name in face.names() {
+        match name.name_id {
+            name_id::TYPOGRAPHIC_FAMILY => {
+                if let Some(s) = name.to_string() {
+                    return Some(s);
+                }
+            }
+            name_id::FAMILY if fallback.is_none() => {
+                fallback = name.to_string();
+            }
+            _ => {}
+        }
+    }
+    fallback
+}
+
+/// Register raw font bytes (`ttf`/`otf`) into the process-wide registry,
+/// keyed by the family name the font reports. Returns that name, or `None`
+/// if the bytes are not a parseable font.
+pub fn register_font_data(bytes: Vec<u8>) -> Option<String> {
+    let family = font_family_name(&bytes)?;
+    registry()
+        .lock()
+        .unwrap()
+        .fonts
+        .insert(family.clone(), Arc::from(bytes));
+    Some(family)
+}
+
+/// All registered family names (including the bundled default), sorted.
+pub fn registered_families() -> Vec<String> {
+    let mut names: Vec<String> = registry().lock().unwrap().fonts.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+#[cfg(test)]
+fn clear_registered_fonts() {
+    registry().lock().unwrap().fonts.clear();
 }
 
 /// Collects glyph outline segments into a `BezPath`. Font coordinates are
@@ -86,7 +187,7 @@ impl OutlineBuilder for PathSink {
 ///
 /// Origin: (0, 0) is the first line's baseline start; lines advance downward.
 pub fn shape_text(font: &FontRef, text: &str, size: f64, align: TextAlign) -> BezPath {
-    let face = &font.face;
+    let face = font.face();
     let upem = face.units_per_em() as f64;
     let scale = size / upem.max(1.0);
     let line_height = (face.ascender() as f64 - face.descender() as f64
@@ -95,7 +196,7 @@ pub fn shape_text(font: &FontRef, text: &str, size: f64, align: TextAlign) -> Be
     let mut out = BezPath::new();
     for (line_idx, line) in text.split('\n').enumerate() {
         let baseline = line_idx as f64 * line_height;
-        let width = line_advance(face, line) * scale;
+        let width = line_advance(&face, line) * scale;
         let start_x = match align {
             TextAlign::Left => 0.0,
             TextAlign::Center => -width / 2.0,
@@ -162,5 +263,59 @@ mod tests {
         let a = shape_text(&font, "Renamite", 32.0, TextAlign::Left);
         let b = shape_text(&font, "Renamite", 32.0, TextAlign::Left);
         assert_eq!(a.elements(), b.elements());
+    }
+
+    #[test]
+    fn bundled_font_reports_family_name() {
+        let name = font_family_name(DEFAULT_FONT).expect("bundled font has a name");
+        assert!(!name.is_empty());
+        assert!(
+            registered_families().contains(&name),
+            "default should be registered under its own family name, got {:?}",
+            registered_families()
+        );
+    }
+
+    #[test]
+    fn for_family_none_resolves_to_default() {
+        let font = FontRef::for_family(None);
+        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
+        assert!(!p.elements().is_empty());
+    }
+
+    #[test]
+    fn for_family_unknown_falls_back_to_default() {
+        clear_registered_fonts();
+        let font = FontRef::for_family(Some("Definitely Not A Font"));
+        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
+        assert!(!p.elements().is_empty());
+    }
+
+    #[test]
+    fn register_font_data_keys_by_family_and_resolves() {
+        clear_registered_fonts();
+        let name = register_font_data(DEFAULT_FONT.to_vec()).expect("valid font registers");
+        assert_eq!(
+            name,
+            font_family_name(DEFAULT_FONT).unwrap(),
+            "register returns the same family the font reports"
+        );
+        assert!(registered_families().contains(&name));
+
+        let by_name = FontRef::for_family(Some(&name));
+        let by_default = FontRef::default_font();
+        let a = shape_text(&by_name, "Renamite", 32.0, TextAlign::Left);
+        let b = shape_text(&by_default, "Renamite", 32.0, TextAlign::Left);
+        assert_eq!(
+            a.elements(),
+            b.elements(),
+            "registry hit shapes identically to the default face"
+        );
+    }
+
+    #[test]
+    fn register_invalid_bytes_returns_none() {
+        assert_eq!(register_font_data(b"not a font".to_vec()), None);
+        assert_eq!(font_family_name(b"not a font"), None);
     }
 }
