@@ -17,7 +17,7 @@ use renamite_history::{
     EditorCommand, NodeTree, OutputVec, SelectionChange, ToolId, ToolOutput, resolve_property_edit,
 };
 use renamite_model::{
-    Color, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
+    FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
     StarKind, StyleKind, StylePaint, Value, node_affine, nodes_bounds, pick, pick_box,
 };
 use smallvec::smallvec;
@@ -774,7 +774,9 @@ impl FillTool {
                     return smallvec![];
                 }
 
-                let Some(cmd) = cmd_fill_shape(ctx.doc, shape, ctx.current_paint.clone()) else {
+                let paint = ctx.current_paint.snapshot(ctx.playhead.0 as f64);
+
+                let Some(cmd) = cmd_fill_shape(ctx.doc, shape, paint) else {
                     return smallvec![];
                 };
 
@@ -916,7 +918,7 @@ impl ShapeTool {
                         NodeTree::leaf(Node::new(
                             "Fill",
                             NodeKind::Style(StyleKind::Fill {
-                                paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+                                paint: ctx.current_paint.snapshot(ctx.playhead.0 as f64),
                                 rule: FillRule::NonZero,
                             }),
                         )),
@@ -1128,7 +1130,7 @@ impl PenTool {
         let fill = Node::new(
             "Fill",
             NodeKind::Style(StyleKind::Fill {
-                paint: StylePaint::solid(Color::rgba(0.96, 0.42, 0.18, 1.0)),
+                paint: ctx.current_paint.snapshot(ctx.playhead.0 as f64),
                 rule: FillRule::NonZero,
             }),
         );
@@ -1556,7 +1558,7 @@ mod tests {
     use renamite_animation::Frame;
     use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ViewTransform};
     use renamite_history::{History, ProjectMut};
-    use renamite_model::{Document, GradientStops, Scene, evaluate};
+    use renamite_model::{Color, Document, GradientStops, Scene, evaluate};
 
     struct World {
         doc: Document,
@@ -2916,5 +2918,76 @@ mod tests {
                 .keyframe_data(pw.path, &PropPath::new("shape.path"), Frame(0))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn shape_tool_uses_current_paint() {
+        let mut world = World::new();
+        let mut history = History::new();
+        let mut tool = ShapeTool::new(ShapeToolKind::Rect);
+
+        let current = StylePaint::solid(Color::rgba(0.1, 0.8, 0.3, 1.0));
+        let scene = world.scene();
+
+        let context = |modifiers| ToolContext {
+            doc: &world.doc,
+            scene: &scene,
+            comp: world.doc.main,
+            selection: &world.selection,
+            playhead: Frame(0),
+            record: false,
+            view: ViewTransform::identity(),
+            snap: SnapConfig {
+                grid: None,
+                anchor: false,
+                guide: false,
+            },
+            modifiers,
+            current_paint: &current,
+        };
+
+        let mut outputs = Vec::new();
+        outputs.extend(tool.handle(
+            &context(Modifiers::none()),
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(200.0, 200.0),
+                button: PointerButton::Primary,
+            },
+        ));
+        outputs.extend(tool.handle(
+            &context(Modifiers::none()),
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(260.0, 260.0),
+            },
+        ));
+        outputs.extend(tool.handle(
+            &context(Modifiers::none()),
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(260.0, 260.0),
+                button: PointerButton::Primary,
+            },
+        ));
+
+        drop(scene);
+        apply_all(&mut world, &mut history, outputs);
+
+        let group = world.doc.compositions[world.doc.main].children[0];
+        let fill = world.doc.nodes[group]
+            .children
+            .iter()
+            .copied()
+            .find(|id| {
+                matches!(
+                    world.doc.nodes[*id].kind,
+                    NodeKind::Style(StyleKind::Fill { .. })
+                )
+            })
+            .unwrap();
+
+        let NodeKind::Style(StyleKind::Fill { paint, .. }) = &world.doc.nodes[fill].kind else {
+            panic!("expected fill");
+        };
+
+        assert_eq!(paint.base_color(), Color::rgba(0.1, 0.8, 0.3, 1.0));
     }
 }

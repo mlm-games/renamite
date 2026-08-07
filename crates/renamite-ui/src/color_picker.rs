@@ -9,7 +9,7 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
 use repose_core::{AlignItems, Color, Modifier, View, theme};
-use repose_material::material3::{TextField, TextFieldConfig};
+use repose_material::material3::{Button, ButtonConfig, TextField, TextFieldConfig};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -74,6 +74,7 @@ pub fn ColorPicker(
     on_change: Rc<dyn Fn(ModelColor)>,
     on_commit: Rc<dyn Fn(ModelColor)>,
     on_add_swatch: Rc<dyn Fn(ModelColor)>,
+    on_done: Rc<dyn Fn()>,
 ) -> View {
     Column(
         Modifier::new()
@@ -88,6 +89,12 @@ pub fn ColorPicker(
         alpha_strip(state.clone(), on_change.clone(), on_commit.clone()),
         hex_row(state.clone(), on_change.clone(), on_commit.clone()),
         swatch_row(state, swatches, on_change, on_commit, on_add_swatch),
+        Button(
+            Modifier::new().fill_max_width(),
+            move || on_done(),
+            ButtonConfig::default(),
+            || Text("Done"),
+        ),
     ))
 }
 

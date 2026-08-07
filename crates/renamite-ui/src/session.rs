@@ -134,6 +134,12 @@ pub struct LayerDragState {
 pub struct OpenPicker {
     pub target: PickerTarget,
     pub state: Rc<RefCell<crate::color_picker::PickerState>>,
+
+    /// Only picker-owned transactions may be committed/cancelled by the picker.
+    pub transaction_open: bool,
+
+    /// Cancellation baseline for non-document current-paint edits.
+    pub cancel_current_paint: Option<renamite_model::StylePaint>,
 }
 
 /// What a live-editing picker session writes back to.
@@ -411,33 +417,50 @@ impl Session {
 }
 
 impl Session {
+    fn cancel_open_picker_state(&mut self) {
+        let Some(open) = self.open_picker.take() else {
+            return;
+        };
+
+        if open.transaction_open {
+            let history = &mut self.history;
+            let file = &mut self.file;
+            let mut project = pm_from(file);
+            let _ = history.cancel(&mut project);
+            self.engine.reevaluate(&self.file);
+        }
+
+        if let Some(paint) = open.cancel_current_paint {
+            self.current_paint = paint;
+        }
+    }
+
     /// Open a color picker editing `initial`. The history transaction is begun
     /// lazily on the first change, so an untouched picker leaves no undo entry.
     pub fn open_color_picker(&mut self, target: PickerTarget, initial: renamite_model::Color) {
-        // Re-opening over an existing picker abandons its in-flight edits.
-        if self.open_picker.is_some() {
-            let mut pm = pm_from(&mut self.file);
-            let _ = self.history.cancel(&mut pm);
-        }
+        // Cancel only the old picker's own pending work.
+        self.cancel_open_picker_state();
+
+        let cancel_current_paint =
+            (target == PickerTarget::CurrentPaint).then(|| self.current_paint.clone());
+
         self.open_picker = Some(OpenPicker {
             target,
             state: Rc::new(RefCell::new(crate::color_picker::PickerState::from_color(
                 initial,
             ))),
+            transaction_open: false,
+            cancel_current_paint,
         });
+
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
 
     /// Dismiss the picker without committing: an in-progress gesture's changes
-    /// (applied since the last `commit_picker_color`) are reverted via cancel.
+    /// (applied since the last `commit_picker_color`) are reverted.
     pub fn close_color_picker(&mut self) {
-        if self.open_picker.is_some() {
-            let mut pm = pm_from(&mut self.file);
-            let _ = self.history.cancel(&mut pm);
-        }
-        self.open_picker = None;
-        self.engine.reevaluate(&self.file);
+        self.cancel_open_picker_state();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
@@ -445,26 +468,60 @@ impl Session {
     /// Live preview path: writes the current picker color to its target inside
     /// a transaction, so an entire drag coalesces into one undo step.
     pub fn apply_picker_change(&mut self, color: renamite_model::Color) {
-        let Some(picker) = self.open_picker.clone() else {
+        let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
             return;
         };
-        if !self.history.transaction_open() {
-            self.history.begin("Edit color");
-        }
-        match picker.target {
+
+        match target {
             PickerTarget::CurrentPaint => {
-                self.current_paint = renamite_model::StylePaint::solid(color);
+                // Tool state is not part of document history.
+                self.current_paint.set_base_color(color);
             }
+
             PickerTarget::StyleColor { style_id } => {
+                if !self.ensure_picker_transaction() {
+                    return;
+                }
                 self.write_style_color(style_id, color);
+                self.engine.reevaluate(&self.file);
             }
+
             PickerTarget::GradientStop { style_id, index } => {
+                if !self.ensure_picker_transaction() {
+                    return;
+                }
                 self.write_gradient_stop_color(style_id, index, color);
+                self.engine.reevaluate(&self.file);
             }
         }
-        self.engine.reevaluate(&self.file);
+
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    /// Returns false if another editor gesture owns the global transaction.
+    fn ensure_picker_transaction(&mut self) -> bool {
+        let picker_owns_transaction = self
+            .open_picker
+            .as_ref()
+            .is_some_and(|open| open.transaction_open);
+
+        if picker_owns_transaction {
+            return true;
+        }
+
+        if self.history.transaction_open() {
+            self.status = Some("Finish the active edit before changing a color".into());
+            return false;
+        }
+
+        self.history.begin("Edit color");
+
+        if let Some(open) = self.open_picker.as_mut() {
+            open.transaction_open = true;
+        }
+
+        true
     }
 
     fn write_style_color(
@@ -526,14 +583,57 @@ impl Session {
     /// closing is a separate, explicit action so stop-color workflows can stay
     /// open across picks.
     pub fn commit_picker_color(&mut self, color: renamite_model::Color) {
-        self.history.commit();
+        let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
+            return;
+        };
+
+        match target {
+            PickerTarget::CurrentPaint => {
+                // Update cancellation baseline. Closing after a committed color
+                // must preserve that color.
+                let committed = self.current_paint.clone();
+                if let Some(open) = self.open_picker.as_mut() {
+                    open.cancel_current_paint = Some(committed);
+                }
+            }
+            PickerTarget::StyleColor { .. } | PickerTarget::GradientStop { .. } => {
+                let owns_transaction = self
+                    .open_picker
+                    .as_ref()
+                    .is_some_and(|open| open.transaction_open);
+
+                if owns_transaction {
+                    self.history.commit();
+                    if let Some(open) = self.open_picker.as_mut() {
+                        open.transaction_open = false;
+                    }
+                }
+            }
+        }
+
         self.swatches.push(color);
-        self.bump();
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
     }
 
     /// Save the current picker color to the swatch history (no history edit).
     pub fn add_swatch(&mut self, color: renamite_model::Color) {
         self.swatches.push(color);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Dismiss the picker. Commits a still-open picker-owned transaction before
+    /// discarding so the latest color is preserved, then clears the picker.
+    pub fn finish_color_picker(&mut self) {
+        if let Some(open) = self.open_picker.clone()
+            && open.transaction_open
+        {
+            let color = open.state.borrow().color();
+            self.commit_picker_color(color);
+        }
+
+        self.open_picker = None;
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
@@ -888,5 +988,47 @@ mod tests {
             !s.history.can_undo(),
             "cancelled picker leaves no undo entry"
         );
+    }
+
+    #[test]
+    fn current_paint_picker_does_not_open_history() {
+        let mut session = Session::new(default_file());
+
+        session.open_color_picker(
+            PickerTarget::CurrentPaint,
+            session.current_paint.base_color(),
+        );
+        session.apply_picker_change(Color::WHITE);
+        session.commit_picker_color(Color::WHITE);
+
+        assert!(!session.history.can_undo());
+        assert!(!session.history.transaction_open());
+    }
+
+    #[test]
+    fn cancelling_current_paint_restores_original() {
+        let mut session = Session::new(default_file());
+        let original = session.current_paint.clone();
+
+        session.open_color_picker(PickerTarget::CurrentPaint, original.base_color());
+        session.apply_picker_change(Color::WHITE);
+        session.close_color_picker();
+
+        assert_eq!(session.current_paint, original);
+    }
+
+    #[test]
+    fn committed_current_paint_survives_close() {
+        let mut session = Session::new(default_file());
+
+        session.open_color_picker(
+            PickerTarget::CurrentPaint,
+            session.current_paint.base_color(),
+        );
+        session.apply_picker_change(Color::WHITE);
+        session.commit_picker_color(Color::WHITE);
+        session.close_color_picker();
+
+        assert_eq!(session.current_paint.base_color(), Color::WHITE);
     }
 }

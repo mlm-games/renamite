@@ -276,6 +276,50 @@ impl StylePaint {
             }
         }
     }
+
+    /// Produce a static paint snapshot at `frame`.
+    ///
+    /// Current paint is tool state, not an animation track, so copying paint
+    /// from a document should sample it rather than copying its keyframes.
+    pub fn snapshot(&self, frame: f64) -> Self {
+        match self {
+            StylePaint::Solid { color } => StylePaint::solid(color.value_at(frame)),
+            StylePaint::Gradient(gradient) => StylePaint::Gradient(Gradient {
+                kind: gradient.kind,
+                start: Animated::new(gradient.start.value_at(frame)),
+                end: Animated::new(gradient.end.value_at(frame)),
+                stops: Animated::new(gradient.stops.value_at(frame)),
+            }),
+        }
+    }
+
+    /// Change the representative color while preserving paint type.
+    ///
+    /// For a gradient, this updates its first stop rather than destroying the
+    /// gradient and converting it to a solid.
+    pub fn set_base_color(&mut self, color: Color) {
+        match self {
+            StylePaint::Solid { color: animated } => {
+                animated.base = color;
+                animated.keyframes.clear();
+            }
+            StylePaint::Gradient(gradient) => {
+                gradient.start.keyframes.clear();
+                gradient.end.keyframes.clear();
+                gradient.stops.keyframes.clear();
+
+                if let Some(first) = gradient.stops.base.0.first_mut() {
+                    first.color = color;
+                } else {
+                    gradient
+                        .stops
+                        .base
+                        .0
+                        .push(GradientStop { offset: 0.0, color });
+                }
+            }
+        }
+    }
 }
 
 impl Tween for StylePaint {
@@ -2433,5 +2477,39 @@ mod trim_tests {
         let out = trim_path(&line(), 0.0, 1.0, 0.3).unwrap();
         let bb = out.bounding_box();
         assert!(bb.x0 < 0.5 && bb.x1 > 99.5);
+    }
+}
+
+#[cfg(test)]
+mod style_paint_tests {
+    use super::*;
+
+    #[test]
+    fn paint_snapshot_samples_without_copying_keys() {
+        let mut color = Animated::new(Color::BLACK);
+        color.set_key(Frame(0), Color::BLACK);
+        color.set_key(Frame(10), Color::WHITE);
+
+        let sampled = StylePaint::Solid { color }.snapshot(10.0);
+        let StylePaint::Solid { color } = sampled else {
+            panic!("expected solid");
+        };
+
+        assert_eq!(color.base, Color::WHITE);
+        assert!(color.keyframes.is_empty());
+    }
+
+    #[test]
+    fn set_base_color_preserves_gradient() {
+        let mut paint =
+            StylePaint::linear(glam::DVec2::ZERO, glam::DVec2::X, GradientStops::default());
+
+        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+        paint.set_base_color(red);
+
+        let StylePaint::Gradient(gradient) = paint else {
+            panic!("must remain a gradient");
+        };
+        assert_eq!(gradient.stops.base.0[0].color, red);
     }
 }

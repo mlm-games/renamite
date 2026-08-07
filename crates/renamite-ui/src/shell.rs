@@ -79,6 +79,7 @@ fn color_picker_overlay(session: SessionRef) -> View {
     let session_change = session.clone();
     let session_commit = session.clone();
     let session_add = session.clone();
+    let session_done = session.clone();
 
     ZStack(Modifier::new().fill_max_size()).child((
         // Scrim: click anywhere outside the picker to dismiss (cancels).
@@ -102,6 +103,9 @@ fn color_picker_overlay(session: SessionRef) -> View {
             }),
             Rc::new(move |c| {
                 session_add.borrow_mut().add_swatch(c);
+            }),
+            Rc::new(move || {
+                session_done.borrow_mut().finish_color_picker();
             }),
         )),
     ))

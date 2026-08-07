@@ -16,7 +16,7 @@ use renamite_behavior_common::modifiers::{
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
     Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
-    StyleKind, StylePaint, TrimMode, Value, fill_style_for, node_affine,
+    StyleKind, StylePaint, TrimMode, Value, node_affine,
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
@@ -686,11 +686,22 @@ fn enum2_segment(
         )
 }
 
-fn paint_style_id(s: &Session, id: NodeId) -> Option<NodeId> {
-    match &s.file.document.nodes.get(id)?.kind {
-        NodeKind::Style(StyleKind::Fill { .. }) => Some(id),
-        NodeKind::Style(_) => None,
-        _ => fill_style_for(&s.file.document, id),
+fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {
+    match &session.file.document.nodes.get(selected)?.kind {
+        NodeKind::Style(StyleKind::Fill { .. }) | NodeKind::Style(StyleKind::Stroke { .. }) => {
+            Some(selected)
+        }
+
+        NodeKind::Shape(_) => session
+            .engine
+            .scene()
+            .items
+            .iter()
+            .rev()
+            .find(|item| item.node == selected)
+            .map(|item| item.style),
+
+        _ => None,
     }
 }
 
@@ -719,14 +730,20 @@ fn paint_section(
         return None;
     }
     let id = ids[0];
-    let (style_id, paint) = {
-        let s = session.borrow();
-        let style_id = paint_style_id(&s, id)?;
-        let paint = match &s.file.document.nodes.get(style_id)?.kind {
-            NodeKind::Style(st) => st.paint().clone(),
+    let (style_id, paint, section_label, solid_path) = {
+        let session = session.borrow();
+        let style_id = paint_style_id(&session, id)?;
+        let node = session.file.document.nodes.get(style_id)?;
+
+        match &node.kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => {
+                (style_id, paint.clone(), "Fill", "fill.color")
+            }
+            NodeKind::Style(StyleKind::Stroke { paint, .. }) => {
+                (style_id, paint.clone(), "Stroke", "stroke.color")
+            }
             _ => return None,
-        };
-        (style_id, paint)
+        }
     };
     let th = theme();
     let gradient = match &paint {
@@ -780,7 +797,7 @@ fn paint_section(
     ));
 
     let mut children = vec![
-        Text("Fill")
+        Text(section_label)
             .size(theme().typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -794,8 +811,8 @@ fn paint_section(
 
     match &paint {
         StylePaint::Solid { .. } => {
-            // Color row bound to the style node's fill.color.
-            let path = PropPath::new("fill.color");
+            // Color row bound to the style node's solid-color property.
+            let path = PropPath::new(solid_path);
             let swatch = paint_swatch_button(
                 session.clone(),
                 PickerTarget::StyleColor { style_id },
@@ -933,18 +950,19 @@ fn paint_section(
                 .size(th.typography.body_medium)
                 .color(th.on_surface)
                 .modifier(Modifier::new().width(96.0)),
-            CompactIconAction(Symbols::palette, "Use as fill paint", {
+            CompactIconAction(Symbols::palette, "Use as current paint", {
                 let session = session.clone();
                 let paint = paint.clone();
                 move || {
-                    let mut s = session.borrow_mut();
-                    s.current_paint = paint.clone();
-                    s.status = Some("Current fill paint updated".into());
-                    s.revision = s.revision.wrapping_add(1);
+                    let mut session = session.borrow_mut();
+                    session.current_paint = paint.snapshot(session.playback.head);
+
+                    session.status = Some("Current paint updated".into());
+                    session.revision = session.revision.wrapping_add(1);
                     request_frame();
                 }
             }),
-            Text("Use as current fill")
+            Text("Use as current paint")
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant),
         )),
