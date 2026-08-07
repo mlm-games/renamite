@@ -6,6 +6,7 @@ pub mod inspect;
 pub mod layers;
 pub mod modifiers;
 pub mod path;
+pub mod stroke;
 
 use glam::DVec2;
 use renamite_animation::Frame;

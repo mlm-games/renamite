@@ -15,6 +15,7 @@ use lyon_tessellation::{
     StrokeTessellator, StrokeVertexConstructor, VertexBuffers,
 };
 use renamite_behavior_common::ViewTransform;
+use renamite_geometry::dash_bez_path;
 use renamite_model::{
     BlendMode as ModelBlendMode, FillRule, GradientStops, PaintKind, Scene, SceneItem, ScenePaint,
 };
@@ -190,19 +191,32 @@ impl SceneRenderer {
         if let Some(m) = self.cache.get(&key) {
             return Some(m.clone());
         }
-        let path = bez_to_lyon(&item.path);
+
+        // Convert a dashed stroke into visible open subpaths before Lyon
+        // tessellation. Invalid/disabled patterns fall back to the solid path.
+        let dashed_path = match &item.kind {
+            PaintKind::Stroke(stroke) => stroke
+                .dash
+                .as_ref()
+                .and_then(|dash| dash_bez_path(&item.path, &dash.dashes, dash.offset)),
+            PaintKind::Fill(_) => None,
+        };
+
+        let source_path = dashed_path.as_ref().unwrap_or(&item.path);
+        let lyon_path = bez_to_lyon(source_path);
+
         let mesh = match (&item.paint, &item.kind) {
             (ScenePaint::RadialGradient { center, end, stops }, PaintKind::Fill(_)) => {
-                match radial_fan_mesh(&item.path, *center, *end, stops, item.opacity, tol) {
+                match radial_fan_mesh(source_path, *center, *end, stops, item.opacity, tol) {
                     Some(m) => Arc::new(m),
                     None => {
-                        let m = self.tessellate(&path, &item.kind, [1.0; 4], tol)?;
+                        let m = self.tessellate(&lyon_path, &item.kind, [1.0; 4], tol)?;
                         colorize_mesh(m, &item.paint, item.opacity)
                     }
                 }
             }
             _ => {
-                let m = self.tessellate(&path, &item.kind, [1.0; 4], tol)?;
+                let m = self.tessellate(&lyon_path, &item.kind, [1.0; 4], tol)?;
                 colorize_mesh(m, &item.paint, item.opacity)
             }
         };
@@ -492,6 +506,22 @@ fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
             stroke.width.to_bits().hash(&mut h);
             std::mem::discriminant(&stroke.cap).hash(&mut h);
             std::mem::discriminant(&stroke.join).hash(&mut h);
+
+            match &stroke.dash {
+                None => {
+                    0u8.hash(&mut h);
+                }
+
+                Some(dash) => {
+                    1u8.hash(&mut h);
+                    dash.offset.to_bits().hash(&mut h);
+                    dash.dashes.len().hash(&mut h);
+
+                    for value in &dash.dashes {
+                        value.to_bits().hash(&mut h);
+                    }
+                }
+            }
         }
     }
 
@@ -722,6 +752,76 @@ mod tests {
         let mut b = a.clone();
         b.paint = ScenePaint::Solid(Color::rgba(0.0, 0.0, 1.0, 1.0));
         assert_ne!(mesh_key(&a, 0.5), mesh_key(&b, 0.5));
+    }
+
+    #[test]
+    fn dashed_stroke_tessellates() {
+        let mut renderer = SceneRenderer::new();
+
+        let mut path = kurbo::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+
+        let item = SceneItem {
+            path,
+            node: NodeId::default(),
+            style: NodeId::default(),
+            paint: ScenePaint::Solid(Color::BLACK),
+            kind: PaintKind::Stroke(renamite_model::StrokeSample {
+                width: 8.0,
+                cap: renamite_model::StrokeCap::Round,
+                join: renamite_model::StrokeJoin::Round,
+                dash: Some(renamite_model::DashSample {
+                    dashes: vec![12.0, 8.0],
+                    offset: 0.0,
+                }),
+            }),
+            opacity: 1.0,
+            clip: None,
+            blend: renamite_model::BlendMode::Normal,
+        };
+
+        let mesh = renderer.mesh_for(&item, 0.25).unwrap();
+
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert!(mesh.indices.len().is_multiple_of(3));
+    }
+
+    #[test]
+    fn cache_key_includes_dash_pattern_and_offset() {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+
+        let make = |pattern: Vec<f64>, offset: f64| SceneItem {
+            path: path.clone(),
+            node: NodeId::default(),
+            style: NodeId::default(),
+            paint: ScenePaint::Solid(Color::BLACK),
+            kind: PaintKind::Stroke(renamite_model::StrokeSample {
+                width: 4.0,
+                cap: renamite_model::StrokeCap::Butt,
+                join: renamite_model::StrokeJoin::Miter,
+                dash: Some(renamite_model::DashSample {
+                    dashes: pattern,
+                    offset,
+                }),
+            }),
+            opacity: 1.0,
+            clip: None,
+            blend: renamite_model::BlendMode::Normal,
+        };
+
+        assert_ne!(
+            mesh_key(&make(vec![10.0, 5.0], 0.0), 0.25),
+            mesh_key(&make(vec![10.0, 5.0], 2.0), 0.25),
+        );
+
+        assert_ne!(
+            mesh_key(&make(vec![10.0, 5.0], 0.0), 0.25),
+            mesh_key(&make(vec![5.0, 10.0], 0.0), 0.25),
+        );
     }
 
     #[test]

@@ -10,9 +10,9 @@ use renamite_animation::{Animated, EasingHandle, EasingPreset, Frame, Interpolat
 use renamite_behavior_common::ViewTransform;
 use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
-    Color, Document, FillRule, GradientKind, GradientStop, GradientStops, KeyframeData,
-    ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StrokeCap, StrokeJoin, StyleKind,
-    StylePaint, TrimMode, Value, evaluate,
+    AnimatedDash, Color, Document, FillRule, GradientKind, GradientStop, GradientStops,
+    KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StrokeCap, StrokeJoin,
+    StyleKind, StylePaint, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::{OffscreenRenderer, fit_view};
@@ -488,5 +488,55 @@ fn golden_radial_gradient() {
     check_golden(
         "radial_gradient",
         &render_doc(&mut gpu, &fixture_radial_gradient(), 0.0),
+    );
+}
+
+/// A horizontal line with a round-capped dashed stroke - pins the dash ->
+/// open-subpath -> Lyon caps pipeline.
+fn fixture_dashed_stroke() -> Document {
+    let mut document = Document::empty();
+    let comp = document.main;
+
+    let path = VectorPath {
+        closed: false,
+        anchors: vec![
+            Anchor::corner(DVec2::new(80.0, 256.0)),
+            Anchor::corner(DVec2::new(432.0, 256.0)),
+        ],
+    };
+
+    let shape = document.create_node(Node::new(
+        "Line",
+        NodeKind::Shape(ShapeKind::Path(Animated::new(path))),
+    ));
+
+    let stroke = document.create_node(Node::new(
+        "Dashed Stroke",
+        NodeKind::Style(StyleKind::Stroke {
+            paint: StylePaint::solid(Color::rgba(0.1, 0.3, 0.9, 1.0)),
+            width: Animated::new(18.0),
+            cap: StrokeCap::Round,
+            join: StrokeJoin::Round,
+            dash: Some(AnimatedDash {
+                dashes: vec![Animated::new(32.0), Animated::new(18.0)],
+                offset: Animated::new(0.0),
+            }),
+        }),
+    ));
+
+    document.attach(shape, Parent::Comp(comp), 0).unwrap();
+
+    document.attach(stroke, Parent::Comp(comp), 1).unwrap();
+
+    document
+}
+
+#[test]
+fn golden_dashed_stroke() {
+    let Some(mut gpu) = gpu() else { return };
+
+    check_golden(
+        "dashed_stroke",
+        &render_doc(&mut gpu, &fixture_dashed_stroke(), 0.0),
     );
 }

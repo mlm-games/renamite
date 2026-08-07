@@ -377,4 +377,70 @@ mod tests {
         let layer = report.value.compositions[report.value.main].children[0];
         assert_eq!(report.value.nodes[layer].children.len(), 1);
     }
+
+    #[test]
+    fn dashed_stroke_round_trips() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{
+                "ty": 4,
+                "ind": 1,
+                "nm": "Dashed Stroke",
+                "ks": {},
+                "shapes": [
+                    {
+                        "ty": "sh",
+                        "nm": "Line",
+                        "ks": {
+                            "a": 0,
+                            "k": {
+                                "c": false,
+                                "v": [[0, 0], [100, 0]],
+                                "i": [[0, 0], [0, 0]],
+                                "o": [[0, 0], [0, 0]]
+                            }
+                        }
+                    },
+                    {
+                        "ty": "st",
+                        "nm": "Stroke",
+                        "c": { "a": 0, "k": [0, 0, 0, 1] },
+                        "o": { "a": 0, "k": 100 },
+                        "w": { "a": 0, "k": 4 },
+                        "lc": 2,
+                        "lj": 2,
+                        "d": [
+                            {
+                                "n": "d",
+                                "v": { "a": 0, "k": 12 }
+                            },
+                            {
+                                "n": "g",
+                                "v": { "a": 0, "k": 8 }
+                            },
+                            {
+                                "n": "o",
+                                "v": { "a": 0, "k": 3 }
+                            }
+                        ]
+                    }
+                ]
+            }]
+        });
+
+        let document = import(&lottie).unwrap();
+
+        let exported = export(&document).unwrap();
+
+        let serialized = serde_json::to_string(&exported).unwrap();
+
+        assert!(serialized.contains("\"n\":\"d\""));
+        assert!(serialized.contains("\"n\":\"g\""));
+        assert!(serialized.contains("\"n\":\"o\""));
+    }
 }

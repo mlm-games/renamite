@@ -6,6 +6,45 @@ pub use kurbo::{Affine, BezPath, CubicBez, PathEl, Point, Rect, Shape as KurboSh
 
 use glam::DVec2;
 
+/// Validate a dash pattern before passing it to Kurbo.
+///
+/// Returns `None` for:
+/// - empty patterns,
+/// - negative/non-finite entries,
+/// - all-zero patterns.
+///
+/// Mixed zero/nonzero patterns are retained. Kurbo handles odd-length
+/// patterns according to SVG semantics.
+pub fn normalize_dash_pattern(pattern: &[f64]) -> Option<Vec<f64>> {
+    if pattern.is_empty()
+        || pattern.iter().any(|x| !x.is_finite() || *x < 0.0)
+        || pattern.iter().sum::<f64>() <= 1e-9
+    {
+        return None;
+    }
+
+    Some(pattern.to_vec())
+}
+
+/// Apply a stroke dash pattern to `path`.
+///
+/// The returned path consists of open subpaths representing visible dashes.
+/// Each subpath is subsequently capped by the stroke tessellator.
+///
+/// `None` means the dash settings are invalid or effectively disabled, so the
+/// caller should render the original solid path.
+pub fn dash_bez_path(path: &BezPath, pattern: &[f64], offset: f64) -> Option<BezPath> {
+    let pattern = normalize_dash_pattern(pattern)?;
+
+    if !offset.is_finite() {
+        return None;
+    }
+
+    let elements = kurbo::dash(path.elements().iter().copied(), offset, &pattern).collect();
+
+    Some(BezPath::from_vec(elements))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VectorPath {
     pub anchors: Vec<Anchor>,
@@ -599,5 +638,71 @@ mod round_corner_tests {
         assert_eq!(r.anchors.len(), 4); // 1 + 2 + 1
         assert_eq!(r.anchors[0].pos, DVec2::new(0.0, 0.0));
         assert_eq!(r.anchors.last().unwrap().pos, DVec2::new(50.0, 50.0));
+    }
+}
+
+#[cfg(test)]
+mod dash_tests {
+    use super::*;
+    use kurbo::ParamCurveArclen;
+
+    fn line(length: f64) -> BezPath {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((length, 0.0));
+        path
+    }
+
+    fn length(path: &BezPath) -> f64 {
+        path.segments().map(|segment| segment.arclen(1e-6)).sum()
+    }
+
+    #[test]
+    fn dash_line_produces_expected_visible_length() {
+        // 40 units with [10 on, 10 off] => 20 visible units.
+        let dashed = dash_bez_path(&line(40.0), &[10.0, 10.0], 0.0).unwrap();
+
+        assert!((length(&dashed) - 20.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dash_offset_shifts_pattern() {
+        let a = dash_bez_path(&line(40.0), &[10.0, 10.0], 0.0).unwrap();
+
+        let b = dash_bez_path(&line(40.0), &[10.0, 10.0], 5.0).unwrap();
+
+        assert_ne!(a.elements(), b.elements());
+    }
+
+    #[test]
+    fn odd_pattern_matches_explicitly_doubled_pattern() {
+        let path = line(100.0);
+
+        let odd = dash_bez_path(&path, &[10.0], 0.0).unwrap();
+
+        let doubled = dash_bez_path(&path, &[10.0, 10.0], 0.0).unwrap();
+
+        assert_eq!(odd.elements(), doubled.elements());
+    }
+
+    #[test]
+    fn negative_offset_is_supported() {
+        let path = line(100.0);
+
+        let positive = dash_bez_path(&path, &[10.0, 5.0], 30.0).unwrap();
+
+        let negative = dash_bez_path(&path, &[10.0, 5.0], -30.0).unwrap();
+
+        assert!(positive.is_finite());
+        assert!(negative.is_finite());
+    }
+
+    #[test]
+    fn rejects_invalid_patterns() {
+        assert!(dash_bez_path(&line(10.0), &[], 0.0).is_none());
+        assert!(dash_bez_path(&line(10.0), &[0.0, 0.0], 0.0).is_none());
+        assert!(dash_bez_path(&line(10.0), &[-1.0, 2.0], 0.0).is_none());
+        assert!(dash_bez_path(&line(10.0), &[f64::NAN, 2.0], 0.0).is_none());
+        assert!(dash_bez_path(&line(10.0), &[1.0, 2.0], f64::NAN).is_none());
     }
 }

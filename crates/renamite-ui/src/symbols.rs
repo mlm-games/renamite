@@ -46,6 +46,9 @@ repose_material::material_symbols! {
     radio_button_unchecked: '\u{e836}',
     stop_circle:            '\u{ef71}',
     fiber_manual_record:    '\u{eb61}',
+
+    remove:                '\u{e15b}',
+    delete:                '\u{e872}',
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {

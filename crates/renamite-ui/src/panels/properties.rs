@@ -13,6 +13,10 @@ use renamite_behavior_common::inspect::{
 use renamite_behavior_common::modifiers::{
     cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_set_trim_mode,
 };
+use renamite_behavior_common::stroke::{
+    cmd_add_stroke_dash_pair, cmd_disable_stroke_dash, cmd_enable_stroke_dash,
+    cmd_remove_stroke_dash_pair,
+};
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
     Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
@@ -106,6 +110,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     // stops) driving the fill style that paints it.
     if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
         children.push(v);
+    }
+
+    // Single selected stroke: dash section (offset, dash/gap values, enable /
+    // disable / add-pair / remove-pair controls).
+    if ids.len() == 1
+        && let Some(section) = stroke_dash_section(session.clone(), ids[0], playhead, record)
+    {
+        children.push(section);
     }
 
     // Single selected shape: offer to add a modifier as its sibling.
@@ -1238,4 +1250,244 @@ fn stop_rows(
             ))
         })
         .collect()
+}
+
+fn stroke_dash_section(
+    session: SessionRef,
+    id: NodeId,
+    playhead: Frame,
+    record: bool,
+) -> Option<View> {
+    let (is_stroke, dash) = {
+        let session = session.borrow();
+        let node = session.file.document.nodes.get(id)?;
+
+        match &node.kind {
+            NodeKind::Style(StyleKind::Stroke { dash, .. }) => (true, dash.clone()),
+
+            _ => (false, None),
+        }
+    };
+
+    if !is_stroke {
+        return None;
+    }
+
+    let th = theme();
+    let mut children = vec![
+        Text("Dash")
+            .size(th.typography.label_medium)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 12.0,
+                bottom: 4.0,
+            })),
+    ];
+
+    let Some(dash) = dash else {
+        children.push(
+            Row(Modifier::new()
+                .height(36.0)
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                })
+                .align_items(AlignItems::CENTER)
+                .gap(8.0))
+            .child((
+                CompactIconAction(Symbols::add, "Enable dashes", {
+                    let session = session.clone();
+
+                    move || {
+                        let mut session = session.borrow_mut();
+
+                        let Some(command) = cmd_enable_stroke_dash(&session.file.document, id)
+                        else {
+                            return;
+                        };
+
+                        session.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Enable dashes".into()),
+                            ToolOutput::Commands(smallvec![command]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+                Text("Enable stroke dashes")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface_variant),
+            )),
+        );
+
+        return Some(Column(Modifier::new().fill_max_width()).child(children));
+    };
+
+    // Offset
+    children.push(dash_scalar_row(
+        session.clone(),
+        id,
+        playhead,
+        record,
+        "Offset",
+        PropPath::new("stroke.dash.offset"),
+        dash.offset.value_at(playhead.0 as f64),
+        None,
+    ));
+
+    // Alternating dash/gap values.
+    for (index, value) in dash.dashes.iter().enumerate() {
+        let label = if index % 2 == 0 {
+            format!("Dash {}", index / 2 + 1)
+        } else {
+            format!("Gap {}", index / 2 + 1)
+        };
+
+        children.push(dash_scalar_row(
+            session.clone(),
+            id,
+            playhead,
+            record,
+            label,
+            PropPath::new(format!("stroke.dash.{index}")),
+            value.value_at(playhead.0 as f64),
+            Some(0.0),
+        ));
+    }
+
+    // Structural controls.
+    children.push(
+        Row(Modifier::new()
+            .height(36.0)
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 0.0,
+                bottom: 0.0,
+            })
+            .align_items(AlignItems::CENTER)
+            .gap(8.0))
+        .child((
+            CompactIconAction(Symbols::add, "Add dash/gap pair", {
+                let session = session.clone();
+
+                move || {
+                    apply_dash_structure_command(&session, "Add dash pair", |doc| {
+                        cmd_add_stroke_dash_pair(doc, id)
+                    });
+                }
+            }),
+            if dash.dashes.len() > 2 {
+                CompactIconAction(Symbols::remove, "Remove last dash/gap pair", {
+                    let session = session.clone();
+
+                    move || {
+                        apply_dash_structure_command(&session, "Remove dash pair", |doc| {
+                            cmd_remove_stroke_dash_pair(doc, id)
+                        });
+                    }
+                })
+            } else {
+                Box(Modifier::new().width(40.0))
+            },
+            CompactIconAction(Symbols::delete, "Disable dashes", {
+                let session = session.clone();
+
+                move || {
+                    apply_dash_structure_command(&session, "Disable dashes", |doc| {
+                        cmd_disable_stroke_dash(doc, id)
+                    });
+                }
+            }),
+        )),
+    );
+
+    Some(Column(Modifier::new().fill_max_width()).child(children))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dash_scalar_row(
+    session: SessionRef,
+    id: NodeId,
+    playhead: Frame,
+    record: bool,
+    label: impl Into<String>,
+    path: PropPath,
+    value: f64,
+    min: Option<f64>,
+) -> View {
+    let label = label.into();
+
+    let state = {
+        let session = session.borrow();
+        let animated = session.file.document.property_is_animated(id, &path);
+
+        if session
+            .file
+            .document
+            .keyframe_data(id, &path, playhead)
+            .is_some()
+        {
+            DiamondState::AtPlayhead
+        } else if animated {
+            DiamondState::HasKeys
+        } else {
+            DiamondState::Empty
+        }
+    };
+
+    Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        diamond_button(session.clone(), vec![id], path.clone(), state, playhead),
+        Text(label)
+            .size(theme().typography.body_medium)
+            .color(theme().on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        Box(Modifier::new().flex_grow(1.0)).child(scrub_f64_w(
+            session,
+            vec![id],
+            path,
+            value,
+            0.5,
+            min,
+            None,
+            playhead,
+            record,
+            0,
+            64.0,
+        )),
+    ))
+}
+
+fn apply_dash_structure_command(
+    session: &SessionRef,
+    label: &'static str,
+    command: impl FnOnce(&renamite_model::Document) -> Option<EditorCommand>,
+) {
+    let mut session = session.borrow_mut();
+
+    let Some(command) = command(&session.file.document) else {
+        return;
+    };
+
+    session.apply_outputs(smallvec![
+        ToolOutput::BeginTransaction(label.into()),
+        ToolOutput::Commands(smallvec![command]),
+        ToolOutput::CommitTransaction,
+    ]);
 }

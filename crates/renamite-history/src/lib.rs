@@ -7,7 +7,7 @@ use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
     Document, GradientKind, GradientStop, GradientStops, KeyframeData, ModelError, ModifierKind,
-    Node, NodeId, NodeKind, Parent, PropMut, PropPath, StylePaint, Value,
+    Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind, StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -109,6 +109,12 @@ pub enum EditorCommand {
     SetTrimMode {
         id: NodeId,
         mode: renamite_model::TrimMode,
+    },
+    /// Enable/disable a stroke's dash pattern (whole-value structural edit).
+    /// No coalescing: discrete structural edits only.
+    SetStrokeDash {
+        id: NodeId,
+        dash: Option<renamite_model::AnimatedDash>,
     },
 
     // properties
@@ -416,6 +422,7 @@ fn apply_command(
         | ConvertToSolid { .. }
         | SetPaint { .. }
         | SetTrimMode { .. }
+        | SetStrokeDash { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
         | RemoveKeyframe { .. }
@@ -918,6 +925,17 @@ fn apply_document_command(
             let old = std::mem::replace(cur, *mode);
             Ok((None, vec![SetTrimMode { id: *id, mode: old }]))
         }
+        SetStrokeDash { id, dash } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+
+            let NodeKind::Style(StyleKind::Stroke { dash: current, .. }) = &mut node.kind else {
+                return Err(ModelError::MissingNode.into());
+            };
+
+            let old = std::mem::replace(current, dash.clone());
+
+            Ok((None, vec![SetStrokeDash { id: *id, dash: old }]))
+        }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
             Ok((
@@ -1265,7 +1283,9 @@ pub enum ToolId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renamite_model::{NodeKind, StyleKind};
+    use renamite_model::{
+        AnimatedDash, Color, NodeKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
+    };
 
     fn f64_key(f: i64, v: f64) -> KeyframeData {
         KeyframeData {
@@ -1522,6 +1542,72 @@ mod tests {
             panic!("not a trim path");
         };
         assert_eq!(*mode, renamite_model::TrimMode::Simultaneously);
+    }
+
+    #[test]
+    fn set_stroke_dash_undo_redo_roundtrips() {
+        let mut world = World::new();
+        let id = world.node();
+
+        world.doc.nodes[id].kind = NodeKind::Style(StyleKind::Stroke {
+            paint: StylePaint::solid(Color::BLACK),
+            width: Animated::new(4.0),
+            cap: StrokeCap::Round,
+            join: StrokeJoin::Round,
+            dash: None,
+        });
+
+        let dash = AnimatedDash {
+            dashes: vec![Animated::new(12.0), Animated::new(8.0)],
+            offset: Animated::new(0.0),
+        };
+
+        let mut history = History::new();
+
+        history
+            .apply(
+                &mut world.pm(),
+                EditorCommand::SetStrokeDash {
+                    id,
+                    dash: Some(dash.clone()),
+                },
+            )
+            .unwrap();
+
+        history.commit();
+
+        let NodeKind::Style(StyleKind::Stroke {
+            dash: Some(current),
+            ..
+        }) = &world.doc.nodes[id].kind
+        else {
+            panic!("expected dashed stroke");
+        };
+
+        assert_eq!(current, &dash);
+
+        history.undo(&mut world.pm()).unwrap();
+
+        let NodeKind::Style(StyleKind::Stroke {
+            dash: dash_field, ..
+        }) = &world.doc.nodes[id].kind
+        else {
+            panic!("expected stroke");
+        };
+
+        assert!(dash_field.is_none());
+
+        history.redo(&mut world.pm()).unwrap();
+
+        let NodeKind::Style(StyleKind::Stroke {
+            dash: Some(current),
+            ..
+        }) = &world.doc.nodes[id].kind
+        else {
+            panic!("expected dashed stroke");
+        };
+
+        assert_eq!(current, &dash);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use kurbo::{Affine, BezPath, ParamCurveNearest, Point, Shape as KurboShape};
 use renamite_animation::{
     Angle, Animated, AnimatedTransform, EasingHandle, Frame, Interpolation, Tween,
 };
-use renamite_geometry::VectorPath;
+use renamite_geometry::{VectorPath, dash_bez_path};
 use serde::de::{Deserializer, Error as DeError, Visitor};
 use serde::{Deserialize, Serialize};
 use slotmap::{SlotMap, new_key_type};
@@ -1518,11 +1518,27 @@ pub fn pick(scene: &Scene, pt: glam::DVec2) -> Option<NodeId> {
         if item.opacity <= 0.0 {
             continue;
         }
-        let pad = match &item.kind {
-            PaintKind::Stroke(s) => (s.width * 0.5).max(1.0),
+
+        let dashed_path = match &item.kind {
+            PaintKind::Stroke(stroke) => stroke
+                .dash
+                .as_ref()
+                .and_then(|dash| dash_bez_path(&item.path, &dash.dashes, dash.offset)),
+            PaintKind::Fill(_) => None,
+        };
+
+        let hit_path = dashed_path.as_ref().unwrap_or(&item.path);
+
+        let padding = match &item.kind {
+            PaintKind::Stroke(stroke) => (stroke.width * 0.5).max(1.0),
             PaintKind::Fill(_) => 0.0,
         };
-        if !item.path.bounding_box().inflate(pad, pad).contains(q) {
+
+        if !hit_path
+            .bounding_box()
+            .inflate(padding, padding)
+            .contains(q)
+        {
             continue;
         }
         if let Some(ci) = item.clip {
@@ -1533,10 +1549,10 @@ pub fn pick(scene: &Scene, pt: glam::DVec2) -> Option<NodeId> {
         }
         let hit = match &item.kind {
             PaintKind::Fill(rule) => match rule {
-                FillRule::NonZero => item.path.winding(q) != 0,
-                FillRule::EvenOdd => item.path.winding(q) % 2 != 0,
+                FillRule::NonZero => hit_path.winding(q) != 0,
+                FillRule::EvenOdd => hit_path.winding(q) % 2 != 0,
             },
-            PaintKind::Stroke(_) => nearest_dist(&item.path, q) <= pad,
+            PaintKind::Stroke(_) => nearest_dist(hit_path, q) <= padding,
         };
         if hit {
             return Some(item.node);
@@ -1732,10 +1748,30 @@ pub fn read_prop<V: PropReader>(p: PropRef<'_>, v: V) -> V::Out {
     }
 }
 
+fn dash_index(path: &str) -> Option<usize> {
+    path.strip_prefix("stroke.dash.")?.parse().ok()
+}
+
 impl Node {
     pub fn prop_mut(&mut self, prop: &PropPath) -> Option<PropMut<'_>> {
         use PropMut::*;
-        match (prop.as_str(), &mut self.kind) {
+        let s = prop.as_str();
+        if s == "stroke.dash.offset" || dash_index(s).is_some() {
+            if let NodeKind::Style(StyleKind::Stroke {
+                dash: Some(dash), ..
+            }) = &mut self.kind
+            {
+                if s == "stroke.dash.offset" {
+                    return Some(F64(&mut dash.offset));
+                }
+                if let Some(index) = dash_index(s) {
+                    return dash.dashes.get_mut(index).map(PropMut::F64);
+                }
+            }
+            return None;
+        }
+
+        match (s, &mut self.kind) {
             ("opacity", _) => Some(F64(&mut self.opacity)),
             ("transform.anchor", _) => Some(Vec2(&mut self.transform.anchor)),
             ("transform.position", _) => Some(Vec2(&mut self.transform.position)),
@@ -1853,7 +1889,23 @@ impl Node {
 
     pub fn prop_ref(&self, prop: &PropPath) -> Option<PropRef<'_>> {
         use PropRef::*;
-        match (prop.as_str(), &self.kind) {
+        let s = prop.as_str();
+        if s == "stroke.dash.offset" || dash_index(s).is_some() {
+            if let NodeKind::Style(StyleKind::Stroke {
+                dash: Some(dash), ..
+            }) = &self.kind
+            {
+                if s == "stroke.dash.offset" {
+                    return Some(F64(&dash.offset));
+                }
+                if let Some(index) = dash_index(s) {
+                    return dash.dashes.get(index).map(PropRef::F64);
+                }
+            }
+            return None;
+        }
+
+        match (s, &self.kind) {
             ("opacity", _) => Some(F64(&self.opacity)),
             ("transform.anchor", _) => Some(Vec2(&self.transform.anchor)),
             ("transform.position", _) => Some(Vec2(&self.transform.position)),
@@ -2324,6 +2376,47 @@ mod tests {
     }
 
     #[test]
+    fn dashed_stroke_gaps_are_not_pickable() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((40.0, 0.0));
+
+        let shape = NodeId::default();
+
+        let scene = Scene {
+            clips: vec![],
+            items: vec![SceneItem {
+                path,
+                node: shape,
+                style: NodeId::default(),
+                paint: ScenePaint::Solid(Color::BLACK),
+                kind: PaintKind::Stroke(StrokeSample {
+                    width: 4.0,
+                    cap: StrokeCap::Butt,
+                    join: StrokeJoin::Miter,
+                    dash: Some(DashSample {
+                        dashes: vec![10.0, 10.0],
+                        offset: 0.0,
+                    }),
+                }),
+                opacity: 1.0,
+                clip: None,
+                blend: BlendMode::Normal,
+            }],
+        };
+
+        assert_eq!(pick(&scene, DVec2::new(5.0, 0.0)), Some(shape),);
+
+        assert_eq!(
+            pick(&scene, DVec2::new(15.0, 0.0)),
+            None,
+            "point lies inside an off-gap",
+        );
+
+        assert_eq!(pick(&scene, DVec2::new(25.0, 0.0)), Some(shape),);
+    }
+
+    #[test]
     fn gradient_fill_emits_linear_paint() {
         let (mut doc, _) = doc_with_ellipse_and_fill();
         let fill = find_fill(&doc);
@@ -2400,6 +2493,48 @@ mod tests {
         assert!(
             min.x <= 0.0 && max.x >= 0.0,
             "bounds must cover the ellipse center"
+        );
+    }
+
+    #[test]
+    fn dash_entries_are_addressable_properties() {
+        let mut doc = Document::empty();
+
+        let stroke = doc.create_node(Node::new(
+            "Stroke",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(4.0),
+                cap: StrokeCap::Round,
+                join: StrokeJoin::Round,
+                dash: Some(AnimatedDash {
+                    dashes: vec![Animated::new(12.0), Animated::new(8.0)],
+                    offset: Animated::new(2.0),
+                }),
+            }),
+        ));
+
+        doc.attach(stroke, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(
+            doc.value_at(stroke, &PropPath::new("stroke.dash.0"), 0.0,)
+                .unwrap(),
+            Value::F64(12.0),
+        );
+
+        assert_eq!(
+            doc.value_at(stroke, &PropPath::new("stroke.dash.offset"), 0.0,)
+                .unwrap(),
+            Value::F64(2.0),
+        );
+
+        doc.set_static(stroke, &PropPath::new("stroke.dash.1"), &Value::F64(4.0))
+            .unwrap();
+
+        assert_eq!(
+            doc.value_at(stroke, &PropPath::new("stroke.dash.1"), 0.0,)
+                .unwrap(),
+            Value::F64(4.0),
         );
     }
 }
