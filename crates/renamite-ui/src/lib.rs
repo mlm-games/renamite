@@ -16,10 +16,15 @@ pub mod symbols;
 
 use renamite_animation::PlayState;
 use renamite_history::ToolId;
-use repose_core::{Color, Modifier, Scheduler, View, request_frame, theme};
-use repose_material::material3::{TopAppBar, TopAppBarConfig};
+use repose_core::{Color, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
+use repose_material::material3::{
+    DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem, MenuState,
+    TopAppBar, TopAppBarConfig,
+};
 use repose_platform::RenderContext;
+use repose_ui::overlay::OverlayHandle;
 use repose_ui::{Box, Column, Text, TextStyle, ViewExt};
+use std::rc::Rc;
 use web_time::Instant;
 
 use components::{CompactIconAction, ToolAction};
@@ -46,9 +51,7 @@ pub fn init_wasm() {
     }
 }
 
-pub fn AppTopBar(session: SessionRef) -> View {
-    let is_playing = session.borrow().playing;
-    let recording = session.borrow().record;
+pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
     let (name, dirty, status, path) = {
         let s = session.borrow();
         let name = s
@@ -74,90 +77,164 @@ pub fn AppTopBar(session: SessionRef) -> View {
                 .size(theme().typography.label_medium)
                 .color(theme().on_surface_variant),
         ),
-        Some(CompactIconAction(Symbols::menu, "Main menu", || {})),
+        Some(FileMenu(session.clone(), overlay)),
         vec![
             CompactSwatchButton(session.clone()),
-            CompactIconAction(Symbols::add, "New", {
-                let session = session.clone();
-                move || file::new_document(&session)
-            }),
-            CompactIconAction(Symbols::folder_open, "Open", {
-                let session = session.clone();
-                move || file::open_document(&session)
-            }),
-            CompactIconAction(Symbols::save, "Save", {
-                let session = session.clone();
-                move || {
-                    file::save_document(&session);
-                }
-            }),
-            CompactIconAction(Symbols::save_as, "Save As", {
-                let session = session.clone();
-                move || {
-                    file::save_document_as(&session);
-                }
-            }),
-            CompactIconAction(Symbols::file_upload, "Import Lottie", {
-                let session = session.clone();
-                move || file::import_lottie(&session)
-            }),
-            CompactIconAction(Symbols::font_download, "Import Font", {
-                let session = session.clone();
-                move || file::import_font(&session)
-            }),
-            CompactIconAction(Symbols::file_download, "Export Lottie", {
-                let session = session.clone();
-                move || file::export_lottie(&session)
-            }),
-            CompactIconAction(Symbols::image, "Export PNG", {
-                let session = session.clone();
-                move || file::export_png(&session)
-            }),
-            CompactIconAction(Symbols::undo, "Undo", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    undo_cmd(&mut s);
-                    s.bump();
-                }
-            }),
-            CompactIconAction(Symbols::redo, "Redo", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    redo_cmd(&mut s);
-                    s.bump();
-                }
-            }),
-            if recording {
-                CompactIconAction(Symbols::fiber_manual_record, "Stop recording keys", {
-                    let session = session.clone();
-                    move || toggle_record(&session)
-                })
-            } else {
-                CompactIconAction(Symbols::radio_button_unchecked, "Record keys on edit", {
-                    let session = session.clone();
-                    move || toggle_record(&session)
-                })
-            },
-            if is_playing {
-                CompactIconAction(Symbols::pause, "Pause", {
-                    let session = session.clone();
-                    move || toggle_playback(&session)
-                })
-            } else {
-                CompactIconAction(Symbols::play_arrow, "Play", {
-                    let session = session.clone();
-                    move || toggle_playback(&session)
-                })
-            },
-            CompactIconAction(Symbols::more_vert, "More", || {}),
+            SaveButton(session.clone()),
+            UndoButton(session.clone()),
+            RedoButton(session.clone()),
+            RecordButton(session.clone()),
+            PlaybackButton(session),
         ],
         TopAppBarConfig {
             modifier: Modifier::new(),
             ..Default::default()
         },
     )
+}
+
+pub fn FileMenu(
+    session: SessionRef,
+    overlay: OverlayHandle,
+) -> View {
+    let state = remember_with_key(
+        "renamite_file_menu",
+        MenuState::new,
+    );
+
+    let trigger = CompactIconAction(Symbols::menu, "File", {
+        let state = state.clone();
+        move || state.open()
+    });
+
+    let item = |text: &'static str, action: Rc<dyn Fn()>| {
+        DropdownMenuEntry::Item(DropdownMenuItem {
+            text: text.into(),
+            leading_icon: None,
+            trailing_icon: None,
+            on_click: action,
+            enabled: true,
+        })
+    };
+
+    let items = vec![
+        item("New", {
+            let session = session.clone();
+            Rc::new(move || file::new_document(&session))
+        }),
+        item("Open…", {
+            let session = session.clone();
+            Rc::new(move || file::open_document(&session))
+        }),
+        item("Save", {
+            let session = session.clone();
+            Rc::new(move || {
+                file::save_document(&session);
+            })
+        }),
+        item("Save As…", {
+            let session = session.clone();
+            Rc::new(move || {
+                file::save_document_as(&session);
+            })
+        }),
+
+        DropdownMenuEntry::Divider,
+
+        item("Import Lottie…", {
+            let session = session.clone();
+            Rc::new(move || file::import_lottie(&session))
+        }),
+        item("Import Font…", {
+            let session = session.clone();
+            Rc::new(move || file::import_font(&session))
+        }),
+
+        DropdownMenuEntry::Divider,
+
+        item("Export Lottie…", {
+            let session = session.clone();
+            Rc::new(move || file::export_lottie(&session))
+        }),
+        item("Export PNG…", {
+            let session = session.clone();
+            Rc::new(move || file::export_png(&session))
+        }),
+    ];
+
+    DropdownMenu(
+        state,
+        overlay,
+        Modifier::new(),
+        trigger,
+        items,
+        DropdownMenuConfig {
+            min_width: 220.0,
+            max_width: 280.0,
+            ..Default::default()
+        },
+    )
+}
+
+fn SaveButton(session: SessionRef) -> View {
+    CompactIconAction(Symbols::save, "Save", {
+        let session = session.clone();
+        move || {
+            file::save_document(&session);
+        }
+    })
+}
+
+fn UndoButton(session: SessionRef) -> View {
+    CompactIconAction(Symbols::undo, "Undo", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            undo_cmd(&mut s);
+            s.bump();
+        }
+    })
+}
+
+fn RedoButton(session: SessionRef) -> View {
+    CompactIconAction(Symbols::redo, "Redo", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            redo_cmd(&mut s);
+            s.bump();
+        }
+    })
+}
+
+fn RecordButton(session: SessionRef) -> View {
+    let recording = session.borrow().record;
+    if recording {
+        CompactIconAction(Symbols::fiber_manual_record, "Stop recording keys", {
+            let session = session.clone();
+            move || toggle_record(&session)
+        })
+    } else {
+        CompactIconAction(Symbols::radio_button_unchecked, "Record keys on edit", {
+            let session = session.clone();
+            move || toggle_record(&session)
+        })
+    }
+}
+
+fn PlaybackButton(session: SessionRef) -> View {
+    let is_playing = session.borrow().playing;
+    if is_playing {
+        CompactIconAction(Symbols::pause, "Pause", {
+            let session = session.clone();
+            move || toggle_playback(&session)
+        })
+    } else {
+        CompactIconAction(Symbols::play_arrow, "Play", {
+            let session = session.clone();
+            move || toggle_playback(&session)
+        })
+    }
 }
 
 fn toggle_playback(session: &SessionRef) {

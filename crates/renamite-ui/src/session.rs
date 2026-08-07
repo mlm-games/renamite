@@ -27,6 +27,7 @@ pub enum PanelPage {
     Layers = 1,
     Timeline = 2,
     Inspect = 3,
+    Assets = 4,
 }
 
 pub type SessionRef = Rc<RefCell<Session>>;

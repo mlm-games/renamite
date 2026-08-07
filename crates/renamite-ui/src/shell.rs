@@ -8,7 +8,7 @@ use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
 use std::rc::Rc;
 
 use crate::components::PanelSurface;
-use crate::panels::{LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel};
+use crate::panels::{AssetsPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel};
 use crate::session::{PanelPage, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::MenuEntry;
@@ -49,7 +49,7 @@ pub fn EditorShell(session: SessionRef) -> View {
             ShellClass::Compact => CompactWorkspace(session_body.clone()),
         },
         ScaffoldConfig {
-            top_bar: Some(crate::AppTopBar(session.clone())),
+            top_bar: Some(crate::AppTopBar(session.clone(), (*overlay).clone())),
             bottom_bar: match class {
                 ShellClass::Compact => Some(BottomNavigation(session.clone())),
                 _ => None,
@@ -273,8 +273,18 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 fn ExpandedWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
-        Box(Modifier::new().width(264.0).fill_max_height())
-            .child(PanelSurface(LayersPanel(session.clone()))),
+        Column(
+            Modifier::new()
+                .width(264.0)
+                .fill_max_height()
+                .gap(8.0),
+        )
+        .child((
+            Box(Modifier::new().weight(1.0))
+                .child(PanelSurface(LayersPanel(session.clone()))),
+            Box(Modifier::new().height(240.0))
+                .child(PanelSurface(AssetsPanel(session.clone()))),
+        )),
         Column(Modifier::new().fill_max_size().weight(1.0).gap(8.0)).child((
             Box(Modifier::new().weight(1.0).fill_max_width())
                 .child(PanelSurface(ViewportPanel(session.clone()))),
@@ -303,6 +313,7 @@ fn CompactWorkspace(session: SessionRef) -> View {
         PanelPage::Layers => LayersPanel(session),
         PanelPage::Timeline => TimelinePanel(session),
         PanelPage::Inspect => PropertiesPanel(session),
+        PanelPage::Assets => AssetsPanel(session),
     }
 }
 
@@ -313,6 +324,7 @@ fn active_side_panel(session: SessionRef) -> View {
         PanelPage::Timeline => TimelinePanel(session),
         PanelPage::Inspect => PropertiesPanel(session),
         PanelPage::Canvas => LayersPanel(session),
+        PanelPage::Assets => AssetsPanel(session),
     }
 }
 
@@ -335,7 +347,8 @@ fn BottomNavigation(session: SessionRef) -> View {
                 Symbols::play_arrow,
                 "Animate",
             ),
-            nav_item(session, PanelPage::Inspect, Symbols::settings, "Inspect"),
+            nav_item(session.clone(), PanelPage::Inspect, Symbols::settings, "Inspect"),
+            nav_item(session, PanelPage::Assets, Symbols::folder_open, "Assets"),
         ],
         NavigationBarConfig::default(),
     )

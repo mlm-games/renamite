@@ -19,6 +19,7 @@ repose_material::material_symbols! {
     file_download:       '\u{e2c4}',
     image:               '\u{e3f4}',
     font_download:       '\u{e167}',
+    check:               '\u{e5ca}',
 
     arrow_selector_tool: '\u{f82f}',
     edit:                '\u{f097}',
