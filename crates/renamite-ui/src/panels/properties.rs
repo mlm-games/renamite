@@ -29,7 +29,7 @@ use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{InspectorDrag, Session, SessionRef};
+use crate::session::{InspectorDrag, PickerTarget, Session, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 
 pub fn PropertiesPanel(session: SessionRef) -> View {
@@ -796,6 +796,11 @@ fn paint_section(
         StylePaint::Solid { .. } => {
             // Color row bound to the style node's fill.color.
             let path = PropPath::new("fill.color");
+            let swatch = paint_swatch_button(
+                session.clone(),
+                PickerTarget::StyleColor { style_id },
+                paint.base_color(),
+            );
             children.push(
                 Row(Modifier::new()
                     .height(36.0)
@@ -814,6 +819,7 @@ fn paint_section(
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
                         .modifier(Modifier::new().width(96.0)),
+                    swatch,
                     Box(Modifier::new().flex_grow(1.0)).child(color_row(
                         session.clone(),
                         vec![style_id],
@@ -1032,6 +1038,28 @@ fn paint_segment(
         )
 }
 
+/// A small clickable fill-color swatch that opens the picker for `target`.
+fn paint_swatch_button(session: SessionRef, target: PickerTarget, color: Color) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .width(28.0)
+        .height(28.0)
+        .clip_rounded(6.0)
+        .border(1.0, th.outline_variant, 6.0)
+        .background(repose_core::Color(
+            (color.r * 255.0) as u8,
+            (color.g * 255.0) as u8,
+            (color.b * 255.0) as u8,
+            (color.a * 255.0) as u8,
+        ))
+        .on_pointer_down({
+            let session = session.clone();
+            move |_| {
+                session.borrow_mut().open_color_picker(target, color);
+            }
+        }))
+}
+
 fn axis_row(
     session: SessionRef,
     style_id: NodeId,
@@ -1084,16 +1112,27 @@ fn stop_rows(
         .map(|(i, stop)| {
             let th = theme();
             let path = PropPath::new("grad.stops");
-            let swatch =
-                Box(Modifier::new()
-                    .width(20.0)
-                    .height(20.0)
-                    .background(repose_core::Color(
-                        (stop.color.r * 255.0) as u8,
-                        (stop.color.g * 255.0) as u8,
-                        (stop.color.b * 255.0) as u8,
-                        (stop.color.a * 255.0) as u8,
-                    )));
+            let stop_color = stop.color;
+            let swatch = Box(Modifier::new()
+                .width(20.0)
+                .height(20.0)
+                .clip_rounded(4.0)
+                .border(1.0, th.outline_variant, 4.0)
+                .background(repose_core::Color(
+                    (stop_color.r * 255.0) as u8,
+                    (stop_color.g * 255.0) as u8,
+                    (stop_color.b * 255.0) as u8,
+                    (stop_color.a * 255.0) as u8,
+                ))
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |_| {
+                        session.borrow_mut().open_color_picker(
+                            PickerTarget::GradientStop { style_id, index: i },
+                            stop_color,
+                        );
+                    }
+                }));
             let base = i * 5;
             Row(Modifier::new()
                 .height(36.0)

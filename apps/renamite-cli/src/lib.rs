@@ -182,12 +182,16 @@ fn dispatch(command: Commands) -> Result<()> {
         Commands::Diff { a, b, fail_on_diff } => cmd_diff(a, b, fail_on_diff),
         Commands::New { output, template } => cmd_new(output, template),
         Commands::Play { input, duration } => cmd_play(input, duration),
-        Commands::ExportLottie { input, output, strict } => {
-            cmd_export_lottie(input, output, strict)
-        }
-        Commands::ImportLottie { input, output, strict } => {
-            cmd_import_lottie(input, output, strict)
-        }
+        Commands::ExportLottie {
+            input,
+            output,
+            strict,
+        } => cmd_export_lottie(input, output, strict),
+        Commands::ImportLottie {
+            input,
+            output,
+            strict,
+        } => cmd_import_lottie(input, output, strict),
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();

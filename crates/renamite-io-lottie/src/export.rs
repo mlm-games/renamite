@@ -13,9 +13,7 @@ use crate::property::{
 };
 use crate::{LottieError, LottieReport, LottieWarning};
 
-pub fn export_with_report(
-    document: &Document,
-) -> Result<LottieReport<Value>, LottieError> {
+pub fn export_with_report(document: &Document) -> Result<LottieReport<Value>, LottieError> {
     let main = document
         .compositions
         .get(document.main)
@@ -59,10 +57,7 @@ struct Exporter<'a> {
 }
 
 impl Exporter<'_> {
-    fn export_composition_layers(
-        &mut self,
-        comp_id: CompId,
-    ) -> Result<Vec<Value>, LottieError> {
+    fn export_composition_layers(&mut self, comp_id: CompId) -> Result<Vec<Value>, LottieError> {
         let composition = self
             .document
             .compositions
@@ -76,14 +71,8 @@ impl Exporter<'_> {
                 continue;
             };
             match &node.kind {
-                NodeKind::Layer(_)
-                | NodeKind::Group
-                | NodeKind::Precomp { .. } => {
-                    self.flush_bare_run(
-                        &composition,
-                        &mut output,
-                        &mut bare_run,
-                    )?;
+                NodeKind::Layer(_) | NodeKind::Group | NodeKind::Precomp { .. } => {
+                    self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
                     match &node.kind {
                         NodeKind::Layer(props) => {
                             output.push(self.export_layer_node(
@@ -115,17 +104,11 @@ impl Exporter<'_> {
                         _ => unreachable!(),
                     }
                 }
-                NodeKind::Shape(_)
-                | NodeKind::Style(_)
-                | NodeKind::Modifier(_) => {
+                NodeKind::Shape(_) | NodeKind::Style(_) | NodeKind::Modifier(_) => {
                     bare_run.push(node_id);
                 }
                 _ => {
-                    self.flush_bare_run(
-                        &composition,
-                        &mut output,
-                        &mut bare_run,
-                    )?;
+                    self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
                     self.warnings.push(LottieWarning::new(
                         format!("node/{node_id:?}"),
                         "node kind is not representable as a Lottie shape layer",
@@ -133,11 +116,7 @@ impl Exporter<'_> {
                 }
             }
         }
-        self.flush_bare_run(
-            &composition,
-            &mut output,
-            &mut bare_run,
-        )?;
+        self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
         for (index, layer) in output.iter_mut().enumerate() {
             layer["ind"] = json!(index as u32 + 1);
         }
@@ -164,26 +143,19 @@ impl Exporter<'_> {
                     .is_some_and(|node| matches!(node.kind, NodeKind::Shape(_)))
             })
             .collect();
-        let (transform, opacity, transform_owner) =
-            if shape_ids.len() == 1 {
-                let node = &self.document.nodes[shape_ids[0]];
-                (
-                    node.transform.clone(),
-                    node.opacity.clone(),
-                    Some(shape_ids[0]),
-                )
-            } else {
-                (
-                    AnimatedTransform::identity(),
-                    Animated::new(1.0),
-                    None,
-                )
-            };
+        let (transform, opacity, transform_owner) = if shape_ids.len() == 1 {
+            let node = &self.document.nodes[shape_ids[0]];
+            (
+                node.transform.clone(),
+                node.opacity.clone(),
+                Some(shape_ids[0]),
+            )
+        } else {
+            (AnimatedTransform::identity(), Animated::new(1.0), None)
+        };
         let shapes = ids
             .iter()
-            .flat_map(|id| {
-                self.export_node_item(*id, transform_owner)
-            })
+            .flat_map(|id| self.export_node_item(*id, transform_owner))
             .collect::<Vec<_>>();
         if !shapes.is_empty() {
             output.push(self.shape_layer(
@@ -291,10 +263,7 @@ impl Exporter<'_> {
         }))
     }
 
-    fn ensure_precomp_asset(
-        &mut self,
-        comp_id: CompId,
-    ) -> Result<String, LottieError> {
+    fn ensure_precomp_asset(&mut self, comp_id: CompId) -> Result<String, LottieError> {
         if let Some(existing) = self.asset_ids.get(&comp_id) {
             return Ok(existing.clone());
         }
@@ -306,9 +275,7 @@ impl Exporter<'_> {
             .document
             .compositions
             .get(comp_id)
-            .ok_or_else(|| {
-                LottieError::InvalidPrecomposition(asset_id.clone())
-            })?
+            .ok_or_else(|| LottieError::InvalidPrecomposition(asset_id.clone()))?
             .clone();
         let layers = self.export_composition_layers(comp_id)?;
         self.assets.push(json!({
@@ -349,11 +316,7 @@ impl Exporter<'_> {
         })
     }
 
-    fn export_node_item(
-        &mut self,
-        id: NodeId,
-        transform_owner: Option<NodeId>,
-    ) -> Vec<Value> {
+    fn export_node_item(&mut self, id: NodeId, transform_owner: Option<NodeId>) -> Vec<Value> {
         let Some(node) = self.document.nodes.get(id).cloned() else {
             return Vec::new();
         };
@@ -367,10 +330,7 @@ impl Exporter<'_> {
                     .iter()
                     .flat_map(|child| self.export_node_item(*child, None))
                     .collect::<Vec<_>>();
-                items.push(group_transform_json(
-                    &node.transform,
-                    &node.opacity,
-                ));
+                items.push(group_transform_json(&node.transform, &node.opacity));
                 vec![json!({
                     "ty": "gr",
                     "nm": node.name,
@@ -399,24 +359,15 @@ impl Exporter<'_> {
                 }
             }
             NodeKind::Style(style) => {
-                vec![style_json(
-                    &node.name,
-                    style,
-                    &node.opacity,
-                )]
+                vec![style_json(&node.name, style, &node.opacity)]
             }
             NodeKind::Modifier(modifier) => {
-                modifier_json(&node.name, modifier)
-                    .into_iter()
-                    .collect()
+                modifier_json(&node.name, modifier).into_iter().collect()
             }
             other => {
                 self.warnings.push(LottieWarning::new(
                     format!("node/{id:?}"),
-                    format!(
-                        "nested node kind `{}` was skipped",
-                        node_kind_name(other)
-                    ),
+                    format!("nested node kind `{}` was skipped", node_kind_name(other)),
                 ));
                 Vec::new()
             }
@@ -424,10 +375,7 @@ impl Exporter<'_> {
     }
 }
 
-fn transform_is_identity(
-    transform: &AnimatedTransform,
-    opacity: &Animated<f64>,
-) -> bool {
+fn transform_is_identity(transform: &AnimatedTransform, opacity: &Animated<f64>) -> bool {
     transform.anchor.keyframes.is_empty()
         && transform.anchor.base == glam::DVec2::ZERO
         && transform.position.keyframes.is_empty()
@@ -444,10 +392,7 @@ fn transform_is_identity(
         && opacity.base == 1.0
 }
 
-fn transform_json(
-    transform: &AnimatedTransform,
-    opacity: &Animated<f64>,
-) -> Value {
+fn transform_json(transform: &AnimatedTransform, opacity: &Animated<f64>) -> Value {
     json!({
         "a": export_vec2(&transform.anchor),
         "p": export_vec2(&transform.position),
@@ -459,10 +404,7 @@ fn transform_json(
     })
 }
 
-fn group_transform_json(
-    transform: &AnimatedTransform,
-    opacity: &Animated<f64>,
-) -> Value {
+fn group_transform_json(transform: &AnimatedTransform, opacity: &Animated<f64>) -> Value {
     let mut value = transform_json(transform, opacity);
     value["ty"] = json!("tr");
     value
@@ -470,11 +412,7 @@ fn group_transform_json(
 
 fn shape_json(name: &str, shape: &ShapeKind) -> Value {
     match shape {
-        ShapeKind::Rect {
-            pos,
-            size,
-            rounded,
-        } => json!({
+        ShapeKind::Rect { pos, size, rounded } => json!({
             "ty": "rc",
             "nm": name,
             "d": 1,
@@ -538,11 +476,7 @@ fn shape_json(name: &str, shape: &ShapeKind) -> Value {
     }
 }
 
-fn style_json(
-    name: &str,
-    style: &StyleKind,
-    opacity: &Animated<f64>,
-) -> Value {
+fn style_json(name: &str, style: &StyleKind, opacity: &Animated<f64>) -> Value {
     match style {
         StyleKind::Fill { paint, rule } => match paint {
             StylePaint::Solid { color } => json!({
@@ -553,8 +487,7 @@ fn style_json(
                 "r": fill_rule_to_lottie(*rule)
             }),
             StylePaint::Gradient(gradient) => {
-                let (count, stops) =
-                    export_gradient(&gradient.stops);
+                let (count, stops) = export_gradient(&gradient.stops);
                 let mut value = json!({
                     "ty": "gf",
                     "nm": name,
@@ -593,8 +526,7 @@ fn style_json(
                     "lj": stroke_join_to_lottie(*join)
                 }),
                 StylePaint::Gradient(gradient) => {
-                    let (count, stops) =
-                        export_gradient(&gradient.stops);
+                    let (count, stops) = export_gradient(&gradient.stops);
                     let mut value = json!({
                         "ty": "gs",
                         "nm": name,
@@ -611,10 +543,8 @@ fn style_json(
                         "lj": stroke_join_to_lottie(*join)
                     });
                     if gradient.kind == GradientKind::Radial {
-                        value["h"] =
-                            json!({ "a": 0, "k": 0.0 });
-                        value["a"] =
-                            json!({ "a": 0, "k": 0.0 });
+                        value["h"] = json!({ "a": 0, "k": 0.0 });
+                        value["a"] = json!({ "a": 0, "k": 0.0 });
                     }
                     value
                 }
@@ -638,10 +568,7 @@ fn style_json(
     }
 }
 
-fn modifier_json(
-    name: &str,
-    modifier: &ModifierKind,
-) -> Option<Value> {
+fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
     match modifier {
         ModifierKind::TrimPath {
             start,

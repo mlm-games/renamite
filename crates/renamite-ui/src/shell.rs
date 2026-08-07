@@ -58,12 +58,53 @@ pub fn EditorShell(session: SessionRef) -> View {
         },
     );
 
-    let confirm = discard_dialog(session, (*overlay).clone());
+    let confirm = discard_dialog(session.clone(), (*overlay).clone());
+    let picker = color_picker_overlay(session.clone());
 
     overlay.host(
         Modifier::new().fill_max_size(),
-        ZStack(Modifier::new().fill_max_size()).child((scaffold, confirm)),
+        ZStack(Modifier::new().fill_max_size()).child((scaffold, picker, confirm)),
     )
+}
+
+/// Transparent-to-closem modal layer containing the color picker popover,
+/// anchored under the top bar when a picker is open.
+fn color_picker_overlay(session: SessionRef) -> View {
+    let Some(picker) = session.borrow().open_picker.clone() else {
+        return ZStack(Modifier::new());
+    };
+    let swatches = session.borrow().swatches.colors.clone();
+
+    let session_close = session.clone();
+    let session_change = session.clone();
+    let session_commit = session.clone();
+    let session_add = session.clone();
+
+    ZStack(Modifier::new().fill_max_size()).child((
+        // Scrim: click anywhere outside the picker to dismiss (cancels).
+        Box(Modifier::new()
+            .fill_max_size()
+            .background(repose_core::Color(0, 0, 0, 90))
+            .on_pointer_down(move |_| {
+                session_close.borrow_mut().close_color_picker();
+            })),
+        Box(Modifier::new()
+            .absolute()
+            .offset(Some(16.0), Some(56.0), None, None))
+        .child(crate::color_picker::ColorPicker(
+            picker.state.clone(),
+            swatches,
+            Rc::new(move |c| {
+                session_change.borrow_mut().apply_picker_change(c);
+            }),
+            Rc::new(move |c| {
+                session_commit.borrow_mut().commit_picker_color(c);
+            }),
+            Rc::new(move |c| {
+                session_add.borrow_mut().add_swatch(c);
+            }),
+        )),
+    ))
 }
 
 fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {

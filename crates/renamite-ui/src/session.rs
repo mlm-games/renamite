@@ -73,6 +73,10 @@ pub struct Session {
     pub confirm_dialog: Rc<DialogState>,
     /// Current paint used by the Fill tool (and, later, newly created shapes).
     pub current_paint: renamite_model::StylePaint,
+    /// Recent colors for the picker's swatch strip (most-recent first).
+    pub swatches: renamite_behavior_common::color::SwatchHistory,
+    /// The currently open color picker popover, if any.
+    pub open_picker: Option<OpenPicker>,
 }
 
 /// A destructive action deferred behind the unsaved-changes guard.
@@ -124,6 +128,28 @@ pub struct LayerDragState {
     pub as_child: bool,
 }
 
+/// A live color-picker transaction: which target it writes back to, plus the
+/// picker's own view/editing state.
+#[derive(Clone)]
+pub struct OpenPicker {
+    pub target: PickerTarget,
+    pub state: Rc<RefCell<crate::color_picker::PickerState>>,
+}
+
+/// What a live-editing picker session writes back to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerTarget {
+    /// The global current-paint swatch (top bar / Fill tool).
+    CurrentPaint,
+    /// A specific fill/stroke style node's solid color.
+    StyleColor { style_id: renamite_model::NodeId },
+    /// One stop in a gradient (fill or stroke).
+    GradientStop {
+        style_id: renamite_model::NodeId,
+        index: usize,
+    },
+}
+
 impl Session {
     pub fn new(file: RenFile) -> Self {
         let engine = Engine::new(&file).expect("project");
@@ -161,9 +187,11 @@ impl Session {
             file_ops: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             pending_intent: None,
             confirm_dialog: Rc::new(DialogState::new()),
-            current_paint: renamite_model::StylePaint::solid(
-                renamite_model::Color::rgba(0.96, 0.42, 0.18, 1.0),
-            ),
+            current_paint: renamite_model::StylePaint::solid(renamite_model::Color::rgba(
+                0.96, 0.42, 0.18, 1.0,
+            )),
+            swatches: renamite_behavior_common::color::SwatchHistory::new(12),
+            open_picker: None,
         }
     }
 
@@ -379,6 +407,135 @@ impl Session {
         self.revision = self.revision.wrapping_add(1);
         request_frame();
         true
+    }
+}
+
+impl Session {
+    /// Open a color picker editing `initial`. The history transaction is begun
+    /// lazily on the first change, so an untouched picker leaves no undo entry.
+    pub fn open_color_picker(&mut self, target: PickerTarget, initial: renamite_model::Color) {
+        // Re-opening over an existing picker abandons its in-flight edits.
+        if self.open_picker.is_some() {
+            let mut pm = pm_from(&mut self.file);
+            let _ = self.history.cancel(&mut pm);
+        }
+        self.open_picker = Some(OpenPicker {
+            target,
+            state: Rc::new(RefCell::new(crate::color_picker::PickerState::from_color(
+                initial,
+            ))),
+        });
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Dismiss the picker without committing: an in-progress gesture's changes
+    /// (applied since the last `commit_picker_color`) are reverted via cancel.
+    pub fn close_color_picker(&mut self) {
+        if self.open_picker.is_some() {
+            let mut pm = pm_from(&mut self.file);
+            let _ = self.history.cancel(&mut pm);
+        }
+        self.open_picker = None;
+        self.engine.reevaluate(&self.file);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Live preview path: writes the current picker color to its target inside
+    /// a transaction, so an entire drag coalesces into one undo step.
+    pub fn apply_picker_change(&mut self, color: renamite_model::Color) {
+        let Some(picker) = self.open_picker.clone() else {
+            return;
+        };
+        if !self.history.transaction_open() {
+            self.history.begin("Edit color");
+        }
+        match picker.target {
+            PickerTarget::CurrentPaint => {
+                self.current_paint = renamite_model::StylePaint::solid(color);
+            }
+            PickerTarget::StyleColor { style_id } => {
+                self.write_style_color(style_id, color);
+            }
+            PickerTarget::GradientStop { style_id, index } => {
+                self.write_gradient_stop_color(style_id, index, color);
+            }
+        }
+        self.engine.reevaluate(&self.file);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    fn write_style_color(
+        &mut self,
+        style_id: renamite_model::NodeId,
+        color: renamite_model::Color,
+    ) {
+        use renamite_model::{NodeKind, PropPath, StyleKind, Value};
+        let path = match self.file.document.nodes.get(style_id).map(|n| &n.kind) {
+            Some(NodeKind::Style(StyleKind::Stroke { .. })) => PropPath::new("stroke.color"),
+            _ => PropPath::new("fill.color"),
+        };
+        let frame = renamite_animation::Frame(self.playback.head.round() as i64);
+        let cmd = renamite_history::resolve_property_edit(
+            &self.file.document,
+            style_id,
+            &path,
+            Value::Color(color),
+            frame,
+            self.record,
+        );
+        self.history_apply(cmd);
+    }
+
+    fn write_gradient_stop_color(
+        &mut self,
+        style_id: renamite_model::NodeId,
+        index: usize,
+        color: renamite_model::Color,
+    ) {
+        use renamite_model::{NodeKind, PropPath, StylePaint, Value};
+        let Some(node) = self.file.document.nodes.get(style_id) else {
+            return;
+        };
+        let NodeKind::Style(st) = &node.kind else {
+            return;
+        };
+        let StylePaint::Gradient(g) = st.paint() else {
+            return;
+        };
+        let mut stops = g.stops.value_at(self.playback.head);
+        if let Some(stop) = stops.0.get_mut(index) {
+            stop.color = color;
+        }
+        let frame = renamite_animation::Frame(self.playback.head.round() as i64);
+        let cmd = renamite_history::resolve_property_edit(
+            &self.file.document,
+            style_id,
+            &PropPath::new("grad.stops"),
+            Value::Stops(stops),
+            frame,
+            self.record,
+        );
+        self.history_apply(cmd);
+    }
+
+    /// End-of-gesture: coalesce the open transaction into a single undo step
+    /// and record the color in swatch history. Does not close the picker --
+    /// closing is a separate, explicit action so stop-color workflows can stay
+    /// open across picks.
+    pub fn commit_picker_color(&mut self, color: renamite_model::Color) {
+        self.history.commit();
+        self.swatches.push(color);
+        self.bump();
+    }
+
+    /// Save the current picker color to the swatch history (no history edit).
+    pub fn add_swatch(&mut self, color: renamite_model::Color) {
+        self.swatches.push(color);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
     }
 }
 
@@ -668,4 +825,68 @@ pub fn init_session() -> Rc<RefCell<Session>> {
 
     let _rev = session.borrow().revision;
     session
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renamite_model::{Color, NodeKind, fill_style_for};
+
+    fn fill_id_of(s: &Session) -> renamite_model::NodeId {
+        let comp = s.file.document.main;
+        let shape = s.file.document.compositions[comp].children[0];
+        fill_style_for(&s.file.document, shape).expect("default file has a fill")
+    }
+
+    #[test]
+    fn picker_change_then_commit_is_one_undo_step() {
+        let mut s = Session::new(default_file());
+        let fill = fill_id_of(&s);
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK);
+        for _ in 0..5 {
+            s.apply_picker_change(Color::rgba(0.1, 0.2, 0.3, 1.0));
+        }
+        s.commit_picker_color(Color::rgba(0.1, 0.2, 0.3, 1.0));
+        assert!(s.history.can_undo());
+        undo_cmd(&mut s);
+        assert!(!s.history.can_undo(), "whole picker drag = one undo step");
+    }
+
+    #[test]
+    fn undoing_picker_restores_original_color() {
+        let mut s = Session::new(default_file());
+        let fill = fill_id_of(&s);
+        let orig = {
+            let s = &s;
+            let NodeKind::Style(st) = &s.file.document.nodes.get(fill).unwrap().kind else {
+                panic!("not a style");
+            };
+            st.paint().base_color()
+        };
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, orig);
+        s.apply_picker_change(Color::WHITE);
+        s.commit_picker_color(Color::WHITE);
+        undo_cmd(&mut s);
+        let now = {
+            let s = &s;
+            let NodeKind::Style(st) = &s.file.document.nodes.get(fill).unwrap().kind else {
+                panic!("not a style");
+            };
+            st.paint().base_color()
+        };
+        assert!((now.r - orig.r).abs() < 1e-6, "color restored after undo");
+    }
+
+    #[test]
+    fn close_without_commit_cancels() {
+        let mut s = Session::new(default_file());
+        let fill = fill_id_of(&s);
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK);
+        s.apply_picker_change(Color::WHITE);
+        s.close_color_picker();
+        assert!(
+            !s.history.can_undo(),
+            "cancelled picker leaves no undo entry"
+        );
+    }
 }

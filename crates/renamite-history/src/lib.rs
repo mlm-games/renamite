@@ -386,6 +386,11 @@ impl History {
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
+
+    /// True while an apply-batch transaction is open (between `begin`/`commit`).
+    pub fn transaction_open(&self) -> bool {
+        self.open.is_some()
+    }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }

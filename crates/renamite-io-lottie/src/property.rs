@@ -1,9 +1,7 @@
 //! Conversion of Renamite animated values to/from Lottie property objects.
 
 use glam::DVec2;
-use renamite_animation::{
-    Angle, Animated, EasingHandle, Frame, Interpolation, Keyframe, Tween,
-};
+use renamite_animation::{Angle, Animated, EasingHandle, Frame, Interpolation, Keyframe, Tween};
 use renamite_geometry::{Anchor, TangentMode, VectorPath};
 use renamite_model::{Color, GradientStop, GradientStops};
 use serde_json::{Map, Value, json};
@@ -182,12 +180,7 @@ fn packed_stops(stops: &GradientStops, count: usize) -> Vec<f64> {
     let stops = normalized_stops(stops, count);
     let mut output = Vec::with_capacity(count * 6);
     for stop in &stops.0 {
-        output.extend_from_slice(&[
-            stop.offset,
-            stop.color.r,
-            stop.color.g,
-            stop.color.b,
-        ]);
+        output.extend_from_slice(&[stop.offset, stop.color.r, stop.color.g, stop.color.b]);
     }
     for stop in &stops.0 {
         output.extend_from_slice(&[stop.offset, stop.color.a]);
@@ -196,9 +189,7 @@ fn packed_stops(stops: &GradientStops, count: usize) -> Vec<f64> {
 }
 
 /// Returns `(color_stop_count, Lottie animated gradient property)`.
-pub(crate) fn export_gradient(
-    animated: &Animated<GradientStops>,
-) -> (usize, Value) {
+pub(crate) fn export_gradient(animated: &Animated<GradientStops>) -> (usize, Value) {
     let count = animated
         .keyframes
         .iter()
@@ -220,15 +211,9 @@ pub(crate) fn export_gradient(
     for (index, key) in animated.keyframes.iter().enumerate() {
         let mut object = Map::new();
         object.insert("t".into(), json!(key.frame.0));
-        object.insert(
-            "s".into(),
-            json!(packed_stops(&key.value, count)),
-        );
+        object.insert("s".into(), json!(packed_stops(&key.value, count)));
         if let Some(next) = animated.keyframes.get(index + 1) {
-            object.insert(
-                "e".into(),
-                json!(packed_stops(&next.value, count)),
-            );
+            object.insert("e".into(), json!(packed_stops(&next.value, count)));
         }
         easing_fields(key, &mut object);
         keys.push(Value::Object(object));
@@ -300,9 +285,7 @@ fn parse_path_value(value: &Value) -> Option<VectorPath> {
             .get(index)
             .and_then(parse_vec2_value)
             .unwrap_or(DVec2::ZERO);
-        let mode = if tan_in.length_squared() < 1e-12
-            && tan_out.length_squared() < 1e-12
-        {
+        let mode = if tan_in.length_squared() < 1e-12 && tan_out.length_squared() < 1e-12 {
             TangentMode::Corner
         } else {
             TangentMode::Smooth
@@ -316,10 +299,7 @@ fn parse_path_value(value: &Value) -> Option<VectorPath> {
     }
     Some(VectorPath {
         anchors,
-        closed: object
-            .get("c")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        closed: object.get("c").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -331,9 +311,7 @@ fn handle_component(value: &Value) -> Option<f64> {
     }
 }
 
-fn parse_interpolation(
-    object: &Value,
-) -> (Interpolation, EasingHandle, EasingHandle) {
+fn parse_interpolation(object: &Value) -> (Interpolation, EasingHandle, EasingHandle) {
     if object.get("h").and_then(Value::as_u64) == Some(1) {
         return (
             Interpolation::Hold,
@@ -341,18 +319,10 @@ fn parse_interpolation(
             EasingHandle::LINEAR_IN,
         );
     }
-    let out_x = object
-        .pointer("/o/x")
-        .and_then(handle_component);
-    let out_y = object
-        .pointer("/o/y")
-        .and_then(handle_component);
-    let in_x = object
-        .pointer("/i/x")
-        .and_then(handle_component);
-    let in_y = object
-        .pointer("/i/y")
-        .and_then(handle_component);
+    let out_x = object.pointer("/o/x").and_then(handle_component);
+    let out_y = object.pointer("/o/y").and_then(handle_component);
+    let in_x = object.pointer("/i/x").and_then(handle_component);
+    let in_y = object.pointer("/i/y").and_then(handle_component);
     match (out_x, out_y, in_x, in_y) {
         (Some(ox), Some(oy), Some(ix), Some(iy)) => (
             Interpolation::CubicBezier,
@@ -382,16 +352,13 @@ fn import_property<T: Clone + Tween>(
         return Animated::new(default);
     }
     let raw = property.get("k").unwrap_or(property);
-    let explicitly_animated =
-        property.get("a").and_then(Value::as_u64) == Some(1);
+    let explicitly_animated = property.get("a").and_then(Value::as_u64) == Some(1);
     let looks_animated = raw
         .as_array()
         .and_then(|array| array.first())
         .is_some_and(|first| first.get("t").is_some());
     if !explicitly_animated && !looks_animated {
-        return Animated::new(
-            parse_value(raw).unwrap_or(default),
-        );
+        return Animated::new(parse_value(raw).unwrap_or(default));
     }
     let Some(raw_keys) = raw.as_array() else {
         return Animated::new(default);
@@ -406,8 +373,7 @@ fn import_property<T: Clone + Tween>(
             .or_else(|| previous_end.clone())
             .or_else(|| raw_key.get("e").and_then(&parse_value))
             .unwrap_or_else(|| previous_value.clone());
-        let (interpolation, ease_out, ease_in) =
-            parse_interpolation(raw_key);
+        let (interpolation, ease_out, ease_in) = parse_interpolation(raw_key);
         let frame = Frame(
             raw_key
                 .get("t")
@@ -423,9 +389,7 @@ fn import_property<T: Clone + Tween>(
             ease_in,
         });
         previous_value = value;
-        previous_end = raw_key
-            .get("e")
-            .and_then(&parse_value);
+        previous_end = raw_key.get("e").and_then(&parse_value);
     }
     keys.sort_by_key(|key| key.frame);
     let mut unique = Vec::with_capacity(keys.len());
@@ -449,20 +413,13 @@ fn import_property<T: Clone + Tween>(
     }
 }
 
-pub(crate) fn import_scalar(
-    property: &Value,
-    scale: f64,
-    default: f64,
-) -> Animated<f64> {
+pub(crate) fn import_scalar(property: &Value, scale: f64, default: f64) -> Animated<f64> {
     import_property(property, default, |value| {
         first_number(value).map(|number| number * scale)
     })
 }
 
-pub(crate) fn import_angle(
-    property: &Value,
-    default: f64,
-) -> Animated<Angle> {
+pub(crate) fn import_angle(property: &Value, default: f64) -> Animated<Angle> {
     let scalar = import_scalar(property, 1.0, default);
     Animated {
         base: Angle(scalar.base),
@@ -480,26 +437,11 @@ pub(crate) fn import_angle(
     }
 }
 
-pub(crate) fn import_vec2(
-    property: &Value,
-    default: DVec2,
-) -> Animated<DVec2> {
+pub(crate) fn import_vec2(property: &Value, default: DVec2) -> Animated<DVec2> {
     // Split-dimension Lottie position.
-    if property
-        .get("s")
-        .and_then(Value::as_u64)
-        == Some(1)
-    {
-        let x = import_scalar(
-            property.get("x").unwrap_or(&Value::Null),
-            1.0,
-            default.x,
-        );
-        let y = import_scalar(
-            property.get("y").unwrap_or(&Value::Null),
-            1.0,
-            default.y,
-        );
+    if property.get("s").and_then(Value::as_u64) == Some(1) {
+        let x = import_scalar(property.get("x").unwrap_or(&Value::Null), 1.0, default.x);
+        let y = import_scalar(property.get("y").unwrap_or(&Value::Null), 1.0, default.y);
         let mut frames = std::collections::BTreeSet::new();
         frames.extend(x.keyframes.iter().map(|key| key.frame));
         frames.extend(y.keyframes.iter().map(|key| key.frame));
@@ -507,10 +449,7 @@ pub(crate) fn import_vec2(
         for frame in frames {
             output.set_key(
                 frame,
-                DVec2::new(
-                    x.value_at(frame.0 as f64),
-                    y.value_at(frame.0 as f64),
-                ),
+                DVec2::new(x.value_at(frame.0 as f64), y.value_at(frame.0 as f64)),
             );
         }
         return output;
@@ -518,21 +457,12 @@ pub(crate) fn import_vec2(
     import_property(property, default, parse_vec2_value)
 }
 
-pub(crate) fn import_color(
-    property: &Value,
-    default: Color,
-) -> Animated<Color> {
+pub(crate) fn import_color(property: &Value, default: Color) -> Animated<Color> {
     import_property(property, default, parse_color_value)
 }
 
-pub(crate) fn import_path(
-    property: &Value,
-) -> Animated<VectorPath> {
-    import_property(
-        property,
-        VectorPath::default(),
-        parse_path_value,
-    )
+pub(crate) fn import_path(property: &Value) -> Animated<VectorPath> {
+    import_property(property, VectorPath::default(), parse_path_value)
 }
 
 fn alpha_at(alpha: &[(f64, f64)], offset: f64) -> f64 {
@@ -563,9 +493,7 @@ fn unpack_stops(value: &Value, count: usize) -> Option<GradientStops> {
     let alpha_values = &values[count * 4..];
     let alpha_stops: Vec<(f64, f64)> = alpha_values
         .chunks_exact(2)
-        .filter_map(|pair| {
-            Some((pair[0].as_f64()?, pair[1].as_f64()?))
-        })
+        .filter_map(|pair| Some((pair[0].as_f64()?, pair[1].as_f64()?)))
         .collect();
     let mut stops = Vec::with_capacity(count);
     for index in 0..count {
@@ -585,13 +513,8 @@ fn unpack_stops(value: &Value, count: usize) -> Option<GradientStops> {
     Some(GradientStops(stops))
 }
 
-pub(crate) fn import_gradient(
-    gradient: &Value,
-) -> Animated<GradientStops> {
-    let count = gradient
-        .get("p")
-        .and_then(Value::as_u64)
-        .unwrap_or(2) as usize;
+pub(crate) fn import_gradient(gradient: &Value) -> Animated<GradientStops> {
+    let count = gradient.get("p").and_then(Value::as_u64).unwrap_or(2) as usize;
     import_property(
         gradient.get("k").unwrap_or(&Value::Null),
         GradientStops::default(),

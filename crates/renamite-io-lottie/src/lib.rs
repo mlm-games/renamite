@@ -99,7 +99,8 @@ mod tests {
     use glam::DVec2;
     use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
     use renamite_model::{
-        Color, FillRule, GradientStop, GradientStops, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TrimMode, Value,
+        Color, FillRule, GradientStop, GradientStops, ModifierKind, Node, NodeKind, Parent,
+        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TrimMode, Value,
     };
 
     fn visible_shape_doc() -> Document {
@@ -177,9 +178,7 @@ mod tests {
         let exported = export(&doc).unwrap();
         let imported = import(&exported).unwrap();
         let layer = imported.compositions[imported.main].children[0];
-        assert!(
-            imported.property_is_animated(layer, &PropPath::new("transform.position"))
-        );
+        assert!(imported.property_is_animated(layer, &PropPath::new("transform.position")));
         let value = imported
             .value_at(layer, &PropPath::new("transform.position"), 60.0)
             .unwrap();

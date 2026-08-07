@@ -14,19 +14,14 @@ use crate::property::{
 };
 use crate::{LottieError, LottieReport, LottieWarning};
 
-pub fn import_with_report(
-    root: &Value,
-) -> Result<LottieReport<Document>, LottieError> {
+pub fn import_with_report(root: &Value) -> Result<LottieReport<Document>, LottieError> {
     let width = required_u32(root, "w")?;
     let height = required_u32(root, "h")?;
     let frame_rate = root
         .get("fr")
         .and_then(Value::as_f64)
         .ok_or(LottieError::Missing("fr"))?;
-    let in_frame = root
-        .get("ip")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
+    let in_frame = root.get("ip").and_then(Value::as_f64).unwrap_or(0.0);
     let out_frame = root
         .get("op")
         .and_then(Value::as_f64)
@@ -52,12 +47,7 @@ pub fn import_with_report(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|asset| {
-            Some((
-                asset.get("id")?.as_str()?.to_owned(),
-                asset.clone(),
-            ))
-        })
+        .filter_map(|asset| Some((asset.get("id")?.as_str()?.to_owned(), asset.clone())))
         .collect::<HashMap<_, _>>();
     let mut importer = Importer {
         document,
@@ -110,22 +100,14 @@ impl Importer {
     ) -> Result<(), LottieError> {
         for (index, layer) in layers.iter().enumerate() {
             let layer_path = format!("{path}/{index}");
-            let layer_type = layer
-                .get("ty")
-                .and_then(Value::as_u64)
-                .unwrap_or(u64::MAX);
+            let layer_type = layer.get("ty").and_then(Value::as_u64).unwrap_or(u64::MAX);
             let tree = match layer_type {
                 4 => self.import_shape_layer(layer, &layer_path),
-                0 => Some(self.import_precomp_layer(
-                    layer,
-                    &layer_path,
-                )?),
+                0 => Some(self.import_precomp_layer(layer, &layer_path)?),
                 unsupported => {
                     self.warnings.push(LottieWarning::new(
                         layer_path,
-                        format!(
-                            "unsupported Lottie layer type `{unsupported}` was skipped"
-                        ),
+                        format!("unsupported Lottie layer type `{unsupported}` was skipped"),
                     ));
                     None
                 }
@@ -137,11 +119,7 @@ impl Importer {
         Ok(())
     }
 
-    fn import_shape_layer(
-        &mut self,
-        layer: &Value,
-        path: &str,
-    ) -> Option<ImportTree> {
+    fn import_shape_layer(&mut self, layer: &Value, path: &str) -> Option<ImportTree> {
         let mut node = Node::new(
             layer
                 .get("nm")
@@ -162,29 +140,15 @@ impl Importer {
                         .unwrap_or(i64::MAX as f64 / 4.0)
                         .round() as i64,
                 ),
-                time_stretch: layer
-                    .get("sr")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(1.0),
-                blend: blend_from_lottie(
-                    layer
-                        .get("bm")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                ),
+                time_stretch: layer.get("sr").and_then(Value::as_f64).unwrap_or(1.0),
+                blend: blend_from_lottie(layer.get("bm").and_then(Value::as_u64).unwrap_or(0)),
             }),
         );
-        node.visible = !layer
-            .get("hd")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        node.visible = !layer.get("hd").and_then(Value::as_bool).unwrap_or(false);
         if let Some(transform) = layer.get("ks") {
             node.transform = import_transform(transform);
-            node.opacity = import_scalar(
-                transform.get("o").unwrap_or(&Value::Null),
-                1.0 / 100.0,
-                1.0,
-            );
+            node.opacity =
+                import_scalar(transform.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
         }
         let children = layer
             .get("shapes")
@@ -193,10 +157,7 @@ impl Importer {
             .flatten()
             .enumerate()
             .filter_map(|(index, item)| {
-                self.import_shape_item(
-                    item,
-                    &format!("{path}/shapes/{index}"),
-                )
+                self.import_shape_item(item, &format!("{path}/shapes/{index}"))
             })
             .collect();
         Some(ImportTree { node, children })
@@ -227,40 +188,26 @@ impl Importer {
                             .unwrap_or(0.0)
                             .round() as i64,
                     ),
-                    stretch: layer
-                        .get("sr")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(1.0),
+                    stretch: layer.get("sr").and_then(Value::as_f64).unwrap_or(1.0),
                 },
             },
         );
-        node.visible = !layer
-            .get("hd")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        node.visible = !layer.get("hd").and_then(Value::as_bool).unwrap_or(false);
         if let Some(transform) = layer.get("ks") {
             node.transform = import_transform(transform);
-            node.opacity = import_scalar(
-                transform.get("o").unwrap_or(&Value::Null),
-                1.0 / 100.0,
-                1.0,
-            );
+            node.opacity =
+                import_scalar(transform.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
         }
         let _ = path;
         Ok(ImportTree::leaf(node))
     }
 
-    fn ensure_asset_composition(
-        &mut self,
-        asset_id: &str,
-    ) -> Result<CompId, LottieError> {
+    fn ensure_asset_composition(&mut self, asset_id: &str) -> Result<CompId, LottieError> {
         if let Some(comp) = self.imported_assets.get(asset_id) {
             return Ok(*comp);
         }
         if !self.building_assets.insert(asset_id.to_owned()) {
-            return Err(LottieError::InvalidPrecomposition(
-                asset_id.to_owned(),
-            ));
+            return Err(LottieError::InvalidPrecomposition(asset_id.to_owned()));
         }
         let asset = self
             .assets
@@ -286,22 +233,14 @@ impl Importer {
         let comp = self.document.compositions.insert(Composition {
             name: asset_id.to_owned(),
             size: (
-                asset
-                    .get("w")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(512) as u32,
-                asset
-                    .get("h")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(512) as u32,
+                asset.get("w").and_then(Value::as_u64).unwrap_or(512) as u32,
+                asset.get("h").and_then(Value::as_u64).unwrap_or(512) as u32,
             ),
             rate: asset
                 .get("fr")
                 .and_then(Value::as_f64)
                 .map(rational_frame_rate)
-                .unwrap_or(
-                    self.document.compositions[self.document.main].rate,
-                ),
+                .unwrap_or(self.document.compositions[self.document.main].rate),
             range: (
                 Frame(min_frame.round() as i64),
                 Frame(max_frame.round() as i64),
@@ -309,34 +248,20 @@ impl Importer {
             children: Vec::new(),
         });
         self.imported_assets.insert(asset_id.to_owned(), comp);
-        self.import_layers(
-            comp,
-            &layers,
-            &format!("assets/{asset_id}/layers"),
-        )?;
+        self.import_layers(comp, &layers, &format!("assets/{asset_id}/layers"))?;
         self.building_assets.remove(asset_id);
         Ok(comp)
     }
 
-    fn import_shape_item(
-        &mut self,
-        item: &Value,
-        path: &str,
-    ) -> Option<ImportTree> {
-        if item
-            .get("hd")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+    fn import_shape_item(&mut self, item: &Value, path: &str) -> Option<ImportTree> {
+        if item.get("hd").and_then(Value::as_bool).unwrap_or(false) {
             return None;
         }
         let kind = item.get("ty").and_then(Value::as_str)?;
         match kind {
             "gr" => {
                 let mut node = Node::new(
-                    item.get("nm")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Group"),
+                    item.get("nm").and_then(Value::as_str).unwrap_or("Group"),
                     NodeKind::Group,
                 );
                 let mut children = Vec::new();
@@ -347,19 +272,13 @@ impl Importer {
                     .flatten()
                     .enumerate()
                 {
-                    if child.get("ty").and_then(Value::as_str)
-                        == Some("tr")
-                    {
+                    if child.get("ty").and_then(Value::as_str) == Some("tr") {
                         node.transform = import_transform(child);
-                        node.opacity = import_scalar(
-                            child.get("o").unwrap_or(&Value::Null),
-                            1.0 / 100.0,
-                            1.0,
-                        );
-                    } else if let Some(tree) = self.import_shape_item(
-                        child,
-                        &format!("{path}/it/{index}"),
-                    ) {
+                        node.opacity =
+                            import_scalar(child.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
+                    } else if let Some(tree) =
+                        self.import_shape_item(child, &format!("{path}/it/{index}"))
+                    {
                         children.push(tree);
                     }
                 }
@@ -368,32 +287,16 @@ impl Importer {
             "rc" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Rectangle"),
                 NodeKind::Shape(ShapeKind::Rect {
-                    pos: import_vec2(
-                        item.get("p").unwrap_or(&Value::Null),
-                        DVec2::ZERO,
-                    ),
-                    size: import_vec2(
-                        item.get("s").unwrap_or(&Value::Null),
-                        DVec2::ZERO,
-                    ),
-                    rounded: import_scalar(
-                        item.get("r").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
+                    pos: import_vec2(item.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+                    size: import_vec2(item.get("s").unwrap_or(&Value::Null), DVec2::ZERO),
+                    rounded: import_scalar(item.get("r").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
             "el" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Ellipse"),
                 NodeKind::Shape(ShapeKind::Ellipse {
-                    pos: import_vec2(
-                        item.get("p").unwrap_or(&Value::Null),
-                        DVec2::ZERO,
-                    ),
-                    size: import_vec2(
-                        item.get("s").unwrap_or(&Value::Null),
-                        DVec2::ZERO,
-                    ),
+                    pos: import_vec2(item.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+                    size: import_vec2(item.get("s").unwrap_or(&Value::Null), DVec2::ZERO),
                 }),
             ))),
             "sh" => Some(ImportTree::leaf(Node::new(
@@ -403,27 +306,14 @@ impl Importer {
                 ))),
             ))),
             "sr" => {
-                let star_type = item
-                    .get("sy")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1);
-                let rotation = import_angle(
-                    item.get("r").unwrap_or(&Value::Null),
-                    0.0,
-                );
+                let star_type = item.get("sy").and_then(Value::as_u64).unwrap_or(1);
+                let rotation = import_angle(item.get("r").unwrap_or(&Value::Null), 0.0);
                 let mut node = if star_type == 2 {
                     Node::new(
                         item_name(item, "Polygon"),
                         NodeKind::Shape(ShapeKind::Polygon {
-                            pos: import_vec2(
-                                item.get("p").unwrap_or(&Value::Null),
-                                DVec2::ZERO,
-                            ),
-                            points: import_scalar(
-                                item.get("pt").unwrap_or(&Value::Null),
-                                1.0,
-                                5.0,
-                            ),
+                            pos: import_vec2(item.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+                            points: import_scalar(item.get("pt").unwrap_or(&Value::Null), 1.0, 5.0),
                             outer_r: import_scalar(
                                 item.get("or").unwrap_or(&Value::Null),
                                 1.0,
@@ -440,15 +330,8 @@ impl Importer {
                     Node::new(
                         item_name(item, "Star"),
                         NodeKind::Shape(ShapeKind::Star {
-                            pos: import_vec2(
-                                item.get("p").unwrap_or(&Value::Null),
-                                DVec2::ZERO,
-                            ),
-                            points: import_scalar(
-                                item.get("pt").unwrap_or(&Value::Null),
-                                1.0,
-                                5.0,
-                            ),
+                            pos: import_vec2(item.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+                            points: import_scalar(item.get("pt").unwrap_or(&Value::Null), 1.0, 5.0),
                             inner_r: import_scalar(
                                 item.get("ir").unwrap_or(&Value::Null),
                                 1.0,
@@ -464,9 +347,7 @@ impl Importer {
                                 1.0,
                                 0.0,
                             ),
-                            kind: if item
-                                .get("renamiteStarKind")
-                                .and_then(Value::as_str)
+                            kind: if item.get("renamiteStarKind").and_then(Value::as_str)
                                 == Some("burst")
                             {
                                 StarKind::Burst
@@ -485,23 +366,17 @@ impl Importer {
                     NodeKind::Style(StyleKind::Fill {
                         paint: StylePaint::Solid {
                             color: import_color(
-                                item.get("c")
-                                    .unwrap_or(&Value::Null),
+                                item.get("c").unwrap_or(&Value::Null),
                                 Color::BLACK,
                             ),
                         },
                         rule: fill_rule_from_lottie(
-                            item.get("r")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(1),
+                            item.get("r").and_then(Value::as_u64).unwrap_or(1),
                         ),
                     }),
                 );
-                node.opacity = import_scalar(
-                    item.get("o").unwrap_or(&Value::Null),
-                    1.0 / 100.0,
-                    1.0,
-                );
+                node.opacity =
+                    import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
                 Some(ImportTree::leaf(node))
             }
             "st" => {
@@ -510,55 +385,35 @@ impl Importer {
                     NodeKind::Style(StyleKind::Stroke {
                         paint: StylePaint::Solid {
                             color: import_color(
-                                item.get("c")
-                                    .unwrap_or(&Value::Null),
+                                item.get("c").unwrap_or(&Value::Null),
                                 Color::BLACK,
                             ),
                         },
-                        width: import_scalar(
-                            item.get("w")
-                                .unwrap_or(&Value::Null),
-                            1.0,
-                            1.0,
-                        ),
+                        width: import_scalar(item.get("w").unwrap_or(&Value::Null), 1.0, 1.0),
                         cap: stroke_cap_from_lottie(
-                            item.get("lc")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(1),
+                            item.get("lc").and_then(Value::as_u64).unwrap_or(1),
                         ),
                         join: stroke_join_from_lottie(
-                            item.get("lj")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(1),
+                            item.get("lj").and_then(Value::as_u64).unwrap_or(1),
                         ),
                         dash: import_dash(item.get("d")),
                     }),
                 );
-                node.opacity = import_scalar(
-                    item.get("o").unwrap_or(&Value::Null),
-                    1.0 / 100.0,
-                    1.0,
-                );
+                node.opacity =
+                    import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
                 Some(ImportTree::leaf(node))
             }
             "gf" | "gs" => {
                 let gradient = Gradient {
                     kind: gradient_kind_from_lottie(
-                        item.get("t")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(1),
+                        item.get("t").and_then(Value::as_u64).unwrap_or(1),
                     ),
-                    start: import_vec2(
-                        item.get("s").unwrap_or(&Value::Null),
-                        DVec2::ZERO,
-                    ),
+                    start: import_vec2(item.get("s").unwrap_or(&Value::Null), DVec2::ZERO),
                     end: import_vec2(
                         item.get("e").unwrap_or(&Value::Null),
                         DVec2::new(100.0, 0.0),
                     ),
-                    stops: import_gradient(
-                        item.get("g").unwrap_or(&Value::Null),
-                    ),
+                    stops: import_gradient(item.get("g").unwrap_or(&Value::Null)),
                 };
                 let mut node = if kind == "gf" {
                     Node::new(
@@ -566,9 +421,7 @@ impl Importer {
                         NodeKind::Style(StyleKind::Fill {
                             paint: StylePaint::Gradient(gradient),
                             rule: fill_rule_from_lottie(
-                                item.get("r")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(1),
+                                item.get("r").and_then(Value::as_u64).unwrap_or(1),
                             ),
                         }),
                     )
@@ -577,56 +430,28 @@ impl Importer {
                         item_name(item, "Gradient Stroke"),
                         NodeKind::Style(StyleKind::Stroke {
                             paint: StylePaint::Gradient(gradient),
-                            width: import_scalar(
-                                item.get("w")
-                                    .unwrap_or(&Value::Null),
-                                1.0,
-                                1.0,
-                            ),
+                            width: import_scalar(item.get("w").unwrap_or(&Value::Null), 1.0, 1.0),
                             cap: stroke_cap_from_lottie(
-                                item.get("lc")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(1),
+                                item.get("lc").and_then(Value::as_u64).unwrap_or(1),
                             ),
                             join: stroke_join_from_lottie(
-                                item.get("lj")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(1),
+                                item.get("lj").and_then(Value::as_u64).unwrap_or(1),
                             ),
                             dash: import_dash(item.get("d")),
                         }),
                     )
                 };
-                node.opacity = import_scalar(
-                    item.get("o").unwrap_or(&Value::Null),
-                    1.0 / 100.0,
-                    1.0,
-                );
+                node.opacity =
+                    import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
                 Some(ImportTree::leaf(node))
             }
             "tm" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Trim Path"),
                 NodeKind::Modifier(ModifierKind::TrimPath {
-                    start: import_scalar(
-                        item.get("s").unwrap_or(&Value::Null),
-                        1.0 / 100.0,
-                        0.0,
-                    ),
-                    end: import_scalar(
-                        item.get("e").unwrap_or(&Value::Null),
-                        1.0 / 100.0,
-                        1.0,
-                    ),
-                    offset: import_scalar(
-                        item.get("o").unwrap_or(&Value::Null),
-                        1.0 / 360.0,
-                        0.0,
-                    ),
-                    mode: match item
-                        .get("m")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1)
-                    {
+                    start: import_scalar(item.get("s").unwrap_or(&Value::Null), 1.0 / 100.0, 0.0),
+                    end: import_scalar(item.get("e").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0),
+                    offset: import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0 / 360.0, 0.0),
+                    mode: match item.get("m").and_then(Value::as_u64).unwrap_or(1) {
                         2 => TrimMode::Simultaneously,
                         _ => TrimMode::Individually,
                     },
@@ -635,19 +460,11 @@ impl Importer {
             "rd" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Round Corners"),
                 NodeKind::Modifier(ModifierKind::RoundCorners {
-                    radius: import_scalar(
-                        item.get("r").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
+                    radius: import_scalar(item.get("r").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
             "rp" => {
-                if item
-                    .pointer("/tr/so")
-                    .is_some()
-                    || item.pointer("/tr/eo").is_some()
-                {
+                if item.pointer("/tr/so").is_some() || item.pointer("/tr/eo").is_some() {
                     self.warnings.push(LottieWarning::new(
                         path,
                         "repeater start/end opacity is not represented by the Renamite model",
@@ -656,16 +473,8 @@ impl Importer {
                 Some(ImportTree::leaf(Node::new(
                     item_name(item, "Repeater"),
                     NodeKind::Modifier(ModifierKind::Repeater {
-                        copies: import_scalar(
-                            item.get("c").unwrap_or(&Value::Null),
-                            1.0,
-                            1.0,
-                        ),
-                        offset: import_scalar(
-                            item.get("o").unwrap_or(&Value::Null),
-                            1.0,
-                            0.0,
-                        ),
+                        copies: import_scalar(item.get("c").unwrap_or(&Value::Null), 1.0, 1.0),
+                        offset: import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0, 0.0),
                         transform: import_repeater_transform(
                             item.get("tr").unwrap_or(&Value::Null),
                         ),
@@ -675,20 +484,14 @@ impl Importer {
             unsupported => {
                 self.warnings.push(LottieWarning::new(
                     path,
-                    format!(
-                        "unsupported Lottie shape item `{unsupported}` was skipped"
-                    ),
+                    format!("unsupported Lottie shape item `{unsupported}` was skipped"),
                 ));
                 None
             }
         }
     }
 
-    fn attach_tree(
-        &mut self,
-        tree: ImportTree,
-        parent: Parent,
-    ) -> NodeId {
+    fn attach_tree(&mut self, tree: ImportTree, parent: Parent) -> NodeId {
         let id = self.document.create_node(tree.node);
         self.document
             .attach(id, parent, usize::MAX)
@@ -705,18 +508,9 @@ fn import_transform(value: &Value) -> AnimatedTransform {
         return AnimatedTransform::identity();
     }
     AnimatedTransform {
-        anchor: import_vec2(
-            value.get("a").unwrap_or(&Value::Null),
-            DVec2::ZERO,
-        ),
-        position: import_vec2(
-            value.get("p").unwrap_or(&Value::Null),
-            DVec2::ZERO,
-        ),
-        scale: import_vec2(
-            value.get("s").unwrap_or(&Value::Null),
-            DVec2::splat(100.0),
-        ),
+        anchor: import_vec2(value.get("a").unwrap_or(&Value::Null), DVec2::ZERO),
+        position: import_vec2(value.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+        scale: import_vec2(value.get("s").unwrap_or(&Value::Null), DVec2::splat(100.0)),
         rotation: import_angle(
             value
                 .get("r")
@@ -724,47 +518,19 @@ fn import_transform(value: &Value) -> AnimatedTransform {
                 .unwrap_or(&Value::Null),
             0.0,
         ),
-        skew: import_scalar(
-            value.get("sk").unwrap_or(&Value::Null),
-            1.0,
-            0.0,
-        ),
-        skew_axis: import_scalar(
-            value.get("sa").unwrap_or(&Value::Null),
-            1.0,
-            0.0,
-        ),
+        skew: import_scalar(value.get("sk").unwrap_or(&Value::Null), 1.0, 0.0),
+        skew_axis: import_scalar(value.get("sa").unwrap_or(&Value::Null), 1.0, 0.0),
     }
 }
 
 fn import_repeater_transform(value: &Value) -> AnimatedTransform {
     AnimatedTransform {
-        anchor: import_vec2(
-            value.get("a").unwrap_or(&Value::Null),
-            DVec2::ZERO,
-        ),
-        position: import_vec2(
-            value.get("p").unwrap_or(&Value::Null),
-            DVec2::ZERO,
-        ),
-        scale: import_vec2(
-            value.get("s").unwrap_or(&Value::Null),
-            DVec2::splat(100.0),
-        ),
-        rotation: import_angle(
-            value.get("r").unwrap_or(&Value::Null),
-            0.0,
-        ),
-        skew: import_scalar(
-            value.get("sk").unwrap_or(&Value::Null),
-            1.0,
-            0.0,
-        ),
-        skew_axis: import_scalar(
-            value.get("sa").unwrap_or(&Value::Null),
-            1.0,
-            0.0,
-        ),
+        anchor: import_vec2(value.get("a").unwrap_or(&Value::Null), DVec2::ZERO),
+        position: import_vec2(value.get("p").unwrap_or(&Value::Null), DVec2::ZERO),
+        scale: import_vec2(value.get("s").unwrap_or(&Value::Null), DVec2::splat(100.0)),
+        rotation: import_angle(value.get("r").unwrap_or(&Value::Null), 0.0),
+        skew: import_scalar(value.get("sk").unwrap_or(&Value::Null), 1.0, 0.0),
+        skew_axis: import_scalar(value.get("sa").unwrap_or(&Value::Null), 1.0, 0.0),
     }
 }
 
@@ -782,11 +548,7 @@ fn import_dash(value: Option<&Value>) -> Option<AnimatedDash> {
                 ));
             }
             Some("o") => {
-                offset = import_scalar(
-                    entry.get("v").unwrap_or(&Value::Null),
-                    1.0,
-                    0.0,
-                );
+                offset = import_scalar(entry.get("v").unwrap_or(&Value::Null), 1.0, 0.0);
             }
             _ => {}
         }
@@ -819,9 +581,7 @@ fn rational_frame_rate(rate: f64) -> FrameRate {
         };
     }
     let denominator = 1_000_u32;
-    let numerator = (rate * denominator as f64)
-        .round()
-        .max(1.0) as u32;
+    let numerator = (rate * denominator as f64).round().max(1.0) as u32;
     let divisor = gcd(numerator, denominator);
     FrameRate {
         num: numerator / divisor,
@@ -838,10 +598,7 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
     a.max(1)
 }
 
-fn required_u32(
-    value: &Value,
-    field: &'static str,
-) -> Result<u32, LottieError> {
+fn required_u32(value: &Value, field: &'static str) -> Result<u32, LottieError> {
     value
         .get(field)
         .and_then(Value::as_u64)
@@ -849,14 +606,8 @@ fn required_u32(
         .ok_or(LottieError::Missing(field))
 }
 
-fn item_name<'a>(
-    value: &'a Value,
-    fallback: &'a str,
-) -> &'a str {
-    value
-        .get("nm")
-        .and_then(Value::as_str)
-        .unwrap_or(fallback)
+fn item_name<'a>(value: &'a Value, fallback: &'a str) -> &'a str {
+    value.get("nm").and_then(Value::as_str).unwrap_or(fallback)
 }
 
 fn fill_rule_from_lottie(value: u64) -> FillRule {

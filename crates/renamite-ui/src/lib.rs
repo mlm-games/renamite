@@ -6,6 +6,7 @@
 
 #![allow(non_snake_case)]
 
+pub mod color_picker;
 pub mod components;
 pub mod file;
 pub mod panels;
@@ -15,14 +16,14 @@ pub mod symbols;
 
 use renamite_animation::PlayState;
 use renamite_history::ToolId;
-use repose_core::{Modifier, Scheduler, View, request_frame, theme};
+use repose_core::{Color, Modifier, Scheduler, View, request_frame, theme};
 use repose_material::material3::{TopAppBar, TopAppBarConfig};
 use repose_platform::RenderContext;
 use repose_ui::{Box, Column, Text, TextStyle, ViewExt};
 use web_time::Instant;
 
 use components::{CompactIconAction, ToolAction};
-use session::{SessionRef, init_session, redo_cmd, undo_cmd};
+use session::{PickerTarget, SessionRef, init_session, redo_cmd, undo_cmd};
 use shell::EditorShell;
 use symbols::Symbols;
 
@@ -75,6 +76,7 @@ pub fn AppTopBar(session: SessionRef) -> View {
         ),
         Some(CompactIconAction(Symbols::menu, "Main menu", || {})),
         vec![
+            CompactSwatchButton(session.clone()),
             CompactIconAction(Symbols::add, "New", {
                 let session = session.clone();
                 move || file::new_document(&session)
@@ -255,4 +257,47 @@ fn tool(
         s.revision = s.revision.wrapping_add(1);
         request_frame();
     })
+}
+
+/// Top-bar swatch showing the current fill paint; click opens the color picker
+/// popover targeting the current paint.
+fn CompactSwatchButton(session: SessionRef) -> View {
+    let th = theme();
+    let (color, is_open) = {
+        let s = session.borrow();
+        let color = s.current_paint.base_color();
+        (color, s.open_picker.is_some())
+    };
+
+    Box(Modifier::new()
+        .width(32.0)
+        .height(32.0)
+        .clip_rounded(8.0)
+        .border(
+            2.0,
+            if is_open {
+                th.primary
+            } else {
+                th.outline_variant
+            },
+            8.0,
+        )
+        .background(Color::from_rgba(
+            (color.r * 255.0) as u8,
+            (color.g * 255.0) as u8,
+            (color.b * 255.0) as u8,
+            (color.a * 255.0) as u8,
+        ))
+        .on_pointer_down({
+            let session = session.clone();
+            move |_| {
+                let mut s = session.borrow_mut();
+                if s.open_picker.is_some() {
+                    s.close_color_picker();
+                } else {
+                    let c = s.current_paint.base_color();
+                    s.open_color_picker(PickerTarget::CurrentPaint, c);
+                }
+            }
+        }))
 }
