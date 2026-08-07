@@ -114,7 +114,7 @@ impl Default for ToolSet {
             pen: PenTool::default(),
             path_edit: PathEditTool::default(),
             gradient: GradientTool::default(),
-            fill: FillTool::default(),
+            fill: FillTool,
         }
     }
 }
@@ -1721,7 +1721,7 @@ mod tests {
     fn fill_tool_replaces_following_fill_paint_and_is_undoable() {
         let mut w = World::new();
         let mut h = History::new();
-        let mut tool = FillTool::default();
+        let mut tool = FillTool;
 
         let new_paint = StylePaint::solid(Color::rgba(0.0, 1.0, 0.0, 1.0));
         let scene = w.scene();
@@ -1791,7 +1791,7 @@ mod tests {
     #[test]
     fn fill_tool_does_nothing_on_empty_space() {
         let w = World::new();
-        let mut tool = FillTool::default();
+        let mut tool = FillTool;
         let paint = StylePaint::solid(Color::WHITE);
         let scene = w.scene();
         let ctx = ToolContext {

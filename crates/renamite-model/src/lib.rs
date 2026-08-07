@@ -1071,10 +1071,10 @@ fn apply_modifier(
                         if frac > 1e-12 {
                             let ps = ((s - cursor) / frac).clamp(0.0, 1.0);
                             let pe = ((e - cursor) / frac).clamp(0.0, 1.0);
-                            if pe > ps + 1e-9 {
-                                if let Some(t) = trim_path(&path, ps, pe, o) {
-                                    paths.push((id, affine, t));
-                                }
+                            if pe > ps + 1e-9
+                                && let Some(t) = trim_path(&path, ps, pe, o)
+                            {
+                                paths.push((id, affine, t));
                             }
                         }
                         cursor += frac;
