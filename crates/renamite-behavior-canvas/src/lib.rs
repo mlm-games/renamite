@@ -18,7 +18,9 @@ use renamite_history::{
 };
 use renamite_model::{
     FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
-    StarKind, StyleKind, StylePaint, Value, node_affine, nodes_bounds, pick, pick_box,
+    StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine, node_is_ancestor,
+    node_transform_context, pick, pick_box, selected_ancestor_for_pick, selection_bounds,
+    world_delta_to_parent,
 };
 use smallvec::smallvec;
 use std::f64::consts::{PI, TAU};
@@ -61,6 +63,10 @@ pub enum ToolOverlay {
         max: DVec2,
         rotate: DVec2,
         scale: DVec2,
+
+        /// Exact transform anchor in world coordinates for one selected node.
+        /// Multi-selection has no editable shared pivot in v1.
+        pivot: Option<DVec2>,
     },
     ShapePreview {
         min: DVec2,
@@ -184,6 +190,19 @@ enum SelState {
         base: DVec2,
         txn: bool,
     },
+    DragPivot {
+        node: NodeId,
+        base_anchor: DVec2,
+        base_position: DVec2,
+
+        /// World -> parent coordinate transform captured at drag start.
+        world_to_parent: Affine,
+
+        /// Parent-space vector -> local-anchor-space vector.
+        parent_to_anchor: Affine,
+
+        txn: bool,
+    },
 }
 
 #[derive(Default)]
@@ -203,16 +222,26 @@ impl SelectTool {
                 max: start.max(*current),
             };
         }
-        if let Some((min, max)) = nodes_bounds(ctx.scene, &ctx.selection.nodes) {
-            let (rot, scl) = handles(ctx, min, max);
-            return ToolOverlay::Selection {
-                min,
-                max,
-                rotate: rot,
-                scale: scl,
-            };
+        let Some((min, max)) = selection_bounds(ctx.doc, ctx.scene, &ctx.selection.nodes) else {
+            return ToolOverlay::None;
+        };
+
+        let (rotate, scale) = handles(ctx, min, max);
+
+        let pivot = match ctx.selection.nodes.as_slice() {
+            [node] => node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64)
+                .map(|context| context.pivot_world),
+
+            _ => None,
+        };
+
+        ToolOverlay::Selection {
+            min,
+            max,
+            rotate,
+            scale,
+            pivot,
         }
-        ToolOverlay::None
     }
 
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
@@ -230,61 +259,95 @@ impl SelectTool {
             CanvasEvent::KeyDown(Key::Delete) | CanvasEvent::KeyDown(Key::Backspace) => {
                 self.delete(ctx)
             }
+            CanvasEvent::DoubleClick { pos } => self.double_click(ctx, pos),
             _ => smallvec![],
         }
     }
 
     fn press(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
         // 1. Handles win over shapes - single-node selection only (v1).
-        if let [node] = ctx.selection.nodes[..]
-            && let Some((min, max)) = nodes_bounds(ctx.scene, &ctx.selection.nodes)
+        if let [node] = ctx.selection.nodes.as_slice()
+            && let Some((min, max)) = selection_bounds(ctx.doc, ctx.scene, &ctx.selection.nodes)
         {
-            let (rot, scl) = handles(ctx, min, max);
-            let tol = ctx.view.world_tolerance(HANDLE_PX);
+            let tolerance = ctx.view.world_tolerance(HANDLE_PX);
+
+            if let Some(transform) = node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64)
+                && (pos - transform.pivot_world).length() <= tolerance
+            {
+                let parent_det = determinant(transform.parent_world);
+                let linear_det = determinant(transform.linear);
+
+                if parent_det.abs() > 1e-12 && linear_det.abs() > 1e-12 {
+                    self.state = Some(SelState::DragPivot {
+                        node: *node,
+                        base_anchor: transform.anchor,
+                        base_position: transform.position,
+                        world_to_parent: transform.parent_world.inverse(),
+                        parent_to_anchor: transform.linear.inverse(),
+                        txn: false,
+                    });
+
+                    return smallvec![];
+                }
+            }
+
+            let (rotate, scale) = handles(ctx, min, max);
             let pivot = (min + max) * 0.5;
-            if (pos - rot).length() <= tol {
-                let base_deg = rotation_deg(ctx, node);
+
+            if (pos - rotate).length() <= tolerance {
+                let base_deg = rotation_deg(ctx, *node);
+
                 *self.st() = SelState::DragRotate {
                     pivot,
                     start: angle_of(pos - pivot),
                     acc: 0.0,
-                    node,
+                    node: *node,
                     base_deg,
                     txn: false,
                 };
+
                 return smallvec![];
             }
-            if (pos - scl).length() <= tol {
-                let base = scale_of(ctx, node);
-                // Pivot = opposite corner (min), standard corner-scale feel.
+
+            if (pos - scale).length() <= tolerance {
+                let base = scale_of(ctx, *node);
+
                 *self.st() = SelState::DragScale {
                     pivot: min,
                     start_dist: (pos - min).length().max(1e-6),
-                    node,
+                    node: *node,
                     base,
                     txn: false,
                 };
+
                 return smallvec![];
             }
         }
-        // 2. Shape pick (skip locked nodes).
         match pick(ctx.scene, pos).filter(|n| !ctx.doc.nodes.get(*n).is_none_or(|x| x.locked)) {
-            Some(node) => {
+            Some(picked) => {
+                let target = selected_ancestor_for_pick(ctx.doc, picked, &ctx.selection.nodes)
+                    .unwrap_or(picked);
+
                 let mut out: OutputVec = smallvec![];
                 if ctx.modifiers.ctrl {
-                    out.push(ToolOutput::RequestSelection(SelectionChange::Toggle(node)));
+                    out.push(ToolOutput::RequestSelection(SelectionChange::Toggle(
+                        target,
+                    )));
                 } else if ctx.modifiers.shift {
-                    if !ctx.selection.contains(node) {
+                    if !ctx.selection.contains(target) {
                         let mut s = ctx.selection.nodes.clone();
-                        s.push(node);
+                        s.push(target);
                         out.push(ToolOutput::RequestSelection(SelectionChange::Set(s)));
                     }
-                } else if !ctx.selection.contains(node) {
+                } else if !ctx.selection.contains(target) {
                     out.push(ToolOutput::RequestSelection(SelectionChange::Set(vec![
-                        node,
+                        target,
                     ])));
                 }
-                *self.st() = SelState::Pending { press: pos, node };
+                *self.st() = SelState::Pending {
+                    press: pos,
+                    node: target,
+                };
                 out
             }
             None => {
@@ -330,17 +393,20 @@ impl SelectTool {
                     .selection
                     .nodes
                     .iter()
-                    .filter_map(|&n| {
-                        let Ok(Value::DVec2(cur)) =
-                            ctx.doc.value_at(n, &prop, ctx.playhead.0 as f64)
+                    .filter_map(|&node| {
+                        let Ok(Value::DVec2(current)) =
+                            ctx.doc.value_at(node, &prop, ctx.playhead.0 as f64)
                         else {
                             return None;
                         };
+                        let local_delta =
+                            world_delta_to_parent(ctx.doc, node, ctx.playhead.0 as f64, delta)
+                                .unwrap_or(delta);
                         Some(resolve_property_edit(
                             ctx.doc,
-                            n,
+                            node,
                             &prop,
-                            Value::DVec2(cur + delta),
+                            Value::DVec2(current + local_delta),
                             ctx.playhead,
                             ctx.record,
                         ))
@@ -404,6 +470,57 @@ impl SelectTool {
                 )]));
                 out
             }
+            SelState::DragPivot {
+                node,
+                base_anchor,
+                base_position,
+                world_to_parent,
+                parent_to_anchor,
+                txn,
+            } => {
+                let parent_point = *world_to_parent * Point::new(pos.x, pos.y);
+
+                let new_position = DVec2::new(parent_point.x, parent_point.y);
+
+                let position_delta = new_position - *base_position;
+
+                let anchor_delta = affine_vector(*parent_to_anchor, position_delta);
+
+                let new_anchor = *base_anchor + anchor_delta;
+
+                let mut output: OutputVec = smallvec![];
+
+                if !*txn {
+                    output.push(ToolOutput::BeginTransaction("Move pivot".into()));
+
+                    *txn = true;
+                }
+
+                let anchor_command = resolve_property_edit(
+                    ctx.doc,
+                    *node,
+                    &PropPath::new("transform.anchor"),
+                    Value::DVec2(new_anchor),
+                    ctx.playhead,
+                    ctx.record,
+                );
+
+                let position_command = resolve_property_edit(
+                    ctx.doc,
+                    *node,
+                    &PropPath::new("transform.position"),
+                    Value::DVec2(new_position),
+                    ctx.playhead,
+                    ctx.record,
+                );
+
+                output.push(ToolOutput::Commands(smallvec![
+                    anchor_command,
+                    position_command,
+                ]));
+
+                output
+            }
             SelState::RubberBand { current, .. } => {
                 *current = pos;
                 smallvec![]
@@ -416,7 +533,8 @@ impl SelectTool {
         match std::mem::replace(self.st(), SelState::Idle) {
             SelState::DragMove { txn, .. }
             | SelState::DragRotate { txn, .. }
-            | SelState::DragScale { txn, .. } => {
+            | SelState::DragScale { txn, .. }
+            | SelState::DragPivot { txn, .. } => {
                 if txn {
                     smallvec![ToolOutput::CommitTransaction]
                 } else {
@@ -455,7 +573,8 @@ impl SelectTool {
         match std::mem::replace(self.st(), SelState::Idle) {
             SelState::DragMove { txn: true, .. }
             | SelState::DragRotate { txn: true, .. }
-            | SelState::DragScale { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            | SelState::DragScale { txn: true, .. }
+            | SelState::DragPivot { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
             _ => smallvec![],
         }
     }
@@ -476,6 +595,24 @@ impl SelectTool {
             ToolOutput::CommitTransaction,
             ToolOutput::RequestSelection(SelectionChange::Set(vec![])),
         ]
+    }
+
+    fn double_click(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let Some(picked) = pick(ctx.scene, pos) else {
+            return smallvec![];
+        };
+
+        let target = match ctx.selection.nodes.as_slice() {
+            [selected] if node_is_ancestor(ctx.doc, *selected, picked) => {
+                immediate_child_below(ctx.doc, *selected, picked).unwrap_or(picked)
+            }
+
+            _ => picked,
+        };
+
+        smallvec![ToolOutput::RequestSelection(SelectionChange::Set(vec![
+            target
+        ]),)]
     }
 }
 
@@ -510,6 +647,17 @@ fn scale_of(ctx: &ToolContext, node: NodeId) -> DVec2 {
 
 fn angle_of(v: DVec2) -> f64 {
     v.y.atan2(v.x)
+}
+
+fn determinant(affine: Affine) -> f64 {
+    let [a, b, c, d, _, _] = affine.as_coeffs();
+    a * d - b * c
+}
+
+fn affine_vector(affine: Affine, value: DVec2) -> DVec2 {
+    let [a, b, c, d, _, _] = affine.as_coeffs();
+
+    DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
 /// Multi-turn unwrap: keep `raw` continuous with `acc` (Glaxnimate 0.6:
@@ -2260,6 +2408,297 @@ mod tests {
         assert!(w.doc.locate(w.shape).is_none());
         h.undo(&mut w.pm()).unwrap();
         assert!(w.doc.locate(w.shape).is_some());
+    }
+
+    #[test]
+    fn dragging_selected_group_moves_descendants() {
+        let mut world = World::new();
+
+        let comp = world.doc.main;
+        let group = world.doc.create_node(Node::new("group", NodeKind::Group));
+        let fill = fill_style(&world);
+
+        world.doc.detach(world.shape).unwrap();
+        world.doc.detach(fill).unwrap();
+        world
+            .doc
+            .attach(world.shape, Parent::Node(group), 0)
+            .unwrap();
+        world.doc.attach(fill, Parent::Node(group), 1).unwrap();
+        world.doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        world.selection.nodes = vec![group];
+
+        let before = world.scene();
+        let before_bounds = selection_bounds(&world.doc, &before, &[group]).unwrap();
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(140.0, 120.0),
+            },
+            Modifiers::none(),
+        );
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(140.0, 120.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        let after = world.scene();
+        let after_bounds = selection_bounds(&world.doc, &after, &[group]).unwrap();
+
+        assert!(((after_bounds.0 - before_bounds.0) - DVec2::new(40.0, 20.0)).length() < 1e-6);
+
+        history.undo(&mut world.pm()).unwrap();
+
+        let restored = world.scene();
+        let restored_bounds = selection_bounds(&world.doc, &restored, &[group]).unwrap();
+
+        assert_eq!(restored_bounds, before_bounds);
+    }
+
+    #[test]
+    fn moving_group_pivot_preserves_rendered_geometry() {
+        let mut world = World::new();
+        let comp = world.doc.main;
+
+        let group = world.doc.create_node(Node::new("group", NodeKind::Group));
+        let fill = fill_style(&world);
+
+        world.doc.detach(world.shape).unwrap();
+        world.doc.detach(fill).unwrap();
+
+        world
+            .doc
+            .attach(world.shape, Parent::Node(group), 0)
+            .unwrap();
+
+        world.doc.attach(fill, Parent::Node(group), 1).unwrap();
+
+        world.doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        world.selection.nodes = vec![group];
+
+        let before = world.scene();
+        let before_path = before.items[0].path.clone();
+
+        let pivot = node_transform_context(&world.doc, group, 0.0)
+            .unwrap()
+            .pivot_world;
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerDown {
+                pos: pivot,
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerMove {
+                pos: pivot + DVec2::new(25.0, 15.0),
+            },
+            Modifiers::none(),
+        );
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerUp {
+                pos: pivot + DVec2::new(25.0, 15.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        let after = world.scene();
+
+        assert_eq!(
+            before_path.elements(),
+            after.items[0].path.elements(),
+            "compensated pivot movement must not move rendered content",
+        );
+
+        let anchor = world
+            .doc
+            .value_at(group, &PropPath::new("transform.anchor"), 0.0)
+            .unwrap();
+
+        let position = world
+            .doc
+            .value_at(group, &PropPath::new("transform.position"), 0.0)
+            .unwrap();
+
+        assert_eq!(anchor, Value::DVec2(DVec2::new(25.0, 15.0)));
+
+        assert_eq!(position, Value::DVec2(DVec2::new(25.0, 15.0)));
+
+        history.undo(&mut world.pm()).unwrap();
+
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn pivot_compensation_is_exact_under_rotation_and_scale() {
+        let mut doc = Document::empty();
+
+        let group = doc.create_node(Node::new("group", NodeKind::Group));
+
+        doc.nodes[group].transform.rotation = Animated::new(Angle(35.0));
+
+        doc.nodes[group].transform.scale = Animated::new(DVec2::new(180.0, 70.0));
+
+        doc.attach(group, Parent::Comp(doc.main), 0).unwrap();
+
+        let before = node_transform_context(&doc, group, 0.0).unwrap().world;
+
+        let context = node_transform_context(&doc, group, 0.0).unwrap();
+
+        let new_position = context.position + DVec2::new(30.0, -12.0);
+
+        let local_delta = affine_vector(context.linear.inverse(), new_position - context.position);
+
+        doc.set_static(
+            group,
+            &PropPath::new("transform.position"),
+            &Value::DVec2(new_position),
+        )
+        .unwrap();
+
+        doc.set_static(
+            group,
+            &PropPath::new("transform.anchor"),
+            &Value::DVec2(context.anchor + local_delta),
+        )
+        .unwrap();
+
+        let after = node_transform_context(&doc, group, 0.0).unwrap().world;
+
+        for (a, b) in before.as_coeffs().iter().zip(after.as_coeffs()) {
+            assert!((*a - b).abs() < 1e-9, "before={before:?}, after={after:?}",);
+        }
+    }
+
+    #[test]
+    fn child_click_preserves_selected_group() {
+        let mut world = World::new();
+        let comp = world.doc.main;
+
+        let group = world.doc.create_node(Node::new("group", NodeKind::Group));
+        let fill = fill_style(&world);
+
+        world.doc.detach(world.shape).unwrap();
+        world.doc.detach(fill).unwrap();
+        world
+            .doc
+            .attach(world.shape, Parent::Node(group), 0)
+            .unwrap();
+        world.doc.attach(fill, Parent::Node(group), 1).unwrap();
+        world.doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        world.selection.nodes = vec![group];
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        // Pointer down + up at the child's center must not replace group.
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        assert_eq!(world.selection.nodes, vec![group]);
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        assert_eq!(world.selection.nodes, vec![group]);
+    }
+
+    #[test]
+    fn double_click_selects_immediate_group_child() {
+        // Outer -> Inner -> Shape.
+        let mut world = World::new();
+        let comp = world.doc.main;
+
+        let outer = world.doc.create_node(Node::new("outer", NodeKind::Group));
+        let inner = world.doc.create_node(Node::new("inner", NodeKind::Group));
+        let fill = fill_style(&world);
+
+        world.doc.detach(world.shape).unwrap();
+        world.doc.detach(fill).unwrap();
+        world
+            .doc
+            .attach(world.shape, Parent::Node(inner), 0)
+            .unwrap();
+        world.doc.attach(fill, Parent::Node(inner), 1).unwrap();
+        world.doc.attach(inner, Parent::Node(outer), 0).unwrap();
+        world.doc.attach(outer, Parent::Comp(comp), 0).unwrap();
+
+        // Select Outer, double-click Shape. Selection must contain Inner.
+        world.selection.nodes = vec![outer];
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::DoubleClick {
+                pos: DVec2::new(100.0, 100.0),
+            },
+            Modifiers::none(),
+        );
+
+        assert_eq!(world.selection.nodes, vec![inner]);
     }
 
     #[test]

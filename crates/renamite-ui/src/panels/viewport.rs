@@ -351,19 +351,20 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             max,
             rotate,
             scale,
+            pivot,
         } => {
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
-            for p in [rotate, scale] {
-                let sp = view.world_to_screen(*p);
-                let rect = Rect {
-                    x: sp.x as f32 - 4.0,
-                    y: sp.y as f32 - 4.0,
-                    w: 8.0,
-                    h: 8.0,
-                };
-                scope.draw_rect(rect, th.on_primary, 2.0);
-                scope.draw_rect_stroke(rect, primary, 2.0, 1.0);
+            for point in [rotate, scale] {
+                draw_selection_handle(
+                    scope,
+                    view.world_to_screen(*point),
+                    primary,
+                    th.on_primary,
+                );
+            }
+            if let Some(pivot) = pivot {
+                draw_pivot(scope, view.world_to_screen(*pivot), th.tertiary);
             }
         }
         ToolOverlay::ShapePreview { min, max, kind } => {
@@ -474,6 +475,49 @@ fn draw_handle_dot(scope: &mut DrawScope, tip: DVec2, color: Color) {
         h: 5.0,
     };
     scope.draw_rect(rect, color, 5.0);
+}
+
+fn draw_selection_handle(scope: &mut DrawScope, point: DVec2, stroke: Color, fill: Color) {
+    let rect = Rect {
+        x: point.x as f32 - 4.0,
+        y: point.y as f32 - 4.0,
+        w: 8.0,
+        h: 8.0,
+    };
+
+    scope.draw_rect(rect, fill, 2.0);
+    scope.draw_rect_stroke(rect, stroke, 2.0, 1.0);
+}
+
+fn draw_pivot(scope: &mut DrawScope, point: DVec2, color: Color) {
+    let horizontal = Rect {
+        x: point.x as f32 - 7.0,
+        y: point.y as f32 - 1.0,
+        w: 14.0,
+        h: 2.0,
+    };
+
+    let vertical = Rect {
+        x: point.x as f32 - 1.0,
+        y: point.y as f32 - 7.0,
+        w: 2.0,
+        h: 14.0,
+    };
+
+    scope.draw_rect(horizontal, color, 1.0);
+    scope.draw_rect(vertical, color, 1.0);
+
+    scope.draw_rect_stroke(
+        Rect {
+            x: point.x as f32 - 4.0,
+            y: point.y as f32 - 4.0,
+            w: 8.0,
+            h: 8.0,
+        },
+        color,
+        4.0,
+        1.0,
+    );
 }
 
 fn star_preview_pts(

@@ -55,6 +55,7 @@ pub enum MenuAction {
     UseAsClipMask,
     ReleaseMask,
     ToggleMaskInverted,
+    CenterPivot,
 }
 
 #[derive(Clone)]
@@ -224,6 +225,11 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
         m.push(MenuEntry::Separator);
         m.push(action(MenuAction::EditPath, "Edit path", true));
     }
+    m.push(action(
+        MenuAction::CenterPivot,
+        "Center Pivot",
+        single.is_some() && !any_locked,
+    ));
     let single_kind = single.and_then(|id| ctx.doc.nodes.get(id)).map(|n| &n.kind);
     if !multi {
         match single_kind {
@@ -372,6 +378,9 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
         MenuAction::CreateText => create_primitive(ctx, Prim::Text),
 
         MenuAction::SwitchTool(t) => vec![ToolOutput::SwitchTool(*t)],
+
+        // Host-side in the session: needs scene + playhead, unavailable here.
+        MenuAction::CenterPivot => vec![],
 
         MenuAction::Rename
         | MenuAction::Cut

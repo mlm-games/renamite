@@ -137,7 +137,12 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
             PropKind::Angle,
         ),
         pd("Transform", "Opacity", "opacity", f04()),
-        pd("Transform", "Anchor", "transform.anchor", PropKind::DVec2),
+        pd(
+            "Transform",
+            "Pivot / Anchor",
+            "transform.anchor",
+            PropKind::DVec2,
+        ),
     ];
     match kind {
         NodeKind::Shape(s) => match s {

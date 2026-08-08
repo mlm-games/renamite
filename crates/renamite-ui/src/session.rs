@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::DVec2;
+use kurbo::Point;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
 use renamite_behavior_common::machine::MachineSelection;
@@ -13,7 +14,7 @@ use renamite_behavior_timeline::{
 use renamite_history::{EditorCommand, History, OutputVec, ProjectMut, ToolId, ToolOutput};
 use renamite_io_ren::RenFile;
 use renamite_machine::{InputKind, InputValue, Machine, MachineId, State, StateKind};
-use renamite_model::{PropPath, Value};
+use renamite_model::{PropPath, Value, node_transform_context, selection_bounds};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
@@ -388,6 +389,11 @@ impl Session {
                 self.close_context_menu();
                 return;
             }
+            MenuAction::CenterPivot => {
+                self.center_pivot();
+                self.close_context_menu();
+                return;
+            }
             _ => {}
         }
 
@@ -409,6 +415,63 @@ impl Session {
         };
         self.close_context_menu();
         self.apply_outputs(outs.into());
+    }
+
+    /// Center the selected node's pivot over its rendered geometry without
+    /// moving the content (compensated anchor/position edit).
+    fn center_pivot(&mut self) {
+        let [node] = self.selection.nodes.as_slice() else {
+            return;
+        };
+
+        let scene = self.engine.scene();
+        let Some((min, max)) = selection_bounds(
+            &self.file.document,
+            scene,
+            &self.selection.nodes,
+        ) else {
+            return;
+        };
+
+        let world_center = (min + max) * 0.5;
+
+        let Some(transform) = node_transform_context(
+            &self.file.document,
+            *node,
+            self.playback.head,
+        ) else {
+            return;
+        };
+
+        let parent_point =
+            transform.parent_world.inverse() * Point::new(world_center.x, world_center.y);
+
+        let new_position = DVec2::new(parent_point.x, parent_point.y);
+
+        let delta_position = new_position - transform.position;
+
+        let delta_anchor = affine_vector(transform.linear.inverse(), delta_position);
+
+        let new_anchor = transform.anchor + delta_anchor;
+
+        let outs: OutputVec = smallvec![
+            ToolOutput::BeginTransaction("Center pivot".into()),
+            ToolOutput::Commands(smallvec![
+                EditorCommand::SetStatic {
+                    id: *node,
+                    prop: PropPath::new("transform.anchor"),
+                    value: Value::DVec2(new_anchor),
+                },
+                EditorCommand::SetStatic {
+                    id: *node,
+                    prop: PropPath::new("transform.position"),
+                    value: Value::DVec2(new_position),
+                },
+            ]),
+            ToolOutput::CommitTransaction,
+        ];
+
+        self.apply_outputs(outs);
     }
 
     fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
@@ -1505,6 +1568,15 @@ pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
 
 fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {
     tree.node.transform.position.base += d;
+}
+
+fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {
+    let [a, b, c, d, _, _] = affine.as_coeffs();
+
+    DVec2::new(
+        a * value.x + c * value.y,
+        b * value.x + d * value.y,
+    )
 }
 
 /// Default empty document with a seeded ellipse so the artboard isn't blank.

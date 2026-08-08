@@ -968,15 +968,120 @@ pub fn node_affine(doc: &Document, id: NodeId, frame: f64) -> Affine {
     affine_of(&sample_transform(n, id, frame, &Overrides::default()))
 }
 
-fn affine_of(ts: &renamite_animation::TransformSample) -> Affine {
-    let ax = ts.skew_axis.to_radians();
-    let skew =
-        Affine::rotate(ax) * Affine::skew(ts.skew.to_radians().tan(), 0.0) * Affine::rotate(-ax);
-    Affine::translate((ts.position.x, ts.position.y))
-        * Affine::rotate(ts.rotation_deg.to_radians())
+fn linear_affine_of(sample: &renamite_animation::TransformSample) -> Affine {
+    let axis = sample.skew_axis.to_radians();
+    let skew = Affine::rotate(axis)
+        * Affine::skew(sample.skew.to_radians().tan(), 0.0)
+        * Affine::rotate(-axis);
+    Affine::rotate(sample.rotation_deg.to_radians())
         * skew
-        * Affine::scale_non_uniform(ts.scale.x / 100.0, ts.scale.y / 100.0)
-        * Affine::translate((-ts.anchor.x, -ts.anchor.y))
+        * Affine::scale_non_uniform(sample.scale.x / 100.0, sample.scale.y / 100.0)
+}
+
+fn affine_of(sample: &renamite_animation::TransformSample) -> Affine {
+    Affine::translate((sample.position.x, sample.position.y))
+        * linear_affine_of(sample)
+        * Affine::translate((-sample.anchor.x, -sample.anchor.y))
+}
+
+/// Resolved transform information for one node at an editor frame.
+#[derive(Clone, Copy, Debug)]
+pub struct NodeTransformContext {
+    /// Transform from the node's parent coordinate space into world space.
+    pub parent_world: Affine,
+
+    /// Linear part of this node's transform: rotation * skew * scale.
+    /// Does not contain position or anchor translations.
+    pub linear: Affine,
+
+    /// Full node-local to parent transform.
+    pub local: Affine,
+
+    /// Full node-local to world transform.
+    pub world: Affine,
+
+    /// Effective frame after ancestor layer time-stretch mappings.
+    pub frame: f64,
+
+    /// Node position in parent coordinates.
+    pub position: glam::DVec2,
+
+    /// Node anchor/pivot in local coordinates.
+    pub anchor: glam::DVec2,
+
+    /// Pivot location in world coordinates.
+    pub pivot_world: glam::DVec2,
+}
+
+fn node_effective_frame(node: &Node, incoming_frame: f64) -> f64 {
+    match &node.kind {
+        NodeKind::Layer(layer) => {
+            (incoming_frame - layer.in_frame.0 as f64) / layer.time_stretch.max(1e-9)
+                + layer.in_frame.0 as f64
+        }
+
+        _ => incoming_frame,
+    }
+}
+
+/// Resolve one attached node's parent/world transforms.
+///
+/// This follows the node's actual parent chain and applies the same Layer
+/// time-stretch convention used by the evaluator. It intentionally does not
+/// traverse through `Precomp` references because precomposition contents live
+/// in a separate composition tree.
+pub fn node_transform_context(
+    doc: &Document,
+    id: NodeId,
+    root_frame: f64,
+) -> Option<NodeTransformContext> {
+    let mut chain = Vec::new();
+    let mut current = id;
+
+    loop {
+        chain.push(current);
+
+        let node = doc.nodes.get(current)?;
+
+        let Some(parent) = node.parent else {
+            break;
+        };
+
+        current = parent;
+    }
+
+    chain.reverse();
+
+    let mut parent_world = Affine::IDENTITY;
+    let mut frame = root_frame;
+
+    for current in chain {
+        let node = doc.nodes.get(current)?;
+        let effective = node_effective_frame(node, frame);
+        let sample = node.transform.sample(effective);
+        let linear = linear_affine_of(&sample);
+        let local = affine_of(&sample);
+
+        if current == id {
+            let pivot = parent_world * Point::new(sample.position.x, sample.position.y);
+
+            return Some(NodeTransformContext {
+                parent_world,
+                linear,
+                local,
+                world: parent_world * local,
+                frame: effective,
+                position: sample.position,
+                anchor: sample.anchor,
+                pivot_world: glam::DVec2::new(pivot.x, pivot.y),
+            });
+        }
+
+        parent_world *= local;
+        frame = effective;
+    }
+
+    None
 }
 
 const SHAPE_TOL: f64 = 0.1;
@@ -1966,6 +2071,118 @@ pub fn nodes_bounds(scene: &Scene, nodes: &[NodeId]) -> Option<(glam::DVec2, gla
         acc = Some(acc.map_or(bb, |a| a.union(bb)));
     }
     acc.map(|r| (glam::DVec2::new(r.x0, r.y0), glam::DVec2::new(r.x1, r.y1)))
+}
+
+fn transform_vector(affine: Affine, value: glam::DVec2) -> glam::DVec2 {
+    let [a, b, c, d, _, _] = affine.as_coeffs();
+
+    glam::DVec2::new(
+        a * value.x + c * value.y,
+        b * value.x + d * value.y,
+    )
+}
+
+/// Convert a world-space drag delta to a node's parent coordinate system.
+pub fn world_delta_to_parent(
+    doc: &Document,
+    id: NodeId,
+    frame: f64,
+    delta: glam::DVec2,
+) -> Option<glam::DVec2> {
+    let context = node_transform_context(doc, id, frame)?;
+    let inverse = context.parent_world.inverse();
+
+    let result = transform_vector(inverse, delta);
+
+    result.is_finite().then_some(result)
+}
+
+pub fn node_is_ancestor(doc: &Document, ancestor: NodeId, mut node: NodeId) -> bool {
+    while let Some(current) = doc.nodes.get(node) {
+        let Some(parent) = current.parent else {
+            return false;
+        };
+
+        if parent == ancestor {
+            return true;
+        }
+
+        node = parent;
+    }
+
+    false
+}
+
+/// If `picked` belongs to an already-selected group/layer, return that selected
+/// ancestor instead of replacing it with the leaf shape.
+pub fn selected_ancestor_for_pick(
+    doc: &Document,
+    picked: NodeId,
+    selection: &[NodeId],
+) -> Option<NodeId> {
+    selection
+        .iter()
+        .copied()
+        .find(|selected| {
+            *selected == picked || node_is_ancestor(doc, *selected, picked)
+        })
+}
+
+/// Return the immediate child of `ancestor` that contains `descendant`.
+pub fn immediate_child_below(
+    doc: &Document,
+    ancestor: NodeId,
+    descendant: NodeId,
+) -> Option<NodeId> {
+    if ancestor == descendant {
+        return None;
+    }
+
+    let mut current = descendant;
+
+    loop {
+        let parent = doc.nodes.get(current)?.parent?;
+
+        if parent == ancestor {
+            return Some(current);
+        }
+
+        current = parent;
+    }
+}
+
+/// Union bounds of selected leaf nodes and all rendered descendants of selected
+/// groups/layers.
+pub fn selection_bounds(
+    doc: &Document,
+    scene: &Scene,
+    selection: &[NodeId],
+) -> Option<(glam::DVec2, glam::DVec2)> {
+    let mut bounds: Option<kurbo::Rect> = None;
+
+    for item in &scene.items {
+        let included = selection.iter().copied().any(|selected| {
+            selected == item.node || node_is_ancestor(doc, selected, item.node)
+        });
+
+        if !included {
+            continue;
+        }
+
+        let item_bounds = item.path.bounding_box();
+
+        bounds = Some(match bounds {
+            Some(existing) => existing.union(item_bounds),
+            None => item_bounds,
+        });
+    }
+
+    bounds.map(|rect| {
+        (
+            glam::DVec2::new(rect.x0, rect.y0),
+            glam::DVec2::new(rect.x1, rect.y1),
+        )
+    })
 }
 
 /// Serialized keyframe (for RestoreKeyframe / undo).
@@ -3716,5 +3933,97 @@ mod style_paint_tests {
             panic!("mask shape.pos not readable");
         };
         assert_eq!(v.base, DVec2::new(5.0, 5.0));
+    }
+}
+
+#[cfg(test)]
+mod group_transform_tests {
+    use super::*;
+
+    fn grouped_rect() -> (Document, NodeId, NodeId) {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        let group = doc.create_node(Node::new("Group", NodeKind::Group));
+
+        let shape = doc.create_node(Node::new(
+            "Rect",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::new(100.0, 80.0)),
+                size: Animated::new(glam::DVec2::new(60.0, 40.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+
+        doc.attach(shape, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        (doc, group, shape)
+    }
+
+    #[test]
+    fn group_selection_bounds_include_descendants() {
+        let (doc, group, _) = grouped_rect();
+        let scene = evaluate(&doc, doc.main, 0.0);
+
+        let bounds = selection_bounds(&doc, &scene, &[group]);
+
+        assert!(bounds.is_some());
+
+        let (min, max) = bounds.unwrap();
+        assert!(max.x > min.x);
+        assert!(max.y > min.y);
+    }
+
+    #[test]
+    fn selected_group_is_resolved_from_child_pick() {
+        let (doc, group, shape) = grouped_rect();
+
+        assert_eq!(
+            selected_ancestor_for_pick(&doc, shape, &[group]),
+            Some(group),
+        );
+    }
+
+    #[test]
+    fn immediate_child_resolution_descends_one_level() {
+        let mut doc = Document::empty();
+
+        let outer = doc.create_node(Node::new("Outer", NodeKind::Group));
+        let inner = doc.create_node(Node::new("Inner", NodeKind::Group));
+        let shape = doc.create_node(Node::new(
+            "Shape",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::ONE),
+            }),
+        ));
+
+        doc.attach(shape, Parent::Node(inner), 0).unwrap();
+        doc.attach(inner, Parent::Node(outer), 0).unwrap();
+        doc.attach(outer, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(immediate_child_below(&doc, outer, shape), Some(inner));
+    }
+
+    #[test]
+    fn nested_parent_delta_conversion_respects_scale() {
+        let (mut doc, group, shape) = grouped_rect();
+
+        doc.nodes[group].transform.scale = Animated::new(glam::DVec2::splat(200.0));
+
+        let local =
+            world_delta_to_parent(&doc, shape, 0.0, glam::DVec2::new(20.0, 10.0)).unwrap();
+
+        assert!((local - glam::DVec2::new(10.0, 5.0)).length() < 1e-9);
     }
 }
