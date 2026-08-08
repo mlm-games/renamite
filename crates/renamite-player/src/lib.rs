@@ -226,6 +226,23 @@ impl Engine {
         }
     }
 
+    /// Active state index per machine layer, or `None` when not in machine mode.
+    pub fn active_machine_states(
+        &self,
+    ) -> Option<Vec<usize>> {
+        let PlayMode::Machine { instance, .. } =
+            &self.mode
+        else {
+            return None;
+        };
+
+        Some(
+            instance
+                .layer_states()
+                .collect(),
+        )
+    }
+
     pub fn set_bool(&mut self, project: &RenFile, name: &str, v: bool) -> bool {
         self.with_input(project, name, |inst, i| inst.set_bool(i, v))
     }

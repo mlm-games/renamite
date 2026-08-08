@@ -9,9 +9,11 @@ description = "ToolContext, selection, snapping, and view transforms shared by r
 renamite-model.workspace = true
 renamite-history.workspace = true
 renamite-animation.workspace = true
+renamite-machine.workspace = true
 glam.workspace = true
 serde.workspace = true
 smallvec.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 renamite-geometry.workspace = true

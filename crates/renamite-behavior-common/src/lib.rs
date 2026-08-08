@@ -6,6 +6,7 @@ pub mod context_menu;
 pub mod fill;
 pub mod inspect;
 pub mod layers;
+pub mod machine;
 pub mod modifiers;
 pub mod path;
 pub mod stroke;

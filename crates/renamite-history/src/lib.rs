@@ -364,6 +364,7 @@ pub enum EditError {
 pub struct Applied {
     pub created: Option<NodeId>,
     pub created_asset: Option<AssetId>,
+    pub created_machine: Option<MachineId>,
 }
 
 /// Internal creation payload returned by each apply arm.
@@ -371,6 +372,7 @@ pub struct Applied {
 struct Created {
     node: Option<NodeId>,
     asset: Option<AssetId>,
+    machine: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -416,6 +418,7 @@ impl History {
             return Ok(Applied {
                 created: created.node,
                 created_asset: created.asset,
+                created_machine: created.machine,
             });
         }
         let (created, inverse) = apply_command(p, &mut cmd)?;
@@ -433,6 +436,7 @@ impl History {
         Ok(Applied {
             created: created.node,
             created_asset: created.asset,
+            created_machine: created.machine,
         })
     }
 
@@ -542,7 +546,7 @@ fn apply_command(
         | EditAnchors { .. }
         | ReversePath { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
-            Ok((Created { node, asset: None }, inv))
+            Ok((Created { node, asset: None, machine: None }, inv))
         }
 
         AddAsset { index, asset, id } => {
@@ -567,7 +571,7 @@ fn apply_command(
             let index = (*index).min(p.document.asset_order.len());
             p.document.asset_order.insert(index, asset_id);
 
-            Ok((Created { node: None, asset: Some(asset_id) }, vec![DetachAsset { id: asset_id }]))
+            Ok((Created { node: None, asset: Some(asset_id), machine: None }, vec![DetachAsset { id: asset_id }]))
         }
         AttachAsset { id, index } => {
             if !p.document.assets.contains_key(*id) {
@@ -860,7 +864,13 @@ fn apply_command(
             }
             let i = (*index).min(p.machine_order.len());
             p.machine_order.insert(i, mid);
-            Ok((Created::default(), vec![DetachMachine { id: mid }]))
+            Ok((
+                Created {
+                    machine: Some(mid),
+                    ..Default::default()
+                },
+                vec![DetachMachine { id: mid }],
+            ))
         }
         AttachMachine { id, index } => {
             if !p.machines.contains_key(*id) {

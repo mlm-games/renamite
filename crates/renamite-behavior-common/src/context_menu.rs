@@ -104,11 +104,23 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
         m.push(MenuEntry::Separator);
         match &n.kind {
             NodeKind::Mask(_) => {
-                m.push(action(MenuAction::ToggleMaskInverted, "Invert Mask", !locked));
-                m.push(action(MenuAction::ReleaseMask, "Release Clipping Path", !locked));
+                m.push(action(
+                    MenuAction::ToggleMaskInverted,
+                    "Invert Mask",
+                    !locked,
+                ));
+                m.push(action(
+                    MenuAction::ReleaseMask,
+                    "Release Clipping Path",
+                    !locked,
+                ));
             }
             NodeKind::Shape(_) => {
-                m.push(action(MenuAction::UseAsClipMask, "Use as Clipping Path", !locked));
+                m.push(action(
+                    MenuAction::UseAsClipMask,
+                    "Use as Clipping Path",
+                    !locked,
+                ));
             }
             _ => {}
         }
@@ -210,12 +222,24 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
         match single_kind {
             Some(NodeKind::Mask(_)) => {
                 m.push(MenuEntry::Separator);
-                m.push(action(MenuAction::ToggleMaskInverted, "Invert Mask", !any_locked));
-                m.push(action(MenuAction::ReleaseMask, "Release Clipping Path", !any_locked));
+                m.push(action(
+                    MenuAction::ToggleMaskInverted,
+                    "Invert Mask",
+                    !any_locked,
+                ));
+                m.push(action(
+                    MenuAction::ReleaseMask,
+                    "Release Clipping Path",
+                    !any_locked,
+                ));
             }
             Some(NodeKind::Shape(_)) => {
                 m.push(MenuEntry::Separator);
-                m.push(action(MenuAction::UseAsClipMask, "Use as Clipping Path", !any_locked));
+                m.push(action(
+                    MenuAction::UseAsClipMask,
+                    "Use as Clipping Path",
+                    !any_locked,
+                ));
             }
             _ => {}
         }
@@ -261,8 +285,6 @@ fn is_path_group(doc: &Document, id: NodeId) -> bool {
         )
     })
 }
-
-// ---------------------------------------------------------------- dispatch
 
 #[derive(Clone, Copy)]
 enum Reorder {

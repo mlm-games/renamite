@@ -4,13 +4,15 @@ use std::rc::Rc;
 use glam::DVec2;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
+use renamite_behavior_common::machine::MachineSelection;
 use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
     TimelineScrubBehavior, TimelineTarget,
 };
-use renamite_history::{History, OutputVec, ProjectMut, ToolId, ToolOutput};
+use renamite_history::{EditorCommand, History, OutputVec, ProjectMut, ToolId, ToolOutput};
 use renamite_io_ren::RenFile;
+use renamite_machine::{InputKind, InputValue, Machine, MachineId, State, StateKind};
 use renamite_model::{PropPath, Value};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
@@ -28,6 +30,7 @@ pub enum PanelPage {
     Timeline = 2,
     Inspect = 3,
     Assets = 4,
+    Interact = 5,
 }
 
 pub type SessionRef = Rc<RefCell<Session>>;
@@ -85,6 +88,37 @@ pub struct Session {
     pub context_menu: Option<ContextMenuState>,
     /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
     pub clipboard: Option<Vec<renamite_history::NodeTree>>,
+    /// Machine edited by the Interactivity panel.
+    pub active_machine: Option<MachineId>,
+    /// Graph selection within the active machine (view state).
+    pub machine_selection: MachineSelection,
+    /// Preview values mirrored in the player engine.
+    pub machine_preview_inputs: Vec<InputValue>,
+    /// Live preview drives the engine in machine mode.
+    pub machine_preview_enabled: bool,
+    /// Active scrubbable-drag on a machine preview Number input.
+    pub machine_preview_drag: Option<MachinePreviewDrag>,
+    /// Draft of the listener being authored (view state).
+    pub listener_draft: ListenerDraft,
+}
+
+/// A scrubbable-drag on a machine preview Number input (view state).
+#[derive(Clone, Copy, Debug)]
+pub struct MachinePreviewDrag {
+    pub input: usize,
+    pub origin: f64,
+    pub press_x: f32,
+}
+
+/// Draft fields for the "add listener" row in the Interactivity panel (view
+/// state, not undoable until the listener is actually added).
+#[derive(Clone, Debug, Default)]
+pub struct ListenerDraft {
+    pub event: Option<renamite_machine::PointerEventKind>,
+    pub input: Option<usize>,
+    pub toggle: bool,
+    pub bool_value: bool,
+    pub number_value: f64,
 }
 
 /// A destructive action deferred behind the unsaved-changes guard.
@@ -196,6 +230,9 @@ impl Session {
     ) -> Self {
         let engine = Engine::new(&file).expect("project");
         let range = file.document.compositions[file.document.main].range;
+        let active_machine = file
+            .start_machine
+            .or_else(|| file.machine_order.first().copied());
         Self {
             file,
             current_path: None,
@@ -237,6 +274,12 @@ impl Session {
             open_picker: None,
             context_menu: None,
             clipboard: None,
+            active_machine,
+            machine_selection: MachineSelection::None,
+            machine_preview_inputs: Vec::new(),
+            machine_preview_enabled: false,
+            machine_preview_drag: None,
+            listener_draft: ListenerDraft::default(),
         }
     }
 
@@ -627,6 +670,15 @@ impl Session {
         self.layer_drag = None;
         self.renaming = None;
         self.inspector_drag = None;
+        self.active_machine = self
+            .file
+            .start_machine
+            .or_else(|| self.file.machine_order.first().copied());
+        self.machine_selection = MachineSelection::None;
+        self.machine_preview_inputs = Vec::new();
+        self.machine_preview_enabled = false;
+        self.machine_preview_drag = None;
+        self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
         self.dirty = false;
         self.sync_image_assets();
@@ -717,7 +769,7 @@ impl Session {
 
     /// Called by the `animation_driver` tick each frame. Returns true while playing.
     pub fn tick_playback(&mut self) -> bool {
-        if !self.playing {
+        if !self.playing && !self.machine_preview_enabled {
             return false;
         }
         let now = Instant::now();
@@ -951,6 +1003,269 @@ impl Session {
         self.open_picker = None;
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+}
+
+impl Session {
+    /// Run one pure machine edit through the helpers and commit it as a single
+    /// undoable `ReplaceMachine`. On error, surfaces the message and returns
+    /// false (no history entry is written).
+    pub fn edit_active_machine(
+        &mut self,
+        label: impl Into<String>,
+        edit: impl FnOnce(
+            &mut Machine,
+        ) -> renamite_behavior_common::machine::Result<()>,
+    ) -> bool {
+        let Some(machine_id) = self.active_machine else {
+            return false;
+        };
+
+        let Some(mut machine) =
+            self.file.machines.get(machine_id).cloned()
+        else {
+            return false;
+        };
+
+        if let Err(error) = edit(&mut machine) {
+            self.status = Some(
+                format!("Machine edit failed: {error}"),
+            );
+            self.revision = self.revision.wrapping_add(1);
+            request_frame();
+            return false;
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction(label.into()),
+            ToolOutput::Commands(smallvec![
+                EditorCommand::ReplaceMachine {
+                    id: machine_id,
+                    machine,
+                }
+            ]),
+            ToolOutput::CommitTransaction,
+        ]);
+
+        // Existing runtime instances hold state/input arrays derived from the
+        // old definition. Structural edits reset the preview deterministically.
+        if self.machine_preview_enabled {
+            self.reset_machine_preview();
+        }
+
+        true
+    }
+
+    /// Switch the active machine (no-op if `id` is not attached).
+    pub fn select_machine(
+        &mut self,
+        machine: MachineId,
+    ) {
+        if !self.file.machines.contains_key(machine)
+            || !self.file.machine_order.contains(&machine)
+        {
+            return;
+        }
+
+        self.active_machine = Some(machine);
+        self.machine_selection =
+            MachineSelection::None;
+
+        self.reset_machine_preview();
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Create a default machine (one layer, one Idle state) and select it.
+    pub fn create_machine(&mut self) {
+        let machine = Machine {
+            name: format!(
+                "State Machine {}",
+                self.file.machine_order.len() + 1,
+            ),
+            inputs: Vec::new(),
+            layers: vec![renamite_machine::MachineLayer {
+                name: "Layer 1".into(),
+                entry: 0,
+                any_transitions: Vec::new(),
+                states: vec![State {
+                    name: "Idle".into(),
+                    kind: StateKind::Empty,
+                    transitions: Vec::new(),
+                }],
+            }],
+            listeners: Vec::new(),
+        };
+
+        let applied = self.history_apply_full(
+            EditorCommand::CreateMachine {
+                index: usize::MAX,
+                machine,
+                id: None,
+            },
+        );
+
+        self.history.commit();
+
+        if let Some(machine) =
+            applied.and_then(|value| value.created_machine)
+        {
+            self.active_machine = Some(machine);
+            self.machine_selection = MachineSelection::None;
+            self.reset_machine_preview();
+        }
+
+        self.bump();
+    }
+
+    /// Delete the active machine from the project (undoable). Clears the
+    /// selection if the active machine is removed.
+    pub fn remove_active_machine(&mut self) {
+        let Some(machine) = self.active_machine else {
+            return;
+        };
+        if !self.file.machine_order.contains(&machine) {
+            return;
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Remove machine".into()),
+            ToolOutput::Commands(smallvec![
+                EditorCommand::DetachMachine { id: machine }
+            ]),
+            ToolOutput::CommitTransaction,
+        ]);
+
+        self.active_machine = self
+            .file
+            .start_machine
+            .or_else(|| self.file.machine_order.first().copied());
+        self.machine_selection = MachineSelection::None;
+        self.reset_machine_preview();
+    }
+
+    /// Rebuild `machine_preview_inputs` from the machine's input defaults and
+    /// restart the engine in machine (preview) or timeline mode.
+    pub fn reset_machine_preview(&mut self) {
+        let Some(machine_id) = self.active_machine else {
+            self.machine_preview_inputs.clear();
+            return;
+        };
+
+        let Some(machine) = self.file.machines.get(machine_id) else {
+            self.machine_preview_inputs.clear();
+            return;
+        };
+
+        self.machine_preview_inputs = machine
+            .inputs
+            .iter()
+            .map(|input| match input.kind {
+                InputKind::Bool { default } => {
+                    InputValue::Bool(default)
+                }
+
+                InputKind::Number { default } => {
+                    InputValue::Number(default)
+                }
+
+                InputKind::Trigger => {
+                    InputValue::Trigger { fired: false }
+                }
+            })
+            .collect();
+
+        if self.machine_preview_enabled {
+            self.engine.play_machine(
+                &self.file,
+                machine_id,
+            );
+        } else {
+            self.engine.play_timeline(
+                &self.file,
+                LoopMode::Loop,
+            );
+        }
+
+        self.engine.reevaluate(&self.file);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn set_preview_bool(
+        &mut self,
+        input: usize,
+        value: bool,
+    ) {
+        let Some(machine) = self.active_machine else {
+            return;
+        };
+
+        if let Some(InputValue::Bool(current)) =
+            self.machine_preview_inputs.get_mut(input)
+        {
+            *current = value;
+            self.engine.set_bool(
+                &self.file,
+                &self.file.machines[machine].inputs[input].name,
+                value,
+            );
+            request_frame();
+        }
+    }
+
+    pub fn set_preview_number(
+        &mut self,
+        input: usize,
+        value: f64,
+    ) {
+        let Some(machine) = self.active_machine else {
+            return;
+        };
+
+        if let Some(InputValue::Number(current)) =
+            self.machine_preview_inputs.get_mut(input)
+        {
+            *current = value;
+            self.engine.set_number(
+                &self.file,
+                &self.file.machines[machine].inputs[input].name,
+                value,
+            );
+            request_frame();
+        }
+    }
+
+    pub fn fire_preview_trigger(
+        &mut self,
+        input: usize,
+    ) {
+        let Some(machine) = self.active_machine else {
+            return;
+        };
+
+        let Some(input_def) =
+            self.file.machines[machine].inputs.get(input)
+        else {
+            return;
+        };
+
+        self.engine.fire(
+            &self.file,
+            &input_def.name,
+        );
+
+        request_frame();
+    }
+
+    /// Node display name for a scene node, falling back to its id string.
+    pub fn node_name(&self, id: renamite_model::NodeId) -> String {
+        self.file
+            .document
+            .nodes
+            .get(id)
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| format!("{id:?}"))
     }
 }
 
@@ -1425,5 +1740,68 @@ mod tests {
             panic!("not text");
         };
         assert_eq!(t.font, None);
+    }
+
+    #[test]
+    fn machine_edit_is_one_undo_step() {
+        use renamite_behavior_common::machine::add_input;
+
+        let mut session = Session::new(default_file());
+        session.create_machine();
+        let machine = session.active_machine.expect("machine created");
+
+        for index in 0..3 {
+            let ok = session.edit_active_machine(format!("Add input {index}"), move |m| {
+                add_input(m, format!("toggle {index}"), InputKind::Bool { default: false })?;
+                Ok(())
+            });
+            assert!(ok, "input edit succeeds");
+        }
+
+        assert_eq!(session.file.machines[machine].inputs.len(), 3);
+
+        undo_cmd(&mut session);
+        assert_eq!(
+            session.file.machines[machine].inputs.len(),
+            2,
+            "one undo = one machine edit"
+        );
+    }
+
+    #[test]
+    fn preview_bool_drives_transition() {
+        use renamite_behavior_common::machine::{
+            add_input, add_state, add_transition, transition_mut, TransitionSource,
+        };
+        use renamite_machine::Condition;
+
+        let mut session = Session::new(default_file());
+        session.create_machine();
+        let machine = session.active_machine.expect("machine created");
+
+        let ok = session.edit_active_machine("Build", |m| {
+            add_input(m, "hover", InputKind::Bool { default: false })?;
+            add_state(m, 0, "Active", StateKind::Empty)?;
+            let index = add_transition(m, 0, TransitionSource::State(0), 1)?;
+            transition_mut(m, 0, TransitionSource::State(0), index)?
+                .conditions
+                .push(Condition::BoolIs {
+                    input: 0,
+                    value: true,
+                });
+            Ok(())
+        });
+        assert!(ok, "build edit succeeds");
+
+        session.machine_preview_enabled = true;
+        session.reset_machine_preview();
+        session.set_preview_bool(0, true);
+        session.engine.tick(&session.file, 0.1);
+
+        let states = session
+            .engine
+            .active_machine_states()
+            .expect("engine in machine mode");
+        assert_eq!(states[0], 1, "true bool advances to the Active state");
     }
 }

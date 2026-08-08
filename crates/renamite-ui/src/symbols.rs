@@ -53,6 +53,7 @@ repose_material::material_symbols! {
 
     remove:                '\u{e15b}',
     delete:                '\u{e872}',
+    account_tree:          '\u{e97a}',
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {

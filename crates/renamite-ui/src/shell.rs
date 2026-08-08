@@ -8,7 +8,9 @@ use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
 use std::rc::Rc;
 
 use crate::components::PanelSurface;
-use crate::panels::{AssetsPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel};
+use crate::panels::{
+    AssetsPanel, InteractivityPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel,
+};
 use crate::session::{PanelPage, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::MenuEntry;
@@ -282,8 +284,10 @@ fn ExpandedWorkspace(session: SessionRef) -> View {
         .child((
             Box(Modifier::new().weight(1.0))
                 .child(PanelSurface(LayersPanel(session.clone()))),
-            Box(Modifier::new().height(240.0))
+            Box(Modifier::new().height(200.0))
                 .child(PanelSurface(AssetsPanel(session.clone()))),
+            Box(Modifier::new().height(320.0))
+                .child(PanelSurface(InteractivityPanel(session.clone()))),
         )),
         Column(Modifier::new().fill_max_size().weight(1.0).gap(8.0)).child((
             Box(Modifier::new().weight(1.0).fill_max_width())
@@ -314,6 +318,7 @@ fn CompactWorkspace(session: SessionRef) -> View {
         PanelPage::Timeline => TimelinePanel(session),
         PanelPage::Inspect => PropertiesPanel(session),
         PanelPage::Assets => AssetsPanel(session),
+        PanelPage::Interact => InteractivityPanel(session),
     }
 }
 
@@ -325,6 +330,7 @@ fn active_side_panel(session: SessionRef) -> View {
         PanelPage::Inspect => PropertiesPanel(session),
         PanelPage::Canvas => LayersPanel(session),
         PanelPage::Assets => AssetsPanel(session),
+        PanelPage::Interact => InteractivityPanel(session),
     }
 }
 
@@ -348,7 +354,8 @@ fn BottomNavigation(session: SessionRef) -> View {
                 "Animate",
             ),
             nav_item(session.clone(), PanelPage::Inspect, Symbols::settings, "Inspect"),
-            nav_item(session, PanelPage::Assets, Symbols::folder_open, "Assets"),
+            nav_item(session.clone(), PanelPage::Assets, Symbols::folder_open, "Assets"),
+            nav_item(session, PanelPage::Interact, Symbols::account_tree, "Logic"),
         ],
         NavigationBarConfig::default(),
     )
