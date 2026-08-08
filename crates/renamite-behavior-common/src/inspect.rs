@@ -79,6 +79,18 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     animated: false,
                 });
             }
+            if desc.path.as_str() == "mask.inverted" {
+                let inverted = match &node.kind {
+                    NodeKind::Mask(m) => m.inverted,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::Bool(inverted),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
             let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
             let animated = doc.property_is_animated(id, &desc.path);
             let diamond = diamond_state(doc, id, &desc.path, playhead, animated);
@@ -309,6 +321,96 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 d.push(pd("Repeater", "End opacity", "repeater.end_opacity", f01()));
             }
             _ => {}
+        },
+        NodeKind::Mask(mask) => {
+            d.push(pd("Mask", "Inverted", "mask.inverted", PropKind::Bool));
+            match &mask.shape {
+            ShapeKind::Path(_) => {}
+            ShapeKind::Rect { .. } => {
+                d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
+                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Mask",
+                    "Corner radius",
+                    "shape.rounded",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
+            ShapeKind::Ellipse { .. } => {
+                d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
+                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+            }
+            ShapeKind::Star { .. } => {
+                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Mask",
+                    "Points",
+                    "shape.points",
+                    PropKind::F64 {
+                        min: Some(3.0),
+                        max: Some(64.0),
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Mask",
+                    "Outer radius",
+                    "shape.outer_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Mask",
+                    "Inner radius",
+                    "shape.inner_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Mask",
+                    "Roundness",
+                    "shape.roundness",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 0.5,
+                    },
+                ));
+            }
+            ShapeKind::Polygon { .. } => {
+                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                d.push(pd(
+                    "Mask",
+                    "Points",
+                    "shape.points",
+                    PropKind::F64 {
+                        min: Some(3.0),
+                        max: Some(64.0),
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Mask",
+                    "Outer radius",
+                    "shape.outer_r",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
+        }
         },
         _ => {}
     }

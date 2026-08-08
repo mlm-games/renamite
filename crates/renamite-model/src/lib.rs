@@ -633,6 +633,18 @@ pub struct TextNode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaskProps {
     pub inverted: bool,
+
+    /// The actual vector geometry of the mask.
+    ///
+    /// Defaults to an empty path so legacy documents deserialize safely.
+    #[serde(default)]
+    pub shape: ShapeKind,
+}
+
+impl Default for ShapeKind {
+    fn default() -> Self {
+        ShapeKind::Path(Animated::new(renamite_geometry::VectorPath::default()))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -672,8 +684,9 @@ impl Tween for Color {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FillRule {
+    #[default]
     NonZero,
     EvenOdd,
 }
@@ -767,7 +780,11 @@ pub struct SceneItem {
     pub paint: ScenePaint,
     pub kind: PaintKind,
     pub opacity: f64,
-    pub clip: Option<u32>,
+
+    /// Clip stack applied to this item, outermost → innermost.
+    #[serde(default)]
+    pub clips: Vec<u32>,
+
     pub blend: BlendMode,
 }
 
@@ -844,6 +861,8 @@ impl ScenePaint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClipPath {
     pub path: BezPath,
+    #[serde(default)]
+    pub rule: FillRule,
 }
 
 /// Per-frame property patch. Produced by clip/state-machine playback,
@@ -962,7 +981,9 @@ fn affine_of(ts: &renamite_animation::TransformSample) -> Affine {
 
 const SHAPE_TOL: f64 = 0.1;
 
-fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> BezPath {
+/// The vector outline of a shape (or mask shape) node's geometry in its own
+/// local coordinate space at `frame`, honoring any `shape.*` overrides.
+pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> BezPath {
     match kind {
         ShapeKind::Path(p) => {
             if let Some(Value::Path(p)) = ov.get(id, "shape.path") {
@@ -1038,9 +1059,23 @@ pub fn evaluate(doc: &Document, comp: CompId, frame: f64) -> Scene {
     evaluate_with(doc, comp, frame, &Overrides::default())
 }
 
+fn mask_shape_path(shape: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> BezPath {
+    shape_path(shape, id, frame, ov)
+}
+
+fn inverted_clip_path(scope_world: &BezPath, mask_world: &BezPath) -> ClipPath {
+    let mut path = scope_world.clone();
+    path.extend(mask_world.clone());
+    ClipPath {
+        path,
+        rule: FillRule::EvenOdd,
+    }
+}
+
 pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -> Scene {
     let mut scene = Scene::default();
     if let Some(c) = doc.compositions.get(comp) {
+        let scope = kurbo::Rect::new(0.0, 0.0, c.size.0 as f64, c.size.1 as f64);
         eval_group(
             doc,
             &c.children,
@@ -1050,6 +1085,8 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
             &mut scene,
             0,
             ov,
+            scope,
+            &[],
         );
     }
     scene
@@ -1066,6 +1103,8 @@ fn eval_group(
     scene: &mut Scene,
     depth: u32,
     ov: &Overrides,
+    scope_rect: kurbo::Rect,
+    inherited_clips: &[u32],
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -1110,22 +1149,62 @@ fn eval_group(
                 });
             }
             NodeKind::Modifier(m) => apply_modifier(m, id, frame, ov, &mut paths),
+            NodeKind::Mask(_) => {}
             _ => {}
         }
     }
 
-    // Pass 2: bottom-first recursion + style emission (painter's order).
-    for &id in children.iter().rev() {
+    // Pass 2: resolve the clip stack for every sibling.
+    let mut active: Vec<Vec<u32>> = Vec::with_capacity(children.len());
+    let mut acc = inherited_clips.to_vec();
+    for &id in children {
+        active.push(acc.clone());
+        let Some(n) = doc.nodes.get(id) else { continue };
+        if !n.visible {
+            continue;
+        }
+        if let NodeKind::Mask(mask) = &n.kind {
+            let local = affine_of(&sample_transform(n, id, frame, ov));
+            let world_mask = tf * local * mask_shape_path(&mask.shape, id, frame, ov);
+            let clip = if mask.inverted {
+                inverted_clip_path(&(tf * scope_rect.to_path(0.1)), &world_mask)
+            } else {
+                ClipPath {
+                    path: world_mask,
+                    rule: FillRule::NonZero,
+                }
+            };
+            scene.clips.push(clip);
+            acc.push((scene.clips.len() - 1) as u32);
+        }
+    }
+
+    // Pass 3: emit bottom-first (painter's order), carrying each child's
+    // active clip stack down into recursion and style emission.
+    for (i, &id) in children.iter().enumerate().rev() {
         let Some(n) = doc.nodes.get(id) else { continue };
         if !n.visible {
             continue;
         }
         let node_op =
             opacity * ov_f64(ov, id, "opacity", n.opacity.value_at(frame)).clamp(0.0, 1.0);
+        let clips = &active[i];
         match &n.kind {
+            NodeKind::Mask(_) => {}
             NodeKind::Group => {
                 let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
-                eval_group(doc, &n.children, frame, ntf, node_op, scene, depth + 1, ov);
+                eval_group(
+                    doc,
+                    &n.children,
+                    frame,
+                    ntf,
+                    node_op,
+                    scene,
+                    depth + 1,
+                    ov,
+                    scope_rect,
+                    clips,
+                );
             }
             NodeKind::Layer(lp) => {
                 if frame < lp.in_frame.0 as f64 || frame > lp.out_frame.0 as f64 {
@@ -1134,7 +1213,18 @@ fn eval_group(
                 let lf = (frame - lp.in_frame.0 as f64) / lp.time_stretch.max(1e-9)
                     + lp.in_frame.0 as f64;
                 let ntf = tf * affine_of(&sample_transform(n, id, lf, ov));
-                eval_group(doc, &n.children, lf, ntf, node_op, scene, depth + 1, ov);
+                eval_group(
+                    doc,
+                    &n.children,
+                    lf,
+                    ntf,
+                    node_op,
+                    scene,
+                    depth + 1,
+                    ov,
+                    scope_rect,
+                    clips,
+                );
             }
             NodeKind::Image(asset_id) => {
                 let Some(asset) = doc.image_asset(*asset_id) else {
@@ -1144,12 +1234,8 @@ fn eval_group(
                 let node_transform = affine_of(&sample_transform(n, id, frame, ov));
                 let full_transform = tf * node_transform;
 
-                let local_rect = kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    asset.width as f64,
-                    asset.height as f64,
-                );
+                let local_rect =
+                    kurbo::Rect::new(0.0, 0.0, asset.width as f64, asset.height as f64);
 
                 let world_path = full_transform * local_rect.to_path(0.1);
 
@@ -1166,7 +1252,7 @@ fn eval_group(
                     },
                     kind: PaintKind::Fill(FillRule::NonZero),
                     opacity: node_op,
-                    clip: None,
+                    clips: clips.to_vec(),
                     blend: BlendMode::Normal,
                 });
             }
@@ -1174,10 +1260,22 @@ fn eval_group(
                 let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
                 let cf = (frame - time_map.offset.0 as f64) / time_map.stretch.max(1e-9);
                 if let Some(c) = doc.compositions.get(*comp) {
-                    eval_group(doc, &c.children, cf, ntf, node_op, scene, depth + 1, ov);
+                    let pre_scope = kurbo::Rect::new(0.0, 0.0, c.size.0 as f64, c.size.1 as f64);
+                    eval_group(
+                        doc,
+                        &c.children,
+                        cf,
+                        ntf,
+                        node_op,
+                        scene,
+                        depth + 1,
+                        ov,
+                        pre_scope,
+                        clips,
+                    );
                 }
             }
-            NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, scene),
+            NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, clips, scene),
             _ => {}
         }
     }
@@ -1458,6 +1556,7 @@ fn emit_style(
     ov: &Overrides,
     paths: &[ShapeEntry],
     opacity: f64,
+    active_clips: &[u32],
     scene: &mut Scene,
 ) {
     for e in paths {
@@ -1492,7 +1591,7 @@ fn emit_style(
             paint,
             kind,
             opacity: opacity * e.opacity,
-            clip: None,
+            clips: active_clips.to_vec(),
             blend: BlendMode::Normal,
         });
     }
@@ -1792,11 +1891,17 @@ pub fn pick(scene: &Scene, pt: glam::DVec2) -> Option<NodeId> {
         {
             continue;
         }
-        if let Some(ci) = item.clip {
-            match scene.clips.get(ci as usize) {
-                Some(c) if c.path.contains(q) => {}
-                _ => continue, // clipped away (or dangling index): not pickable
+        let clips_ok = item.clips.iter().all(|&ci| {
+            let Some(c) = scene.clips.get(ci as usize) else {
+                return false; // dangling index: not pickable
+            };
+            match c.rule {
+                FillRule::NonZero => c.path.winding(q) != 0,
+                FillRule::EvenOdd => c.path.winding(q) % 2 != 0,
             }
+        });
+        if !clips_ok {
+            continue;
         }
         let hit = match &item.kind {
             PaintKind::Fill(rule) => match rule {
@@ -2057,6 +2162,90 @@ impl Node {
             }
             ("text.size", NodeKind::Text(t)) => Some(F64(&mut t.size)),
             (
+                "shape.path",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Path(p),
+                    ..
+                }),
+            ) => Some(Path(p)),
+            (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Ellipse { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Polygon { pos, .. },
+                    ..
+                }),
+            ) => Some(Vec2(pos)),
+            (
+                "shape.size",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { size, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.size",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Ellipse { size, .. },
+                    ..
+                }),
+            ) => Some(Vec2(size)),
+            (
+                "shape.rounded",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { rounded, .. },
+                    ..
+                }),
+            ) => Some(F64(rounded)),
+            (
+                "shape.points",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { points, .. } | ShapeKind::Polygon { points, .. },
+                    ..
+                }),
+            ) => Some(F64(points)),
+            (
+                "shape.inner_r",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { inner_r, .. },
+                    ..
+                }),
+            ) => Some(F64(inner_r)),
+            (
+                "shape.outer_r",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { outer_r, .. } | ShapeKind::Polygon { outer_r, .. },
+                    ..
+                }),
+            ) => Some(F64(outer_r)),
+            (
+                "shape.roundness",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { roundness, .. } | ShapeKind::Polygon { roundness, .. },
+                    ..
+                }),
+            ) => Some(F64(roundness)),
+            (
                 "fill.color",
                 NodeKind::Style(StyleKind::Fill {
                     paint: StylePaint::Solid { color },
@@ -2199,6 +2388,90 @@ impl Node {
                 Some(F64(roundness))
             }
             ("text.size", NodeKind::Text(t)) => Some(F64(&t.size)),
+            (
+                "shape.path",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Path(p),
+                    ..
+                }),
+            ) => Some(Path(p)),
+            (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Ellipse { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { pos, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.pos",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Polygon { pos, .. },
+                    ..
+                }),
+            ) => Some(Vec2(pos)),
+            (
+                "shape.size",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { size, .. },
+                    ..
+                }),
+            )
+            | (
+                "shape.size",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Ellipse { size, .. },
+                    ..
+                }),
+            ) => Some(Vec2(size)),
+            (
+                "shape.rounded",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Rect { rounded, .. },
+                    ..
+                }),
+            ) => Some(F64(rounded)),
+            (
+                "shape.points",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { points, .. } | ShapeKind::Polygon { points, .. },
+                    ..
+                }),
+            ) => Some(F64(points)),
+            (
+                "shape.inner_r",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { inner_r, .. },
+                    ..
+                }),
+            ) => Some(F64(inner_r)),
+            (
+                "shape.outer_r",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { outer_r, .. } | ShapeKind::Polygon { outer_r, .. },
+                    ..
+                }),
+            ) => Some(F64(outer_r)),
+            (
+                "shape.roundness",
+                NodeKind::Mask(MaskProps {
+                    shape: ShapeKind::Star { roundness, .. } | ShapeKind::Polygon { roundness, .. },
+                    ..
+                }),
+            ) => Some(F64(roundness)),
             (
                 "fill.color",
                 NodeKind::Style(StyleKind::Fill {
@@ -2891,7 +3164,7 @@ mod tests {
                     }),
                 }),
                 opacity: 1.0,
-                clip: None,
+                clips: vec![],
                 blend: BlendMode::Normal,
             }],
         };
@@ -3196,6 +3469,7 @@ mod trim_tests {
 #[cfg(test)]
 mod style_paint_tests {
     use super::*;
+    use glam::DVec2;
 
     #[test]
     fn paint_snapshot_samples_without_copying_keys() {
@@ -3224,5 +3498,140 @@ mod style_paint_tests {
             panic!("must remain a gradient");
         };
         assert_eq!(gradient.stops.base.0[0].color, red);
+    }
+
+    fn doc_with_square_and_fill() -> (Document, NodeId) {
+        let mut doc = Document::empty();
+        let rect = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(0.0, 0.0)),
+                size: Animated::new(DVec2::new(200.0, 200.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(rect, Parent::Comp(doc.main), 0).unwrap();
+        doc.attach(fill, Parent::Comp(doc.main), 1).unwrap();
+        (doc, rect)
+    }
+
+    #[test]
+    fn mask_clips_subsequent_siblings() {
+        let (mut doc, square) = doc_with_square_and_fill();
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(MaskProps {
+                inverted: false,
+                shape: ShapeKind::Ellipse {
+                    pos: Animated::new(DVec2::new(100.0, 100.0)),
+                    size: Animated::new(DVec2::new(50.0, 50.0)),
+                },
+            }),
+        ));
+        let comp = doc.main;
+        // Detach the already-attached square, reattach it after the mask.
+        let (_, _) = doc.detach(square).unwrap();
+        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
+        doc.attach(square, Parent::Comp(comp), 1).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        let item = &scene.items[0];
+        assert_eq!(item.node, square);
+        assert_eq!(item.clips.len(), 1);
+        assert_eq!(scene.clips.len(), 1);
+        assert_eq!(scene.clips[0].rule, FillRule::NonZero);
+    }
+
+    #[test]
+    fn inverted_mask_uses_evenodd_rule() {
+        let (mut doc, square) = doc_with_square_and_fill();
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(MaskProps {
+                inverted: true,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(DVec2::new(100.0, 100.0)),
+                    size: Animated::new(DVec2::new(50.0, 50.0)),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+        ));
+        let comp = doc.main;
+        let (_, _) = doc.detach(square).unwrap();
+        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
+        doc.attach(square, Parent::Comp(comp), 1).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].node, square);
+        assert_eq!(scene.clips.len(), 1);
+        assert_eq!(scene.clips[0].rule, FillRule::EvenOdd);
+    }
+
+    #[test]
+    fn mask_clips_image_siblings() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(MaskProps {
+                inverted: false,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(DVec2::new(0.0, 0.0)),
+                    size: Animated::new(DVec2::new(10.0, 10.0)),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+        ));
+        let img_asset = doc.assets.insert(Asset::Image(ImageAsset {
+            name: "img".into(),
+            mime: "image/png".into(),
+            bytes: Vec::new(),
+            width: 64,
+            height: 64,
+            srgb: true,
+        }));
+        let img = doc.create_node(Node::new("i", NodeKind::Image(img_asset)));
+        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
+        doc.attach(img, Parent::Comp(comp), 1).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn mask_param_paths_edit_mask_geometry() {
+        let mut doc = Document::empty();
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(MaskProps {
+                inverted: false,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(DVec2::new(0.0, 0.0)),
+                    size: Animated::new(DVec2::new(10.0, 20.0)),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+        ));
+        let mut node = doc.nodes.get_mut(mask).unwrap();
+        let Some(PropMut::Vec2(v)) = node.prop_mut(&PropPath::new("shape.pos")) else {
+            panic!("mask shape.pos not addressable");
+        };
+        v.base = DVec2::new(5.0, 5.0);
+        drop(node);
+        let n = doc.nodes.get_mut(mask).unwrap();
+        let Some(PropRef::Vec2(v)) = n.prop_ref(&PropPath::new("shape.pos")) else {
+            panic!("mask shape.pos not readable");
+        };
+        assert_eq!(v.base, DVec2::new(5.0, 5.0));
     }
 }

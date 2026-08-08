@@ -11,7 +11,7 @@ use renamite_behavior_common::ViewTransform;
 use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
     AnimatedDash, Asset, Color, Document, FillRule, GradientKind, GradientStop, GradientStops,
-    ImageAsset, KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind,
+    ImageAsset, KeyframeData, MaskProps, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind,
     StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
@@ -686,5 +686,90 @@ fn golden_image_layer() {
     check_golden(
         "image_layer",
         &render_doc_images(&mut gpu, &fixture_image_layer(), 0.0),
+    );
+}
+
+fn fixture_masked_text() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let mask = doc.create_node(Node::new(
+        "m",
+        NodeKind::Mask(MaskProps {
+            inverted: false,
+            shape: ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::new(256.0, 180.0)),
+                size: Animated::new(DVec2::new(260.0, 140.0)),
+            },
+        }),
+    ));
+    let text = doc.create_node(Node::new(
+        "t",
+        NodeKind::Text(TextNode {
+            text: "Hello".into(),
+            size: Animated::new(140.0),
+            align: TextAlign::Left,
+            font: None,
+        }),
+    ));
+    doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.9, 0.4, 0.2, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+    doc.attach(mask, Parent::Node(group), 0).unwrap();
+    doc.attach(text, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+#[test]
+fn golden_masked_text() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "masked_text",
+        &render_doc(&mut gpu, &fixture_masked_text(), 0.0),
+    );
+}
+
+fn fixture_masked_image() -> Document {
+    let mut doc = fixture_image_layer();
+    let comp = doc.main;
+    let image = doc.compositions[comp].children[0];
+
+    let mask = doc.create_node(Node::new(
+        "m",
+        NodeKind::Mask(MaskProps {
+            inverted: false,
+            shape: ShapeKind::Path(Animated::new(VectorPath {
+                closed: true,
+                anchors: vec![
+                    Anchor::corner(DVec2::new(120.0, 120.0)),
+                    Anchor::corner(DVec2::new(392.0, 120.0)),
+                    Anchor::corner(DVec2::new(392.0, 392.0)),
+                    Anchor::corner(DVec2::new(120.0, 392.0)),
+                ],
+            })),
+        }),
+    ));
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+    doc.attach(mask, Parent::Node(group), 0).unwrap();
+    doc.detach(image).unwrap();
+    doc.attach(image, Parent::Node(group), 1).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+#[test]
+fn golden_masked_image() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "masked_image",
+        &render_doc_images(&mut gpu, &fixture_masked_image(), 0.0),
     );
 }

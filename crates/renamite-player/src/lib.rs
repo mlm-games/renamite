@@ -558,7 +558,10 @@ mod tests {
         let big = kurbo::Rect::new(-100.0, -100.0, 100.0, 100.0).to_path(0.1);
         let small = kurbo::Rect::new(-10.0, -10.0, 10.0, 10.0).to_path(0.1);
         let scene = Scene {
-            clips: vec![ClipPath { path: small }],
+            clips: vec![ClipPath {
+                path: small,
+                rule: FillRule::NonZero,
+            }],
             items: vec![SceneItem {
                 path: big,
                 node: shape,
@@ -566,7 +569,7 @@ mod tests {
                 paint: ScenePaint::Solid(Color::BLACK),
                 kind: PaintKind::Fill(FillRule::NonZero),
                 opacity: 1.0,
-                clip: Some(0),
+                clips: vec![0],
                 blend: BlendMode::Normal,
             }],
         };

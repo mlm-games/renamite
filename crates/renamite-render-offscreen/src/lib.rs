@@ -257,6 +257,7 @@ mod tests {
         let model = ModelScene {
             clips: vec![ClipPath {
                 path: kurbo::Rect::new(-25.0, -25.0, 25.0, 25.0).to_path(0.1),
+                rule: renamite_model::FillRule::NonZero,
             }],
             items: vec![SceneItem {
                 path: kurbo::Circle::new((0.0, 0.0), 20.0).to_path(0.1),
@@ -265,7 +266,7 @@ mod tests {
                 paint: ScenePaint::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0)),
                 kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
                 opacity: 1.0,
-                clip: Some(0),
+                clips: vec![0],
                 blend: renamite_model::BlendMode::Normal,
             }],
         };

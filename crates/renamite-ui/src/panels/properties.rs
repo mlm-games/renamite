@@ -189,6 +189,13 @@ fn PropRowView(
         return enum2_row(session, ids, row.desc.label, *v as usize, a_label, b_label);
     }
 
+    // Bool fields aren't Animated<T> either (e.g. `mask.inverted`).
+    if let PropKind::Bool = &row.desc.kind
+        && let Value::Bool(v) = &row.value
+    {
+        return bool_toggle_row(session, ids, row.desc.label, *v);
+    }
+
     Row(Modifier::new()
         .height(36.0)
         .fill_max_width()
@@ -678,6 +685,90 @@ fn enum2_row(
     ))
 }
 
+fn bool_toggle_row(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    label: &'static str,
+    value: bool,
+) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)), // diamond spacer
+        Text(label)
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        bool_toggle_segment(session.clone(), ids.clone(), value, false),
+        bool_toggle_segment(session, ids, value, true),
+    ))
+}
+
+fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, value: bool) -> View {
+    let th = theme();
+    let active = current == value;
+    let label = if value { "On" } else { "Off" };
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    let ids = ids.clone();
+                    move |_pe: PointerEvent| {
+                        let mut s = session.borrow_mut();
+                        let cmds: Vec<_> = ids
+                            .iter()
+                            .copied()
+                            .filter_map(|id| match s.file.document.nodes.get(id) {
+                                Some(node) if matches!(node.kind, NodeKind::Mask(_)) => {
+                                    Some(EditorCommand::SetMaskInverted {
+                                        id,
+                                        inverted: value,
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if cmds.is_empty() {
+                            return;
+                        }
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Invert mask".into()),
+                            ToolOutput::Commands(cmds.into()),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+        )
+}
+
 fn enum2_segment(
     session: SessionRef,
     ids: Vec<NodeId>,
@@ -885,24 +976,26 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
         ("Dimensions", format!("{width}×{height} px")),
         ("Type", mime),
     ] {
-        children.push(Row(Modifier::new()
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
-            .gap(8.0)
-            .align_items(AlignItems::CENTER))
-        .child((
-            Text(label)
-                .size(th.typography.label_small)
-                .color(th.on_surface_variant),
-            Text(value)
-                .size(th.typography.body_small)
-                .color(th.on_surface),
-        )));
+        children.push(
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 12.0,
+                    top: 2.0,
+                    bottom: 2.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text(label)
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+                Text(value)
+                    .size(th.typography.body_small)
+                    .color(th.on_surface),
+            )),
+        );
     }
 
     Some(Column(Modifier::new().fill_max_width()).child(children))
@@ -913,7 +1006,8 @@ fn font_chip(
     text_id: NodeId,
     label: String,
     family: Option<String>,
-    active: bool,) -> View {
+    active: bool,
+) -> View {
     let th = theme();
     Text(label)
         .size(th.typography.body_medium)

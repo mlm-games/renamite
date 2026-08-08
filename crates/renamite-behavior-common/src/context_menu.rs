@@ -51,6 +51,9 @@ pub enum MenuAction {
     CreateStar,
     CreateText,
     SwitchTool(ToolId),
+    UseAsClipMask,
+    ReleaseMask,
+    ToggleMaskInverted,
 }
 
 #[derive(Clone)]
@@ -73,7 +76,7 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
     let can_ungroup = is_group && n.map(|n| n.children.len() >= 1).unwrap_or(false);
     let multi = ctx.selection.len() > 1;
 
-    vec![
+    let mut m = vec![
         action(MenuAction::Rename, "Rename", !locked),
         action(MenuAction::Duplicate, "Duplicate", true),
         action(MenuAction::Delete, "Delete", !locked),
@@ -96,16 +99,30 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
         MenuEntry::Separator,
         action(MenuAction::Group, "Group", multi && same_parent(ctx)),
         action(MenuAction::Ungroup, "Ungroup", can_ungroup && !locked),
-        MenuEntry::Separator,
-        MenuEntry::Submenu {
-            label: "Add modifier",
-            children: vec![
-                action(MenuAction::AddTrimPath, "Trim Path", !locked),
-                action(MenuAction::AddRoundCorners, "Round Corners", !locked),
-                action(MenuAction::AddRepeater, "Repeater", !locked),
-            ],
-        },
-    ]
+    ];
+    if let Some(n) = ctx.doc.nodes.get(row_id) {
+        m.push(MenuEntry::Separator);
+        match &n.kind {
+            NodeKind::Mask(_) => {
+                m.push(action(MenuAction::ToggleMaskInverted, "Invert Mask", !locked));
+                m.push(action(MenuAction::ReleaseMask, "Release Clipping Path", !locked));
+            }
+            NodeKind::Shape(_) => {
+                m.push(action(MenuAction::UseAsClipMask, "Use as Clipping Path", !locked));
+            }
+            _ => {}
+        }
+    }
+    m.push(MenuEntry::Separator);
+    m.push(MenuEntry::Submenu {
+        label: "Add modifier",
+        children: vec![
+            action(MenuAction::AddTrimPath, "Trim Path", !locked),
+            action(MenuAction::AddRoundCorners, "Round Corners", !locked),
+            action(MenuAction::AddRepeater, "Repeater", !locked),
+        ],
+    });
+    m
 }
 
 /// Right-click menu for the viewport: empty canvas vs. an existing selection.
@@ -187,6 +204,21 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
     if is_path {
         m.push(MenuEntry::Separator);
         m.push(action(MenuAction::EditPath, "Edit path", true));
+    }
+    let single_kind = single.and_then(|id| ctx.doc.nodes.get(id)).map(|n| &n.kind);
+    if !multi {
+        match single_kind {
+            Some(NodeKind::Mask(_)) => {
+                m.push(MenuEntry::Separator);
+                m.push(action(MenuAction::ToggleMaskInverted, "Invert Mask", !any_locked));
+                m.push(action(MenuAction::ReleaseMask, "Release Clipping Path", !any_locked));
+            }
+            Some(NodeKind::Shape(_)) => {
+                m.push(MenuEntry::Separator);
+                m.push(action(MenuAction::UseAsClipMask, "Use as Clipping Path", !any_locked));
+            }
+            _ => {}
+        }
     }
     m
 }
@@ -283,6 +315,25 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
         MenuAction::AddRepeater => add_mod(ctx, ModKind::Repeater),
 
         MenuAction::EditPath => vec![ToolOutput::SwitchTool(ToolId::PathEdit)],
+
+        MenuAction::UseAsClipMask => mask_command(
+            ctx,
+            |id, _| EditorCommand::ConvertToMask { id },
+            "Use as clipping path",
+            true,
+        ),
+        MenuAction::ReleaseMask => mask_command(
+            ctx,
+            |id, _| EditorCommand::ReleaseMask { id },
+            "Release clipping path",
+            true,
+        ),
+        MenuAction::ToggleMaskInverted => mask_command(
+            ctx,
+            |id, inverted| EditorCommand::SetMaskInverted { id, inverted },
+            "Invert mask",
+            true,
+        ),
 
         MenuAction::CreateRect => create_primitive(ctx, Prim::Rect),
         MenuAction::CreateEllipse => create_primitive(ctx, Prim::Ellipse),
@@ -462,6 +513,91 @@ mod tests {
                 [EditorCommand::GroupSelection { .. }])
         })));
     }
+
+    #[test]
+    fn mask_menu_shows_invert_and_release_for_mask() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(renamite_model::MaskProps {
+                inverted: false,
+                shape: ShapeKind::Path(Animated::new(
+                    renamite_geometry::VectorPath::from_bez_path(&kurbo::BezPath::new()),
+                )),
+            }),
+        ));
+        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![mask];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = selection_canvas_menu(&ctx);
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::ToggleMaskInverted,
+                ..
+            }
+        )));
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::ReleaseMask,
+                ..
+            }
+        )));
+
+        let outs = dispatch_menu_action(&ctx, &MenuAction::ToggleMaskInverted);
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            ToolOutput::Commands(c)
+                if matches!(c.as_slice(), [EditorCommand::SetMaskInverted { id, inverted: true }] if *id == mask)
+        )));
+    }
+
+    #[test]
+    fn shape_menu_offers_use_as_clip_mask() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let shape = doc.create_node(Node::new(
+            "s",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::ONE),
+            }),
+        ));
+        doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![shape];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = selection_canvas_menu(&ctx);
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::UseAsClipMask,
+                ..
+            }
+        )));
+
+        let outs = dispatch_menu_action(&ctx, &MenuAction::UseAsClipMask);
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            ToolOutput::Commands(c)
+                if matches!(c.as_slice(), [EditorCommand::ConvertToMask { id }] if *id == shape)
+        )));
+    }
 }
 
 fn toggle_flags(ctx: &MenuContext, vis: bool, lock: bool) -> Vec<ToolOutput> {
@@ -483,6 +619,27 @@ fn toggle_flags(ctx: &MenuContext, vis: bool, lock: bool) -> Vec<ToolOutput> {
     vec![
         ToolOutput::BeginTransaction(label.into()),
         ToolOutput::Commands(cmds),
+        ToolOutput::CommitTransaction,
+    ]
+}
+
+fn mask_command<F: Fn(NodeId, bool) -> EditorCommand>(
+    ctx: &MenuContext,
+    build: F,
+    label: &str,
+    toggle_inverted: bool,
+) -> Vec<ToolOutput> {
+    let Some(&id) = ctx.selection.first() else {
+        return vec![];
+    };
+    let inverted = match ctx.doc.nodes.get(id).map(|n| &n.kind) {
+        Some(NodeKind::Mask(mask)) => mask.inverted,
+        _ => false,
+    };
+    let cmd = build(id, if toggle_inverted { !inverted } else { inverted });
+    vec![
+        ToolOutput::BeginTransaction(label.into()),
+        ToolOutput::Commands(smallvec![cmd]),
         ToolOutput::CommitTransaction,
     ]
 }

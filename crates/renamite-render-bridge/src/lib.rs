@@ -60,7 +60,7 @@ pub enum PreparedDraw {
         mesh: Arc<VectorMeshData>,
         transform: [f32; 6],
         paint: PaintDesc,
-        clip: Option<u32>,
+        clips: Vec<u32>,
         blend: BlendMode,
     },
 
@@ -70,7 +70,7 @@ pub enum PreparedDraw {
         transform: repose_core::Transform,
         tint: repose_core::Color,
         fit: repose_core::ImageFit,
-        clip: Option<u32>,
+        clips: Vec<u32>,
     },
 }
 
@@ -179,7 +179,7 @@ impl SceneRenderer {
         let mut clips = Vec::with_capacity(scene.clips.len());
         for clip in &scene.clips {
             let mesh = self
-                .clip_mesh(&clip.path, tol)
+                .clip_mesh(&clip.path, clip.rule, tol)
                 .map(|m| transform_mesh(&m, t))
                 .unwrap_or_else(|| Arc::new(VectorMeshData::default()));
             clips.push(PreparedClip { mesh });
@@ -209,7 +209,7 @@ impl SceneRenderer {
                         )),
                         tint: Self::model_color_to_repose(*tint, item.opacity),
                         fit: repose_core::ImageFit::Contain,
-                        clip: item.clip,
+                        clips: item.clips.clone(),
                     });
                 }
 
@@ -219,7 +219,7 @@ impl SceneRenderer {
                             mesh,
                             transform: t,
                             paint: PaintDesc::Solid,
-                            clip: item.clip,
+                            clips: item.clips.clone(),
                             blend: map_blend(item.blend),
                         });
                     }
@@ -289,24 +289,24 @@ impl SceneRenderer {
                     mesh,
                     transform,
                     paint,
-                    clip,
+                    clips,
                     blend,
                 } => {
-                    if let Some(ci) = clip
-                        && let Some(clip) = prepared.clips.get(*ci as usize)
-                    {
-                        scope.commands.push(DrawCommand::PushVectorClip {
-                            mesh: clip.mesh.clone(),
-                        });
+                    for &ci in clips {
+                        if let Some(clip) = prepared.clips.get(ci as usize) {
+                            scope.commands.push(DrawCommand::PushVectorClip {
+                                mesh: clip.mesh.clone(),
+                            });
+                        }
                     }
                     scope.commands.push(DrawCommand::VectorMesh {
                         mesh: mesh.clone(),
                         transform: *transform,
                         paint: *paint,
-                        clip: *clip,
+                        clip: None,
                         blend: *blend,
                     });
-                    if clip.is_some() {
+                    for _ in clips.iter().rev() {
                         scope.commands.push(DrawCommand::PopVectorClip);
                     }
                 }
@@ -317,14 +317,14 @@ impl SceneRenderer {
                     transform,
                     tint,
                     fit,
-                    clip,
+                    clips,
                 } => {
-                    if let Some(ci) = clip
-                        && let Some(clip) = prepared.clips.get(*ci as usize)
-                    {
-                        scope.commands.push(DrawCommand::PushVectorClip {
-                            mesh: clip.mesh.clone(),
-                        });
+                    for &ci in clips {
+                        if let Some(clip) = prepared.clips.get(ci as usize) {
+                            scope.commands.push(DrawCommand::PushVectorClip {
+                                mesh: clip.mesh.clone(),
+                            });
+                        }
                     }
 
                     scope.commands.push(DrawCommand::PushTransform {
@@ -340,7 +340,7 @@ impl SceneRenderer {
 
                     scope.commands.push(DrawCommand::PopTransform);
 
-                    if clip.is_some() {
+                    for _ in clips.iter().rev() {
                         scope.commands.push(DrawCommand::PopVectorClip);
                     }
                 }
@@ -356,24 +356,24 @@ impl SceneRenderer {
                     mesh,
                     transform,
                     paint,
-                    clip,
+                    clips,
                     blend,
                 } => {
-                    if let Some(ci) = clip
-                        && let Some(clip) = prepared.clips.get(*ci as usize)
-                    {
-                        out.nodes.push(SceneNode::PushVectorClip {
-                            mesh: clip.mesh.clone(),
-                        });
+                    for &ci in clips {
+                        if let Some(clip) = prepared.clips.get(ci as usize) {
+                            out.nodes.push(SceneNode::PushVectorClip {
+                                mesh: clip.mesh.clone(),
+                            });
+                        }
                     }
                     out.nodes.push(SceneNode::VectorMesh {
                         mesh: mesh.clone(),
                         transform: *transform,
                         paint: *paint,
-                        clip: *clip,
+                        clip: None,
                         blend: *blend,
                     });
-                    if clip.is_some() {
+                    for _ in clips.iter().rev() {
                         out.nodes.push(SceneNode::PopVectorClip);
                     }
                 }
@@ -384,14 +384,14 @@ impl SceneRenderer {
                     transform,
                     tint,
                     fit,
-                    clip,
+                    clips,
                 } => {
-                    if let Some(ci) = clip
-                        && let Some(clip) = prepared.clips.get(*ci as usize)
-                    {
-                        out.nodes.push(SceneNode::PushVectorClip {
-                            mesh: clip.mesh.clone(),
-                        });
+                    for &ci in clips {
+                        if let Some(clip) = prepared.clips.get(ci as usize) {
+                            out.nodes.push(SceneNode::PushVectorClip {
+                                mesh: clip.mesh.clone(),
+                            });
+                        }
                     }
 
                     out.nodes.push(SceneNode::PushTransform {
@@ -407,7 +407,7 @@ impl SceneRenderer {
 
                     out.nodes.push(SceneNode::PopTransform);
 
-                    if clip.is_some() {
+                    for _ in clips.iter().rev() {
                         out.nodes.push(SceneNode::PopVectorClip);
                     }
                 }
@@ -459,13 +459,18 @@ impl SceneRenderer {
         Some(mesh)
     }
 
-    fn clip_mesh(&mut self, path: &kurbo::BezPath, tol: f32) -> Option<Arc<VectorMeshData>> {
-        let key = clip_key(path, tol);
+    fn clip_mesh(
+        &mut self,
+        path: &kurbo::BezPath,
+        rule: FillRule,
+        tol: f32,
+    ) -> Option<Arc<VectorMeshData>> {
+        let key = clip_key(path, rule, tol);
         if let Some(m) = self.cache.get(&key) {
             return Some(m.clone());
         }
         let path = bez_to_lyon(path);
-        let mesh = self.tessellate(&path, &PaintKind::Fill(FillRule::NonZero), [1.0; 4], tol)?;
+        let mesh = self.tessellate(&path, &PaintKind::Fill(rule), [1.0; 4], tol)?;
         self.cache.insert(key, mesh.clone().into());
         Some(mesh.into())
     }
@@ -763,7 +768,7 @@ fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
     h.finish()
 }
 
-fn clip_key(path: &kurbo::BezPath, tolerance: f32) -> u64 {
+fn clip_key(path: &kurbo::BezPath, rule: FillRule, tolerance: f32) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut h = rustc_hash::FxHasher::default();
@@ -798,7 +803,7 @@ fn clip_key(path: &kurbo::BezPath, tolerance: f32) -> u64 {
     }
 
     0u8.hash(&mut h);
-    (FillRule::NonZero as u8).hash(&mut h);
+    (rule as u8).hash(&mut h);
 
     h.finish()
 }
@@ -871,7 +876,7 @@ mod tests {
             paint: ScenePaint::Solid(color),
             kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
             opacity: 1.0,
-            clip: None,
+            clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         }
     }
@@ -929,7 +934,7 @@ mod tests {
             },
             kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
             opacity: 1.0,
-            clip: None,
+            clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         };
         let m = r.mesh_for(&item, 0.5).unwrap();
@@ -971,7 +976,7 @@ mod tests {
             },
             kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
             opacity: 1.0,
-            clip: None,
+            clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         };
         let m = r.mesh_for(&item, 0.5).unwrap();
@@ -1019,7 +1024,7 @@ mod tests {
                 }),
             }),
             opacity: 1.0,
-            clip: None,
+            clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         };
 
@@ -1051,7 +1056,7 @@ mod tests {
                 }),
             }),
             opacity: 1.0,
-            clip: None,
+            clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         };
 
@@ -1072,6 +1077,7 @@ mod tests {
         let scene = Scene {
             clips: vec![renamite_model::ClipPath {
                 path: kurbo::Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1),
+                rule: renamite_model::FillRule::NonZero,
             }],
             items: vec![SceneItem {
                 path: Circle::new((5.0, 5.0), 4.0).to_path(0.1),
@@ -1080,7 +1086,7 @@ mod tests {
                 paint: ScenePaint::Solid(Color::BLACK),
                 kind: PaintKind::Fill(renamite_model::FillRule::NonZero),
                 opacity: 1.0,
-                clip: Some(0),
+                clips: vec![0],
                 blend: renamite_model::BlendMode::Normal,
             }],
         };

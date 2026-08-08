@@ -255,6 +255,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             match kind {
                 LayerKind::Shape => Symbols::circle,
                 LayerKind::Style => Symbols::format_color_fill,
+                LayerKind::Mask => Symbols::content_cut,
                 LayerKind::Group => Symbols::layers,
                 LayerKind::Other => Symbols::layers,
             },

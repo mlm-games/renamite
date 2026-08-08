@@ -22,6 +22,7 @@ pub enum LayerKind {
     Group,
     Shape,
     Style,
+    Mask,
     Other,
 }
 
@@ -31,6 +32,7 @@ impl LayerKind {
             NodeKind::Group | NodeKind::Layer(_) => LayerKind::Group,
             NodeKind::Shape(_) => LayerKind::Shape,
             NodeKind::Style(_) => LayerKind::Style,
+            NodeKind::Mask(_) => LayerKind::Mask,
             _ => LayerKind::Other,
         }
     }

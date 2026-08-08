@@ -150,6 +150,27 @@ pub enum EditorCommand {
         id: NodeId,
         mode: renamite_model::TrimMode,
     },
+    /// Turn a Shape into a Mask (whole-kind structural edit). Exact inverse:
+    /// restore the previous shape. Use `ReleaseMask` to go back.
+    ConvertToMask {
+        id: NodeId,
+    },
+    /// Turn a Mask back into a Shape. Exact inverse: `RestoreMask`.
+    ReleaseMask {
+        id: NodeId,
+    },
+    /// Undo-internal: restore a mask node's `MaskProps` (inverse of
+    /// `ReleaseMask`).
+    RestoreMask {
+        id: NodeId,
+        mask: renamite_model::MaskProps,
+    },
+    /// Flip a mask's `inverted` flag. Exact inverse: same command with the old
+    /// value.
+    SetMaskInverted {
+        id: NodeId,
+        inverted: bool,
+    },
     /// Enable/disable a stroke's dash pattern (whole-value structural edit).
     /// No coalescing: discrete structural edits only.
     SetStrokeDash {
@@ -508,6 +529,10 @@ fn apply_command(
         | SetPaint { .. }
         | SetTrimMode { .. }
         | SetStrokeDash { .. }
+        | ConvertToMask { .. }
+        | ReleaseMask { .. }
+        | RestoreMask { .. }
+        | SetMaskInverted { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
         | RemoveKeyframe { .. }
@@ -1128,6 +1153,56 @@ fn apply_document_command(
             let old = std::mem::replace(current, dash.clone());
 
             Ok((None, vec![SetStrokeDash { id: *id, dash: old }]))
+        }
+        ConvertToMask { id } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let kind = std::mem::replace(&mut node.kind, NodeKind::Group);
+            let shape = match kind {
+                NodeKind::Shape(shape) => shape,
+                other => {
+                    node.kind = other;
+                    return Err(ModelError::WrongNodeKind("Shape").into());
+                }
+            };
+            node.kind = NodeKind::Mask(renamite_model::MaskProps {
+                inverted: false,
+                shape,
+            });
+            Ok((None, vec![ReleaseMask { id: *id }]))
+        }
+        ReleaseMask { id } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let kind = std::mem::replace(&mut node.kind, NodeKind::Group);
+            let mask = match kind {
+                NodeKind::Mask(mask) => mask,
+                other => {
+                    node.kind = other;
+                    return Err(ModelError::WrongNodeKind("Mask").into());
+                }
+            };
+            node.kind = NodeKind::Shape(mask.shape.clone());
+            Ok((None, vec![RestoreMask { id: *id, mask }]))
+        }
+        RestoreMask { id, mask } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let kind = std::mem::replace(&mut node.kind, NodeKind::Group);
+            let _shape = match kind {
+                NodeKind::Shape(shape) => shape,
+                other => {
+                    node.kind = other;
+                    return Err(ModelError::WrongNodeKind("Shape").into());
+                }
+            };
+            node.kind = NodeKind::Mask(mask.clone());
+            Ok((None, vec![ReleaseMask { id: *id }]))
+        }
+        SetMaskInverted { id, inverted } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Mask(mask) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Mask").into());
+            };
+            let old = std::mem::replace(&mut mask.inverted, *inverted);
+            Ok((None, vec![SetMaskInverted { id: *id, inverted: old }]))
         }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
@@ -2365,5 +2440,107 @@ mod tests {
                 prop_assert_eq!(w.snapshot(), s_final);
             }
         }
+    }
+
+    #[test]
+    fn convert_shape_to_mask_undo_redo_roundtrips() {
+        let mut world = World::new();
+        let id = world.node();
+
+        world.doc.nodes[id].kind = NodeKind::Shape(renamite_model::ShapeKind::Ellipse {
+            pos: Animated::new(glam::DVec2::ZERO),
+            size: Animated::new(glam::DVec2::splat(10.0)),
+        });
+
+        let mut history = History::new();
+
+        history
+            .apply(&mut world.pm(), EditorCommand::ConvertToMask { id })
+            .unwrap();
+        history.commit();
+
+        assert!(matches!(world.doc.nodes[id].kind, NodeKind::Mask(_)));
+
+        history.undo(&mut world.pm()).unwrap();
+        assert!(matches!(world.doc.nodes[id].kind, NodeKind::Shape(_)));
+
+        history.redo(&mut world.pm()).unwrap();
+        assert!(matches!(world.doc.nodes[id].kind, NodeKind::Mask(_)));
+    }
+
+    #[test]
+    fn release_mask_and_restore_roundtrip() {
+        let mut world = World::new();
+        let id = world.node();
+
+        world.doc.nodes[id].kind = NodeKind::Mask(renamite_model::MaskProps {
+            inverted: true,
+            shape: renamite_model::ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::splat(20.0)),
+                rounded: Animated::new(0.0),
+            },
+        });
+
+        let mut history = History::new();
+        history
+            .apply(&mut world.pm(), EditorCommand::ReleaseMask { id })
+            .unwrap();
+        history.commit();
+
+        let NodeKind::Shape(renamite_model::ShapeKind::Rect { size, .. }) = &world.doc.nodes[id].kind
+        else {
+            panic!("expected rect shape");
+        };
+        assert_eq!(size.base, glam::DVec2::splat(20.0));
+
+        history.undo(&mut world.pm()).unwrap();
+        let NodeKind::Mask(mask) = &world.doc.nodes[id].kind else {
+            panic!("expected mask");
+        };
+        assert!(mask.inverted);
+        assert!(matches!(mask.shape, renamite_model::ShapeKind::Rect { .. }));
+
+        history.redo(&mut world.pm()).unwrap();
+        assert!(matches!(world.doc.nodes[id].kind, NodeKind::Shape(_)));
+    }
+
+    #[test]
+    fn set_mask_inverted_undo_redo_roundtrips() {
+        let mut world = World::new();
+        let id = world.node();
+
+        world.doc.nodes[id].kind = NodeKind::Mask(renamite_model::MaskProps {
+            inverted: false,
+            shape: renamite_model::ShapeKind::Path(Animated::new(
+                renamite_geometry::VectorPath::default(),
+            )),
+        });
+
+        let mut history = History::new();
+        history
+            .apply(
+                &mut world.pm(),
+                EditorCommand::SetMaskInverted { id, inverted: true },
+            )
+            .unwrap();
+        history.commit();
+
+        let NodeKind::Mask(mask) = &world.doc.nodes[id].kind else {
+            panic!("expected mask");
+        };
+        assert!(mask.inverted);
+
+        history.undo(&mut world.pm()).unwrap();
+        let NodeKind::Mask(mask) = &world.doc.nodes[id].kind else {
+            panic!("expected mask");
+        };
+        assert!(!mask.inverted);
+
+        history.redo(&mut world.pm()).unwrap();
+        let NodeKind::Mask(mask) = &world.doc.nodes[id].kind else {
+            panic!("expected mask");
+        };
+        assert!(mask.inverted);
     }
 }

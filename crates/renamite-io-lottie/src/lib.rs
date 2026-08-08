@@ -99,8 +99,9 @@ mod tests {
     use glam::DVec2;
     use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
     use renamite_model::{
-        Color, FillRule, GradientStop, GradientStops, ModifierKind, Node, NodeKind, Parent,
-        PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value,
+        Color, FillRule, GradientStop, GradientStops, MaskProps, ModifierKind, Node, NodeKind,
+        Parent, PropPath, ShapeKind, StarKind, StyleKind, StylePaint, TextAlign, TextNode,
+        TrimMode, Value,
     };
 
     fn visible_shape_doc() -> Document {
@@ -580,6 +581,95 @@ mod tests {
                 .any(|w| w.message.contains("text.size")),
             "animated size must warn, got {:?}",
             report.warnings
+        );
+    }
+
+    #[test]
+    fn export_direct_masks_to_masks_properties() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Masked Group", NodeKind::Group));
+        let mask = doc.create_node(Node::new(
+            "Mask",
+            NodeKind::Mask(MaskProps {
+                inverted: true,
+                shape: ShapeKind::Path(Animated::new(renamite_geometry::VectorPath::default())),
+            }),
+        ));
+        let rect = doc.create_node(Node::new(
+            "Rect",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(256.0, 256.0)),
+                size: Animated::new(DVec2::new(200.0, 200.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(mask, Parent::Node(group), 0).unwrap();
+        doc.attach(rect, Parent::Node(group), 1).unwrap();
+        doc.attach(fill, Parent::Node(group), 2).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let value = export(&doc).unwrap();
+        let masks = value["layers"][0]["masksProperties"].as_array().unwrap();
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0]["nm"], "Mask");
+        assert_eq!(masks[0]["mode"], "s");
+        assert_eq!(masks[0]["inv"], true);
+        assert!(masks[0]["pt"]["a"] == 0);
+    }
+
+    #[test]
+    fn import_layer_masks_properties() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{
+                "ty": 4,
+                "ind": 1,
+                "nm": "Masked",
+                "ks": {},
+                "masksProperties": [{
+                    "nm": "Mask 1",
+                    "mode": "s",
+                    "inv": true,
+                    "o": { "a": 0, "k": 100 },
+                    "x": { "a": 0, "k": 0 },
+                    "pt": {
+                        "a": 0,
+                        "k": {
+                            "c": true,
+                            "v": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                            "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "o": [[0, 0], [0, 0], [0, 0], [0, 0]]
+                        }
+                    }
+                }],
+                "shapes": []
+            }]
+        });
+
+        let document = import(&lottie).unwrap();
+        let layer = document.compositions[document.main].children[0];
+        let children = &document.nodes[layer].children;
+        assert!(
+            children.iter().any(|&id| {
+                matches!(
+                    &document.nodes[id].kind,
+                    NodeKind::Mask(MaskProps { inverted: true, .. })
+                )
+            }),
+            "inverted mask must import as Mask with inverted=true"
         );
     }
 }

@@ -4,8 +4,8 @@ use glam::DVec2;
 use renamite_animation::{Animated, AnimatedTransform, Frame, FrameRate};
 use renamite_model::{
     AnimatedDash, Asset, BlendMode, Color, CompId, Composition, Document, FillRule, Gradient,
-    GradientKind, ImageAsset, LayerProps, ModifierKind, Node, NodeId, NodeKind, Parent, ShapeKind,
-    StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
+    GradientKind, ImageAsset, LayerProps, MaskProps, ModifierKind, Node, NodeId, NodeKind, Parent,
+    ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
 };
 use serde_json::Value;
 
@@ -153,24 +153,31 @@ impl Importer {
             node.opacity =
                 import_scalar(transform.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
         }
-        let children = layer
-            .get("shapes")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, item)| {
-                self.import_shape_item(item, &format!("{path}/shapes/{index}"))
-            })
-            .collect();
+        let mut children: Vec<ImportTree> = Vec::new();
+        // Lottie masks apply to the layer's own shapes, so prepend them as
+        // sibling masks in document order (they clip the content after them).
+        if let Some(masks) = layer.get("masksProperties").and_then(Value::as_array) {
+            for (index, mask) in masks.iter().enumerate() {
+                if let Some(tree) = self.import_mask(mask, &format!("{path}/masks/{index}")) {
+                    children.push(tree);
+                }
+            }
+        }
+        children.extend(
+            layer
+                .get("shapes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    self.import_shape_item(item, &format!("{path}/shapes/{index}"))
+                }),
+        );
         Some(ImportTree { node, children })
     }
 
-    fn import_image_layer(
-        &mut self,
-        layer: &Value,
-        path: &str,
-    ) -> Result<ImportTree, LottieError> {
+    fn import_image_layer(&mut self, layer: &Value, path: &str) -> Result<ImportTree, LottieError> {
         let reference = layer
             .get("refId")
             .and_then(Value::as_str)
@@ -179,10 +186,7 @@ impl Importer {
         let asset = self.ensure_image_asset(reference)?;
 
         let mut node = Node::new(
-            layer
-                .get("nm")
-                .and_then(Value::as_str)
-                .unwrap_or("Image"),
+            layer.get("nm").and_then(Value::as_str).unwrap_or("Image"),
             NodeKind::Image(asset),
         );
 
@@ -190,12 +194,47 @@ impl Importer {
 
         if let Some(transform) = layer.get("ks") {
             node.transform = import_transform(transform);
-            node.opacity =
-                import_scalar(transform.get("o").unwrap_or(&Value::Null), 0.01, 1.0);
+            node.opacity = import_scalar(transform.get("o").unwrap_or(&Value::Null), 0.01, 1.0);
         }
 
-        let _ = path;
-        Ok(ImportTree::leaf(node))
+        let mut children = Vec::new();
+        if let Some(masks) = layer.get("masksProperties").and_then(Value::as_array) {
+            for (index, mask) in masks.iter().enumerate() {
+                if let Some(tree) = self.import_mask(mask, &format!("{path}/masks/{index}")) {
+                    children.push(tree);
+                }
+            }
+        }
+        if children.is_empty() {
+            Ok(ImportTree::leaf(node))
+        } else {
+            Ok(ImportTree { node, children })
+        }
+    }
+
+    fn import_mask(&mut self, mask: &Value, path: &str) -> Option<ImportTree> {
+        let mode = mask.get("mode").and_then(Value::as_str);
+        if let Some(mode) = mode
+            && mode != "a"
+            && mode != "s"
+        {
+            self.warnings.push(LottieWarning::new(
+                path.to_owned(),
+                format!("mask mode `{mode}` not supported; importing as add/invert best-effort"),
+            ));
+        }
+
+        let pt = mask.get("pt").unwrap_or(&Value::Null);
+        let shape = ShapeKind::Path(import_path(pt));
+
+        let inverted =
+            mask.get("inv").and_then(Value::as_bool).unwrap_or(false) || mode == Some("s");
+
+        let tree = ImportTree::leaf(Node::new(
+            mask.get("nm").and_then(Value::as_str).unwrap_or("Mask"),
+            NodeKind::Mask(MaskProps { inverted, shape }),
+        ));
+        Some(tree)
     }
 
     /// Find or create the model `ImageAsset` for a Lottie `assets` entry,

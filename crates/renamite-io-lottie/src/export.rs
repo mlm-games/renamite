@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use renamite_animation::{Animated, AnimatedTransform};
 use renamite_model::{
-    BlendMode, CompId, Composition, Document, FillRule, GradientKind, LayerProps, ModifierKind,
-    Node, NodeId, NodeKind, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
-    TimeMap, TrimMode,
+    BlendMode, CompId, Composition, Document, FillRule, GradientKind, LayerProps, MaskProps,
+    ModifierKind, Node, NodeId, NodeKind, Overrides, ShapeKind, StarKind, StrokeCap, StrokeJoin,
+    StyleKind, StylePaint, TimeMap, TrimMode,
 };
 use serde_json::{Value, json};
 
@@ -191,11 +191,7 @@ impl Exporter<'_> {
         _composition: &Composition,
         index: u32,
     ) -> Value {
-        let shapes = node
-            .children
-            .iter()
-            .flat_map(|child| self.export_node_item(*child, None))
-            .collect();
+        let (shapes, masks) = self.split_layer_children(node);
         let mut layer = self.shape_layer(
             node.name.clone(),
             transform_json(&node.transform, &node.opacity),
@@ -206,6 +202,9 @@ impl Exporter<'_> {
             props.time_stretch,
             blend_to_lottie(props.blend),
         );
+        if !masks.is_empty() {
+            layer["masksProperties"] = Value::Array(masks);
+        }
         layer["ind"] = json!(index);
         layer["hd"] = json!(!node.visible);
         let _ = id;
@@ -219,11 +218,7 @@ impl Exporter<'_> {
         composition: &Composition,
         index: u32,
     ) -> Value {
-        let shapes = node
-            .children
-            .iter()
-            .flat_map(|child| self.export_node_item(*child, None))
-            .collect();
+        let (shapes, masks) = self.split_layer_children(node);
         let mut layer = self.shape_layer(
             node.name.clone(),
             transform_json(&node.transform, &node.opacity),
@@ -234,9 +229,60 @@ impl Exporter<'_> {
             1.0,
             0,
         );
+        if !masks.is_empty() {
+            layer["masksProperties"] = Value::Array(masks);
+        }
         layer["ind"] = json!(index);
         layer["hd"] = json!(!node.visible);
         layer
+    }
+
+    fn split_layer_children(&mut self, node: &Node) -> (Vec<Value>, Vec<Value>) {
+        let mut shapes = Vec::new();
+        let mut masks = Vec::new();
+        for &child in &node.children {
+            if let Some(child_node) = self.document.nodes.get(child) {
+                match &child_node.kind {
+                    NodeKind::Mask(mask) => {
+                        masks.push(self.export_mask(child, child_node, mask));
+                    }
+                    _ => {
+                        shapes.extend(self.export_node_item(child, None));
+                    }
+                }
+            }
+        }
+        (shapes, masks)
+    }
+
+    fn export_mask(&mut self, id: NodeId, node: &Node, mask: &MaskProps) -> Value {
+        let path_property = match &mask.shape {
+            ShapeKind::Path(path) => export_path(path),
+            other => {
+                let baked = renamite_model::shape_path(
+                    other,
+                    NodeId::default(),
+                    0.0,
+                    &Overrides::default(),
+                );
+                self.warnings.push(LottieWarning::new(
+                    format!("node/{id:?}"),
+                    "mask shape baked to static path for Lottie export",
+                ));
+                export_path(&Animated::new(
+                    renamite_geometry::VectorPath::from_bez_path(&baked),
+                ))
+            }
+        };
+
+        json!({
+            "nm": node.name,
+            "mode": if mask.inverted { "s" } else { "a" },
+            "inv": mask.inverted,
+            "o": { "a": 0, "k": 100 },
+            "x": { "a": 0, "k": 0 },
+            "pt": path_property,
+        })
     }
 
     fn export_precomp_layer(
@@ -1009,16 +1055,16 @@ mod tests {
 
         let mut doc = Document::empty();
         let comp = doc.main;
-        let asset = doc.assets.insert(renamite_model::Asset::Image(
-            renamite_model::ImageAsset {
+        let asset = doc
+            .assets
+            .insert(renamite_model::Asset::Image(renamite_model::ImageAsset {
                 name: "px.png".into(),
                 mime: "image/png".into(),
                 bytes: vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3],
                 width: 4,
                 height: 3,
                 srgb: true,
-            },
-        ));
+            }));
         doc.asset_order.push(asset);
         let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
@@ -1037,8 +1083,9 @@ mod tests {
 
         let uri = asset_entry["p"].as_str().unwrap();
         let encoded = uri.strip_prefix("data:image/png;base64,").unwrap();
-        let decoded =
-            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
         assert_eq!(decoded, vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     }
 
@@ -1047,16 +1094,16 @@ mod tests {
         let mut doc = Document::empty();
         let comp = doc.main;
         let bytes = vec![0x89, 0x50, 0x4e, 0x47, 9, 9, 9, 9];
-        let asset = doc.assets.insert(renamite_model::Asset::Image(
-            renamite_model::ImageAsset {
+        let asset = doc
+            .assets
+            .insert(renamite_model::Asset::Image(renamite_model::ImageAsset {
                 name: "px.png".into(),
                 mime: "image/png".into(),
                 bytes: bytes.clone(),
                 width: 7,
                 height: 5,
                 srgb: true,
-            },
-        ));
+            }));
         doc.asset_order.push(asset);
         let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
@@ -1064,9 +1111,10 @@ mod tests {
         let json = crate::export(&doc).unwrap();
         let imported = crate::import(&json).unwrap();
 
-        let imported_image = imported.asset_order.iter().find_map(|id| {
-            imported.image_asset(*id)
-        });
+        let imported_image = imported
+            .asset_order
+            .iter()
+            .find_map(|id| imported.image_asset(*id));
         assert!(imported_image.is_some());
         let imported_image = imported_image.unwrap();
         assert_eq!(imported_image.width, 7);
@@ -1074,8 +1122,11 @@ mod tests {
         assert_eq!(imported_image.mime, "image/png");
         assert_eq!(imported_image.bytes, bytes);
 
-        assert!(imported.nodes.values().any(|node| {
-            matches!(node.kind, NodeKind::Image(_))
-        }));
+        assert!(
+            imported
+                .nodes
+                .values()
+                .any(|node| { matches!(node.kind, NodeKind::Image(_)) })
+        );
     }
 }
