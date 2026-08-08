@@ -795,6 +795,12 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
                 "sa": export_scalar(&transform.skew_axis, 1.0)
             }
         })),
+        ModifierKind::OffsetPath { amount } => Some(json!({
+            "ty": "op",
+            "nm": name,
+            "a": export_scalar(amount, 1.0),
+            "ml": 4
+        })),
         _ => None,
     }
 }

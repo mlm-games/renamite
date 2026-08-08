@@ -9,7 +9,7 @@ use kurbo::{Affine, BezPath, ParamCurveNearest, Point, Shape as KurboShape};
 use renamite_animation::{
     Angle, Animated, AnimatedTransform, EasingHandle, Frame, Interpolation, Tween,
 };
-use renamite_geometry::{VectorPath, dash_bez_path};
+use renamite_geometry::{VectorPath, dash_bez_path, offset_bez_path};
 pub use renamite_text::TextAlign;
 use serde::de::{Deserializer, Error as DeError, Visitor};
 use serde::{Deserialize, Serialize};
@@ -1418,7 +1418,17 @@ fn apply_modifier(
                 }
             }
         }
-        // v0.4: OffsetPath, ZigZag, InflateDeflate - passthrough until then.
+        ModifierKind::OffsetPath { amount } => {
+            let amount = ov_f64(ov, id, "offset.amount", amount.value_at(frame));
+            if amount.abs() > 1e-9 {
+                for entry in paths.iter_mut() {
+                    if let Some(offset) = offset_bez_path(&entry.path, amount, SHAPE_TOL) {
+                        entry.path = offset;
+                    }
+                }
+            }
+        }
+        // v0.4: ZigZag, InflateDeflate - passthrough until then.
         _ => {}
     }
 }
@@ -3386,6 +3396,79 @@ mod tests {
             doc.value_at(id, &PropPath::new("repeater.end_opacity"), 0.0)
                 .unwrap(),
             Value::F64(0.5),
+        );
+    }
+
+    #[test]
+    fn offset_path_expands_rect_bounds() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+        let rect = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(100.0, 100.0)),
+                size: Animated::new(DVec2::new(100.0, 100.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+
+        let offset = doc.create_node(Node::new(
+            "op",
+            NodeKind::Modifier(ModifierKind::OffsetPath {
+                amount: Animated::new(10.0),
+            }),
+        ));
+
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        ));
+
+        doc.attach(rect, Parent::Node(group), 0).unwrap();
+        doc.attach(offset, Parent::Node(group), 1).unwrap();
+        doc.attach(fill, Parent::Node(group), 2).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        let bb = scene.items[0].path.bounding_box();
+
+        assert!(bb.width() > 118.0, "bb = {:?}", bb);
+        assert!(bb.height() > 118.0, "bb = {:?}", bb);
+    }
+
+    #[test]
+    fn offset_amount_property_is_addressable() {
+        let mut doc = Document::empty();
+
+        let id = doc.create_node(Node::new(
+            "op",
+            NodeKind::Modifier(ModifierKind::OffsetPath {
+                amount: Animated::new(5.0),
+            }),
+        ));
+
+        doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("offset.amount"), 0.0).unwrap(),
+            Value::F64(5.0),
+        );
+
+        doc.set_static(
+            id,
+            &PropPath::new("offset.amount"),
+            &Value::F64(12.0),
+        )
+        .unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("offset.amount"), 0.0).unwrap(),
+            Value::F64(12.0),
         );
     }
 }

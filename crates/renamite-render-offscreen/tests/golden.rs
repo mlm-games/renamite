@@ -773,3 +773,53 @@ fn golden_masked_image() {
         &render_doc_images(&mut gpu, &fixture_masked_image(), 0.0),
     );
 }
+
+/// Rect offset outward 24 units before the fill - pins the flattened-polyline
+/// offset (miter corners, winding-aware expansion) through the modifier
+/// pipeline to the tessellator.
+fn fixture_offset_path() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let rect = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(120.0, 120.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+
+    let offset = doc.create_node(Node::new(
+        "op",
+        NodeKind::Modifier(ModifierKind::OffsetPath {
+            amount: Animated::new(24.0),
+        }),
+    ));
+
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.2, 0.6, 0.9, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+
+    doc.attach(rect, Parent::Node(group), 0).unwrap();
+    doc.attach(offset, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+    doc
+}
+
+#[test]
+fn golden_offset_path() {
+    let Some(mut gpu) = gpu() else { return };
+
+    check_golden(
+        "offset_path",
+        &render_doc(&mut gpu, &fixture_offset_path(), 0.0),
+    );
+}

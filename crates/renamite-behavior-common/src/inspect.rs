@@ -320,6 +320,18 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 ));
                 d.push(pd("Repeater", "End opacity", "repeater.end_opacity", f01()));
             }
+            ModifierKind::OffsetPath { .. } => {
+                d.push(pd(
+                    "Offset Path",
+                    "Amount",
+                    "offset.amount",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
             _ => {}
         },
         NodeKind::Mask(mask) => {

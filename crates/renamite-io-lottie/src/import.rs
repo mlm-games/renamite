@@ -585,6 +585,16 @@ impl Importer {
                     radius: import_scalar(item.get("r").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
+            "op" => Some(ImportTree::leaf(Node::new(
+                item_name(item, "Offset Path"),
+                NodeKind::Modifier(ModifierKind::OffsetPath {
+                    amount: import_scalar(
+                        item.get("a").unwrap_or(&Value::Null),
+                        1.0,
+                        0.0,
+                    ),
+                }),
+            ))),
             "rp" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Repeater"),
                 NodeKind::Modifier(ModifierKind::Repeater {

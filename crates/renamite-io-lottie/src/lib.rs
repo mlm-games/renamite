@@ -8,7 +8,7 @@
 //! - Rectangle, ellipse, path, star, and polygon shapes
 //! - Solid and gradient fills/strokes
 //! - Stroke dashes
-//! - Trim Path, Round Corners, and Repeater
+//! - Trim Path, Round Corners, Offset Path, and Repeater
 //! - Static and keyframed scalar/vector/color/path/gradient properties
 //! - Hold, linear, and cubic-bezier interpolation
 //!
@@ -623,6 +623,60 @@ mod tests {
         assert_eq!(masks[0]["mode"], "s");
         assert_eq!(masks[0]["inv"], true);
         assert!(masks[0]["pt"]["a"] == 0);
+    }
+
+    #[test]
+    fn offset_path_round_trips_lottie() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{
+                "ty": 4,
+                "ind": 1,
+                "nm": "Offset",
+                "ks": {},
+                "shapes": [
+                    {
+                        "ty": "rc",
+                        "nm": "Rect",
+                        "p": { "a": 0, "k": [0, 0] },
+                        "s": { "a": 0, "k": [20, 20] },
+                        "r": { "a": 0, "k": 0 }
+                    },
+                    {
+                        "ty": "op",
+                        "nm": "Offset Path",
+                        "a": { "a": 0, "k": 8 },
+                        "ml": 4
+                    },
+                    {
+                        "ty": "fl",
+                        "nm": "Fill",
+                        "c": { "a": 0, "k": [1, 1, 1, 1] },
+                        "o": { "a": 0, "k": 100 }
+                    }
+                ]
+            }]
+        });
+
+        let doc = import(&lottie).unwrap();
+
+        assert!(doc.nodes.values().any(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Modifier(ModifierKind::OffsetPath { .. })
+            )
+        }));
+
+        let exported = export(&doc).unwrap();
+        let text = serde_json::to_string(&exported).unwrap();
+
+        assert!(text.contains("\"ty\":\"op\""));
+        assert!(text.contains("\"Offset Path\""));
     }
 
     #[test]

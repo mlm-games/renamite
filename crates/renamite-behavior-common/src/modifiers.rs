@@ -60,6 +60,26 @@ pub fn cmd_add_round_corners_after(
     })
 }
 
+/// Append an Offset Path modifier as a sibling immediately after `after`.
+pub fn cmd_add_offset_path_after(
+    doc: &Document,
+    after: NodeId,
+    amount: f64,
+) -> Option<EditorCommand> {
+    let (parent, index) = doc.locate(after)?;
+
+    Some(EditorCommand::InsertNode {
+        parent,
+        index: index + 1,
+        tree: NodeTree::leaf(Node::new(
+            "Offset Path",
+            NodeKind::Modifier(ModifierKind::OffsetPath {
+                amount: Animated::new(amount),
+            }),
+        )),
+    })
+}
+
 /// Append a Repeater as a sibling immediately after `after`. Defaults to
 /// 3 copies stepped +50px in x with no opacity falloff.
 pub fn cmd_add_repeater_after(doc: &Document, after: NodeId) -> Option<EditorCommand> {

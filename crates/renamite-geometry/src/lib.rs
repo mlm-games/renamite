@@ -479,6 +479,312 @@ pub fn boolean_op(_a: &VectorPath, _b: &VectorPath, _op: BooleanOp) -> Vec<Vecto
     Vec::new()
 }
 
+/// Offset a path by `amount` in document units.
+///
+/// Positive amount expands closed contours outward based on their winding.
+/// Negative amount insets closed contours. Open contours are shifted to their
+/// left side for positive amount.
+///
+/// This is a deterministic flattened-polyline offset. Exact cubic offset curves
+/// are not generally cubic Béziers (v1).
+pub fn offset_bez_path(path: &BezPath, amount: f64, tolerance: f64) -> Option<BezPath> {
+    if !amount.is_finite() {
+        return None;
+    }
+
+    if amount.abs() <= 1e-9 {
+        return Some(path.clone());
+    }
+
+    let contours = flatten_to_contours(path, tolerance.max(0.01));
+    if contours.is_empty() {
+        return None;
+    }
+
+    let mut out = BezPath::new();
+
+    for contour in contours {
+        let offset = offset_contour(&contour.points, contour.closed, amount)?;
+
+        if offset.len() < 2 {
+            continue;
+        }
+
+        out.move_to(pt(offset[0]));
+
+        for p in offset.iter().skip(1) {
+            out.line_to(pt(*p));
+        }
+
+        if contour.closed {
+            out.close_path();
+        }
+    }
+
+    if out.elements().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FlatContour {
+    points: Vec<DVec2>,
+    closed: bool,
+}
+
+fn flatten_to_contours(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {
+    use kurbo::{ParamCurve, ParamCurveArclen};
+
+    let mut contours = Vec::new();
+    let mut current: Vec<DVec2> = Vec::new();
+    let mut cursor = DVec2::ZERO;
+    let mut start = DVec2::ZERO;
+
+    let flush = |contours: &mut Vec<FlatContour>, current: &mut Vec<DVec2>, closed: bool| {
+        dedupe_points(current);
+
+        if current.len() >= 2 {
+            contours.push(FlatContour {
+                points: std::mem::take(current),
+                closed,
+            });
+        } else {
+            current.clear();
+        }
+    };
+
+    for element in path.elements() {
+        match *element {
+            PathEl::MoveTo(p) => {
+                flush(&mut contours, &mut current, false);
+                cursor = DVec2::new(p.x, p.y);
+                start = cursor;
+                current.push(cursor);
+            }
+
+            PathEl::LineTo(p) => {
+                cursor = DVec2::new(p.x, p.y);
+                current.push(cursor);
+            }
+
+            PathEl::QuadTo(c, p) => {
+                let seg = kurbo::QuadBez::new(pt(cursor), c, p);
+
+                let len = seg.arclen(tolerance);
+                let steps = (len / tolerance).ceil().max(2.0) as usize;
+
+                for i in 1..=steps {
+                    let t = i as f64 / steps as f64;
+                    let q = seg.eval(t);
+                    current.push(DVec2::new(q.x, q.y));
+                }
+
+                cursor = DVec2::new(p.x, p.y);
+            }
+
+            PathEl::CurveTo(c1, c2, p) => {
+                let seg = CubicBez::new(pt(cursor), c1, c2, p);
+
+                let len = seg.arclen(tolerance);
+                let steps = (len / tolerance).ceil().max(3.0) as usize;
+
+                for i in 1..=steps {
+                    let t = i as f64 / steps as f64;
+                    let q = seg.eval(t);
+                    current.push(DVec2::new(q.x, q.y));
+                }
+
+                cursor = DVec2::new(p.x, p.y);
+            }
+
+            PathEl::ClosePath => {
+                if (cursor - start).length_squared() > 1e-12 {
+                    current.push(start);
+                }
+
+                // Remove duplicated close point. We use ClosePath instead.
+                if current.len() >= 2
+                    && (current[0] - *current.last().unwrap()).length_squared() <= 1e-12
+                {
+                    current.pop();
+                }
+
+                flush(&mut contours, &mut current, true);
+                cursor = start;
+            }
+        }
+    }
+
+    flush(&mut contours, &mut current, false);
+
+    contours
+}
+
+fn dedupe_points(points: &mut Vec<DVec2>) {
+    let mut out = Vec::with_capacity(points.len());
+
+    for p in points.drain(..) {
+        if out
+            .last()
+            .map(|last: &DVec2| (*last - p).length_squared() > 1e-12)
+            .unwrap_or(true)
+        {
+            out.push(p);
+        }
+    }
+
+    *points = out;
+}
+
+fn offset_contour(points: &[DVec2], closed: bool, amount: f64) -> Option<Vec<DVec2>> {
+    if points.len() < 2 {
+        return None;
+    }
+
+    if closed && points.len() < 3 {
+        return None;
+    }
+
+    if closed {
+        offset_closed_contour(points, amount)
+    } else {
+        offset_open_contour(points, amount)
+    }
+}
+
+fn offset_open_contour(points: &[DVec2], amount: f64) -> Option<Vec<DVec2>> {
+    let n = points.len();
+
+    let mut out = Vec::with_capacity(n);
+
+    for i in 0..n {
+        if i == 0 {
+            let dir = unit(points[1] - points[0])?;
+            out.push(points[0] + left_normal(dir) * amount);
+        } else if i == n - 1 {
+            let dir = unit(points[n - 1] - points[n - 2])?;
+            out.push(points[n - 1] + left_normal(dir) * amount);
+        } else {
+            let prev = unit(points[i] - points[i - 1])?;
+            let next = unit(points[i + 1] - points[i])?;
+            let n0 = left_normal(prev);
+            let n1 = left_normal(next);
+            out.push(join_point(points[i], prev, next, n0, n1, amount));
+        }
+    }
+
+    Some(out)
+}
+
+fn offset_closed_contour(points: &[DVec2], amount: f64) -> Option<Vec<DVec2>> {
+    let n = points.len();
+    let area = signed_area(points);
+
+    // For a positive shoelace winding, the contour interior is on the left
+    // side of edges, so outward is the right normal. For negative winding,
+    // outward is the left normal.
+    let outward_right = area >= 0.0;
+
+    let mut out = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let prev_i = (i + n - 1) % n;
+        let next_i = (i + 1) % n;
+
+        let prev_dir = unit(points[i] - points[prev_i])?;
+        let next_dir = unit(points[next_i] - points[i])?;
+
+        let n0 = if outward_right {
+            right_normal(prev_dir)
+        } else {
+            left_normal(prev_dir)
+        };
+
+        let n1 = if outward_right {
+            right_normal(next_dir)
+        } else {
+            left_normal(next_dir)
+        };
+
+        out.push(join_point(points[i], prev_dir, next_dir, n0, n1, amount));
+    }
+
+    Some(out)
+}
+
+fn signed_area(points: &[DVec2]) -> f64 {
+    let mut area = 0.0;
+
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        area += a.x * b.y - b.x * a.y;
+    }
+
+    area * 0.5
+}
+
+fn unit(v: DVec2) -> Option<DVec2> {
+    let len = v.length();
+
+    if len <= 1e-12 || !len.is_finite() {
+        None
+    } else {
+        Some(v / len)
+    }
+}
+
+fn left_normal(v: DVec2) -> DVec2 {
+    DVec2::new(-v.y, v.x)
+}
+
+fn right_normal(v: DVec2) -> DVec2 {
+    DVec2::new(v.y, -v.x)
+}
+
+fn join_point(
+    p: DVec2,
+    prev_dir: DVec2,
+    next_dir: DVec2,
+    prev_normal: DVec2,
+    next_normal: DVec2,
+    amount: f64,
+) -> DVec2 {
+    let a0 = p + prev_normal * amount;
+    let a1 = p + next_normal * amount;
+
+    match line_intersection(a0, prev_dir, a1, next_dir) {
+        Some(miter) => {
+            let miter_len = (miter - p).length();
+            let limit = amount.abs() * 8.0 + 1e-6;
+
+            if miter_len.is_finite() && miter_len <= limit {
+                miter
+            } else {
+                // Bevel-ish fallback: average the two offset endpoints.
+                (a0 + a1) * 0.5
+            }
+        }
+
+        None => (a0 + a1) * 0.5,
+    }
+}
+
+fn line_intersection(p: DVec2, r: DVec2, q: DVec2, s: DVec2) -> Option<DVec2> {
+    let cross = r.x * s.y - r.y * s.x;
+
+    if cross.abs() <= 1e-12 {
+        return None;
+    }
+
+    let qp = q - p;
+    let t = (qp.x * s.y - qp.y * s.x) / cross;
+
+    Some(p + r * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,5 +1010,70 @@ mod dash_tests {
         assert!(dash_bez_path(&line(10.0), &[-1.0, 2.0], 0.0).is_none());
         assert!(dash_bez_path(&line(10.0), &[f64::NAN, 2.0], 0.0).is_none());
         assert!(dash_bez_path(&line(10.0), &[1.0, 2.0], f64::NAN).is_none());
+    }
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+
+    fn square_path() -> BezPath {
+        Rect::new(0.0, 0.0, 100.0, 100.0).to_path(0.1)
+    }
+
+    fn line_path() -> BezPath {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+        path
+    }
+
+    #[test]
+    fn positive_offset_expands_square() {
+        let out = offset_bez_path(&square_path(), 10.0, 0.5).unwrap();
+        let bb = out.bounding_box();
+
+        assert!(bb.x0 < -9.0, "x0 = {}", bb.x0);
+        assert!(bb.y0 < -9.0, "y0 = {}", bb.y0);
+        assert!(bb.x1 > 109.0, "x1 = {}", bb.x1);
+        assert!(bb.y1 > 109.0, "y1 = {}", bb.y1);
+    }
+
+    #[test]
+    fn negative_offset_insets_square() {
+        let out = offset_bez_path(&square_path(), -10.0, 0.5).unwrap();
+        let bb = out.bounding_box();
+
+        assert!(bb.x0 > 9.0, "x0 = {}", bb.x0);
+        assert!(bb.y0 > 9.0, "y0 = {}", bb.y0);
+        assert!(bb.x1 < 91.0, "x1 = {}", bb.x1);
+        assert!(bb.y1 < 91.0, "y1 = {}", bb.y1);
+    }
+
+    #[test]
+    fn offset_preserves_closedness() {
+        let out = offset_bez_path(&square_path(), 5.0, 0.5).unwrap();
+
+        assert!(matches!(out.elements().last(), Some(PathEl::ClosePath)));
+    }
+
+    #[test]
+    fn open_line_offsets_left_for_positive_amount() {
+        let out = offset_bez_path(&line_path(), 10.0, 0.5).unwrap();
+        let bb = out.bounding_box();
+
+        assert!(bb.y0 > 9.0 && bb.y1 > 9.0, "bb = {:?}", bb);
+    }
+
+    #[test]
+    fn zero_offset_is_identity() {
+        let path = square_path();
+        let out = offset_bez_path(&path, 0.0, 0.5).unwrap();
+        assert_eq!(out.elements(), path.elements());
+    }
+
+    #[test]
+    fn invalid_offset_returns_none() {
+        assert!(offset_bez_path(&square_path(), f64::NAN, 0.5).is_none());
     }
 }

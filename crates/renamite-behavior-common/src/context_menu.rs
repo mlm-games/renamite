@@ -43,6 +43,7 @@ pub enum MenuAction {
     BringToFront,
     SendToBack,
     AddTrimPath,
+    AddOffsetPath,
     AddRoundCorners,
     AddRepeater,
     EditPath,
@@ -130,6 +131,7 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
         label: "Add modifier",
         children: vec![
             action(MenuAction::AddTrimPath, "Trim Path", !locked),
+            action(MenuAction::AddOffsetPath, "Offset Path", !locked),
             action(MenuAction::AddRoundCorners, "Round Corners", !locked),
             action(MenuAction::AddRepeater, "Repeater", !locked),
         ],
@@ -198,6 +200,11 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
                 action(
                     MenuAction::AddTrimPath,
                     "Trim Path",
+                    !any_locked && single.is_some(),
+                ),
+                action(
+                    MenuAction::AddOffsetPath,
+                    "Offset Path",
                     !any_locked && single.is_some(),
                 ),
                 action(
@@ -297,6 +304,7 @@ enum Reorder {
 #[derive(Clone, Copy)]
 enum ModKind {
     Trim,
+    Offset,
     Round,
     Repeater,
 }
@@ -333,6 +341,7 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
         MenuAction::Ungroup => ungroup(ctx),
 
         MenuAction::AddTrimPath => add_mod(ctx, ModKind::Trim),
+        MenuAction::AddOffsetPath => add_mod(ctx, ModKind::Offset),
         MenuAction::AddRoundCorners => add_mod(ctx, ModKind::Round),
         MenuAction::AddRepeater => add_mod(ctx, ModKind::Repeater),
 
@@ -740,6 +749,7 @@ fn add_mod(ctx: &MenuContext, kind: ModKind) -> Vec<ToolOutput> {
     };
     let cmd = match kind {
         ModKind::Trim => crate::modifiers::cmd_add_trim_path_after(ctx.doc, target),
+        ModKind::Offset => crate::modifiers::cmd_add_offset_path_after(ctx.doc, target, 10.0),
         ModKind::Round => crate::modifiers::cmd_add_round_corners_after(ctx.doc, target, 10.0),
         ModKind::Repeater => crate::modifiers::cmd_add_repeater_after(ctx.doc, target),
     };
