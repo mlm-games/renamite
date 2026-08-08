@@ -52,6 +52,8 @@ smallvec = "1.15"
 proptest = "1"
 thiserror = "2"
 anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+base64 = "0.22"
 tracing = "0.1"
 bytemuck = { version = "1.25", features = ["derive"] }
 rustc-hash = "2.1"
@@ -97,6 +99,18 @@ git = "https://github.com/GraphiteEditor/Graphite"
 rev = "<SAME_PIN>"
 default-features = false
 features = ["serde"]
+
+[patch.crates-io]
+repose-core = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-core" }
+repose-canvas = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-canvas" }
+repose-ui = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-ui" }
+repose-material = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-material" }
+repose-docking = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-docking" }
+repose-platform = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-platform" }
+repose-render-wgpu = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-render-wgpu" }
+repose-text = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-text" }
+repose-app = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-app" }
+repose-tree = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-tree" }
 
 [profile.release]
 lto = "thin"

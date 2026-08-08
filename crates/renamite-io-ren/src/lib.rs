@@ -66,6 +66,7 @@ impl RenFile {
 
     /// Repair invariants after parsing (legacy files predate order vecs).
     pub fn normalize(&mut self) {
+        self.document.normalize_assets();
         self.clip_order.retain(|id| self.clips.contains_key(*id));
         let seen: HashSet<_> = self.clip_order.iter().copied().collect();
         for id in self.clips.keys() {

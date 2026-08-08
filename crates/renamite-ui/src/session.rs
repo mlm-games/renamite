@@ -52,6 +52,8 @@ pub struct Session {
     pub keys: TimelineKeyframeBehavior,
     pub scrub: TimelineScrubBehavior,
     pub renderer: SceneRenderer,
+    /// Live Repose render context used to upload image assets for the viewport.
+    pub render_context: repose_core::RenderContext,
     pub last_tick: Instant,
     pub revision: u64,
     /// Layers panel: groups whose children are shown (view state, not undoable).
@@ -114,6 +116,8 @@ pub enum PendingFileOp {
     Exported,
     /// Raw font bytes (`.ttf`/`.otf`) read by the Import Font picker.
     ImportFontDone { name: String, bytes: Vec<u8> },
+    /// A decoded image asset read by the Import Image picker.
+    ImportImageDone { asset: renamite_model::ImageAsset },
     /// An async file op failed; surface the message.
     Failed { message: String },
 }
@@ -181,6 +185,15 @@ pub enum ContextMenuSource {
 
 impl Session {
     pub fn new(file: RenFile) -> Self {
+        Self::with_render_context(file, repose_core::RenderContext::new())
+    }
+
+    /// Full constructor; the caller supplies the live `RenderContext` used to
+    /// upload image assets for editor viewport rendering.
+    pub fn with_render_context(
+        file: RenFile,
+        render_context: repose_core::RenderContext,
+    ) -> Self {
         let engine = Engine::new(&file).expect("project");
         let range = file.document.compositions[file.document.main].range;
         Self {
@@ -205,6 +218,7 @@ impl Session {
             keys: TimelineKeyframeBehavior::default(),
             scrub: TimelineScrubBehavior::default(),
             renderer: SceneRenderer::new(),
+            render_context,
             last_tick: Instant::now(),
             revision: 0,
             expanded_layers: std::collections::HashSet::new(),
@@ -491,16 +505,38 @@ impl Session {
         &mut self,
         cmd: renamite_history::EditorCommand,
     ) -> Option<renamite_model::NodeId> {
-        let his = &mut self.history;
+        self.history_apply_full(cmd)?.created
+    }
+
+    /// Apply one command, returning the full `Applied` result (created node
+    /// and/or created asset). Surfaces the failure message in the status bar.
+    pub fn history_apply_full(
+        &mut self,
+        command: renamite_history::EditorCommand,
+    ) -> Option<renamite_history::Applied> {
+        let history = &mut self.history;
         let file = &mut self.file;
-        let mut pm = pm_from(file);
-        match his.apply(&mut pm, cmd) {
-            Ok(a) => {
+        let mut project = pm_from(file);
+
+        match history.apply(&mut project, command) {
+            Ok(applied) => {
                 self.dirty = true;
-                a.created
+                Some(applied)
             }
-            Err(_) => None,
+            Err(error) => {
+                self.status = Some(format!("Edit failed: {error}"));
+                None
+            }
         }
+    }
+
+    /// Upload/refresh the encoded bytes of every attached image asset, and
+    /// evict handles for detached assets. Call after any asset mutation.
+    pub fn sync_image_assets(&mut self) {
+        self.renderer.sync_document_images(
+            &self.file.document,
+            &self.render_context,
+        );
     }
 
     /// Import raw font bytes as a project asset (undoable). Derives the family
@@ -520,7 +556,11 @@ impl Session {
             bytes,
         });
         if self
-            .history_apply(renamite_history::EditorCommand::AddAsset { asset })
+            .history_apply(renamite_history::EditorCommand::AddAsset {
+                index: usize::MAX,
+                asset,
+                id: None,
+            })
             .is_none()
         {
             self.status = Some("Font import failed".into());
@@ -528,6 +568,31 @@ impl Session {
             return;
         }
         self.status = Some(format!("Imported font: {family}"));
+        self.bump();
+    }
+
+    /// Attach a decoded image asset to the project (undoable) and refresh the
+    /// viewport's uploaded image handles.
+    pub fn import_image(&mut self, asset: renamite_model::ImageAsset) {
+        use renamite_model::Asset;
+
+        let name = asset.name.clone();
+        let applied = self.history_apply_full(
+            renamite_history::EditorCommand::AddAsset {
+                index: usize::MAX,
+                asset: Asset::Image(asset),
+                id: None,
+            },
+        );
+
+        if applied.is_none() {
+            self.status = Some("Image import failed".into());
+            self.bump();
+            return;
+        }
+
+        self.status = Some(format!("Imported image: {name}"));
+        self.sync_image_assets();
         self.bump();
     }
 
@@ -564,6 +629,7 @@ impl Session {
         self.inspector_drag = None;
         self.viewport.fit_pending = true;
         self.dirty = false;
+        self.sync_image_assets();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
@@ -615,6 +681,9 @@ impl Session {
                 }
                 PendingFileOp::ImportFontDone { name, bytes } => {
                     self.import_font(name, bytes);
+                }
+                PendingFileOp::ImportImageDone { asset } => {
+                    self.import_image(asset);
                 }
                 PendingFileOp::Failed { message } => {
                     self.clear_pending_intent();
@@ -1158,8 +1227,12 @@ pub fn default_file() -> RenFile {
 }
 
 /// Register the playback driver once and return the shared session.
-pub fn init_session() -> Rc<RefCell<Session>> {
-    let session = remember_with_key("session", || RefCell::new(Session::new(default_file())));
+pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
+    let rc = render_context.clone();
+    let session = remember_with_key(
+        "session",
+        || RefCell::new(Session::with_render_context(default_file(), rc)),
+    );
 
     let registered = remember_state_with_key("pb_reg", || false);
     if !*registered.borrow() {

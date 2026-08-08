@@ -10,9 +10,9 @@ use renamite_animation::{Animated, EasingHandle, EasingPreset, Frame, Interpolat
 use renamite_behavior_common::ViewTransform;
 use renamite_geometry::{Anchor, VectorPath};
 use renamite_model::{
-    AnimatedDash, Color, Document, FillRule, GradientKind, GradientStop, GradientStops,
-    KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind, StrokeCap, StrokeJoin,
-    StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value, evaluate,
+    AnimatedDash, Asset, Color, Document, FillRule, GradientKind, GradientStop, GradientStops,
+    ImageAsset, KeyframeData, ModifierKind, Node, NodeKind, Parent, PropPath, ShapeKind,
+    StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign, TextNode, TrimMode, Value, evaluate,
 };
 use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::{OffscreenRenderer, fit_view};
@@ -49,6 +49,61 @@ fn render_doc(gpu: &mut OffscreenRenderer, doc: &Document, frame: f64) -> Vec<u8
     bridge.append_repose_scene(&prepared, &mut repose);
     gpu.render_png(&repose, Some([1.0, 1.0, 1.0, 1.0]))
         .expect("render")
+}
+
+/// Like `render_doc` but uploads attached image assets first so image layers
+/// resolve against their texture handles.
+fn render_doc_images(gpu: &mut OffscreenRenderer, doc: &Document, frame: f64) -> Vec<u8> {
+    gpu.sync_document_images(doc).expect("upload images");
+    render_doc(gpu, doc, frame)
+}
+
+/// A deterministic 2×2 RGBA PNG: red / green / blue / yellow.
+fn tiny_test_png() -> Vec<u8> {
+    let mut image = image::RgbaImage::new(2, 2);
+
+    image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+    image.put_pixel(1, 0, image::Rgba([0, 255, 0, 255]));
+    image.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+    image.put_pixel(1, 1, image::Rgba([255, 255, 0, 255]));
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .unwrap();
+
+    cursor.into_inner()
+}
+
+/// A 2×2 image, anchored at its center, scaled 10,000× around the composition
+/// center. All four pixels meet at the anchor, so the fit view shows the
+/// four-color quadrant seam.
+fn fixture_image_layer() -> Document {
+    let mut document = Document::empty();
+    let comp = document.main;
+
+    let asset = document.assets.insert(Asset::Image(ImageAsset {
+        name: "test.png".into(),
+        mime: "image/png".into(),
+        bytes: tiny_test_png(),
+        width: 2,
+        height: 2,
+        srgb: true,
+    }));
+
+    document.asset_order.push(asset);
+
+    let mut node = Node::new("Image", NodeKind::Image(asset));
+
+    node.transform.anchor = Animated::new(DVec2::new(1.0, 1.0));
+    node.transform.position = Animated::new(DVec2::new(256.0, 256.0));
+    node.transform.scale = Animated::new(DVec2::splat(10_000.0));
+
+    let image = document.create_node(node);
+    document.attach(image, Parent::Comp(comp), 0).unwrap();
+
+    document
 }
 
 fn check_golden(name: &str, actual_png: &[u8]) {
@@ -621,5 +676,15 @@ fn golden_repeater_falloff() {
     check_golden(
         "repeater_falloff",
         &render_doc(&mut gpu, &fixture_repeater_falloff(), 0.0),
+    );
+}
+
+#[test]
+fn golden_image_layer() {
+    let Some(mut gpu) = gpu() else { return };
+
+    check_golden(
+        "image_layer",
+        &render_doc_images(&mut gpu, &fixture_image_layer(), 0.0),
     );
 }

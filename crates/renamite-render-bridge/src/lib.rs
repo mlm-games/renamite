@@ -24,6 +24,7 @@ use repose_core::{
     BlendMode, PaintDesc, Scene as ReposeScene, SceneNode, VectorMeshData, VectorVertex,
 };
 use rustc_hash::FxHashMap;
+use slotmap::Key as _;
 use std::sync::Arc;
 
 struct SolidVertexCtor {
@@ -54,12 +55,33 @@ impl StrokeVertexConstructor<VectorVertex> for SolidVertexCtor {
 
 /// One prepared draw. `mesh` lives in world space; `transform` is the
 /// world -> screen affine applied in the vertex shader.
-pub struct PreparedDraw {
-    pub mesh: Arc<VectorMeshData>,
-    pub transform: [f32; 6],
-    pub paint: PaintDesc,
-    pub clip: Option<u32>,
-    pub blend: BlendMode,
+pub enum PreparedDraw {
+    Vector {
+        mesh: Arc<VectorMeshData>,
+        transform: [f32; 6],
+        paint: PaintDesc,
+        clip: Option<u32>,
+        blend: BlendMode,
+    },
+
+    Image {
+        handle: repose_core::ImageHandle,
+        rect: repose_core::Rect,
+        transform: repose_core::Transform,
+        tint: repose_core::Color,
+        fit: repose_core::ImageFit,
+        clip: Option<u32>,
+    },
+}
+
+/// High-bit namespace prevents collisions with normal Repose UI allocations.
+const RENAMITE_IMAGE_NAMESPACE: u64 = 0xA000_0000_0000_0000;
+
+/// Stable Repose image handle for a model `AssetId`. High bits are reserved so
+/// this never collides with handles allocated by the UI's `RenderContext`.
+pub fn image_handle(asset: renamite_model::AssetId) -> u64 {
+    RENAMITE_IMAGE_NAMESPACE
+        | (asset.data().as_ffi() & 0x0FFF_FFFF_FFFF_FFFF)
 }
 
 /// One prepared clip mask. Vertices are already mapped to screen space
@@ -78,6 +100,7 @@ pub struct SceneRenderer {
     cache: FxHashMap<u64, Arc<VectorMeshData>>,
     fill_tess: FillTessellator,
     stroke_tess: StrokeTessellator,
+    image_hashes: FxHashMap<renamite_model::AssetId, u64>,
 }
 
 impl Default for SceneRenderer {
@@ -92,6 +115,51 @@ impl SceneRenderer {
             cache: FxHashMap::default(),
             fill_tess: FillTessellator::new(),
             stroke_tess: StrokeTessellator::new(),
+            image_hashes: FxHashMap::default(),
+        }
+    }
+
+    /// Upload or refresh the encoded bytes of every attached image asset, and
+    /// evict handles whose assets were detached or garbage collected.
+    pub fn sync_document_images(
+        &mut self,
+        document: &renamite_model::Document,
+        render: &repose_core::RenderContext,
+    ) {
+        use std::hash::{Hash, Hasher};
+
+        let mut live = std::collections::HashSet::new();
+
+        for &id in &document.asset_order {
+            let Some(image) = document.image_asset(id) else {
+                continue;
+            };
+
+            live.insert(id);
+
+            let mut hasher = rustc_hash::FxHasher::default();
+            image.bytes.hash(&mut hasher);
+            image.srgb.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            if self.image_hashes.get(&id) == Some(&hash) {
+                continue;
+            }
+
+            render.set_image_encoded(image_handle(id), image.bytes.clone(), image.srgb);
+            self.image_hashes.insert(id, hash);
+        }
+
+        let stale: Vec<_> = self
+            .image_hashes
+            .keys()
+            .copied()
+            .filter(|id| !live.contains(id))
+            .collect();
+
+        for id in stale {
+            render.remove_image(image_handle(id));
+            self.image_hashes.remove(&id);
         }
     }
 
@@ -119,40 +187,163 @@ impl SceneRenderer {
 
         let mut draws = Vec::with_capacity(scene.items.len());
         for item in &scene.items {
-            if let Some(mesh) = self.mesh_for(item, tol) {
-                draws.push(PreparedDraw {
-                    mesh,
-                    transform: t,
-                    paint: PaintDesc::Solid,
-                    clip: item.clip,
-                    blend: map_blend(item.blend),
-                });
+            match &item.paint {
+                ScenePaint::Image {
+                    asset,
+                    width,
+                    height,
+                    affine,
+                    tint,
+                } => {
+                    draws.push(PreparedDraw::Image {
+                        handle: image_handle(*asset),
+                        rect: repose_core::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            w: *width as f32,
+                            h: *height as f32,
+                        },
+                        transform: Self::affine_to_repose(Self::compose_view_affine(
+                            *affine,
+                            view,
+                        )),
+                        tint: Self::model_color_to_repose(*tint, item.opacity),
+                        fit: repose_core::ImageFit::Contain,
+                        clip: item.clip,
+                    });
+                }
+
+                _ => {
+                    if let Some(mesh) = self.mesh_for(item, tol) {
+                        draws.push(PreparedDraw::Vector {
+                            mesh,
+                            transform: t,
+                            paint: PaintDesc::Solid,
+                            clip: item.clip,
+                            blend: map_blend(item.blend),
+                        });
+                    }
+                }
             }
         }
 
         PreparedScene { draws, clips }
     }
 
+    /// Compose a model local→world affine with the view transform.
+    fn compose_view_affine(model: [f64; 6], view: &ViewTransform) -> [f64; 6] {
+        [
+            model[0] * view.scale,
+            model[1] * view.scale,
+            model[2] * view.scale,
+            model[3] * view.scale,
+            model[4] * view.scale + view.offset.x,
+            model[5] * view.scale + view.offset.y,
+        ]
+    }
+
+    /// Convert a full affine to Repose's scale/rotate/translate `Transform`.
+    ///
+    /// Skew cannot be represented by Repose's `Transform`; position,
+    /// non-uniform scale, and rotation are preserved.
+    fn affine_to_repose(affine: [f64; 6]) -> repose_core::Transform {
+        let [a, b, c, d, tx, ty] = affine;
+
+        let scale_x = (a * a + b * b).sqrt();
+        let determinant = a * d - b * c;
+        let scale_y = if scale_x > 1e-12 {
+            determinant / scale_x
+        } else {
+            (c * c + d * d).sqrt()
+        };
+
+        repose_core::Transform {
+            translate_x: tx as f32,
+            translate_y: ty as f32,
+            scale_x: scale_x as f32,
+            scale_y: scale_y as f32,
+            rotate: b.atan2(a) as f32,
+            origin_x: 0.0,
+            origin_y: 0.0,
+        }
+    }
+
+    fn model_color_to_repose(
+        color: renamite_model::Color,
+        opacity: f64,
+    ) -> repose_core::Color {
+        repose_core::Color(
+            (color.r.clamp(0.0, 1.0) * 255.0) as u8,
+            (color.g.clamp(0.0, 1.0) * 255.0) as u8,
+            (color.b.clamp(0.0, 1.0) * 255.0) as u8,
+            ((color.a * opacity).clamp(0.0, 1.0) * 255.0) as u8,
+        )
+    }
+
     /// Paint a prepared scene into a Repose `DrawScope` (editor canvas).
     /// Clips become real `PushVectorClip`/`PopVectorClip` nesting.
     pub fn paint_prepared(&self, prepared: &PreparedScene, scope: &mut DrawScope) {
         for draw in &prepared.draws {
-            if let Some(ci) = draw.clip
-                && let Some(clip) = prepared.clips.get(ci as usize)
-            {
-                scope.commands.push(DrawCommand::PushVectorClip {
-                    mesh: clip.mesh.clone(),
-                });
-            }
-            scope.commands.push(DrawCommand::VectorMesh {
-                mesh: draw.mesh.clone(),
-                transform: draw.transform,
-                paint: draw.paint,
-                clip: draw.clip,
-                blend: draw.blend,
-            });
-            if draw.clip.is_some() {
-                scope.commands.push(DrawCommand::PopVectorClip);
+            match draw {
+                PreparedDraw::Vector {
+                    mesh,
+                    transform,
+                    paint,
+                    clip,
+                    blend,
+                } => {
+                    if let Some(ci) = clip
+                        && let Some(clip) = prepared.clips.get(*ci as usize)
+                    {
+                        scope.commands.push(DrawCommand::PushVectorClip {
+                            mesh: clip.mesh.clone(),
+                        });
+                    }
+                    scope.commands.push(DrawCommand::VectorMesh {
+                        mesh: mesh.clone(),
+                        transform: *transform,
+                        paint: *paint,
+                        clip: *clip,
+                        blend: *blend,
+                    });
+                    if clip.is_some() {
+                        scope.commands.push(DrawCommand::PopVectorClip);
+                    }
+                }
+
+                PreparedDraw::Image {
+                    handle,
+                    rect,
+                    transform,
+                    tint,
+                    fit,
+                    clip,
+                } => {
+                    if let Some(ci) = clip
+                        && let Some(clip) = prepared.clips.get(*ci as usize)
+                    {
+                        scope.commands.push(DrawCommand::PushVectorClip {
+                            mesh: clip.mesh.clone(),
+                        });
+                    }
+
+                    scope.commands.push(DrawCommand::PushTransform {
+                        transform: *transform,
+                    });
+
+                    scope.commands.push(DrawCommand::Image {
+                        rect: *rect,
+                        handle: *handle,
+                        tint: *tint,
+                        fit: *fit,
+                    });
+
+                    scope.commands.push(DrawCommand::PopTransform);
+
+                    if clip.is_some() {
+                        scope.commands.push(DrawCommand::PopVectorClip);
+                    }
+                }
             }
         }
     }
@@ -160,22 +351,66 @@ impl SceneRenderer {
     /// Append a prepared scene to a headless `repose_core::Scene` (export).
     pub fn append_repose_scene(&self, prepared: &PreparedScene, out: &mut ReposeScene) {
         for draw in &prepared.draws {
-            if let Some(ci) = draw.clip
-                && let Some(clip) = prepared.clips.get(ci as usize)
-            {
-                out.nodes.push(SceneNode::PushVectorClip {
-                    mesh: clip.mesh.clone(),
-                });
-            }
-            out.nodes.push(SceneNode::VectorMesh {
-                mesh: draw.mesh.clone(),
-                transform: draw.transform,
-                paint: draw.paint,
-                clip: draw.clip,
-                blend: draw.blend,
-            });
-            if draw.clip.is_some() {
-                out.nodes.push(SceneNode::PopVectorClip);
+            match draw {
+                PreparedDraw::Vector {
+                    mesh,
+                    transform,
+                    paint,
+                    clip,
+                    blend,
+                } => {
+                    if let Some(ci) = clip
+                        && let Some(clip) = prepared.clips.get(*ci as usize)
+                    {
+                        out.nodes.push(SceneNode::PushVectorClip {
+                            mesh: clip.mesh.clone(),
+                        });
+                    }
+                    out.nodes.push(SceneNode::VectorMesh {
+                        mesh: mesh.clone(),
+                        transform: *transform,
+                        paint: *paint,
+                        clip: *clip,
+                        blend: *blend,
+                    });
+                    if clip.is_some() {
+                        out.nodes.push(SceneNode::PopVectorClip);
+                    }
+                }
+
+                PreparedDraw::Image {
+                    handle,
+                    rect,
+                    transform,
+                    tint,
+                    fit,
+                    clip,
+                } => {
+                    if let Some(ci) = clip
+                        && let Some(clip) = prepared.clips.get(*ci as usize)
+                    {
+                        out.nodes.push(SceneNode::PushVectorClip {
+                            mesh: clip.mesh.clone(),
+                        });
+                    }
+
+                    out.nodes.push(SceneNode::PushTransform {
+                        transform: *transform,
+                    });
+
+                    out.nodes.push(SceneNode::Image {
+                        rect: *rect,
+                        handle: *handle,
+                        tint: *tint,
+                        fit: *fit,
+                    });
+
+                    out.nodes.push(SceneNode::PopTransform);
+
+                    if clip.is_some() {
+                        out.nodes.push(SceneNode::PopVectorClip);
+                    }
+                }
             }
         }
     }
@@ -599,6 +834,13 @@ fn hash_paint(paint: &ScenePaint, h: &mut impl std::hash::Hasher) {
             end.x.to_bits().hash(h);
             end.y.to_bits().hash(h);
             hash_stops(stops, h);
+        }
+        ScenePaint::Image { asset, width, height, .. } => {
+            3u8.hash(h);
+            use slotmap::Key;
+            asset.data().as_ffi().hash(h);
+            width.hash(h);
+            height.hash(h);
         }
     }
 }

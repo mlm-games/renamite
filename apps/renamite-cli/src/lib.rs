@@ -247,6 +247,7 @@ fn cmd_render(
 
     let mut bridge = SceneRenderer::new();
     let mut gpu = pollster::block_on(OffscreenRenderer::new(width, height, 4))?;
+    gpu.sync_document_images(&player.project.document)?;
 
     match (frame, frames) {
         (Some(f), None) => {

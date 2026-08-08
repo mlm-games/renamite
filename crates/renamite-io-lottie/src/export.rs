@@ -23,6 +23,7 @@ pub fn export_with_report(document: &Document) -> Result<LottieReport<Value>, Lo
         document,
         assets: Vec::new(),
         asset_ids: HashMap::new(),
+        image_asset_ids: HashMap::new(),
         warnings: Vec::new(),
         next_asset: 1,
     };
@@ -52,6 +53,7 @@ struct Exporter<'a> {
     document: &'a Document,
     assets: Vec<Value>,
     asset_ids: HashMap<CompId, String>,
+    image_asset_ids: HashMap<renamite_model::AssetId, String>,
     warnings: Vec<LottieWarning>,
     next_asset: usize,
 }
@@ -103,6 +105,15 @@ impl Exporter<'_> {
                         }
                         _ => unreachable!(),
                     }
+                }
+                NodeKind::Image(_) => {
+                    self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
+                    output.push(self.export_image_layer(
+                        node_id,
+                        &node,
+                        &composition,
+                        output.len() as u32 + 1,
+                    )?);
                 }
                 NodeKind::Shape(_) | NodeKind::Style(_) | NodeKind::Modifier(_) => {
                     bare_run.push(node_id);
@@ -261,6 +272,71 @@ impl Exporter<'_> {
             "hd": !node.visible,
             "renamiteNode": format!("{id:?}")
         }))
+    }
+
+    fn export_image_layer(
+        &mut self,
+        id: NodeId,
+        node: &Node,
+        parent: &Composition,
+        index: u32,
+    ) -> Result<Value, LottieError> {
+        let NodeKind::Image(asset) = node.kind else {
+            return Err(LottieError::MissingAsset(format!("{id:?}")));
+        };
+
+        let reference = self.ensure_image_asset(asset)?;
+
+        Ok(json!({
+            "ddd": 0,
+            "ind": index,
+            "ty": 2,
+            "nm": node.name,
+            "refId": reference,
+            "sr": 1,
+            "ks": transform_json(&node.transform, &node.opacity),
+            "ao": 0,
+            "ip": parent.range.0.0,
+            "op": parent.range.1.0,
+            "st": 0,
+            "bm": 0,
+            "hd": !node.visible,
+            "renamiteNode": format!("{id:?}")
+        }))
+    }
+
+    /// Find or create the Lottie `assets` entry for an image, embedding the
+    /// original encoded bytes as a base64 data URI.
+    fn ensure_image_asset(
+        &mut self,
+        asset_id: renamite_model::AssetId,
+    ) -> Result<String, LottieError> {
+        use base64::Engine as _;
+
+        if let Some(existing) = self.image_asset_ids.get(&asset_id) {
+            return Ok(existing.clone());
+        }
+
+        let image = self
+            .document
+            .image_asset(asset_id)
+            .ok_or_else(|| LottieError::MissingAsset(format!("{asset_id:?}")))?;
+
+        let id = format!("image_{}", self.next_asset);
+        self.next_asset += 1;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&image.bytes);
+
+        self.assets.push(json!({
+            "id": id,
+            "w": image.width,
+            "h": image.height,
+            "e": 1,
+            "p": format!("data:{};base64,{}", image.mime, encoded),
+        }));
+
+        self.image_asset_ids.insert(asset_id, id.clone());
+        Ok(id)
     }
 
     fn ensure_precomp_asset(&mut self, comp_id: CompId) -> Result<String, LottieError> {
@@ -925,5 +1001,81 @@ mod tests {
             assert_eq!(vs.as_array().unwrap().len(), ins.as_array().unwrap().len());
             assert_eq!(vs.as_array().unwrap().len(), outs.as_array().unwrap().len());
         }
+    }
+
+    #[test]
+    fn image_layer_export_embeds_encoded_bytes() {
+        use base64::Engine as _;
+
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let asset = doc.assets.insert(renamite_model::Asset::Image(
+            renamite_model::ImageAsset {
+                name: "px.png".into(),
+                mime: "image/png".into(),
+                bytes: vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3],
+                width: 4,
+                height: 3,
+                srgb: true,
+            },
+        ));
+        doc.asset_order.push(asset);
+        let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
+        doc.attach(image, Parent::Comp(comp), 0).unwrap();
+
+        let value = crate::export(&doc).unwrap();
+
+        let layer = &value["layers"][0];
+        assert_eq!(layer["ty"], json!(2));
+        assert_eq!(layer["refId"], json!("image_1"));
+
+        let asset_entry = &value["assets"][0];
+        assert_eq!(asset_entry["id"], json!("image_1"));
+        assert_eq!(asset_entry["w"], json!(4));
+        assert_eq!(asset_entry["h"], json!(3));
+        assert_eq!(asset_entry["e"], json!(1));
+
+        let uri = asset_entry["p"].as_str().unwrap();
+        let encoded = uri.strip_prefix("data:image/png;base64,").unwrap();
+        let decoded =
+            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(decoded, vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    }
+
+    #[test]
+    fn image_layer_round_trips_through_import() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let bytes = vec![0x89, 0x50, 0x4e, 0x47, 9, 9, 9, 9];
+        let asset = doc.assets.insert(renamite_model::Asset::Image(
+            renamite_model::ImageAsset {
+                name: "px.png".into(),
+                mime: "image/png".into(),
+                bytes: bytes.clone(),
+                width: 7,
+                height: 5,
+                srgb: true,
+            },
+        ));
+        doc.asset_order.push(asset);
+        let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
+        doc.attach(image, Parent::Comp(comp), 0).unwrap();
+
+        let json = crate::export(&doc).unwrap();
+        let imported = crate::import(&json).unwrap();
+
+        let imported_image = imported.asset_order.iter().find_map(|id| {
+            imported.image_asset(*id)
+        });
+        assert!(imported_image.is_some());
+        let imported_image = imported_image.unwrap();
+        assert_eq!(imported_image.width, 7);
+        assert_eq!(imported_image.height, 5);
+        assert_eq!(imported_image.mime, "image/png");
+        assert_eq!(imported_image.bytes, bytes);
+
+        assert!(imported.nodes.values().any(|node| {
+            matches!(node.kind, NodeKind::Image(_))
+        }));
     }
 }

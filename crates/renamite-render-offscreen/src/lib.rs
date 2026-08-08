@@ -195,6 +195,37 @@ impl OffscreenRenderer {
 
         Ok(bytes.into_inner())
     }
+
+    /// Upload the encoded bytes of an image under `handle`.
+    pub fn set_image_encoded(
+        &mut self,
+        handle: repose_core::ImageHandle,
+        bytes: &[u8],
+        srgb: bool,
+    ) -> anyhow::Result<()> {
+        self.renderer.set_image_from_bytes(handle, bytes, srgb)
+    }
+
+    /// Upload every attached image asset of `document` under its stable
+    /// Repose handle, so a later `render_*` can reference them.
+    pub fn sync_document_images(
+        &mut self,
+        document: &renamite_model::Document,
+    ) -> anyhow::Result<()> {
+        for &id in &document.asset_order {
+            let Some(image) = document.image_asset(id) else {
+                continue;
+            };
+
+            self.set_image_encoded(
+                renamite_render_bridge::image_handle(id),
+                &image.bytes,
+                image.srgb,
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Remove WGPU's 256-byte-per-row alignment padding, yielding one packed row.

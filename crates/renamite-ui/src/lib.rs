@@ -33,7 +33,8 @@ use shell::EditorShell;
 use symbols::Symbols;
 
 pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
-    let session = init_session();
+    let session = init_session(_rc);
+    session.borrow_mut().sync_image_assets();
     if session.borrow_mut().drain_file_ops() {
         file::run_pending_intent(&session);
     }

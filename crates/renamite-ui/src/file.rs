@@ -379,8 +379,99 @@ pub fn import_font(session: &SessionRef) {
     );
 }
 
-/// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+/// Decode the pixel dimensions of image bytes and wrap them in an `ImageAsset`.
+fn image_asset_from_bytes(
+    name: String,
+    bytes: Vec<u8>,
+) -> anyhow::Result<renamite_model::ImageAsset> {
+    use image::GenericImageView;
+
+    let decoded = image::load_from_memory(&bytes)?;
+    let (width, height) = decoded.dimensions();
+
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+
+    Ok(renamite_model::ImageAsset {
+        name,
+        mime: mime.into(),
+        bytes,
+        width,
+        height,
+        srgb: true,
+    })
+}
+
+/// Read PNG/JPEG/WebP bytes into the project as an image asset (undoable).
+/// Decoding happens on the picker thread; the asset is applied on the UI
+/// thread via `PendingFileOp::ImportImageDone`.
+pub fn import_image(session: &SessionRef) {
+    let operations = session.borrow().file_ops.clone();
+
+    renamite_platform::dialogs::pick_open_file(
+        "Import Image",
+        &["png", "jpg", "jpeg", "webp"],
+        Box::new(move |picked| {
+            let result = match picked {
+                None => None,
+
+                Some(PickedFile::Path(path)) => {
+                    let name = path
+                        .file_name()
+                        .map(|name| {
+                            name.to_string_lossy().into_owned()
+                        })
+                        .unwrap_or_else(|| "Image".into());
+
+                    Some(
+                        std::fs::read(path)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|bytes| {
+                                image_asset_from_bytes(name, bytes)
+                            }),
+                    )
+                }
+
+                Some(PickedFile::Bytes { name, data }) => {
+                    Some(image_asset_from_bytes(name, data))
+                }
+            };
+
+            if let Some(result) = result {
+                let operation = match result {
+                    Ok(asset) => {
+                        PendingFileOp::ImportImageDone { asset }
+                    }
+
+                    Err(error) => PendingFileOp::Failed {
+                        message: format!(
+                            "Image import failed: {error}"
+                        ),
+                    },
+                };
+
+                operations
+                    .lock()
+                    .unwrap()
+                    .push_back(operation);
+            }
+
+            wake_ui();
+        }),
+    );
+}
+
+/// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_ren(session: &SessionRef, path: &Path) -> bool {
     let bytes = if is_binary(path.to_string_lossy().as_ref()) {
         session.borrow().pack_snapshot()
@@ -413,12 +504,14 @@ fn read_ren(path: &Path) -> anyhow::Result<renamite_io_ren::RenFile> {
 
 /// Prepare the current playhead scene for export: build the Repose scene and
 /// clamp the export pixel size. Pure CPU, runs on any thread.
-fn prepare_export(session: &SessionRef) -> anyhow::Result<(repose_core::Scene, (u32, u32))> {
-    let (scene, artboard) = {
+fn prepare_export(
+    session: &SessionRef,
+) -> anyhow::Result<(repose_core::Scene, (u32, u32), renamite_model::Document)> {
+    let (scene, artboard, document) = {
         let s = session.borrow();
         let size = s.file.document.compositions[s.file.document.main].size;
         let scene = s.engine.scene().clone();
-        (scene, size)
+        (scene, size, s.file.document.clone())
     };
     let (w, h) = clamp_export_size(artboard);
     let view = fit_view(artboard, w, h);
@@ -426,15 +519,22 @@ fn prepare_export(session: &SessionRef) -> anyhow::Result<(repose_core::Scene, (
     let prepared = bridge.prepare(&scene, &view);
     let mut repose = repose_core::Scene::default();
     bridge.append_repose_scene(&prepared, &mut repose);
-    Ok((repose, (w, h)))
+    Ok((repose, (w, h), document))
 }
 
-/// Rasterize `repose` on a background thread and encode PNG bytes.
-fn render_offscreen_worker(repose: repose_core::Scene, w: u32, h: u32) -> anyhow::Result<Vec<u8>> {
+/// Rasterize `repose` on a background thread and encode PNG bytes. Image
+/// assets are uploaded from `document` before drawing so image layers resolve.
+fn render_offscreen_worker(
+    repose: repose_core::Scene,
+    w: u32,
+    h: u32,
+    document: renamite_model::Document,
+) -> anyhow::Result<Vec<u8>> {
     web_workers::scope(|scope| {
         let result = scope
             .spawn(move || -> anyhow::Result<Vec<u8>> {
                 let mut gpu = renamite_render_offscreen::OffscreenRenderer::new_blocking(w, h, 4)?;
+                gpu.sync_document_images(&document)?;
                 gpu.render_png(&repose, Some([1.0, 1.0, 1.0, 1.0]))
             })
             .join();
@@ -469,7 +569,7 @@ pub fn export_png(session: &SessionRef) {
         return;
     };
     let png = match prepare_export(session)
-        .and_then(|(scene, (w, h))| render_offscreen_worker(scene, w, h))
+        .and_then(|(scene, (w, h), document)| render_offscreen_worker(scene, w, h, document))
     {
         Ok(png) => png,
         Err(e) => {
@@ -486,7 +586,7 @@ pub fn export_png(session: &SessionRef) {
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub fn export_png(session: &SessionRef) {
     let png = match prepare_export(session)
-        .and_then(|(scene, (w, h))| render_offscreen_worker(scene, w, h))
+        .and_then(|(scene, (w, h), document)| render_offscreen_worker(scene, w, h, document))
     {
         Ok(png) => png,
         Err(e) => {

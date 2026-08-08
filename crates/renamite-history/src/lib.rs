@@ -107,12 +107,22 @@ pub enum EditorCommand {
         id: NodeId,
         font: Option<String>,
     },
-    /// Insert a project asset (font/image bytes). Exact inverse: remove it.
+    /// Insert a project asset (font/image bytes). The asset lands in the
+    /// arena on first apply; redo re-attaches the same arena id. `id` is None
+    /// until first apply, then filled so undo/redo keep AssetIds stable.
     AddAsset {
+        index: usize,
         asset: Asset,
+        id: Option<AssetId>,
     },
-    /// Detach a project asset by its arena id. Exact inverse: re-insert it.
-    RemoveAsset {
+    /// Undo-internal: re-attach an arena asset.
+    AttachAsset {
+        id: AssetId,
+        index: usize,
+    },
+    /// Detach only - the asset stays in the arena for undo/redo, but
+    /// disappears from `asset_order` (and thus the Assets panel).
+    DetachAsset {
         id: AssetId,
     },
     /// Swap a fill/stroke's paint for a gradient seeded from its current
@@ -321,11 +331,25 @@ pub enum EditError {
     MachineNotAttached,
     #[error("machine already attached")]
     MachineAlreadyAttached,
+    #[error("asset is already attached")]
+    AssetAlreadyAttached,
+    #[error("asset is not attached")]
+    AssetNotAttached,
+    #[error("asset is still referenced by an image layer")]
+    AssetInUse,
 }
 
-/// Result of a single apply (created root id surfaces for selection).
+/// Result of a single apply (created ids surface for selection).
 pub struct Applied {
     pub created: Option<NodeId>,
+    pub created_asset: Option<AssetId>,
+}
+
+/// Internal creation payload returned by each apply arm.
+#[derive(Default)]
+struct Created {
+    node: Option<NodeId>,
+    asset: Option<AssetId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -366,9 +390,12 @@ impl History {
             && let Some(last) = t.forward.last_mut()
             && coalesce(last, &cmd)
         {
-            let created = apply_command(p, &mut cmd)?;
+            let (created, _) = apply_command(p, &mut cmd)?;
             *last = cmd;
-            return Ok(Applied { created: created.0 });
+            return Ok(Applied {
+                created: created.node,
+                created_asset: created.asset,
+            });
         }
         let (created, inverse) = apply_command(p, &mut cmd)?;
         if let Some(t) = &mut self.open {
@@ -382,7 +409,10 @@ impl History {
             });
             self.redo.clear();
         }
-        Ok(Applied { created })
+        Ok(Applied {
+            created: created.node,
+            created_asset: created.asset,
+        })
     }
 
     /// Close the open transaction and make it undoable. Consecutive
@@ -460,7 +490,7 @@ impl History {
 fn apply_command(
     p: &mut ProjectMut<'_>,
     cmd: &mut EditorCommand,
-) -> Result<(Option<NodeId>, Vec<EditorCommand>), EditError> {
+) -> Result<(Created, Vec<EditorCommand>), EditError> {
     use EditorCommand::*;
     match cmd {
         InsertNode { .. }
@@ -473,8 +503,6 @@ fn apply_command(
         | SetNodeName { .. }
         | SetTextContent { .. }
         | SetTextFont { .. }
-        | AddAsset { .. }
-        | RemoveAsset { .. }
         | ConvertToGradient { .. }
         | ConvertToSolid { .. }
         | SetPaint { .. }
@@ -489,7 +517,56 @@ fn apply_command(
         | EditAnchors { .. }
         | ReversePath { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
-            Ok((node, inv))
+            Ok((Created { node, asset: None }, inv))
+        }
+
+        AddAsset { index, asset, id } => {
+            let asset_id = match *id {
+                Some(existing) => {
+                    if !p.document.assets.contains_key(existing) {
+                        return Err(ModelError::MissingAsset.into());
+                    }
+                    existing
+                }
+                None => {
+                    let new_id = p.document.assets.insert(asset.clone());
+                    *id = Some(new_id);
+                    new_id
+                }
+            };
+
+            if p.document.asset_order.contains(&asset_id) {
+                return Err(EditError::AssetAlreadyAttached);
+            }
+
+            let index = (*index).min(p.document.asset_order.len());
+            p.document.asset_order.insert(index, asset_id);
+
+            Ok((Created { node: None, asset: Some(asset_id) }, vec![DetachAsset { id: asset_id }]))
+        }
+        AttachAsset { id, index } => {
+            if !p.document.assets.contains_key(*id) {
+                return Err(ModelError::MissingAsset.into());
+            }
+            if p.document.asset_order.contains(id) {
+                return Err(EditError::AssetAlreadyAttached);
+            }
+            let index = (*index).min(p.document.asset_order.len());
+            p.document.asset_order.insert(index, *id);
+            Ok((Created::default(), vec![DetachAsset { id: *id }]))
+        }
+        DetachAsset { id } => {
+            if p.document.image_usage_count(*id) > 0 {
+                return Err(EditError::AssetInUse);
+            }
+            let index = p
+                .document
+                .asset_order
+                .iter()
+                .position(|entry| entry == id)
+                .ok_or(EditError::AssetNotAttached)?;
+            p.document.asset_order.remove(index);
+            Ok((Created::default(), vec![AttachAsset { id: *id, index }]))
         }
 
         CreateClip { index, clip, id } => {
@@ -512,7 +589,7 @@ fn apply_command(
             }
             let i = (*index).min(p.clip_order.len());
             p.clip_order.insert(i, cid);
-            Ok((None, vec![DetachClip { id: cid }]))
+            Ok((Created::default(), vec![DetachClip { id: cid }]))
         }
         AttachClip { id, index } => {
             if !p.clips.contains_key(*id) {
@@ -523,7 +600,7 @@ fn apply_command(
             }
             let i = (*index).min(p.clip_order.len());
             p.clip_order.insert(i, *id);
-            Ok((None, vec![DetachClip { id: *id }]))
+            Ok((Created::default(), vec![DetachClip { id: *id }]))
         }
         DetachClip { id } => {
             let i = p
@@ -532,7 +609,7 @@ fn apply_command(
                 .position(|c| c == id)
                 .ok_or(EditError::ClipNotAttached)?;
             p.clip_order.remove(i);
-            Ok((None, vec![AttachClip { id: *id, index: i }]))
+            Ok((Created::default(), vec![AttachClip { id: *id, index: i }]))
         }
         SetClipMeta { id, name, range } => {
             let c = p.clips.get_mut(*id).ok_or(EditError::MissingClip)?;
@@ -545,7 +622,7 @@ fn apply_command(
                 c.range = *r;
             }
             Ok((
-                None,
+                Created::default(),
                 vec![SetClipMeta {
                     id: *id,
                     name: old_name,
@@ -566,7 +643,7 @@ fn apply_command(
                     Ok(i) => {
                         let old = std::mem::replace(&mut t.keys[i], key.clone());
                         Ok((
-                            None,
+                            Created::default(),
                             vec![AddClipKey {
                                 clip: *clip,
                                 node: *node,
@@ -578,7 +655,7 @@ fn apply_command(
                     Err(i) => {
                         t.keys.insert(i, key.clone());
                         Ok((
-                            None,
+                            Created::default(),
                             vec![RemoveClipKey {
                                 clip: *clip,
                                 node: *node,
@@ -596,7 +673,7 @@ fn apply_command(
                         keys: vec![key.clone()],
                     });
                     Ok((
-                        None,
+                        Created::default(),
                         vec![RemoveClipTrack {
                             clip: *clip,
                             node: *node,
@@ -620,7 +697,7 @@ fn apply_command(
                 .map_err(|_| EditError::NoClipKey(frame.0))?;
             let key = t.keys.remove(i); // empty track remains: exact-inverse invariant
             Ok((
-                None,
+                Created::default(),
                 vec![AddClipKey {
                     clip: *clip,
                     node: *node,
@@ -685,7 +762,7 @@ fn apply_command(
                     to: m.from,
                 })
                 .collect();
-            Ok((None, vec![MoveClipKeys { moves: inv }]))
+            Ok((Created::default(), vec![MoveClipKeys { moves: inv }]))
         }
         CreateClipTrack { clip, track } => {
             let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
@@ -694,7 +771,7 @@ fn apply_command(
             }
             c.tracks.push(track.clone());
             Ok((
-                None,
+                Created::default(),
                 vec![RemoveClipTrack {
                     clip: *clip,
                     node: track.node,
@@ -710,7 +787,7 @@ fn apply_command(
                 .position(|t| t.node == *node && &t.prop == prop)
                 .ok_or(EditError::MissingTrack)?;
             let track = c.tracks.remove(i);
-            Ok((None, vec![CreateClipTrack { clip: *clip, track }]))
+            Ok((Created::default(), vec![CreateClipTrack { clip: *clip, track }]))
         }
         AddClipEvent { clip, event } => {
             let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
@@ -720,7 +797,7 @@ fn apply_command(
             });
             c.events.insert(i, event.clone());
             Ok((
-                None,
+                Created::default(),
                 vec![RemoveClipEvent {
                     clip: *clip,
                     frame: event.frame,
@@ -736,7 +813,7 @@ fn apply_command(
                 .position(|e| e.frame == *frame && &e.name == name)
                 .ok_or(EditError::NoClipKey(frame.0))?;
             let event = c.events.remove(i);
-            Ok((None, vec![AddClipEvent { clip: *clip, event }]))
+            Ok((Created::default(), vec![AddClipEvent { clip: *clip, event }]))
         }
 
         CreateMachine { index, machine, id } => {
@@ -758,7 +835,7 @@ fn apply_command(
             }
             let i = (*index).min(p.machine_order.len());
             p.machine_order.insert(i, mid);
-            Ok((None, vec![DetachMachine { id: mid }]))
+            Ok((Created::default(), vec![DetachMachine { id: mid }]))
         }
         AttachMachine { id, index } => {
             if !p.machines.contains_key(*id) {
@@ -769,7 +846,7 @@ fn apply_command(
             }
             let i = (*index).min(p.machine_order.len());
             p.machine_order.insert(i, *id);
-            Ok((None, vec![DetachMachine { id: *id }]))
+            Ok((Created::default(), vec![DetachMachine { id: *id }]))
         }
         DetachMachine { id } => {
             let i = p
@@ -786,13 +863,13 @@ fn apply_command(
                 inverse.push(SetStartMachine { start: Some(*id) });
             }
             inverse.push(AttachMachine { id: *id, index: i });
-            Ok((None, inverse))
+            Ok((Created::default(), inverse))
         }
         ReplaceMachine { id, machine } => {
             let m = p.machines.get_mut(*id).ok_or(EditError::MissingMachine)?;
             let old = std::mem::replace(m, machine.clone());
             Ok((
-                None,
+                Created::default(),
                 vec![ReplaceMachine {
                     id: *id,
                     machine: old,
@@ -806,7 +883,7 @@ fn apply_command(
                 return Err(EditError::MissingMachine);
             }
             let old = std::mem::replace(p.start_machine, *start);
-            Ok((None, vec![SetStartMachine { start: old }]))
+            Ok((Created::default(), vec![SetStartMachine { start: old }]))
         }
     }
 }
@@ -967,14 +1044,6 @@ fn apply_document_command(
             };
             let old = std::mem::replace(&mut t.font, font.clone());
             Ok((None, vec![SetTextFont { id: *id, font: old }]))
-        }
-        AddAsset { asset } => {
-            let id = doc.assets.insert(asset.clone());
-            Ok((None, vec![RemoveAsset { id }]))
-        }
-        RemoveAsset { id } => {
-            let asset = doc.assets.remove(*id).ok_or(ModelError::MissingNode)?;
-            Ok((None, vec![AddAsset { asset }]))
         }
         ConvertToGradient {
             id,
@@ -1411,8 +1480,8 @@ pub enum ToolId {
 mod tests {
     use super::*;
     use renamite_model::{
-        AnimatedDash, Asset, Color, FontAsset, NodeKind, StrokeCap, StrokeJoin, StyleKind,
-        StylePaint, TextNode,
+        AnimatedDash, Asset, Color, FontAsset, ImageAsset, NodeKind, StrokeCap, StrokeJoin,
+        StyleKind, StylePaint, TextNode,
     };
 
     fn f64_key(f: i64, v: f64) -> KeyframeData {
@@ -1657,23 +1726,70 @@ mod tests {
             .apply(
                 &mut world.pm(),
                 EditorCommand::AddAsset {
+                    index: 0,
                     asset: asset.clone(),
+                    id: None,
                 },
             )
             .unwrap();
         assert_eq!(world.doc.assets.len(), 1);
+        assert_eq!(world.doc.asset_order.len(), 1);
         assert_eq!(world.doc.font_families(), vec!["Inter Regular"]);
-        let id = world.doc.assets.iter().next().unwrap().0;
+        let id = world.doc.asset_order[0];
+        assert!(world.doc.assets.contains_key(id));
         history.commit();
 
         history.undo(&mut world.pm()).unwrap();
-        assert_eq!(world.doc.assets.len(), 0);
+        // Undo detaches from `asset_order`; the arena entry stays (for redo).
+        assert_eq!(world.doc.assets.len(), 1);
+        assert!(world.doc.asset_order.is_empty());
 
         history.redo(&mut world.pm()).unwrap();
-        // slotmap reinserts at a fresh key, but the family is intact.
-        assert_eq!(world.doc.assets.len(), 1);
+        // Redo re-attaches the SAME arena id (stable under undo/redo).
+        assert_eq!(world.doc.asset_order, vec![id]);
         assert_eq!(world.doc.font_families(), vec!["Inter Regular"]);
-        assert_ne!(world.doc.assets.iter().next().unwrap().0, id);
+    }
+
+    #[test]
+    fn detach_asset_forbids_in_use_images() {
+        use renamite_model::ImageAsset;
+        let mut world = World::new();
+        let mut history = History::new();
+
+        let asset = Asset::Image(ImageAsset {
+            name: "a.png".into(),
+            mime: "image/png".into(),
+            bytes: vec![],
+            width: 2,
+            height: 2,
+            srgb: true,
+        });
+
+        let id = history
+            .apply(
+                &mut world.pm(),
+                EditorCommand::AddAsset {
+                    index: 0,
+                    asset,
+                    id: None,
+                },
+            )
+            .unwrap()
+            .created_asset
+            .unwrap();
+        history.commit();
+
+        // Image layer referencing the asset -> cannot detach.
+        let image = world.doc.create_node(Node::new("img", NodeKind::Image(id)));
+        world
+            .doc
+            .attach(image, Parent::Comp(world.doc.main), 0)
+            .unwrap();
+
+        assert!(matches!(
+            history.apply(&mut world.pm(), EditorCommand::DetachAsset { id }),
+            Err(EditError::AssetInUse)
+        ));
     }
 
     #[test]

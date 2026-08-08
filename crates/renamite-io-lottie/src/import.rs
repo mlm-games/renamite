@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use glam::DVec2;
 use renamite_animation::{Animated, AnimatedTransform, Frame, FrameRate};
 use renamite_model::{
-    AnimatedDash, BlendMode, Color, CompId, Composition, Document, FillRule, Gradient,
-    GradientKind, LayerProps, ModifierKind, Node, NodeId, NodeKind, Parent, ShapeKind, StarKind,
-    StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
+    AnimatedDash, Asset, BlendMode, Color, CompId, Composition, Document, FillRule, Gradient,
+    GradientKind, ImageAsset, LayerProps, ModifierKind, Node, NodeId, NodeKind, Parent, ShapeKind,
+    StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
 };
 use serde_json::Value;
 
@@ -53,6 +53,7 @@ pub fn import_with_report(root: &Value) -> Result<LottieReport<Document>, Lottie
         document,
         assets,
         imported_assets: HashMap::new(),
+        imported_images: HashMap::new(),
         building_assets: HashSet::new(),
         warnings: Vec::new(),
     };
@@ -87,6 +88,7 @@ struct Importer {
     document: Document,
     assets: HashMap<String, Value>,
     imported_assets: HashMap<String, CompId>,
+    imported_images: HashMap<String, renamite_model::AssetId>,
     building_assets: HashSet<String>,
     warnings: Vec<LottieWarning>,
 }
@@ -104,6 +106,7 @@ impl Importer {
             let tree = match layer_type {
                 4 => self.import_shape_layer(layer, &layer_path),
                 0 => Some(self.import_precomp_layer(layer, &layer_path)?),
+                2 => Some(self.import_image_layer(layer, &layer_path)?),
                 unsupported => {
                     self.warnings.push(LottieWarning::new(
                         layer_path,
@@ -161,6 +164,86 @@ impl Importer {
             })
             .collect();
         Some(ImportTree { node, children })
+    }
+
+    fn import_image_layer(
+        &mut self,
+        layer: &Value,
+        path: &str,
+    ) -> Result<ImportTree, LottieError> {
+        let reference = layer
+            .get("refId")
+            .and_then(Value::as_str)
+            .ok_or(LottieError::Missing("refId"))?;
+
+        let asset = self.ensure_image_asset(reference)?;
+
+        let mut node = Node::new(
+            layer
+                .get("nm")
+                .and_then(Value::as_str)
+                .unwrap_or("Image"),
+            NodeKind::Image(asset),
+        );
+
+        node.visible = !layer.get("hd").and_then(Value::as_bool).unwrap_or(false);
+
+        if let Some(transform) = layer.get("ks") {
+            node.transform = import_transform(transform);
+            node.opacity =
+                import_scalar(transform.get("o").unwrap_or(&Value::Null), 0.01, 1.0);
+        }
+
+        let _ = path;
+        Ok(ImportTree::leaf(node))
+    }
+
+    /// Find or create the model `ImageAsset` for a Lottie `assets` entry,
+    /// decoding its data-URI payload. External (non-data-URI) images are
+    /// reported as warnings and skipped.
+    fn ensure_image_asset(
+        &mut self,
+        asset_id: &str,
+    ) -> Result<renamite_model::AssetId, LottieError> {
+        if let Some(id) = self.imported_images.get(asset_id) {
+            return Ok(*id);
+        }
+
+        let asset = self
+            .assets
+            .get(asset_id)
+            .ok_or_else(|| LottieError::MissingAsset(asset_id.into()))?;
+
+        let path = asset
+            .get("p")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LottieError::MissingAsset(asset_id.into()))?;
+
+        let Some((mime, data)) = decode_data_uri(path) else {
+            self.warnings.push(LottieWarning::new(
+                format!("assets/{asset_id}"),
+                "external Lottie image cannot be imported without a base directory",
+            ));
+
+            return Err(LottieError::MissingAsset(asset_id.into()));
+        };
+
+        let width = asset.get("w").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let height = asset.get("h").and_then(Value::as_u64).unwrap_or(1) as u32;
+
+        let id = self.document.assets.insert(Asset::Image(ImageAsset {
+            name: asset_id.into(),
+            mime,
+            bytes: data,
+            width,
+            height,
+            srgb: true,
+        }));
+
+        self.document.asset_order.push(id);
+        self.imported_images.insert(asset_id.into(), id);
+
+        Ok(id)
     }
 
     fn import_precomp_layer(
@@ -501,6 +584,26 @@ impl Importer {
         }
         id
     }
+}
+
+/// Decode a `data:<mime>;base64,<payload>` URI into (mime, bytes).
+fn decode_data_uri(value: &str) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+
+    let rest = value.strip_prefix("data:")?;
+    let (metadata, encoded) = rest.split_once(',')?;
+
+    if !metadata.ends_with(";base64") {
+        return None;
+    }
+
+    let mime = metadata.trim_end_matches(";base64").to_owned();
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+
+    Some((mime, bytes))
 }
 
 fn import_transform(value: &Value) -> AnimatedTransform {

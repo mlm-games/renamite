@@ -16,3 +16,4 @@ lyon_path.workspace = true
 rustc-hash.workspace = true
 repose-canvas.workspace = true
 repose-core.workspace = true
+slotmap.workspace = true

@@ -33,3 +33,4 @@ smallvec.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 web-time = "1.1"
+image.workspace = true

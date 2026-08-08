@@ -131,6 +131,13 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         children.push(section);
     }
 
+    // Single selected image: informational metadata (name, dimensions, MIME).
+    if ids.len() == 1
+        && let Some(section) = image_meta_section(session.clone(), ids[0])
+    {
+        children.push(section);
+    }
+
     // Single selected shape: offer to add a modifier as its sibling.
     if ids.len() == 1
         && let Some(v) = add_modifier_row(session.clone(), ids[0])
@@ -844,13 +851,69 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
 }
 
 /// One selectable font-family chip in the text properties section.
+fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let (name, width, height, mime) = {
+        let session = session.borrow();
+        let doc = &session.file.document;
+        let NodeKind::Image(asset) = &doc.nodes.get(id)?.kind else {
+            return None;
+        };
+        let image = doc.image_asset(*asset)?;
+        (
+            image.name.clone(),
+            image.width,
+            image.height,
+            image.mime.clone(),
+        )
+    };
+
+    let th = theme();
+    let mut children: Vec<View> = vec![
+        Text("Image")
+            .size(th.typography.label_medium)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 12.0,
+                bottom: 4.0,
+            })),
+    ];
+
+    for (label, value) in [
+        ("Name", name),
+        ("Dimensions", format!("{width}×{height} px")),
+        ("Type", mime),
+    ] {
+        children.push(Row(Modifier::new()
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 2.0,
+                bottom: 2.0,
+            })
+            .gap(8.0)
+            .align_items(AlignItems::CENTER))
+        .child((
+            Text(label)
+                .size(th.typography.label_small)
+                .color(th.on_surface_variant),
+            Text(value)
+                .size(th.typography.body_small)
+                .color(th.on_surface),
+        )));
+    }
+
+    Some(Column(Modifier::new().fill_max_width()).child(children))
+}
+
 fn font_chip(
     session: SessionRef,
     text_id: NodeId,
     label: String,
     family: Option<String>,
-    active: bool,
-) -> View {
+    active: bool,) -> View {
     let th = theme();
     Text(label)
         .size(th.typography.body_medium)

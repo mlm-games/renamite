@@ -1,5 +1,5 @@
 use renamite_model::{
-    Asset, AssetId, Document, NodeId, NodeKind,
+    Asset, AssetId, Document, Node, NodeId, NodeKind, Parent,
 };
 
 #[derive(Clone, Debug)]
@@ -11,6 +11,67 @@ pub struct FontAssetRow {
     pub bundled: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct ImageAssetRow {
+    pub id: AssetId,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub mime: String,
+    pub usage_count: usize,
+}
+
+pub fn image_rows(doc: &Document) -> Vec<ImageAssetRow> {
+    doc.asset_order
+        .iter()
+        .filter_map(|id| {
+            let image = doc.image_asset(*id)?;
+
+            Some(ImageAssetRow {
+                id: *id,
+                name: image.name.clone(),
+                width: image.width,
+                height: image.height,
+                mime: image.mime.clone(),
+                usage_count: doc.image_usage_count(*id),
+            })
+        })
+        .collect()
+}
+
+/// Build an `InsertNode` command that places an image layer centered on
+/// `position` in composition space, with the anchor at the image center so
+/// scaling/rotation feel natural.
+pub fn cmd_place_image(
+    doc: &Document,
+    asset: AssetId,
+    parent: Parent,
+    index: usize,
+    position: glam::DVec2,
+) -> Option<renamite_history::EditorCommand> {
+    let image = doc.image_asset(asset)?;
+
+    let mut node = Node::new(
+        image.name.clone(),
+        NodeKind::Image(asset),
+    );
+
+    node.transform.anchor = renamite_animation::Animated::new(
+        glam::DVec2::new(
+            image.width as f64 * 0.5,
+            image.height as f64 * 0.5,
+        ),
+    );
+
+    node.transform.position = renamite_animation::Animated::new(position);
+
+    Some(renamite_history::EditorCommand::InsertNode {
+        parent,
+        index,
+        tree: renamite_history::NodeTree::leaf(node),
+    })
+}
+
 pub fn font_rows(doc: &Document) -> Vec<FontAssetRow> {
     let mut rows = vec![FontAssetRow {
         id: None,
@@ -20,13 +81,13 @@ pub fn font_rows(doc: &Document) -> Vec<FontAssetRow> {
         bundled: true,
     }];
 
-    rows.extend(doc.assets.iter().filter_map(|(id, asset)| {
-        let Asset::Font(font) = asset else {
+    rows.extend(doc.asset_order.iter().filter_map(|id| {
+        let Asset::Font(font) = doc.assets.get(*id)? else {
             return None;
         };
 
         Some(FontAssetRow {
-            id: Some(id),
+            id: Some(*id),
             family: font.family.clone(),
             name: font.name.clone(),
             usage_count: font_usage_count(doc, &font.family),

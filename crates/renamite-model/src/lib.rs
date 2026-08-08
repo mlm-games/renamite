@@ -31,6 +31,11 @@ pub struct Document {
     pub compositions: CompMap,
     pub nodes: NodeMap,
     pub assets: AssetMap,
+
+    /// Live/attached assets in UI order.
+    #[serde(default)]
+    pub asset_order: Vec<AssetId>,
+
     pub main: CompId,
 }
 
@@ -702,8 +707,31 @@ pub enum BlendMode {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Asset {
-    Image,
+    Image(ImageAsset),
     Font(FontAsset),
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// An embedded image asset. Stores the original encoded PNG/JPEG/WebP bytes
+/// and the decoded pixel dimensions established at import time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageAsset {
+    pub name: String,
+    pub mime: String,
+
+    /// Original encoded PNG/JPEG/WebP bytes.
+    pub bytes: Vec<u8>,
+
+    /// Decoded pixel dimensions, established during import.
+    pub width: u32,
+    pub height: u32,
+
+    /// Decode/upload using an sRGB texture.
+    #[serde(default = "default_true")]
+    pub srgb: bool,
 }
 
 /// A project font: the user-visible name, the logical family key text nodes
@@ -777,6 +805,19 @@ pub enum ScenePaint {
         end: glam::DVec2,
         stops: GradientStops,
     },
+    Image {
+        asset: AssetId,
+
+        /// Local image rectangle dimensions.
+        width: u32,
+        height: u32,
+
+        /// Full local-image → world affine.
+        affine: [f64; 6],
+
+        /// Multiplicative tint. WHITE means unchanged.
+        tint: Color,
+    },
 }
 
 impl ScenePaint {
@@ -784,6 +825,7 @@ impl ScenePaint {
     pub fn color_at(&self, p: glam::DVec2) -> Color {
         match self {
             ScenePaint::Solid(c) => *c,
+            ScenePaint::Image { tint, .. } => *tint,
             ScenePaint::LinearGradient { start, end, stops } => {
                 let d = *end - *start;
                 let len2 = d.length_squared().max(1e-12);
@@ -1093,6 +1135,40 @@ fn eval_group(
                     + lp.in_frame.0 as f64;
                 let ntf = tf * affine_of(&sample_transform(n, id, lf, ov));
                 eval_group(doc, &n.children, lf, ntf, node_op, scene, depth + 1, ov);
+            }
+            NodeKind::Image(asset_id) => {
+                let Some(asset) = doc.image_asset(*asset_id) else {
+                    continue;
+                };
+
+                let node_transform = affine_of(&sample_transform(n, id, frame, ov));
+                let full_transform = tf * node_transform;
+
+                let local_rect = kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    asset.width as f64,
+                    asset.height as f64,
+                );
+
+                let world_path = full_transform * local_rect.to_path(0.1);
+
+                scene.items.push(SceneItem {
+                    path: world_path,
+                    node: id,
+                    style: id,
+                    paint: ScenePaint::Image {
+                        asset: *asset_id,
+                        width: asset.width,
+                        height: asset.height,
+                        affine: full_transform.as_coeffs(),
+                        tint: Color::WHITE,
+                    },
+                    kind: PaintKind::Fill(FillRule::NonZero),
+                    opacity: node_op,
+                    clip: None,
+                    blend: BlendMode::Normal,
+                });
             }
             NodeKind::Precomp { comp, time_map } => {
                 let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
@@ -1485,6 +1561,8 @@ pub enum ModelError {
     KeyframeExists(i64),
     #[error("node is not attached")]
     NotAttached,
+    #[error("asset not found")]
+    MissingAsset,
 }
 
 impl Document {
@@ -1502,6 +1580,7 @@ impl Document {
             compositions,
             nodes: NodeMap::default(),
             assets: AssetMap::default(),
+            asset_order: Vec::new(),
             main,
         }
     }
@@ -1586,6 +1665,49 @@ impl Document {
             mark(self, r, &mut live);
         }
         self.nodes.retain(|id, _| live.contains(&id));
+
+        // Retain attached or node-referenced assets.
+        let mut live_assets: std::collections::HashSet<AssetId> =
+            self.asset_order.iter().copied().collect();
+        for node in self.nodes.values() {
+            if let NodeKind::Image(asset) = node.kind {
+                live_assets.insert(asset);
+            }
+        }
+        self.assets.retain(|id, _| live_assets.contains(&id));
+        self.asset_order.retain(|id| self.assets.contains_key(*id));
+    }
+
+    /// Rebuild `asset_order` to match the arena: every attached id must exist
+    /// and be unique; any arena asset missing from the order gets appended.
+    /// (Call after loading legacy projects that predate `asset_order`.)
+    pub fn normalize_assets(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+
+        self.asset_order
+            .retain(|id| self.assets.contains_key(*id) && seen.insert(*id));
+
+        for id in self.assets.keys() {
+            if seen.insert(id) {
+                self.asset_order.push(id);
+            }
+        }
+    }
+
+    /// The embedded image asset behind `id`, if it is an image.
+    pub fn image_asset(&self, id: AssetId) -> Option<&ImageAsset> {
+        match self.assets.get(id)? {
+            Asset::Image(image) => Some(image),
+            _ => None,
+        }
+    }
+
+    /// Number of image-layer nodes referencing `asset`.
+    pub fn image_usage_count(&self, asset: AssetId) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| matches!(node.kind, NodeKind::Image(id) if id == asset))
+            .count()
     }
 
     /// The font asset whose family matches `family`, if the project has one.
@@ -1600,10 +1722,10 @@ impl Document {
     /// Sorted, deduplicated family keys of every font asset in the project.
     pub fn font_families(&self) -> Vec<String> {
         let mut out: Vec<String> = self
-            .assets
+            .asset_order
             .iter()
-            .filter_map(|(_, asset)| match asset {
-                Asset::Font(font) => Some(font.family.clone()),
+            .filter_map(|id| match self.assets.get(*id) {
+                Some(Asset::Font(font)) => Some(font.family.clone()),
                 _ => None,
             })
             .collect();
@@ -2552,21 +2674,22 @@ mod tests {
     #[test]
     fn font_families_sorted_and_deduped() {
         let mut doc = Document::empty();
-        doc.assets.insert(Asset::Font(FontAsset {
+        let a = doc.assets.insert(Asset::Font(FontAsset {
             name: "B".into(),
             family: "zeta".into(),
             bytes: vec![],
         }));
-        doc.assets.insert(Asset::Font(FontAsset {
+        let b = doc.assets.insert(Asset::Font(FontAsset {
             name: "A".into(),
             family: "alpha".into(),
             bytes: vec![],
         }));
-        doc.assets.insert(Asset::Font(FontAsset {
+        let c = doc.assets.insert(Asset::Font(FontAsset {
             name: "dup".into(),
             family: "alpha".into(),
             bytes: vec![],
         }));
+        doc.asset_order.extend([a, b, c]);
         assert_eq!(doc.font_families(), vec!["alpha", "zeta"]);
     }
 
@@ -2632,6 +2755,99 @@ mod tests {
         let scene = evaluate(&doc, comp, 0.0);
         assert_eq!(scene.items.len(), 1);
         assert!(!scene.items[0].path.elements().is_empty());
+    }
+
+    #[test]
+    fn image_layer_emits_ordered_scene_item() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        let asset = doc.assets.insert(Asset::Image(ImageAsset {
+            name: "test.png".into(),
+            mime: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            width: 64,
+            height: 32,
+            srgb: true,
+        }));
+        doc.asset_order.push(asset);
+
+        let mut node = Node::new("Image", NodeKind::Image(asset));
+        node.transform.anchor = Animated::new(glam::DVec2::new(32.0, 16.0));
+        node.transform.position = Animated::new(glam::DVec2::new(100.0, 100.0));
+
+        let image = doc.create_node(node);
+        doc.attach(image, Parent::Comp(comp), 0).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].node, image);
+
+        assert!(matches!(
+            scene.items[0].paint,
+            ScenePaint::Image { asset: id, .. } if id == asset
+        ));
+    }
+
+    #[test]
+    fn garbage_collect_keeps_referenced_images() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        let used = doc.assets.insert(Asset::Image(ImageAsset {
+            name: "used.png".into(),
+            mime: "image/png".into(),
+            bytes: vec![],
+            width: 1,
+            height: 1,
+            srgb: true,
+        }));
+        let orphan = doc.assets.insert(Asset::Image(ImageAsset {
+            name: "orphan.png".into(),
+            mime: "image/png".into(),
+            bytes: vec![],
+            width: 1,
+            height: 1,
+            srgb: true,
+        }));
+        doc.asset_order.push(used);
+
+        let image = doc.create_node(Node::new("Image", NodeKind::Image(used)));
+        doc.attach(image, Parent::Comp(comp), 0).unwrap();
+
+        doc.garbage_collect();
+
+        assert!(doc.assets.contains_key(used));
+        assert!(!doc.assets.contains_key(orphan));
+        assert_eq!(doc.asset_order, vec![used]);
+    }
+
+    #[test]
+    fn normalize_assets_repairs_order() {
+        let mut doc = Document::empty();
+        let a = doc.assets.insert(Asset::Font(FontAsset {
+            name: "A".into(),
+            family: "a".into(),
+            bytes: vec![],
+        }));
+        let b = doc.assets.insert(Asset::Font(FontAsset {
+            name: "B".into(),
+            family: "b".into(),
+            bytes: vec![],
+        }));
+        // Legacy-style malformed order: missing id, duplicate, dangling id.
+        let dangling = doc.assets.insert(Asset::Font(FontAsset {
+            name: "d".into(),
+            family: "d".into(),
+            bytes: vec![],
+        }));
+        doc.assets.remove(dangling);
+        doc.asset_order = vec![a, a, dangling];
+
+        doc.normalize_assets();
+
+        assert_eq!(doc.asset_order, vec![a, b]);
     }
 
     #[test]
