@@ -589,9 +589,12 @@ pub enum ModifierKind {
     ZigZag {
         amplitude: Animated<f64>,
         frequency: Animated<f64>,
-        points: Animated<f64>,
+        /// false = corner zig-zag; true = smooth wave (cubic).
+        #[serde(default)]
+        smooth: bool,
     },
-    InflateDeflate {
+    PuckerBloat {
+        /// Percent; positive = bloat, negative = pucker.
         amount: Animated<f64>,
     },
 }
@@ -1533,8 +1536,25 @@ fn apply_modifier(
                 }
             }
         }
-        // v0.4: ZigZag, InflateDeflate - passthrough until then.
-        _ => {}
+        ModifierKind::ZigZag { amplitude, frequency, smooth } => {
+            let amp = ov_f64(ov, id, "zigzag.amplitude", amplitude.value_at(frame));
+            let freq = ov_f64(ov, id, "zigzag.frequency", frequency.value_at(frame));
+            if amp.abs() > 1e-9 && freq.abs() > 1e-9 {
+                for entry in paths.iter_mut() {
+                    entry.path =
+                        renamite_geometry::zigzag_path(&entry.path, amp, freq, *smooth);
+                }
+            }
+        }
+        ModifierKind::PuckerBloat { amount } => {
+            let amt = ov_f64(ov, id, "pucker.amount", amount.value_at(frame));
+            if amt.abs() > 1e-9 {
+                for entry in paths.iter_mut() {
+                    let vp = renamite_geometry::VectorPath::from_bez_path(&entry.path);
+                    entry.path = renamite_geometry::pucker_bloat_vector_path(&vp, amt).to_bez_path();
+                }
+            }
+        }
     }
 }
 
@@ -2556,7 +2576,15 @@ impl Node {
             ("offset.amount", NodeKind::Modifier(ModifierKind::OffsetPath { amount })) => {
                 Some(F64(amount))
             }
-            ("inflate.amount", NodeKind::Modifier(ModifierKind::InflateDeflate { amount })) => {
+            (
+                "zigzag.amplitude",
+                NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. }),
+            ) => Some(F64(amplitude)),
+            (
+                "zigzag.frequency",
+                NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. }),
+            ) => Some(F64(frequency)),
+            ("pucker.amount", NodeKind::Modifier(ModifierKind::PuckerBloat { amount })) => {
                 Some(F64(amount))
             }
             _ => None,
@@ -2783,7 +2811,15 @@ impl Node {
             ("offset.amount", NodeKind::Modifier(ModifierKind::OffsetPath { amount })) => {
                 Some(F64(amount))
             }
-            ("inflate.amount", NodeKind::Modifier(ModifierKind::InflateDeflate { amount })) => {
+            (
+                "zigzag.amplitude",
+                NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. }),
+            ) => Some(F64(amplitude)),
+            (
+                "zigzag.frequency",
+                NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. }),
+            ) => Some(F64(frequency)),
+            ("pucker.amount", NodeKind::Modifier(ModifierKind::PuckerBloat { amount })) => {
                 Some(F64(amount))
             }
             _ => None,
@@ -3686,6 +3722,169 @@ mod tests {
         assert_eq!(
             doc.value_at(id, &PropPath::new("offset.amount"), 0.0).unwrap(),
             Value::F64(12.0),
+        );
+    }
+
+    #[test]
+    fn zigzag_modifier_perturbs_rect_edge() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+        let rect = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(100.0, 100.0)),
+                size: Animated::new(DVec2::new(100.0, 100.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+
+        let zz = doc.create_node(Node::new(
+            "zz",
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(10.0),
+                frequency: Animated::new(4.0),
+                smooth: false,
+            }),
+        ));
+
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        ));
+
+        doc.attach(rect, Parent::Node(group), 0).unwrap();
+        doc.attach(zz, Parent::Node(group), 1).unwrap();
+        doc.attach(fill, Parent::Node(group), 2).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        let path = &scene.items[0].path;
+        // Zig-zag adds extra vertices along the rect edges.
+        let verts = path
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::LineTo(_) | kurbo::PathEl::MoveTo(_)))
+            .count();
+        assert!(verts > 4, "got {} vertices", verts);
+    }
+
+    #[test]
+    fn pucker_bloat_expands_and_contracts_bounds() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+        let rect = doc.create_node(Node::new(
+            "r",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(100.0, 100.0)),
+                size: Animated::new(DVec2::new(100.0, 100.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+
+        let fill = doc.create_node(Node::new(
+            "f",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        ));
+
+        doc.attach(rect, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 2).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let base = evaluate(&doc, comp, 0.0);
+        let base_bb = base.items[0].path.bounding_box();
+
+        let bloat = doc.create_node(Node::new(
+            "pb",
+            NodeKind::Modifier(ModifierKind::PuckerBloat {
+                amount: Animated::new(50.0),
+            }),
+        ));
+        doc.attach(bloat, Parent::Node(group), 1).unwrap();
+
+        let bloated = evaluate(&doc, comp, 0.0);
+        let bloat_bb = bloated.items[0].path.bounding_box();
+        assert!(bloat_bb.width() > base_bb.width(), "w {} vs {}", bloat_bb.width(), base_bb.width());
+        assert!(bloat_bb.height() > base_bb.height());
+
+        doc.set_static(bloat, &PropPath::new("pucker.amount"), &Value::F64(-50.0))
+            .unwrap();
+        let puckered = evaluate(&doc, comp, 0.0);
+        let pucker_bb = puckered.items[0].path.bounding_box();
+        // Vertices move toward the centroid for +amount (toward center) and
+        // away for -amount, so negative amount must be strictly wider.
+        assert!(
+            pucker_bb.width() > bloat_bb.width(),
+            "pucker {} vs bloat {}",
+            pucker_bb.width(),
+            bloat_bb.width()
+        );
+    }
+
+    #[test]
+    fn zigzag_props_are_addressable() {
+        let mut doc = Document::empty();
+        let id = doc.create_node(Node::new(
+            "zz",
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(5.0),
+                frequency: Animated::new(3.0),
+                smooth: true,
+            }),
+        ));
+        doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0).unwrap(),
+            Value::F64(5.0),
+        );
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("zigzag.frequency"), 0.0).unwrap(),
+            Value::F64(3.0),
+        );
+
+        doc.set_static(
+            id,
+            &PropPath::new("zigzag.amplitude"),
+            &Value::F64(12.0),
+        )
+        .unwrap();
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0).unwrap(),
+            Value::F64(12.0),
+        );
+    }
+
+    #[test]
+    fn pucker_amount_property_is_addressable() {
+        let mut doc = Document::empty();
+        let id = doc.create_node(Node::new(
+            "pb",
+            NodeKind::Modifier(ModifierKind::PuckerBloat {
+                amount: Animated::new(20.0),
+            }),
+        ));
+        doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0).unwrap(),
+            Value::F64(20.0),
+        );
+
+        doc.set_static(id, &PropPath::new("pucker.amount"), &Value::F64(-30.0))
+            .unwrap();
+        assert_eq!(
+            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0).unwrap(),
+            Value::F64(-30.0),
         );
     }
 }

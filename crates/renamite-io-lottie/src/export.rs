@@ -801,6 +801,22 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
             "a": export_scalar(amount, 1.0),
             "ml": 4
         })),
+        ModifierKind::ZigZag {
+            amplitude,
+            frequency,
+            smooth,
+        } => Some(json!({
+            "ty": "zz",
+            "nm": name,
+            "a": export_scalar(amplitude, 1.0),
+            "f": export_scalar(frequency, 1.0),
+            "s": *smooth as u8
+        })),
+        ModifierKind::PuckerBloat { amount } => Some(json!({
+            "ty": "pb",
+            "nm": name,
+            "a": export_scalar(amount, 1.0)
+        })),
         _ => None,
     }
 }

@@ -177,6 +177,12 @@ pub enum EditorCommand {
         id: NodeId,
         dash: Option<renamite_model::AnimatedDash>,
     },
+    /// Flip a ZigZag's `smooth` flag (corner zig vs smooth wave). Exact
+    /// inverse: same command with the old value.
+    SetZigZagSmooth {
+        id: NodeId,
+        smooth: bool,
+    },
 
     // properties
     SetStatic {
@@ -537,6 +543,7 @@ fn apply_command(
         | ReleaseMask { .. }
         | RestoreMask { .. }
         | SetMaskInverted { .. }
+        | SetZigZagSmooth { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
         | RemoveKeyframe { .. }
@@ -1213,6 +1220,15 @@ fn apply_document_command(
             };
             let old = std::mem::replace(&mut mask.inverted, *inverted);
             Ok((None, vec![SetMaskInverted { id: *id, inverted: old }]))
+        }
+        SetZigZagSmooth { id, smooth } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Modifier(ModifierKind::ZigZag { smooth: current, .. }) = &mut node.kind
+            else {
+                return Err(ModelError::WrongNodeKind("Modifier").into());
+            };
+            let old = std::mem::replace(current, *smooth);
+            Ok((None, vec![SetZigZagSmooth { id: *id, smooth: old }]))
         }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
@@ -2085,6 +2101,35 @@ mod tests {
             panic!("not a trim path");
         };
         assert_eq!(*mode, renamite_model::TrimMode::Simultaneously);
+    }
+
+    #[test]
+    fn set_zigzag_smooth_undo_redo_round_trips() {
+        let mut w = World::new();
+        let id = w.node();
+        w.doc.nodes[id].kind = NodeKind::Modifier(ModifierKind::ZigZag {
+            amplitude: Animated::new(10.0),
+            frequency: Animated::new(4.0),
+            smooth: false,
+        });
+        let mut h = History::new();
+        let cmd = EditorCommand::SetZigZagSmooth { id, smooth: true };
+        h.apply(&mut w.pm(), cmd).unwrap();
+        h.commit();
+        let NodeKind::Modifier(ModifierKind::ZigZag { smooth, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a zigzag");
+        };
+        assert!(*smooth);
+        h.undo(&mut w.pm()).unwrap();
+        let NodeKind::Modifier(ModifierKind::ZigZag { smooth, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a zigzag");
+        };
+        assert!(!*smooth);
+        h.redo(&mut w.pm()).unwrap();
+        let NodeKind::Modifier(ModifierKind::ZigZag { smooth, .. }) = &w.doc.nodes[id].kind else {
+            panic!("not a zigzag");
+        };
+        assert!(*smooth);
     }
 
     #[test]

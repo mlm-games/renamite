@@ -1,6 +1,11 @@
 //! Vector path geometry. Document stores editable anchors; `kurbo::BezPath` is
 //! the render/hit-test/export form only.
 
+pub mod pucker_bloat;
+pub mod zigzag;
+pub use pucker_bloat::{pucker_bloat_path, pucker_bloat_vector_path};
+pub use zigzag::zigzag_path;
+
 use kurbo::ParamCurveNearest;
 pub use kurbo::{Affine, BezPath, CubicBez, PathEl, Point, Rect, Shape as KurboShape, Vec2};
 

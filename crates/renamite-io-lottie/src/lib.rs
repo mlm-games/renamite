@@ -680,6 +680,111 @@ mod tests {
     }
 
     #[test]
+    fn zigzag_round_trips_lottie() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{
+                "ty": 4,
+                "ind": 1,
+                "nm": "Zig",
+                "ks": {},
+                "shapes": [
+                    {
+                        "ty": "rc",
+                        "nm": "Rect",
+                        "p": { "a": 0, "k": [0, 0] },
+                        "s": { "a": 0, "k": [20, 20] },
+                        "r": { "a": 0, "k": 0 }
+                    },
+                    {
+                        "ty": "zz",
+                        "nm": "Zig Zag",
+                        "a": { "a": 0, "k": 12 },
+                        "f": { "a": 0, "k": 4 },
+                        "s": 1
+                    },
+                    {
+                        "ty": "fl",
+                        "nm": "Fill",
+                        "c": { "a": 0, "k": [1, 1, 1, 1] },
+                        "o": { "a": 0, "k": 100 }
+                    }
+                ]
+            }]
+        });
+
+        let doc = import(&lottie).unwrap();
+
+        assert!(doc.nodes.values().any(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Modifier(ModifierKind::ZigZag { smooth: true, .. })
+            )
+        }));
+
+        let exported = export(&doc).unwrap();
+        let text = serde_json::to_string(&exported).unwrap();
+
+        assert!(text.contains("\"ty\":\"zz\""));
+        assert!(text.contains("\"Zig Zag\""));
+    }
+
+    #[test]
+    fn pucker_bloat_round_trips_lottie() {
+        let lottie = serde_json::json!({
+            "v": "5.5.9",
+            "fr": 60.0,
+            "ip": 0.0,
+            "op": 60.0,
+            "w": 100,
+            "h": 100,
+            "layers": [{
+                "ty": 4,
+                "ind": 1,
+                "nm": "PB",
+                "ks": {},
+                "shapes": [
+                    {
+                        "ty": "rc",
+                        "nm": "Rect",
+                        "p": { "a": 0, "k": [0, 0] },
+                        "s": { "a": 0, "k": [20, 20] },
+                        "r": { "a": 0, "k": 0 }
+                    },
+                    {
+                        "ty": "pb",
+                        "nm": "Pucker & Bloat",
+                        "a": { "a": 0, "k": -40 }
+                    },
+                    {
+                        "ty": "fl",
+                        "nm": "Fill",
+                        "c": { "a": 0, "k": [1, 1, 1, 1] },
+                        "o": { "a": 0, "k": 100 }
+                    }
+                ]
+            }]
+        });
+
+        let doc = import(&lottie).unwrap();
+
+        assert!(doc.nodes.values().any(|node| {
+            matches!(node.kind, NodeKind::Modifier(ModifierKind::PuckerBloat { .. }))
+        }));
+
+        let exported = export(&doc).unwrap();
+        let text = serde_json::to_string(&exported).unwrap();
+
+        assert!(text.contains("\"ty\":\"pb\""));
+        assert!(text.contains("\"Pucker & Bloat\""));
+    }
+
+    #[test]
     fn import_layer_masks_properties() {
         let lottie = serde_json::json!({
             "v": "5.5.9",

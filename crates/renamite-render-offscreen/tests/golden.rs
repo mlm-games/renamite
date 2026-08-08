@@ -384,6 +384,78 @@ fn fixture_round_corners() -> Document {
     doc
 }
 
+/// Rect with a Zig Zag modifier (corner mode) driving a sawtooth edge.
+fn fixture_zigzag() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(200.0, 140.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let zz = doc.create_node(Node::new(
+        "zz",
+        NodeKind::Modifier(ModifierKind::ZigZag {
+            amplitude: Animated::new(14.0),
+            frequency: Animated::new(6.0),
+            smooth: false,
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.3, 0.6, 0.9, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+
+    doc.attach(shape, Parent::Node(group), 0).unwrap();
+    doc.attach(zz, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
+/// Rect with a Pucker & Bloat modifier pulling vertices toward the centroid.
+fn fixture_pucker_bloat() -> Document {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let group = doc.create_node(Node::new("g", NodeKind::Group));
+
+    let shape = doc.create_node(Node::new(
+        "r",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(DVec2::new(256.0, 256.0)),
+            size: Animated::new(DVec2::new(200.0, 140.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let pb = doc.create_node(Node::new(
+        "pb",
+        NodeKind::Modifier(ModifierKind::PuckerBloat {
+            amount: Animated::new(50.0),
+        }),
+    ));
+    let fill = doc.create_node(Node::new(
+        "f",
+        NodeKind::Style(StyleKind::Fill {
+            paint: StylePaint::solid(Color::rgba(0.3, 0.6, 0.9, 1.0)),
+            rule: FillRule::NonZero,
+        }),
+    ));
+
+    doc.attach(shape, Parent::Node(group), 0).unwrap();
+    doc.attach(pb, Parent::Node(group), 1).unwrap();
+    doc.attach(fill, Parent::Node(group), 2).unwrap();
+    doc.attach(group, Parent::Comp(comp), 0).unwrap();
+    doc
+}
+
 /// Rect filled with a linear gradient, left (white) → right (blue).
 fn fixture_linear_gradient() -> Document {
     let mut doc = Document::empty();
@@ -525,6 +597,24 @@ fn golden_round_corners() {
     check_golden(
         "round_corners",
         &render_doc(&mut gpu, &fixture_round_corners(), 0.0),
+    );
+}
+
+#[test]
+fn golden_zigzag() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "zigzag",
+        &render_doc(&mut gpu, &fixture_zigzag(), 0.0),
+    );
+}
+
+#[test]
+fn golden_pucker_bloat() {
+    let Some(mut gpu) = gpu() else { return };
+    check_golden(
+        "pucker_bloat",
+        &render_doc(&mut gpu, &fixture_pucker_bloat(), 0.0),
     );
 }
 

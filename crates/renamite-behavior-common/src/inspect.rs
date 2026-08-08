@@ -91,6 +91,18 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     animated: false,
                 });
             }
+            if desc.path.as_str() == "zigzag.smooth" {
+                let smooth = match &node.kind {
+                    NodeKind::Modifier(ModifierKind::ZigZag { smooth, .. }) => *smooth,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::Bool(smooth),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
             let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
             let animated = doc.property_is_animated(id, &desc.path);
             let diamond = diamond_state(doc, id, &desc.path, playhead, animated);
@@ -330,6 +342,41 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     "Offset Path",
                     "Amount",
                     "offset.amount",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+            }
+            ModifierKind::ZigZag { .. } => {
+                d.push(pd(
+                    "Zig Zag",
+                    "Amplitude",
+                    "zigzag.amplitude",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd(
+                    "Zig Zag",
+                    "Frequency",
+                    "zigzag.frequency",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                d.push(pd("Zig Zag", "Smooth", "zigzag.smooth", PropKind::Bool));
+            }
+            ModifierKind::PuckerBloat { .. } => {
+                d.push(pd(
+                    "Pucker & Bloat",
+                    "Amount",
+                    "pucker.amount",
                     PropKind::F64 {
                         min: None,
                         max: None,

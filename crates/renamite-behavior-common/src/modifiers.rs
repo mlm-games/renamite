@@ -102,6 +102,42 @@ pub fn cmd_add_repeater_after(doc: &Document, after: NodeId) -> Option<EditorCom
     })
 }
 
+/// Append a Zig Zag modifier as a sibling immediately after `after`.
+pub fn cmd_add_zigzag_after(doc: &Document, after: NodeId) -> Option<EditorCommand> {
+    let (parent, index) = doc.locate(after)?;
+    Some(EditorCommand::InsertNode {
+        parent,
+        index: index + 1,
+        tree: NodeTree::leaf(Node::new(
+            "Zig Zag",
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(10.0),
+                frequency: Animated::new(4.0),
+                smooth: false,
+            }),
+        )),
+    })
+}
+
+/// Append a Pucker & Bloat modifier as a sibling immediately after `after`.
+pub fn cmd_add_pucker_bloat_after(
+    doc: &Document,
+    after: NodeId,
+    amount: f64,
+) -> Option<EditorCommand> {
+    let (parent, index) = doc.locate(after)?;
+    Some(EditorCommand::InsertNode {
+        parent,
+        index: index + 1,
+        tree: NodeTree::leaf(Node::new(
+            "Pucker & Bloat",
+            NodeKind::Modifier(ModifierKind::PuckerBloat {
+                amount: Animated::new(amount),
+            }),
+        )),
+    })
+}
+
 /// Current TrimMode of a Trim Path node, if it is one.
 pub fn get_trim_mode(doc: &Document, id: NodeId) -> Option<TrimMode> {
     match &doc.nodes.get(id)?.kind {

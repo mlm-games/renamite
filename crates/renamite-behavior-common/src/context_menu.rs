@@ -46,6 +46,8 @@ pub enum MenuAction {
     AddOffsetPath,
     AddRoundCorners,
     AddRepeater,
+    AddZigZag,
+    AddPuckerBloat,
     EditPath,
     CreateRect,
     CreateEllipse,
@@ -135,6 +137,8 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
             action(MenuAction::AddOffsetPath, "Offset Path", !locked),
             action(MenuAction::AddRoundCorners, "Round Corners", !locked),
             action(MenuAction::AddRepeater, "Repeater", !locked),
+            action(MenuAction::AddZigZag, "Zig Zag", !locked),
+            action(MenuAction::AddPuckerBloat, "Pucker & Bloat", !locked),
         ],
     });
     m
@@ -216,6 +220,16 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
                 action(
                     MenuAction::AddRepeater,
                     "Repeater",
+                    !any_locked && single.is_some(),
+                ),
+                action(
+                    MenuAction::AddZigZag,
+                    "Zig Zag",
+                    !any_locked && single.is_some(),
+                ),
+                action(
+                    MenuAction::AddPuckerBloat,
+                    "Pucker & Bloat",
                     !any_locked && single.is_some(),
                 ),
             ],
@@ -313,6 +327,8 @@ enum ModKind {
     Offset,
     Round,
     Repeater,
+    ZigZag,
+    PuckerBloat,
 }
 
 /// Convert a menu action into outputs. Host-owned actions (`Rename`,
@@ -350,6 +366,8 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
         MenuAction::AddOffsetPath => add_mod(ctx, ModKind::Offset),
         MenuAction::AddRoundCorners => add_mod(ctx, ModKind::Round),
         MenuAction::AddRepeater => add_mod(ctx, ModKind::Repeater),
+        MenuAction::AddZigZag => add_mod(ctx, ModKind::ZigZag),
+        MenuAction::AddPuckerBloat => add_mod(ctx, ModKind::PuckerBloat),
 
         MenuAction::EditPath => vec![ToolOutput::SwitchTool(ToolId::PathEdit)],
 
@@ -761,6 +779,8 @@ fn add_mod(ctx: &MenuContext, kind: ModKind) -> Vec<ToolOutput> {
         ModKind::Offset => crate::modifiers::cmd_add_offset_path_after(ctx.doc, target, 10.0),
         ModKind::Round => crate::modifiers::cmd_add_round_corners_after(ctx.doc, target, 10.0),
         ModKind::Repeater => crate::modifiers::cmd_add_repeater_after(ctx.doc, target),
+        ModKind::ZigZag => crate::modifiers::cmd_add_zigzag_after(ctx.doc, target),
+        ModKind::PuckerBloat => crate::modifiers::cmd_add_pucker_bloat_after(ctx.doc, target, 50.0),
     };
     let Some(cmd) = cmd else {
         return vec![];

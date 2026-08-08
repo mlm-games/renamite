@@ -11,8 +11,8 @@ use renamite_behavior_common::inspect::{
     DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_selection,
 };
 use renamite_behavior_common::modifiers::{
-    cmd_add_offset_path_after, cmd_add_repeater_after, cmd_add_round_corners_after,
-    cmd_add_trim_path_after, cmd_set_trim_mode,
+    cmd_add_offset_path_after, cmd_add_pucker_bloat_after, cmd_add_repeater_after,
+    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_zigzag_after, cmd_set_trim_mode,
 };
 use renamite_behavior_common::stroke::{
     cmd_add_stroke_dash_pair, cmd_disable_stroke_dash, cmd_enable_stroke_dash,
@@ -20,8 +20,8 @@ use renamite_behavior_common::stroke::{
 };
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
-    Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
-    StyleKind, StylePaint, TrimMode, Value, node_affine,
+    Color, GradientKind, GradientStop, GradientStops, ModifierKind, NodeId, NodeKind, PropPath,
+    ShapeKind, StyleKind, StylePaint, TrimMode, Value, node_affine,
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
@@ -652,6 +652,46 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
                 .color(th.on_surface_variant),
         )),
     );
+    buttons.push(
+        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+            CompactIconAction(Symbols::add, "Add Zig Zag", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    if let Some(cmd) = cmd_add_zigzag_after(&s.file.document, id) {
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Add Zig Zag".into()),
+                            ToolOutput::Commands(smallvec![cmd]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }
+            }),
+            Text("Zig Zag")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+        )),
+    );
+    buttons.push(
+        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+            CompactIconAction(Symbols::add, "Add Pucker & Bloat", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    if let Some(cmd) = cmd_add_pucker_bloat_after(&s.file.document, id, 50.0) {
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Add Pucker & Bloat".into()),
+                            ToolOutput::Commands(smallvec![cmd]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }
+            }),
+            Text("Pucker & Bloat")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+        )),
+    );
     Some(
         Row(Modifier::new()
             .height(40.0)
@@ -730,12 +770,12 @@ fn bool_toggle_row(
             .size(th.typography.body_medium)
             .color(th.on_surface)
             .modifier(Modifier::new().width(96.0)),
-        bool_toggle_segment(session.clone(), ids.clone(), value, false),
-        bool_toggle_segment(session, ids, value, true),
+        bool_toggle_segment(session.clone(), ids.clone(), value, false, label),
+        bool_toggle_segment(session, ids, value, true, label),
     ))
 }
 
-fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, value: bool) -> View {
+fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, value: bool, row_label: &'static str) -> View {
     let th = theme();
     let active = current == value;
     let label = if value { "On" } else { "Off" };
@@ -774,14 +814,21 @@ fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, val
                                         inverted: value,
                                     })
                                 }
+                                Some(node) if matches!(node.kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })) => {
+                                    Some(EditorCommand::SetZigZagSmooth {
+                                        id,
+                                        smooth: value,
+                                    })
+                                }
                                 _ => None,
                             })
                             .collect();
                         if cmds.is_empty() {
                             return;
                         }
+                        let tx = format!("Toggle {row_label}");
                         s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Invert mask".into()),
+                            ToolOutput::BeginTransaction(tx.into()),
                             ToolOutput::Commands(cmds.into()),
                             ToolOutput::CommitTransaction,
                         ]);
