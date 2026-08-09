@@ -32,6 +32,7 @@ web-workers = "0.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", default-features = false, features = ["console"] }
 glam.workspace = true
 kurbo.workspace = true
 smallvec.workspace = true

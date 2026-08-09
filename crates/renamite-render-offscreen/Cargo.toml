@@ -14,7 +14,7 @@ glam.workspace = true
 repose-core.workspace = true
 repose-render-wgpu = { workspace = true, default-features = false }
 
-wgpu = "30"
+wgpu.workspace = true
 pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow.workspace = true

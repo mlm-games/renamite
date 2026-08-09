@@ -32,6 +32,7 @@ glam = { version = "0.33", default-features = false, features = [
 lyon_tessellation = "1.0.20"
 lyon_path = "1.0"
 linesweeper = "0.4"
+wgpu = { version = "30", features = ["webgpu", "webgl"] }
 ttf-parser = "0.25"
 
 # CI/reference only

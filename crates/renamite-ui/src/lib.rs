@@ -46,9 +46,9 @@ pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
 pub fn init_wasm() {
     console_error_panic_hook::set_once();
     if web_workers::web::has_spawn_support() {
-        let _ = web_workers::scope(|scope| {
-            let _ = scope.spawn(|| {}).join();
-        });
+        let _ = web_sys::console::log_1(&"wasm worker threads: available".into());
+    } else {
+        let _ = web_sys::console::warn_1(&"wasm worker threads: unavailable (COOP/COEP?)".into());
     }
 }
 
