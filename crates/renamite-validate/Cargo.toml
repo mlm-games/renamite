@@ -1,0 +1,18 @@
+[package]
+name = "renamite-validate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Project validation and diagnostics for renamite."
+
+[dependencies]
+renamite-model.workspace = true
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
+renamite-machine.workspace = true
+renamite-io-ren.workspace = true
+serde.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+slotmap.workspace = true

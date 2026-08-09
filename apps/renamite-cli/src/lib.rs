@@ -83,11 +83,20 @@ pub enum Commands {
         json: bool,
     },
 
-    /// Validate + normalize (optionally fix in place)
+    /// Validate + normalize (optionally fix in place, or deep-validate)
     Validate {
         input: PathBuf,
         #[arg(long)]
         fix: bool,
+        /// Run deep structural validation and print diagnostics
+        #[arg(long)]
+        deep: bool,
+        /// Emit the deep validation report as JSON
+        #[arg(long, requires = "deep")]
+        json: bool,
+        /// Exit 1 on warnings as well as errors in deep mode
+        #[arg(long, requires = "deep")]
+        warnings_as_errors: bool,
     },
 
     /// Structural diff between two .ren/.renb files
@@ -203,7 +212,13 @@ fn dispatch(command: Commands) -> Result<()> {
         Commands::Pack { input, output } => cmd_pack(input, output),
         Commands::Unpack { input, output } => cmd_unpack(input, output),
         Commands::Info { input, json } => cmd_info(input, json),
-        Commands::Validate { input, fix } => cmd_validate(input, fix),
+        Commands::Validate {
+            input,
+            fix,
+            deep,
+            json,
+            warnings_as_errors,
+        } => cmd_validate(input, fix, deep, json, warnings_as_errors),
         Commands::Diff { a, b, fail_on_diff } => cmd_diff(a, b, fail_on_diff),
         Commands::New { output, template } => cmd_new(output, template),
         Commands::Templates {} => cmd_templates(),
@@ -461,11 +476,39 @@ fn cmd_info(input: PathBuf, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_validate(input: PathBuf, fix: bool) -> Result<()> {
+fn cmd_validate(
+    input: PathBuf,
+    fix: bool,
+    deep: bool,
+    json: bool,
+    warnings_as_errors: bool,
+) -> Result<()> {
     let mut file = load_file(&input)?;
     let before_json = serde_json::to_string(&file)?;
     file.normalize();
     file.garbage_collect();
+
+    if deep {
+        let report = renamite_validate::validate(&file);
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for d in &report.diagnostics {
+                println!("{:?}: {}: {}", d.severity, d.path, d.message);
+            }
+            println!(
+                "{} error(s), {} warning(s)",
+                report.error_count(),
+                report.warning_count()
+            );
+        }
+
+        if report.has_errors() || (warnings_as_errors && report.warning_count() > 0) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     if fix {
         std::fs::write(&input, renamite_io_ren::save_binary(&file)?)?;
@@ -576,7 +619,8 @@ fn cmd_templates() -> Result<()> {
 }
 
 fn templates_text() -> String {
-    let mut out = String::from("Available templates (use with `renamite new --template <slug>`):\n");
+    let mut out =
+        String::from("Available templates (use with `renamite new --template <slug>`):\n");
     for t in renamite_examples::templates() {
         out.push_str(&format!("  {:<18} {}\n", t.id.slug(), t.description));
     }
@@ -687,8 +731,7 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
 
 fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> Result<()> {
     let file = load_file(&input)?;
-    let report =
-        renamite_io_svg::export_with_report(&file.document, file.document.main, frame)?;
+    let report = renamite_io_svg::export_with_report(&file.document, file.document.main, frame)?;
     if strict && !report.warnings.is_empty() {
         for warning in &report.warnings {
             eprintln!("warning at {}: {}", warning.path, warning.message);
@@ -986,9 +1029,21 @@ mod tests {
         cmd_new(path.clone(), "ellipse".into()).unwrap();
 
         let before = std::fs::read(&path).unwrap();
-        cmd_validate(path.clone(), false).unwrap(); // no --fix: must not rewrite
+        cmd_validate(path.clone(), false, false, false, false).unwrap(); // no --fix: must not rewrite
         let after = std::fs::read(&path).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn validate_deep_reports_clean_ellipse_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scene.ren");
+        cmd_new(path.clone(), "ellipse".into()).unwrap();
+
+        let file = load_file(&path).unwrap();
+        let report = renamite_validate::validate(&file);
+        assert_eq!(report.error_count(), 0);
+        assert_eq!(report.warning_count(), 0);
     }
 
     #[test]
@@ -1007,7 +1062,10 @@ mod tests {
 
         cmd_import_svg(svg.clone(), ren.clone(), false).unwrap();
         let file = load_file(&ren).unwrap();
-        assert_eq!(file.document.compositions[file.document.main].size, (100, 100));
+        assert_eq!(
+            file.document.compositions[file.document.main].size,
+            (100, 100)
+        );
 
         cmd_export_svg(ren.clone(), out_svg.clone(), 0.0, false).unwrap();
         let text = std::fs::read_to_string(&out_svg).unwrap();

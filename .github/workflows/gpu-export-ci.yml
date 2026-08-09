@@ -46,6 +46,12 @@ jobs:
             test "$magic" = "89504e470d0a1a0a" || { echo "$t produced an invalid PNG (magic=$magic)"; exit 1; }
           done
 
+      - name: Deep-validate built-in templates
+        run: |
+          for t in blank bouncing-ball loader-trim-path masked-text photo-card repeater-burst gradient-poster; do
+            ./target/debug/renamite validate "$PWD/template-render/$t.ren" --deep
+          done
+
       - name: upload golden diffs on failure
         if: failure()
         uses: actions/upload-artifact@v4

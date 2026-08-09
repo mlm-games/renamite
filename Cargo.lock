@@ -3348,6 +3348,7 @@ dependencies = [
  "renamite-player",
  "renamite-render-bridge",
  "renamite-render-offscreen",
+ "renamite-validate",
  "repose-core",
  "serde",
  "serde_json",
@@ -3619,6 +3620,20 @@ dependencies = [
  "smallvec",
  "web-time",
  "web-workers",
+]
+
+[[package]]
+name = "renamite-validate"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "renamite-animation",
+ "renamite-geometry",
+ "renamite-io-ren",
+ "renamite-machine",
+ "renamite-model",
+ "serde",
+ "slotmap",
 ]
 
 [[package]]
