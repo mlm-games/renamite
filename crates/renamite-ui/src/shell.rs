@@ -180,10 +180,10 @@ fn color_picker_overlay(session: SessionRef) -> View {
     let session_done = session.clone();
 
     ZStack(Modifier::new().fill_max_size()).child((
-        // Scrim: click anywhere outside the picker to dismiss (cancels).
+        // Transparent close layer: click anywhere outside the picker to
+        // dismiss (cancels). Not a modal scrim - the editor stays visible.
         Box(Modifier::new()
             .fill_max_size()
-            .background(repose_core::Color(0, 0, 0, 90))
             .on_pointer_down(move |_| {
                 session_close.borrow_mut().close_color_picker();
             })),
@@ -289,33 +289,52 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 
 fn ExpandedWorkspace(session: SessionRef) -> View {
     let mode = session.borrow().mode;
-    let mut left_children: Vec<View> = vec![
-        Box(Modifier::new().weight(1.0))
-            .child(PanelSurface(LayersPanel(session.clone()))),
-        Box(Modifier::new().height(200.0))
-            .child(PanelSurface(AssetsPanel(session.clone()))),
-    ];
-    if mode == EditorMode::Interact {
-        left_children.push(
-            Box(Modifier::new().height(320.0))
-                .child(PanelSurface(InteractivityPanel(session.clone()))),
-        );
+    match mode {
+        EditorMode::Design => ExpandedDesignWorkspace(session),
+        EditorMode::Animate => ExpandedAnimateWorkspace(session),
+        EditorMode::Interact => ExpandedInteractWorkspace(session),
     }
+}
+
+fn ExpandedDesignWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
-        Column(
-            Modifier::new()
-                .width(264.0)
-                .fill_max_height()
-                .gap(8.0),
-        )
-        .child(left_children),
-        Column(Modifier::new().fill_max_size().weight(1.0).gap(8.0)).child((
+        Column(Modifier::new().width(280.0).fill_max_height().gap(8.0)).child((
+            Box(Modifier::new().weight(1.0))
+                .child(PanelSurface(LayersPanel(session.clone()))),
+            Box(Modifier::new().height(220.0))
+                .child(PanelSurface(AssetsPanel(session.clone()))),
+        )),
+        Box(Modifier::new().weight(1.0).fill_max_height())
+            .child(PanelSurface(ViewportPanel(session.clone()))),
+        Box(Modifier::new().width(320.0).fill_max_height())
+            .child(PanelSurface(PropertiesPanel(session))),
+    ))
+}
+
+fn ExpandedAnimateWorkspace(session: SessionRef) -> View {
+    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
+        crate::ToolRail(session.clone()),
+        Box(Modifier::new().width(280.0).fill_max_height())
+            .child(PanelSurface(LayersPanel(session.clone()))),
+        Column(Modifier::new().weight(1.0).fill_max_height().gap(8.0)).child((
             Box(Modifier::new().weight(1.0).fill_max_width())
                 .child(PanelSurface(ViewportPanel(session.clone()))),
-            Box(Modifier::new().height(240.0).fill_max_width())
+            Box(Modifier::new().height(260.0).fill_max_width())
                 .child(PanelSurface(TimelinePanel(session.clone()))),
         )),
+        Box(Modifier::new().width(320.0).fill_max_height())
+            .child(PanelSurface(PropertiesPanel(session))),
+    ))
+}
+
+fn ExpandedInteractWorkspace(session: SessionRef) -> View {
+    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
+        crate::ToolRail(session.clone()),
+        Box(Modifier::new().width(320.0).fill_max_height())
+            .child(PanelSurface(InteractivityPanel(session.clone()))),
+        Box(Modifier::new().weight(1.0).fill_max_height())
+            .child(PanelSurface(ViewportPanel(session.clone()))),
         Box(Modifier::new().width(320.0).fill_max_height())
             .child(PanelSurface(PropertiesPanel(session))),
     ))

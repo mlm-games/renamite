@@ -18,8 +18,8 @@ use renamite_animation::PlayState;
 use renamite_history::ToolId;
 use repose_core::{Color, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
 use repose_material::material3::{
-    DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem, MenuState,
-    TopAppBar, TopAppBarConfig,
+    DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem, MenuState, TopAppBar,
+    TopAppBarConfig,
 };
 use repose_platform::RenderContext;
 use repose_ui::overlay::OverlayHandle;
@@ -87,10 +87,19 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
     };
     let title = if dirty { format!("{name} *") } else { name };
 
+    let mut actions: Vec<View> = Vec::new();
+    if shell::platform_shell_class() == shell::ShellClass::Expanded {
+        actions.push(UndoButton(session.clone()));
+        actions.push(RedoButton(session.clone()));
+    }
+
     TopAppBar(
         Text(title).size(theme().typography.title_large),
         Some(
-            Row(Modifier::new().gap(10.0).align_items(repose_core::AlignItems::CENTER)).child((
+            Row(Modifier::new()
+                .gap(10.0)
+                .align_items(repose_core::AlignItems::CENTER))
+            .child((
                 EditorModeSwitch(session.clone()),
                 Text(status.unwrap_or(path))
                     .size(theme().typography.label_small)
@@ -98,25 +107,13 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             )),
         ),
         Some(FileMenu(session.clone(), overlay)),
-        vec![
-            CompactSwatchButton(session.clone()),
-            SaveButton(session.clone()),
-            UndoButton(session.clone()),
-            RedoButton(session.clone()),
-            PlaybackButton(session),
-        ],
+        actions,
         TopAppBarConfig::default(),
     )
 }
 
-pub fn FileMenu(
-    session: SessionRef,
-    overlay: OverlayHandle,
-) -> View {
-    let state = remember_with_key(
-        "renamite_file_menu",
-        MenuState::new,
-    );
+pub fn FileMenu(session: SessionRef, overlay: OverlayHandle) -> View {
+    let state = remember_with_key("renamite_file_menu", MenuState::new);
 
     let trigger = CompactIconAction(Symbols::menu, "File", {
         let state = state.clone();
@@ -154,9 +151,24 @@ pub fn FileMenu(
                 file::save_document_as(&session);
             })
         }),
-
         DropdownMenuEntry::Divider,
-
+        item("Undo", {
+            let session = session.clone();
+            Rc::new(move || {
+                let mut s = session.borrow_mut();
+                undo_cmd(&mut s);
+                s.bump();
+            })
+        }),
+        item("Redo", {
+            let session = session.clone();
+            Rc::new(move || {
+                let mut s = session.borrow_mut();
+                redo_cmd(&mut s);
+                s.bump();
+            })
+        }),
+        DropdownMenuEntry::Divider,
         item("Import Lottie…", {
             let session = session.clone();
             Rc::new(move || file::import_lottie(&session))
@@ -169,9 +181,7 @@ pub fn FileMenu(
             let session = session.clone();
             Rc::new(move || file::import_font(&session))
         }),
-
         DropdownMenuEntry::Divider,
-
         item("Export Lottie…", {
             let session = session.clone();
             Rc::new(move || file::export_lottie(&session))
@@ -200,15 +210,6 @@ pub fn FileMenu(
     )
 }
 
-fn SaveButton(session: SessionRef) -> View {
-    CompactIconAction(Symbols::save, "Save", {
-        let session = session.clone();
-        move || {
-            file::save_document(&session);
-        }
-    })
-}
-
 fn UndoButton(session: SessionRef) -> View {
     CompactIconAction(Symbols::undo, "Undo", {
         let session = session.clone();
@@ -229,21 +230,6 @@ fn RedoButton(session: SessionRef) -> View {
             s.bump();
         }
     })
-}
-
-fn PlaybackButton(session: SessionRef) -> View {
-    let is_playing = session.borrow().playing;
-    if is_playing {
-        CompactIconAction(Symbols::pause, "Pause", {
-            let session = session.clone();
-            move || toggle_playback(&session)
-        })
-    } else {
-        CompactIconAction(Symbols::play_arrow, "Play", {
-            let session = session.clone();
-            move || toggle_playback(&session)
-        })
-    }
 }
 
 pub(crate) fn toggle_playback(session: &SessionRef) {
@@ -274,7 +260,7 @@ pub fn ToolRail(session: SessionRef) -> View {
             .gap(6.0)
             .background(theme().surface_container),
     )
-    .child((
+    .child(vec![
         tool(
             session.clone(),
             ToolId::Select,
@@ -282,6 +268,14 @@ pub fn ToolRail(session: SessionRef) -> View {
             "Select",
             selected,
         ),
+        tool(
+            session.clone(),
+            ToolId::Transform,
+            Symbols::transform,
+            "Transform / pivot",
+            selected,
+        ),
+        tool(session.clone(), ToolId::Pen, Symbols::draw, "Pen", selected),
         tool(
             session.clone(),
             ToolId::PathEdit,
@@ -319,19 +313,19 @@ pub fn ToolRail(session: SessionRef) -> View {
         ),
         tool(
             session.clone(),
-            ToolId::Gradient,
-            Symbols::gradient,
-            "Gradient",
-            selected,
-        ),
-        tool(
-            session,
             ToolId::Fill,
             Symbols::format_color_fill,
             "Fill",
             selected,
         ),
-    ))
+        tool(
+            session,
+            ToolId::Gradient,
+            Symbols::gradient,
+            "Gradient",
+            selected,
+        ),
+    ])
 }
 
 fn tool(
@@ -349,9 +343,9 @@ fn tool(
     })
 }
 
-/// Top-bar swatch showing the current fill paint; click opens the color picker
+/// Paint swatch showing the current fill paint; click opens the color picker
 /// popover targeting the current paint.
-fn CompactSwatchButton(session: SessionRef) -> View {
+pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
     let th = theme();
     let (color, is_open) = {
         let s = session.borrow();

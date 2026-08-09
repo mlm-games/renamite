@@ -24,6 +24,8 @@ repose_material::material_symbols! {
 
     arrow_selector_tool: '\u{f82f}',
     edit:                '\u{f097}',
+    transform:           '\u{e428}',
+    draw:                '\u{e746}',
     rectangle:           '\u{eb54}',
     circle:              '\u{ef4a}',
     star:                '\u{f09a}',

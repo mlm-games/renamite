@@ -3,6 +3,7 @@ use repose_canvas::Canvas;
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
 use repose_core::{AlignItems, Modifier, View, theme};
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelHeader, StatusChip};
@@ -69,7 +70,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
 
     Column(Modifier::new().fill_max_size()).child((
         header,
-        TimelineInfoBar(head, range),
+        TimelineInfoBar(head, range, record),
         Row(Modifier::new().fill_max_size()).child((
             TimelineLabels(session.clone(), &rows),
             Box(Modifier::new().weight(1.0).fill_max_height())
@@ -81,6 +82,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
 fn TimelineInfoBar(
     head: f64,
     range: (renamite_animation::Frame, renamite_animation::Frame),
+    record: bool,
 ) -> View {
     Row(
         Modifier::new()
@@ -100,9 +102,17 @@ fn TimelineInfoBar(
             theme().surface_container_high,
             theme().on_surface_variant,
         ),
-        Text("One transform property per layer")
-            .size(theme().typography.label_small)
-            .color(theme().on_surface_variant),
+        if record {
+            StatusChip(
+                "● REC — edits add keys".to_string(),
+                theme().error_container,
+                theme().on_error_container,
+            )
+        } else {
+            Text("One transform property per layer")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+        },
     ))
 }
 
@@ -116,33 +126,41 @@ fn prop_label(session: SessionRef, node: renamite_model::NodeId, path: &renamite
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
     Box(Modifier::new().width(170.0).fill_max_height()).child(
-        Column(Modifier::new().fill_max_size()).child(
-            rows.iter()
-                .map(|row| {
-                    let label = prop_label(session.clone(), row.node, &row.prop);
-                    let name = match label {
-                        Some(prop) => format!("{} · {}", session.borrow().node_name(row.node), prop),
-                        None => session.borrow().node_name(row.node),
-                    };
-                    Box(
-                        Modifier::new()
-                            .height(22.0)
-                            .fill_max_width()
-                            .padding_values(repose_core::PaddingValues {
-                                left: 10.0,
-                                right: 8.0,
-                                top: 0.0,
-                                bottom: 0.0,
-                            })
-                            .align_items(AlignItems::CENTER),
-                    )
-                    .child(
-                        Text(name)
-                            .size(theme().typography.body_small)
-                            .color(theme().on_surface),
-                    )
-                })
-                .collect::<Vec<_>>(),
+        ScrollArea(
+            Modifier::new().fill_max_size(),
+            remember_scroll_state("timeline_labels_scroll"),
+            Column(Modifier::new().fill_max_width()).child(
+                rows.iter()
+                    .map(|row| {
+                        let label = prop_label(session.clone(), row.node, &row.prop);
+                        let name = match label {
+                            Some(prop) => format!(
+                                "{} · {}",
+                                session.borrow().node_name(row.node),
+                                prop
+                            ),
+                            None => session.borrow().node_name(row.node),
+                        };
+                        Box(
+                            Modifier::new()
+                                .height(22.0)
+                                .fill_max_width()
+                                .padding_values(repose_core::PaddingValues {
+                                    left: 10.0,
+                                    right: 8.0,
+                                    top: 0.0,
+                                    bottom: 0.0,
+                                })
+                                .align_items(AlignItems::CENTER),
+                        )
+                        .child(
+                            Text(name)
+                                .size(theme().typography.body_small)
+                                .color(theme().on_surface),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         ),
     )
 }
@@ -159,6 +177,19 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     dispatch_timeline(
                         &mut s,
                         TimelineEvent::Press {
+                            pos: pe_pos(&pe),
+                            modifiers: map_modifiers(&pe),
+                        },
+                    );
+                }
+            })
+            .on_pointer_move({
+                let session = session.clone();
+                move |pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    dispatch_timeline(
+                        &mut s,
+                        TimelineEvent::Move {
                             pos: pe_pos(&pe),
                             modifiers: map_modifiers(&pe),
                         },

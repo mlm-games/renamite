@@ -210,7 +210,7 @@ fn HudSurface(content: View) -> View {
 }
 
 fn ViewportStageHud(session: SessionRef) -> View {
-    let (w, h, frame, tool_label) = {
+    let (w, h, frame, tool_label, sel_count, record) = {
         let s = session.borrow();
         let comp = &s.file.document.compositions[s.file.document.main];
         let label = match s.active_tool {
@@ -225,7 +225,14 @@ fn ViewportStageHud(session: SessionRef) -> View {
             renamite_history::ToolId::Gradient => "Gradient",
             renamite_history::ToolId::Fill => "Fill",
         };
-        (comp.size.0, comp.size.1, s.playback.head.round() as i64, label)
+        (
+            comp.size.0,
+            comp.size.1,
+            s.playback.head.round() as i64,
+            label,
+            s.selection.nodes.len(),
+            s.record,
+        )
     };
 
     Box(Modifier::new().absolute().offset(Some(16.0), Some(16.0), None, None)).child(HudSurface(
@@ -235,18 +242,30 @@ fn ViewportStageHud(session: SessionRef) -> View {
                 .gap(8.0)
                 .align_items(AlignItems::CENTER),
         )
-        .child((
-            Text("Main").size(theme().typography.label_medium),
-            Text(format!("{w}×{h}"))
-                .size(theme().typography.label_small)
-                .color(theme().on_surface_variant),
-            Text(format!("Frame {frame}"))
-                .size(theme().typography.label_small)
-                .color(theme().on_surface_variant),
-            Text(tool_label)
-                .size(theme().typography.label_small)
-                .color(theme().primary),
-        )),
+        .child(if record {
+            vec![
+                Text("● REC").size(theme().typography.label_medium).color(theme().error),
+                Text(format!("Frame {frame}"))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+            ]
+        } else {
+            vec![
+                Text("Main").size(theme().typography.label_medium),
+                Text(format!("{w}×{h}"))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+                Text(format!("Frame {frame}"))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+                Text(tool_label)
+                    .size(theme().typography.label_small)
+                    .color(theme().primary),
+                Text(format!("{sel_count} selected"))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+            ]
+        }),
     ))
 }
 

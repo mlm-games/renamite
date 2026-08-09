@@ -12,10 +12,10 @@ pub fn PanelSurface(content: View) -> View {
     Surface(
         SurfaceConfig {
             modifier: Modifier::new().fill_max_size(),
-            color: theme().surface_container,
+            color: theme().surface_container_low,
             content_color: theme().on_surface,
-            shape_radius: 12.0,
-            border: Some((1.0, theme().outline_variant)),
+            shape_radius: 14.0,
+            border: Some((1.0, theme().outline_variant.with_alpha(140))),
             ..Default::default()
         },
         move || content,

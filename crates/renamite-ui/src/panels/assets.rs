@@ -48,30 +48,43 @@ pub fn AssetsPanel(session: SessionRef) -> View {
         ],
     )];
 
-    children.push(
-        Text("FONTS")
-            .size(theme().typography.label_small)
-            .color(theme().on_surface_variant)
-            .modifier(Modifier::new().padding(12.0)),
-    );
+    if rows.is_empty() && image_rows.is_empty() {
+        children.push(
+            Column(Modifier::new().fill_max_width().gap(8.0).padding(16.0)).child((
+                Text("No assets yet")
+                    .size(theme().typography.body_medium)
+                    .color(theme().on_surface),
+                Text("Import an image or font to use it in this project.")
+                    .size(theme().typography.body_small)
+                    .color(theme().on_surface_variant),
+            )),
+        );
+    } else {
+        children.push(
+            Text("FONTS")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+                .modifier(Modifier::new().padding(12.0)),
+        );
 
-    for row in rows {
-        children.push(FontRow(
-            session.clone(),
-            row,
-            selected_text,
-        ));
-    }
+        for row in rows {
+            children.push(FontRow(
+                session.clone(),
+                row,
+                selected_text,
+            ));
+        }
 
-    children.push(
-        Text("IMAGES")
-            .size(theme().typography.label_small)
-            .color(theme().on_surface_variant)
-            .modifier(Modifier::new().padding(12.0)),
-    );
+        children.push(
+            Text("IMAGES")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+                .modifier(Modifier::new().padding(12.0)),
+        );
 
-    for row in image_rows {
-        children.push(ImageRow(session.clone(), row));
+        for row in image_rows {
+            children.push(ImageRow(session.clone(), row));
+        }
     }
 
     let header = children.remove(0);

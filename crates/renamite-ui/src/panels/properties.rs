@@ -51,11 +51,25 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
 
     if ids.is_empty() {
         return Column(Modifier::new().fill_max_size()).child((
-            PanelHeader(Symbols::settings, "Properties", vec![]),
+            PanelHeader(
+                Symbols::settings,
+                "Properties",
+                vec![],
+                // vec![crate::CompactSwatchButton(session)], // Seems unneeded
+            ),
             Text("No selection")
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().padding(16.0)),
+            Text("Select a layer on the canvas or in Layers to edit its properties.")
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant)
+                .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
+                    left: 16.0,
+                    right: 16.0,
+                    top: 0.0,
+                    bottom: 16.0,
+                })),
         ));
     }
 
@@ -86,27 +100,30 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     let mut children: Vec<View> = vec![PanelHeader(
         Symbols::settings,
         title,
-        vec![CompactIconAction(
-            if record {
-                Symbols::stop_circle
-            } else {
-                Symbols::radio_button_unchecked
-            },
-            if record {
-                "Stop recording keys"
-            } else {
-                "Record keys on edit"
-            },
-            {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    s.record = !s.record;
-                    s.revision = s.revision.wrapping_add(1);
-                    request_frame();
-                }
-            },
-        )],
+        vec![
+            crate::CompactSwatchButton(session.clone()),
+            CompactIconAction(
+                if record {
+                    Symbols::stop_circle
+                } else {
+                    Symbols::radio_button_unchecked
+                },
+                if record {
+                    "Stop recording keys"
+                } else {
+                    "Record keys on edit"
+                },
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.record = !s.record;
+                        s.revision = s.revision.wrapping_add(1);
+                        request_frame();
+                    }
+                },
+            ),
+        ],
     )];
     // Single selected node: paint section (solid / linear / radial + axis +
     // stops) driving the fill style that paints it.
@@ -783,7 +800,13 @@ fn bool_toggle_row(
     ))
 }
 
-fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, value: bool, row_label: &'static str) -> View {
+fn bool_toggle_segment(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    current: bool,
+    value: bool,
+    row_label: &'static str,
+) -> View {
     let th = theme();
     let active = current == value;
     let label = if value { "On" } else { "Off" };
@@ -822,11 +845,13 @@ fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, val
                                         inverted: value,
                                     })
                                 }
-                                Some(node) if matches!(node.kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })) => {
-                                    Some(EditorCommand::SetZigZagSmooth {
-                                        id,
-                                        smooth: value,
-                                    })
+                                Some(node)
+                                    if matches!(
+                                        node.kind,
+                                        NodeKind::Modifier(ModifierKind::ZigZag { .. })
+                                    ) =>
+                                {
+                                    Some(EditorCommand::SetZigZagSmooth { id, smooth: value })
                                 }
                                 _ => None,
                             })
@@ -836,7 +861,7 @@ fn bool_toggle_segment(session: SessionRef, ids: Vec<NodeId>, current: bool, val
                         }
                         let tx = format!("Toggle {row_label}");
                         s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction(tx.into()),
+                            ToolOutput::BeginTransaction(tx),
                             ToolOutput::Commands(cmds.into()),
                             ToolOutput::CommitTransaction,
                         ]);
@@ -1519,7 +1544,9 @@ fn paint_swatch_button(session: SessionRef, target: PickerTarget, color: Color) 
             let session = session.clone();
             move |pe: repose_core::input::PointerEvent| {
                 let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
-                session.borrow_mut().open_color_picker(target, color, anchor);
+                session
+                    .borrow_mut()
+                    .open_color_picker(target, color, anchor);
             }
         }))
 }

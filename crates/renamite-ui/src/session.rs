@@ -322,6 +322,7 @@ impl Session {
         let mut needs_repaint = false;
         let mut in_transaction = false;
         let mut txn_mutated = false;
+        let mut mutated_outside_transaction = false;
 
         for out in outputs {
             match out {
@@ -362,8 +363,10 @@ impl Session {
                     self.ensure_selection_visible();
                     document_changed = true;
                     needs_evaluation = true;
-                    if in_transaction {
+                    if in_transaction || self.history.transaction_open() {
                         txn_mutated = true;
+                    } else {
+                        mutated_outside_transaction = true;
                     }
                 }
                 ToolOutput::SetPlayhead(f) => {
@@ -391,6 +394,12 @@ impl Session {
                 }
                 _ => {}
             }
+        }
+
+        // Defensive: any document mutation that never went through a
+        // Begin/Commit pair still marks the project dirty.
+        if mutated_outside_transaction {
+            self.dirty = true;
         }
 
         // Batch invalidation: at most one re-evaluation + one repaint per
@@ -865,8 +874,11 @@ impl Session {
     }
 
     /// Load a fresh project, resetting all session view state and undo history.
+    /// Any real document (open/import/template) clears the welcome launcher;
+    /// callers that want the launcher back set `welcome = true` afterwards.
     pub fn replace_file(&mut self, file: RenFile) {
         self.file = file;
+        self.welcome = false;
         self.history = History::new();
         self.engine = Engine::new(&self.file).expect("valid project");
         self.selection.nodes.clear();
@@ -1353,6 +1365,7 @@ impl Session {
             listeners: Vec::new(),
         };
 
+        self.history.begin("Create machine".to_string());
         let applied = self.history_apply_full(
             EditorCommand::CreateMachine {
                 index: usize::MAX,
@@ -1360,7 +1373,6 @@ impl Session {
                 id: None,
             },
         );
-
         self.history.commit();
 
         if let Some(machine) =
