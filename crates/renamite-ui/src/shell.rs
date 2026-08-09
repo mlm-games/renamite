@@ -11,7 +11,7 @@ use crate::components::{PanelSurface, PillButton, ToolAction};
 use crate::panels::{
     AssetsPanel, InteractivityPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel,
 };
-use crate::session::{PanelPage, SessionRef};
+use crate::session::{EditorMode, PanelPage, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::MenuEntry;
 
@@ -22,20 +22,13 @@ pub enum ShellClass {
     Compact,
 }
 
+/// Choose the shell layout from the current window size class (Material 3
+/// adaptive thresholds: <600 dp compact, <840 dp medium, else expanded).
 pub fn platform_shell_class() -> ShellClass {
-    #[cfg(target_os = "android")]
-    {
-        ShellClass::Compact
-    }
-
-    #[cfg(all(target_arch = "wasm32", not(target_os = "android")))]
-    {
-        ShellClass::Medium
-    }
-
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    {
-        ShellClass::Expanded
+    match repose_core::window_size_class().width {
+        repose_core::WidthClass::Compact => ShellClass::Compact,
+        repose_core::WidthClass::Medium => ShellClass::Medium,
+        repose_core::WidthClass::Expanded => ShellClass::Expanded,
     }
 }
 
@@ -172,12 +165,13 @@ fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> 
 }
 
 /// Transparent-to-closem modal layer containing the color picker popover,
-/// anchored under the top bar when a picker is open.
+/// anchored to the swatch that opened it (clamped to the window edges).
 fn color_picker_overlay(session: SessionRef) -> View {
     let Some(picker) = session.borrow().open_picker.clone() else {
         return ZStack(Modifier::new());
     };
     let swatches = session.borrow().swatches.colors.clone();
+    let (x, y) = picker_placement(picker.anchor);
 
     let session_close = session.clone();
     let session_change = session.clone();
@@ -195,7 +189,7 @@ fn color_picker_overlay(session: SessionRef) -> View {
             })),
         Box(Modifier::new()
             .absolute()
-            .offset(Some(16.0), Some(56.0), None, None))
+            .offset(Some(x), Some(y), None, None))
         .child(crate::color_picker::ColorPicker(
             picker.state.clone(),
             swatches,
@@ -213,6 +207,24 @@ fn color_picker_overlay(session: SessionRef) -> View {
             }),
         )),
     ))
+}
+
+/// Clamp a picker popover near its anchor: prefer below the swatch, flip above
+/// when there is no room, then clamp inside the window with a small margin.
+fn picker_placement(anchor: glam::DVec2) -> (f32, f32) {
+    const W: f32 = 224.0;
+    const H: f32 = 416.0;
+    const M: f32 = 8.0;
+    let vw = repose_core::get_window_container_width().max(1.0);
+    let vh = repose_core::get_window_container_height().max(1.0);
+    let mut x = anchor.x as f32 + 8.0;
+    let mut y = anchor.y as f32 + 8.0;
+    if y + H > vh - M {
+        y = anchor.y as f32 - H - 8.0;
+    }
+    x = x.clamp(M, (vw - W - M).max(M));
+    y = y.clamp(M, (vh - H - M).max(M));
+    (x, y)
 }
 
 fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
@@ -276,6 +288,19 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 }
 
 fn ExpandedWorkspace(session: SessionRef) -> View {
+    let mode = session.borrow().mode;
+    let mut left_children: Vec<View> = vec![
+        Box(Modifier::new().weight(1.0))
+            .child(PanelSurface(LayersPanel(session.clone()))),
+        Box(Modifier::new().height(200.0))
+            .child(PanelSurface(AssetsPanel(session.clone()))),
+    ];
+    if mode == EditorMode::Interact {
+        left_children.push(
+            Box(Modifier::new().height(320.0))
+                .child(PanelSurface(InteractivityPanel(session.clone()))),
+        );
+    }
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
         Column(
@@ -284,14 +309,7 @@ fn ExpandedWorkspace(session: SessionRef) -> View {
                 .fill_max_height()
                 .gap(8.0),
         )
-        .child((
-            Box(Modifier::new().weight(1.0))
-                .child(PanelSurface(LayersPanel(session.clone()))),
-            Box(Modifier::new().height(200.0))
-                .child(PanelSurface(AssetsPanel(session.clone()))),
-            Box(Modifier::new().height(320.0))
-                .child(PanelSurface(InteractivityPanel(session.clone()))),
-        )),
+        .child(left_children),
         Column(Modifier::new().fill_max_size().weight(1.0).gap(8.0)).child((
             Box(Modifier::new().weight(1.0).fill_max_width())
                 .child(PanelSurface(ViewportPanel(session.clone()))),
@@ -445,8 +463,7 @@ fn BottomNavigation(session: SessionRef) -> View {
                 "Animate",
             ),
             nav_item(session.clone(), PanelPage::Inspect, Symbols::settings, "Inspect"),
-            nav_item(session.clone(), PanelPage::Assets, Symbols::folder_open, "Assets"),
-            nav_item(session, PanelPage::Interact, Symbols::account_tree, "Logic"),
+            nav_item(session, PanelPage::Assets, Symbols::folder_open, "Assets"),
         ],
         NavigationBarConfig::default(),
     )

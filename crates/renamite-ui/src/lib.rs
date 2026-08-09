@@ -87,41 +87,11 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
     };
     let title = if dirty { format!("{name} *") } else { name };
 
-    let save_chip = if dirty {
-        crate::components::StatusChip(
-            "Unsaved",
-            theme().tertiary_container,
-            theme().on_tertiary_container,
-        )
-    } else {
-        crate::components::StatusChip(
-            "Saved",
-            theme().surface_container_high,
-            theme().on_surface_variant,
-        )
-    };
-
-    let record_chip = if session.borrow().record {
-        crate::components::StatusChip(
-            "● Recording",
-            theme().error_container,
-            theme().on_error_container,
-        )
-    } else {
-        crate::components::StatusChip(
-            "Design edits",
-            theme().surface_container_high,
-            theme().on_surface_variant,
-        )
-    };
-
     TopAppBar(
         Text(title).size(theme().typography.title_large),
         Some(
             Row(Modifier::new().gap(10.0).align_items(repose_core::AlignItems::CENTER)).child((
                 EditorModeSwitch(session.clone()),
-                save_chip,
-                record_chip,
                 Text(status.unwrap_or(path))
                     .size(theme().typography.label_small)
                     .color(theme().on_surface_variant),
@@ -410,13 +380,14 @@ fn CompactSwatchButton(session: SessionRef) -> View {
         ))
         .on_pointer_down({
             let session = session.clone();
-            move |_| {
+            move |pe: repose_core::input::PointerEvent| {
                 let mut s = session.borrow_mut();
                 if s.open_picker.is_some() {
                     s.close_color_picker();
                 } else {
                     let c = s.current_paint.base_color();
-                    s.open_color_picker(PickerTarget::CurrentPaint, c);
+                    let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
+                    s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
                 }
             }
         }))

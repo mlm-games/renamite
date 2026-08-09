@@ -3,6 +3,7 @@ use renamite_behavior_common::assets::{
 };
 use renamite_history::{EditorCommand, ToolOutput};
 use repose_core::{AlignItems, Modifier, View, theme};
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, ImageExt, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
@@ -73,7 +74,15 @@ pub fn AssetsPanel(session: SessionRef) -> View {
         children.push(ImageRow(session.clone(), row));
     }
 
-    Column(Modifier::new().fill_max_size()).child(children)
+    let header = children.remove(0);
+    Column(Modifier::new().fill_max_size()).child((
+        header,
+        ScrollArea(
+            Modifier::new().fill_max_size(),
+            remember_scroll_state("assets_scroll"),
+            Column(Modifier::new().fill_max_width()).child(children),
+        ),
+    ))
 }
 
 fn ImageRow(

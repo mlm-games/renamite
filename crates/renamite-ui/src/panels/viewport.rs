@@ -22,7 +22,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let show_template_picker = {
         let s = session.borrow();
         let main = s.file.document.main;
-        s.file.document.compositions[main].children.is_empty()
+        s.welcome && s.file.document.compositions[main].children.is_empty()
     };
 
     let main_view = if show_template_picker {
@@ -271,8 +271,9 @@ fn TemplatePicker(session: SessionRef) -> View {
         .iter()
         .map(|t| TemplateCard(session.clone(), t))
         .collect();
+    let cols = launcher_cols().max(1);
     let rows: Vec<View> = cards
-        .chunks(3)
+        .chunks(cols)
         .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
         .collect();
 
@@ -316,6 +317,29 @@ fn TemplatePicker(session: SessionRef) -> View {
             .color(th.on_surface),
     )
     .child(Column(Modifier::new().gap(12.0)).child(rows))
+    .child(
+        Text("Or dismiss to a blank canvas")
+            .size(th.typography.label_medium)
+            .color(th.primary)
+            .modifier(
+                Modifier::new().on_pointer_down({
+                    let session = session.clone();
+                    move |_| {
+                        let mut s = session.borrow_mut();
+                        s.welcome = false;
+                        s.revision = s.revision.wrapping_add(1);
+                        request_frame();
+                    }
+                }),
+            ),
+    )
+}
+
+/// Template grid columns from the available viewport width so the launcher
+/// doesn't blow out on narrow windows. Cards are 260px + 12px gap.
+fn launcher_cols() -> usize {
+    let width = repose_core::get_window_container_width() as f64;
+    (((width - 48.0) / 272.0).floor() as usize).clamp(1, 4)
 }
 
 fn LauncherTile(
@@ -356,6 +380,7 @@ fn TemplateCard(session: SessionRef, template: &'static renamite_examples::Templ
                 let file = renamite_examples::build_template(id);
                 let mut s = session.borrow_mut();
                 s.replace_file(file);
+                s.welcome = false;
                 s.current_path = None;
                 s.dirty = true;
                 s.status = Some(format!("Created from \"{}\"", id.display_name()));

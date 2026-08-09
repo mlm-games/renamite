@@ -100,10 +100,18 @@ fn TimelineInfoBar(
             theme().surface_container_high,
             theme().on_surface_variant,
         ),
-        Text("Opacity rows in v0.1")
+        Text("One transform property per layer")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant),
     ))
+}
+
+fn prop_label(session: SessionRef, node: renamite_model::NodeId, path: &renamite_model::PropPath) -> Option<String> {
+    let s = session.borrow();
+    renamite_behavior_common::inspect::props_for_node(&s.file.document, node, renamite_animation::Frame(0))
+        .into_iter()
+        .find(|row| &row.desc.path == path)
+        .map(|row| row.desc.label.to_string())
 }
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
@@ -111,7 +119,11 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
         Column(Modifier::new().fill_max_size()).child(
             rows.iter()
                 .map(|row| {
-                    let name = session.borrow().node_name(row.node);
+                    let label = prop_label(session.clone(), row.node, &row.prop);
+                    let name = match label {
+                        Some(prop) => format!("{} · {}", session.borrow().node_name(row.node), prop),
+                        None => session.borrow().node_name(row.node),
+                    };
                     Box(
                         Modifier::new()
                             .height(22.0)

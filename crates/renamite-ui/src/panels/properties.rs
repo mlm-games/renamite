@@ -31,6 +31,7 @@ use repose_material::material3::{
     IconButton, IconButtonConfig, TextField, TextFieldConfig, TooltipBox, TooltipConfig,
     TooltipState,
 };
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
@@ -107,7 +108,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             },
         )],
     )];
-
     // Single selected node: paint section (solid / linear / radial + axis +
     // stops) driving the fill style that paints it.
     if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
@@ -169,7 +169,15 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         }
     }
 
-    Column(Modifier::new().fill_max_size()).child(children)
+    let header = children.remove(0);
+    Column(Modifier::new().fill_max_size()).child((
+        header,
+        ScrollArea(
+            Modifier::new().fill_max_size(),
+            remember_scroll_state("properties_scroll"),
+            Column(Modifier::new().fill_max_width()).child(children),
+        ),
+    ))
 }
 
 fn PropRowView(
@@ -1509,8 +1517,9 @@ fn paint_swatch_button(session: SessionRef, target: PickerTarget, color: Color) 
         ))
         .on_pointer_down({
             let session = session.clone();
-            move |_| {
-                session.borrow_mut().open_color_picker(target, color);
+            move |pe: repose_core::input::PointerEvent| {
+                let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
+                session.borrow_mut().open_color_picker(target, color, anchor);
             }
         }))
 }
@@ -1581,10 +1590,12 @@ fn stop_rows(
                 ))
                 .on_pointer_down({
                     let session = session.clone();
-                    move |_| {
+                    move |pe: repose_core::input::PointerEvent| {
+                        let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
                         session.borrow_mut().open_color_picker(
                             PickerTarget::GradientStop { style_id, index: i },
                             stop_color,
+                            anchor,
                         );
                     }
                 }));

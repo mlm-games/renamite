@@ -187,6 +187,7 @@ fn new_document_inner(session: &SessionRef) {
     let mut file = default_file();
     file.meta.name = "Untitled".into();
     s.replace_file(file);
+    s.welcome = true;
     s.current_path = None;
     s.status = Some("New document".into());
 }
@@ -610,7 +611,8 @@ pub fn import_image(session: &SessionRef) {
     );
 }
 
-/// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+/// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_ren(session: &SessionRef, path: &Path) -> bool {
     let bytes = if is_binary(path.to_string_lossy().as_ref()) {
         session.borrow().pack_snapshot()
@@ -661,31 +663,17 @@ fn prepare_export(
     Ok((repose, (w, h), document))
 }
 
-/// Rasterize `repose` on a background thread and encode PNG bytes. Image
-/// assets are uploaded from `document` before drawing so image layers resolve.
-fn render_offscreen_worker(
+/// Rasterize `repose` and encode PNG bytes. Image assets are uploaded from
+/// `document` before drawing so image layers resolve. Runs on any thread.
+fn render_png_bytes(
     repose: repose_core::Scene,
     w: u32,
     h: u32,
     document: renamite_model::Document,
 ) -> anyhow::Result<Vec<u8>> {
-    web_workers::scope(|scope| {
-        let result = scope
-            .spawn(move || -> anyhow::Result<Vec<u8>> {
-                let mut gpu = renamite_render_offscreen::OffscreenRenderer::new_blocking(w, h, 4)?;
-                gpu.sync_document_images(&document)?;
-                gpu.render_png(&repose, Some([1.0, 1.0, 1.0, 1.0]))
-            })
-            .join();
-        match result {
-            Ok(Ok(png)) => Ok(png),
-            Ok(Err(e)) => Err(e),
-            Err(panic) => Err(anyhow::anyhow!(
-                "export worker panicked: {}",
-                panic_payload(&panic)
-            )),
-        }
-    })
+    let mut gpu = renamite_render_offscreen::OffscreenRenderer::new_blocking(w, h, 4)?;
+    gpu.sync_document_images(&document)?;
+    gpu.render_png(&repose, Some([1.0, 1.0, 1.0, 1.0]))
 }
 
 /// Best-effort string for a panic payload (`Box<dyn Any + Send>`).
@@ -699,53 +687,91 @@ fn panic_payload(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Render the current frame and write it to a user-chosen PNG path. Desktop
-/// uses a blocking save dialog; WASM/Android save through the OS picker.
+/// Render the current frame off-thread and write it to a user-chosen PNG path.
+/// The render worker runs detached so the editor stays responsive; completion
+/// is applied through [`PendingFileOp::ExportFinished`] on the UI thread.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn export_png(session: &SessionRef) {
+    if session.borrow().exporting_png {
+        set_status(session, "PNG export already in progress");
+        return;
+    }
     let Some(path) = renamite_platform::dialogs::export_path("Export frame", "frame.png", &["png"])
     else {
         return;
     };
-    let png = match prepare_export(session)
-        .and_then(|(scene, (w, h), document)| render_offscreen_worker(scene, w, h, document))
-    {
-        Ok(png) => png,
+    let (scene, (w, h), document) = match prepare_export(session) {
+        Ok(p) => p,
         Err(e) => {
             report_error(session, e);
             return;
         }
     };
-    match std::fs::write(&path, png) {
-        Ok(()) => set_status(session, format!("Exported {}", path.display())),
-        Err(e) => report_error(session, e),
-    }
+    session.borrow_mut().exporting_png = true;
+    set_status(session, "Rendering PNG…");
+    let ops = session.borrow().file_ops.clone();
+    web_workers::spawn(move || {
+        let op = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_png_bytes(scene, w, h, document)
+        })) {
+            Ok(Ok(png)) => match std::fs::write(&path, png) {
+                Ok(()) => PendingFileOp::ExportFinished {
+                    message: format!("Exported {}", path.display()),
+                },
+                Err(e) => PendingFileOp::Failed {
+                    message: format!("PNG export failed: {e}"),
+                },
+            },
+            Ok(Err(e)) => PendingFileOp::Failed {
+                message: format!("PNG export failed: {e}"),
+            },
+            Err(panic) => PendingFileOp::Failed {
+                message: format!("PNG export failed: {}", panic_payload(&panic)),
+            },
+        };
+        ops.lock().unwrap().push_back(op);
+        wake_ui();
+    });
 }
 
+/// Render the current frame off-thread, then hand the bytes to the OS save
+/// picker (WASM/Android). The picker itself is non-blocking; the render no
+/// longer blocks the UI thread.
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub fn export_png(session: &SessionRef) {
-    let png = match prepare_export(session)
-        .and_then(|(scene, (w, h), document)| render_offscreen_worker(scene, w, h, document))
-    {
-        Ok(png) => png,
+    if session.borrow().exporting_png {
+        set_status(session, "PNG export already in progress");
+        return;
+    }
+    let suggested = format!("{}.png", document_stem(session));
+    let (scene, (w, h), document) = match prepare_export(session) {
+        Ok(p) => p,
         Err(e) => {
             report_error(session, e);
             return;
         }
     };
-    let ops = { session.borrow().file_ops.clone() };
-    renamite_platform::dialogs::save_bytes(
-        "Export frame",
-        "frame.png".to_string(),
-        &["png"],
-        png,
-        Box::new(move |outcome| {
-            if outcome.ok {
-                ops.lock().unwrap().push_back(PendingFileOp::Exported);
-            }
-            wake_ui();
-        }),
-    );
+    session.borrow_mut().exporting_png = true;
+    set_status(session, "Rendering PNG…");
+    let ops = session.borrow().file_ops.clone();
+    web_workers::spawn(move || {
+        let op = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_png_bytes(scene, w, h, document)
+        })) {
+            Ok(Ok(bytes)) => PendingFileOp::ExportPngReady {
+                bytes,
+                suggested_name: suggested,
+            },
+            Ok(Err(e)) => PendingFileOp::Failed {
+                message: format!("PNG export failed: {e}"),
+            },
+            Err(panic) => PendingFileOp::Failed {
+                message: format!("PNG export failed: {}", panic_payload(&panic)),
+            },
+        };
+        ops.lock().unwrap().push_back(op);
+        wake_ui();
+    });
 }
 
 fn clamp_export_size(artboard: (u32, u32)) -> (u32, u32) {

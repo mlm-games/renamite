@@ -1,17 +1,23 @@
 //! Layers panel: M3 list with visibility, lock, expand, select, reorder, rename.
 
 use renamite_behavior_common::layers::{
-    LayerKind, LayerRow, cmd_rename, cmd_toggle_locked, cmd_toggle_visible, drop_command,
-    flatten_layers, is_ancestor, move_is_noop, select_only, toggle_in_selection,
+    LayerKind, LayerRow, cmd_toggle_locked, cmd_toggle_visible, drop_command, flatten_layers,
+    is_ancestor, move_is_noop, select_only, toggle_in_selection,
 };
 use renamite_history::ToolOutput;
-use repose_core::input::{PointerButton, PointerEvent, PointerEventKind};
-use repose_core::{AlignItems, Modifier, PaddingValues, View, request_frame, theme};
+use repose_core::input::{Key, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
+use repose_core::{
+    AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
+};
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
+use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{ContextMenuSource, ContextMenuState, SessionRef};
+use crate::session::{ContextMenuSource, ContextMenuState, LayerDragState, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::{MenuContext, layers_menu};
 
@@ -33,7 +39,7 @@ pub fn LayersPanel(session: SessionRef) -> View {
 
     let list = Column(
         Modifier::new()
-            .fill_max_size()
+            .fill_max_width()
             .padding_values(PaddingValues {
                 left: 4.0,
                 right: 4.0,
@@ -67,8 +73,14 @@ pub fn LayersPanel(session: SessionRef) -> View {
             .collect::<Vec<_>>(),
     );
 
-    Column(Modifier::new().fill_max_size())
-        .child((PanelHeader(Symbols::layers, "Layers", vec![]), list))
+    Column(Modifier::new().fill_max_size()).child((
+        PanelHeader(Symbols::layers, "Layers", vec![]),
+        ScrollArea(
+            Modifier::new().fill_max_size(),
+            remember_scroll_state("layers_scroll"),
+            list,
+        ),
+    ))
 }
 
 struct LayerRowState {
@@ -140,6 +152,10 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                     return;
                 }
                 if matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
+                    // Clicking outside an active rename field commits it.
+                    if s.renaming.is_some() {
+                        s.commit_rename();
+                    }
                     s.renaming = None;
                     if pe.modifiers.shift || pe.modifiers.ctrl {
                         s.apply_outputs(smallvec![ToolOutput::RequestSelection(
@@ -312,42 +328,101 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 }
             },
         ),
+        // Drag-reorder handle. Pointer-down starts the drag (separate from
+        // select / shift-select / double-click rename / expand).
+        Box(
+            Modifier::new()
+                .width(28.0)
+                .height(ROW_HEIGHT)
+                .align_items(AlignItems::CENTER)
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |pe: PointerEvent| {
+                        if !matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
+                            return;
+                        }
+                        let mut s = session.borrow_mut();
+                        if !s.selection.nodes.contains(&id) {
+                            s.selection.nodes = vec![id];
+                        }
+                        s.layer_drag = Some(LayerDragState {
+                            id,
+                            hover_row: index,
+                            before: true,
+                            as_child: false,
+                        });
+                        s.repaint();
+                    }
+                }),
+        )
+        .child(AppIcon(Symbols::drag_indicator, 20.0)),
     ))
 }
 
-fn rename_field(session: SessionRef, id: renamite_model::NodeId, draft: String) -> View {
+fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String) -> View {
+    let tf_state = remember_with_key("active_rename_field", || {
+        RefCell::new(TextFieldState::new())
+    });
+    // Seed the field with the current name, selecting it so typing replaces it.
+    {
+        let mut st = tf_state.borrow_mut();
+        if st.text != draft {
+            st.text = draft.clone();
+            st.select_all();
+        }
+    }
+
     Row(Modifier::new()
         .flex_grow(1.0)
         .gap(2.0)
         .align_items(AlignItems::CENTER))
     .child((
-        Text(draft.clone())
-            .size(theme().typography.body_medium)
-            .modifier(Modifier::new().flex_grow(1.0)),
+        BasicTextField(
+            tf_state,
+            Modifier::new()
+                .flex_grow(1.0)
+                .height(32.0)
+                .on_key_event({
+                    let session = session.clone();
+                    move |ke: KeyEvent| {
+                        if matches!(ke.key, Key::Escape) {
+                            session.borrow_mut().cancel_rename();
+                            return true;
+                        }
+                        false
+                    }
+                }),
+            "",
+            TextFieldConfig {
+                line_limits: repose_core::TextFieldLineLimits::SingleLine,
+                on_change: Some(Rc::new({
+                    let session = session.clone();
+                    move |text: String| {
+                        let mut s = session.borrow_mut();
+                        if let Some((_, draft)) = s.renaming.as_mut() {
+                            *draft = text;
+                        }
+                        s.repaint();
+                    }
+                })),
+                on_submit: Some(Rc::new({
+                    let session = session.clone();
+                    move |_| session.borrow_mut().commit_rename()
+                })),
+                text_style: repose_core::TextStyle {
+                    font_size: theme().typography.body_medium,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ),
         CompactIconAction(Symbols::undo, "Cancel rename", {
             let session = session.clone();
-            move || {
-                session.borrow_mut().renaming = None;
-                request_frame();
-            }
+            move || session.borrow_mut().cancel_rename()
         }),
         CompactIconAction(Symbols::save, "Apply name", {
             let session = session.clone();
-            let draft = draft.clone();
-            move || {
-                let mut s = session.borrow_mut();
-                let name = draft.trim().to_string();
-                s.renaming = None;
-                if !name.is_empty() {
-                    s.apply_outputs(smallvec![
-                        ToolOutput::BeginTransaction("Rename".into()),
-                        ToolOutput::Commands(smallvec![cmd_rename(id, name)]),
-                        ToolOutput::CommitTransaction,
-                    ]);
-                } else {
-                    request_frame();
-                }
-            }
+            move || session.borrow_mut().commit_rename()
         }),
     ))
 }

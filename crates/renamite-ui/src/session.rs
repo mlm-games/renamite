@@ -98,6 +98,13 @@ pub struct Session {
     pub open_picker: Option<OpenPicker>,
     /// The currently open context menu popover, if any.
     pub context_menu: Option<ContextMenuState>,
+    /// True while the async PNG export render is in flight (blocks duplicates).
+    pub exporting_png: bool,
+    /// True while the empty-document launcher should be shown. Only a fresh
+    /// blank project keeps it; opening/importing, picking a template, or
+    /// dismissing to a blank canvas clears it so an emptied composition doesn't
+    /// trap the user back on the launcher.
+    pub welcome: bool,
     /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
     pub clipboard: Option<Vec<renamite_history::NodeTree>>,
     /// Machine edited by the Interactivity panel.
@@ -161,6 +168,13 @@ pub enum PendingFileOp {
     },
     /// An exported frame reached its destination (WASM/Android, no path).
     Exported,
+    /// An async PNG export finished; show the message in the status area.
+    ExportFinished { message: String },
+    /// Rendered PNG bytes ready to hand to the OS save picker (WASM/Android).
+    ExportPngReady {
+        bytes: Vec<u8>,
+        suggested_name: String,
+    },
     /// Raw font bytes (`.ttf`/`.otf`) read by the Import Font picker.
     ImportFontDone { name: String, bytes: Vec<u8> },
     /// A decoded image asset read by the Import Image picker.
@@ -193,6 +207,9 @@ pub struct LayerDragState {
 pub struct OpenPicker {
     pub target: PickerTarget,
     pub state: Rc<RefCell<crate::color_picker::PickerState>>,
+
+    /// Screen-space anchor (from the opening pointer event) for the popover.
+    pub anchor: DVec2,
 
     /// Only picker-owned transactions may be committed/cancelled by the picker.
     pub transaction_open: bool,
@@ -287,6 +304,8 @@ impl Session {
             swatches: renamite_behavior_common::color::SwatchHistory::new(12),
             open_picker: None,
             context_menu: None,
+            exporting_png: false,
+            welcome: true,
             clipboard: None,
             active_machine,
             machine_selection: MachineSelection::None,
@@ -298,17 +317,40 @@ impl Session {
     }
 
     pub fn apply_outputs(&mut self, outputs: OutputVec) {
+        let mut document_changed = false;
+        let mut needs_evaluation = false;
+        let mut needs_repaint = false;
+        let mut in_transaction = false;
+        let mut txn_mutated = false;
+
         for out in outputs {
             match out {
-                ToolOutput::BeginTransaction(l) => self.history.begin(l),
+                ToolOutput::BeginTransaction(l) => {
+                    self.history.begin(l);
+                    in_transaction = true;
+                    txn_mutated = false;
+                }
                 ToolOutput::CommitTransaction => {
-                    self.history.commit();
-                    self.dirty = true;
-                    self.bump();
+                    if in_transaction {
+                        self.history.commit();
+                        if txn_mutated {
+                            self.dirty = true;
+                        }
+                        in_transaction = false;
+                    } else if self.history.transaction_open() {
+                        // A transaction opened in a previous batch (defensive).
+                        self.history.commit();
+                        self.dirty = true;
+                    }
+                    if txn_mutated || self.dirty {
+                        document_changed = true;
+                    }
                 }
                 ToolOutput::CancelTransaction => {
                     apply_cmd(&mut self.history, &mut self.file, None);
-                    self.bump();
+                    document_changed = true;
+                    needs_evaluation = true;
+                    in_transaction = false;
                 }
                 ToolOutput::Commands(cmds) => {
                     for c in cmds {
@@ -318,16 +360,20 @@ impl Session {
                         }
                     }
                     self.ensure_selection_visible();
-                    self.bump();
+                    document_changed = true;
+                    needs_evaluation = true;
+                    if in_transaction {
+                        txn_mutated = true;
+                    }
                 }
                 ToolOutput::SetPlayhead(f) => {
                     self.playback.head = f;
                     self.engine.scrub(&self.file, f);
-                    self.bump();
+                    needs_repaint = true;
                 }
                 ToolOutput::SwitchTool(t) => {
                     self.active_tool = t;
-                    self.repaint();
+                    needs_repaint = true;
                 }
                 ToolOutput::RequestSelection(ch) => {
                     match ch {
@@ -341,10 +387,20 @@ impl Session {
                         }
                     }
                     self.ensure_selection_visible();
-                    self.repaint();
+                    needs_repaint = true;
                 }
                 _ => {}
             }
+        }
+
+        // Batch invalidation: at most one re-evaluation + one repaint per
+        // `apply_outputs` call (a Begin/Commands/Commit edit used to bump twice).
+        if needs_evaluation {
+            self.engine.reevaluate(&self.file);
+        }
+        if document_changed || needs_evaluation || needs_repaint {
+            self.revision = self.revision.wrapping_add(1);
+            request_frame();
         }
     }
 
@@ -657,6 +713,43 @@ impl Session {
         }
     }
 
+    /// Commit the in-progress layer rename. Closes the editor without a
+    /// history entry when the name is unchanged, empty, or whitespace-only.
+    pub fn commit_rename(&mut self) {
+        let Some((id, draft)) = self.renaming.take() else {
+            return;
+        };
+        let name = draft.trim().to_string();
+        let current = self
+            .file
+            .document
+            .nodes
+            .get(id)
+            .map(|n| n.name.clone())
+            .unwrap_or_default();
+        self.renaming = None;
+        if name.is_empty() || name == current {
+            self.repaint();
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Rename".into()),
+            ToolOutput::Commands(smallvec![renamite_behavior_common::layers::cmd_rename(
+                id, name
+            )]),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    /// Dismiss the in-progress layer rename without committing.
+    pub fn cancel_rename(&mut self) {
+        if self.renaming.is_none() {
+            return;
+        }
+        self.renaming = None;
+        self.repaint();
+    }
+
     /// Apply one command; returns the created node id, if any.
     pub fn history_apply(
         &mut self,
@@ -795,6 +888,7 @@ impl Session {
         self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
         self.dirty = false;
+        self.exporting_png = false;
         self.sync_image_assets();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
@@ -825,6 +919,7 @@ impl Session {
                     message,
                 } => {
                     self.replace_file(*file);
+                    self.welcome = false;
                     self.current_path = path;
                     self.status = Some(message.to_string());
                 }
@@ -842,6 +937,46 @@ impl Session {
                 }
                 PendingFileOp::Exported => {
                     self.status = Some("Exported".to_string());
+                    self.revision = self.revision.wrapping_add(1);
+                    request_frame();
+                }
+                PendingFileOp::ExportFinished { message } => {
+                    self.exporting_png = false;
+                    self.status = Some(message);
+                    self.revision = self.revision.wrapping_add(1);
+                    request_frame();
+                }
+                PendingFileOp::ExportPngReady {
+                    bytes,
+                    suggested_name,
+                } => {
+                    self.exporting_png = false;
+                    let ops = self.file_ops.clone();
+                    renamite_platform::dialogs::save_bytes(
+                        "Export PNG",
+                        suggested_name,
+                        &["png"],
+                        bytes,
+                        Box::new(move |outcome| {
+                            if outcome.ok {
+                                ops.lock()
+                                    .unwrap()
+                                    .push_back(PendingFileOp::ExportFinished {
+                                        message: "Exported PNG".to_string(),
+                                    });
+                            } else {
+                                ops.lock()
+                                    .unwrap()
+                                    .push_back(PendingFileOp::ExportFinished {
+                                        message: "PNG export canceled".to_string(),
+                                    });
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            repose_core::request_frame();
+                            #[cfg(not(target_arch = "wasm32"))]
+                            repose_platform::wake_event_loop();
+                        }),
+                    );
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();
                 }
@@ -916,9 +1051,15 @@ impl Session {
         }
     }
 
-    /// Open a color picker editing `initial`. The history transaction is begun
+    /// Open a color picker editing `initial`, anchored at the screen-space
+    /// point the user clicked (`anchor`). The history transaction is begun
     /// lazily on the first change, so an untouched picker leaves no undo entry.
-    pub fn open_color_picker(&mut self, target: PickerTarget, initial: renamite_model::Color) {
+    pub fn open_color_picker(
+        &mut self,
+        target: PickerTarget,
+        initial: renamite_model::Color,
+        anchor: DVec2,
+    ) {
         self.close_context_menu();
         // Cancel only the old picker's own pending work.
         self.cancel_open_picker_state();
@@ -931,6 +1072,7 @@ impl Session {
             state: Rc::new(RefCell::new(crate::color_picker::PickerState::from_color(
                 initial,
             ))),
+            anchor,
             transaction_open: false,
             cancel_current_paint,
         });
@@ -1500,12 +1642,23 @@ pub fn timeline_rows(s: &Session) -> Vec<TimelineRow> {
     let comp = &s.file.document.compositions[s.file.document.main];
     comp.children
         .iter()
-        .take(24)
         .map(|&id| TimelineRow {
             node: id,
-            prop: PropPath::new("opacity"),
+            prop: timeline_row_prop(&s.file.document, id),
         })
         .collect()
+}
+
+/// Which animatable property a layer's timeline row edits. Uses the first
+/// Transform-section property from the inspector (position, scale, rotation,
+/// opacity, anchor) so rows aren't all labeled "opacity"; falls back to
+/// opacity when nothing resolves.
+fn timeline_row_prop(doc: &renamite_model::Document, id: renamite_model::NodeId) -> PropPath {
+    renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0))
+        .into_iter()
+        .find(|row| row.desc.section == "Transform")
+        .map(|row| row.desc.path)
+        .unwrap_or_else(|| PropPath::new("opacity"))
 }
 
 /// Build a `ProjectMut` from a `&mut RenFile` (no overlapping `&mut self`).
@@ -1699,11 +1852,82 @@ mod tests {
         fill_style_for(&s.file.document, shape).expect("default file has a fill")
     }
 
+    fn add_text_node(s: &mut Session) -> renamite_model::NodeId {
+        let text = s.file.document.create_node(renamite_model::Node::new(
+            "t",
+            renamite_model::NodeKind::Text(renamite_model::TextNode {
+                text: "Hi".into(),
+                size: renamite_animation::Animated::new(48.0),
+                align: renamite_model::TextAlign::Left,
+                font: None,
+            }),
+        ));
+        s.file
+            .document
+            .attach(text, renamite_model::Parent::Comp(s.file.document.main), 0)
+            .unwrap();
+        text
+    }
+
+    #[test]
+    fn edit_batch_increments_revision_once() {
+        let mut s = Session::new(default_file());
+        let text = add_text_node(&mut s);
+        let before = s.revision;
+        s.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Rename".into()),
+            ToolOutput::Commands(smallvec![renamite_history::EditorCommand::SetTextFont {
+                id: text,
+                font: Some("Fancy".into()),
+            }]),
+            ToolOutput::CommitTransaction,
+        ]);
+        assert_eq!(
+            s.revision,
+            before + 1,
+            "a Begin/Commands/Commit edit re-evaluates and repaints exactly once"
+        );
+        assert!(s.history.can_undo());
+    }
+
+    #[test]
+    fn empty_transaction_does_not_mark_dirty() {
+        let mut s = Session::new(default_file());
+        let before = s.dirty;
+        s.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("No-op".into()),
+            ToolOutput::CommitTransaction,
+        ]);
+        assert_eq!(s.dirty, before, "empty transaction leaves clean state untouched");
+    }
+
+    #[test]
+    fn playhead_update_batches_invalidation() {
+        let mut s = Session::new(default_file());
+        let before = s.revision;
+        s.apply_outputs(smallvec![ToolOutput::SetPlayhead(12.0)]);
+        assert_eq!(s.playback.head, 12.0);
+        assert_eq!(s.revision, before + 1, "scrub repaints once");
+    }
+
+    #[test]
+    fn selection_only_output_does_not_reevaluate_document() {
+        let mut s = Session::new(default_file());
+        let comp = s.file.document.main;
+        let id = s.file.document.compositions[comp].children[0];
+        let before = s.revision;
+        s.apply_outputs(smallvec![ToolOutput::RequestSelection(
+            renamite_history::SelectionChange::Set(vec![id])
+        )]);
+        assert_eq!(s.selection.nodes, vec![id]);
+        assert_eq!(s.revision, before + 1, "selection-only output repaints once");
+    }
+
     #[test]
     fn picker_change_then_commit_is_one_undo_step() {
         let mut s = Session::new(default_file());
         let fill = fill_id_of(&s);
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK);
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK, DVec2::ZERO);
         for _ in 0..5 {
             s.apply_picker_change(Color::rgba(0.1, 0.2, 0.3, 1.0));
         }
@@ -1724,7 +1948,7 @@ mod tests {
             };
             st.paint().base_color()
         };
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, orig);
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, orig, DVec2::ZERO);
         s.apply_picker_change(Color::WHITE);
         s.commit_picker_color(Color::WHITE);
         undo_cmd(&mut s);
@@ -1742,7 +1966,7 @@ mod tests {
     fn close_without_commit_cancels() {
         let mut s = Session::new(default_file());
         let fill = fill_id_of(&s);
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK);
+        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK, DVec2::ZERO);
         s.apply_picker_change(Color::WHITE);
         s.close_color_picker();
         assert!(
@@ -1758,6 +1982,7 @@ mod tests {
         session.open_color_picker(
             PickerTarget::CurrentPaint,
             session.current_paint.base_color(),
+            DVec2::ZERO,
         );
         session.apply_picker_change(Color::WHITE);
         session.commit_picker_color(Color::WHITE);
@@ -1771,7 +1996,7 @@ mod tests {
         let mut session = Session::new(default_file());
         let original = session.current_paint.clone();
 
-        session.open_color_picker(PickerTarget::CurrentPaint, original.base_color());
+        session.open_color_picker(PickerTarget::CurrentPaint, original.base_color(), DVec2::ZERO);
         session.apply_picker_change(Color::WHITE);
         session.close_color_picker();
 
