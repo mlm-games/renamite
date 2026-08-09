@@ -139,7 +139,9 @@ pub enum RenError {
 }
 
 pub fn save(file: &RenFile) -> Result<String, RenError> {
-    let cfg = ron::ser::PrettyConfig::default().struct_names(true); // `Keyframe(frame: ...)`
+    let cfg = ron::ser::PrettyConfig::default()
+        .struct_names(true) // `Keyframe(frame: ...)`
+        .new_line("\n");
     let mut s = String::from("// renamite project: https://github.com/mlm-games/renamite\n");
     s.push_str(&ron::ser::to_string_pretty(file, cfg)?);
     Ok(s)
@@ -287,9 +289,14 @@ mod tests {
         });
         let text = save(&f).unwrap();
         // Simulate a legacy v1 file that predates the order vecs.
-        let text = text
-            .replace("    clip_order: [],\n", "")
-            .replace("    machine_order: [],\n", "");
+        let text: String = text
+            .lines()
+            .filter(|line| {
+                let t = line.trim();
+                t != "clip_order: []," && t != "machine_order: [],"
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(!text.contains("clip_order"));
         let back = open(&text).unwrap();
         assert_eq!(back.clip_order, vec![cid]);
