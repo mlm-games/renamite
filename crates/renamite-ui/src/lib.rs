@@ -44,6 +44,7 @@ pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
 /// Initialise WASM worker threads.
 #[cfg(target_arch = "wasm32")]
 pub fn init_wasm() {
+    console_error_panic_hook::set_once();
     if web_workers::web::has_spawn_support() {
         let _ = web_workers::scope(|scope| {
             let _ = scope.spawn(|| {}).join();
