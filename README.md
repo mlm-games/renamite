@@ -2,7 +2,7 @@
 
 A motion / vector animation editor built on repose, using tesellation via lyon, and kurbo.
 
-Currently, the editor is not ready, and is just a stubbed editor (can import and view existing examples, which work well, but other problems need to be handled in repose too, for completion). kurbo is the
+Currently, the editor is not ready, and is just a stubbed editor (can import and view existing examples, which work well, but can't edit; has other problems that (might) have to be handled in repose, for completion). kurbo is the
 path math type. The document/animation models are independent and can be embedded in other apps (ex: games, via a bevy plugin)
 
 ## Architecture
