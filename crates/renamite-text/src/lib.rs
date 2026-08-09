@@ -84,6 +84,12 @@ fn default_font_data() -> &'static Arc<[u8]> {
     DEFAULT.get_or_init(|| Arc::from(DEFAULT_FONT))
 }
 
+/// Raw bytes of the bundled default face, for callers that need to register
+/// the font with their own machinery (e.g. `usvg::Options::fontdb_mut`).
+pub fn default_font_bytes() -> &'static [u8] {
+    DEFAULT_FONT
+}
+
 struct Registry {
     fonts: HashMap<String, Arc<[u8]>>,
 }

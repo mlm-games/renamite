@@ -21,6 +21,7 @@ renamite-animation.workspace = true
 renamite-player.workspace = true
 renamite-io-ren = { workspace = true, features = ["binary"] }
 renamite-io-lottie.workspace = true
+renamite-io-svg.workspace = true
 renamite-examples.workspace = true
 renamite-machine.workspace = true
 renamite-render-bridge.workspace = true

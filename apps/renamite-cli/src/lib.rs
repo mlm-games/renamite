@@ -137,6 +137,28 @@ pub enum Commands {
         strict: bool,
     },
 
+    /// Export a .ren/.renb project to a static SVG frame snapshot.
+    ExportSvg {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long, default_value = "0")]
+        frame: f64,
+        /// Fail if the exporter emitted compatibility warnings.
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Convert an SVG file to a Renamite project.
+    ImportSvg {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Fail if unsupported objects were skipped.
+        #[arg(long)]
+        strict: bool,
+    },
+
     /// Generate shell completions
     Completions { shell: clap_complete::Shell },
 }
@@ -196,6 +218,17 @@ fn dispatch(command: Commands) -> Result<()> {
             output,
             strict,
         } => cmd_import_lottie(input, output, strict),
+        Commands::ExportSvg {
+            input,
+            output,
+            frame,
+            strict,
+        } => cmd_export_svg(input, output, frame, strict),
+        Commands::ImportSvg {
+            input,
+            output,
+            strict,
+        } => cmd_import_svg(input, output, strict),
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
@@ -652,6 +685,59 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
     Ok(())
 }
 
+fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> Result<()> {
+    let file = load_file(&input)?;
+    let report =
+        renamite_io_svg::export_with_report(&file.document, file.document.main, frame)?;
+    if strict && !report.warnings.is_empty() {
+        for warning in &report.warnings {
+            eprintln!("warning at {}: {}", warning.path, warning.message);
+        }
+        bail!(
+            "SVG export produced {} compatibility warning(s)",
+            report.warnings.len()
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    std::fs::write(&output, report.value)?;
+    println!(
+        "Exported {} frame {frame} -> {}",
+        input.display(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
+    let bytes = std::fs::read(&input)?;
+    let report = renamite_io_svg::import_with_report(&bytes)?;
+    if strict && !report.warnings.is_empty() {
+        for warning in &report.warnings {
+            eprintln!("warning at {}: {}", warning.path, warning.message);
+        }
+        bail!(
+            "SVG import produced {} compatibility warning(s)",
+            report.warnings.len()
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    let file = RenFile::new(report.value, name_from_path(&input));
+    match output.extension().and_then(|extension| extension.to_str()) {
+        Some("renb") => {
+            std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?;
+        }
+        _ => {
+            std::fs::write(&output, renamite_io_ren::save(&file)?)?;
+        }
+    }
+    println!("Imported {} -> {}", input.display(), output.display());
+    Ok(())
+}
+
 fn load_file(path: &Path) -> Result<RenFile> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     match ext {
@@ -903,5 +989,55 @@ mod tests {
         cmd_validate(path.clone(), false).unwrap(); // no --fix: must not rewrite
         let after = std::fs::read(&path).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn import_svg_then_export_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("in.svg");
+        let ren = dir.path().join("out.ren");
+        let out_svg = dir.path().join("out.svg");
+        std::fs::write(
+            &svg,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+                <rect x="10" y="10" width="50" height="30" fill="#ff0000"/>
+            </svg>"##,
+        )
+        .unwrap();
+
+        cmd_import_svg(svg.clone(), ren.clone(), false).unwrap();
+        let file = load_file(&ren).unwrap();
+        assert_eq!(file.document.compositions[file.document.main].size, (100, 100));
+
+        cmd_export_svg(ren.clone(), out_svg.clone(), 0.0, false).unwrap();
+        let text = std::fs::read_to_string(&out_svg).unwrap();
+        assert!(text.contains("<svg"));
+        assert!(text.contains("fill=\"#FF0000\""));
+    }
+
+    #[test]
+    fn import_svg_strict_fails_on_filter_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("in.svg");
+        let ren = dir.path().join("out.ren");
+        std::fs::write(
+            &svg,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+                <filter id="b"><feGaussianBlur stdDeviation="2"/></filter>
+                <g filter="url(#b)"><rect x="0" y="0" width="10" height="10"/></g>
+            </svg>"##,
+        )
+        .unwrap();
+
+        assert!(cmd_import_svg(svg.clone(), ren.clone(), true).is_err());
+    }
+
+    #[test]
+    fn export_svg_missing_composition_is_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let ren = dir.path().join("out.ren");
+        let svg = dir.path().join("out.svg");
+        std::fs::write(&ren, r##"<svg xmlns="http://www.w3.org/2000/svg"/>"##).unwrap();
+        assert!(cmd_export_svg(ren, svg, 0.0, false).is_err());
     }
 }

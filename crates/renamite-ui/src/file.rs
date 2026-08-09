@@ -1,5 +1,5 @@
-//! File lifecycle: New / Open / Save / Save As / Import Lottie / Export PNG,
-//! plus an unsaved-changes guard.
+//! File lifecycle: New / Open / Save / Save As / Import Lottie / Import SVG /
+//! Export Lottie / Export PNG / Export SVG, plus an unsaved-changes guard.
 //!
 //! Pattern mirrors `repadio`: dialogs go through the non-blocking
 //! `renamite_platform::dialogs` API which works on every target (native on
@@ -137,6 +137,7 @@ pub fn run_pending_intent(session: &SessionRef) {
         Some(PendingIntent::New) => new_document_inner(session),
         Some(PendingIntent::Open) => open_document_inner(session),
         Some(PendingIntent::ImportLottie) => import_lottie_inner(session),
+        Some(PendingIntent::ImportSvg) => import_svg_inner(session),
         None => {}
     }
 }
@@ -339,6 +340,144 @@ fn import_lottie_inner(session: &SessionRef) {
             };
             if let Some(op) = op {
                 ops.lock().unwrap().push_back(op);
+            }
+            wake_ui();
+        }),
+    );
+}
+
+fn import_svg_bytes(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile> {
+    let report = renamite_io_svg::import_with_report(data)?;
+    if !report.warnings.is_empty() {
+        eprintln!(
+            "SVG import completed with {} warning(s)",
+            report.warnings.len()
+        );
+    }
+    let stem = Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Imported".into());
+    Ok(renamite_io_ren::RenFile::new(report.value, stem))
+}
+
+/// Import an SVG file via an async picker (after an unsaved guard).
+pub fn import_svg(session: &SessionRef) {
+    if !request_guard(session, PendingIntent::ImportSvg) {
+        return;
+    }
+    import_svg_inner(session);
+}
+
+fn import_svg_inner(session: &SessionRef) {
+    let ops = { session.borrow().file_ops.clone() };
+    renamite_platform::dialogs::pick_open_file(
+        "Import SVG",
+        &["svg"],
+        Box::new(move |picked| {
+            let op = match picked {
+                None => None,
+                Some(PickedFile::Path(p)) => {
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let result = match std::fs::read(&p) {
+                        Ok(data) => import_svg_bytes(&name, &data),
+                        Err(e) => Err(e.into()),
+                    };
+                    match result {
+                        Ok(file) => Some(PendingFileOp::OpenDone {
+                            file: Box::new(file),
+                            path: None,
+                            message: "Imported SVG",
+                        }),
+                        Err(e) => Some(PendingFileOp::Failed {
+                            message: format!("Import failed: {e}"),
+                        }),
+                    }
+                }
+                Some(PickedFile::Bytes { name, data }) => match import_svg_bytes(&name, &data) {
+                    Ok(file) => Some(PendingFileOp::OpenDone {
+                        file: Box::new(file),
+                        path: None,
+                        message: "Imported SVG",
+                    }),
+                    Err(e) => Some(PendingFileOp::Failed {
+                        message: format!("Import failed: {e}"),
+                    }),
+                },
+            };
+            if let Some(op) = op {
+                ops.lock().unwrap().push_back(op);
+            }
+            wake_ui();
+        }),
+    );
+}
+
+/// Render the current playhead frame to SVG and write it to a user-chosen
+/// path. Desktop uses a blocking save dialog; WASM/Android use the OS picker.
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub fn export_svg(session: &SessionRef) {
+    let Some(path) = renamite_platform::dialogs::export_path("Export SVG", "frame.svg", &["svg"])
+    else {
+        return;
+    };
+    let report = {
+        let borrowed = session.borrow();
+        renamite_io_svg::export_with_report(
+            &borrowed.file.document,
+            borrowed.file.document.main,
+            borrowed.playback.head,
+        )
+    };
+    let svg = match report {
+        Ok(report) => {
+            if !report.warnings.is_empty() {
+                eprintln!(
+                    "SVG export completed with {} warning(s)",
+                    report.warnings.len()
+                );
+            }
+            report.value
+        }
+        Err(e) => {
+            report_error(session, e);
+            return;
+        }
+    };
+    match std::fs::write(&path, svg) {
+        Ok(()) => set_status(session, format!("Exported {}", path.display())),
+        Err(e) => report_error(session, e),
+    }
+}
+
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+pub fn export_svg(session: &SessionRef) {
+    let svg = {
+        let borrowed = session.borrow();
+        match renamite_io_svg::export_with_report(
+            &borrowed.file.document,
+            borrowed.file.document.main,
+            borrowed.playback.head,
+        ) {
+            Ok(report) => report.value,
+            Err(e) => {
+                report_error(session, e);
+                return;
+            }
+        }
+    };
+    let ops = { session.borrow().file_ops.clone() };
+    renamite_platform::dialogs::save_bytes(
+        "Export SVG",
+        "frame.svg".to_string(),
+        &["svg"],
+        svg.into_bytes(),
+        Box::new(move |outcome| {
+            if outcome.ok {
+                ops.lock().unwrap().push_back(PendingFileOp::Exported);
             }
             wake_ui();
         }),

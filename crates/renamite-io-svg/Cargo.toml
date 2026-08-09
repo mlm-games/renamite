@@ -6,11 +6,17 @@ license.workspace = true
 description = "SVG import/export for renamite."
 
 [dependencies]
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
 renamite-model.workspace = true
+renamite-text.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 usvg = { workspace = true }
-resvg = { workspace = true, optional = true }
+glam.workspace = true
+kurbo.workspace = true
+base64.workspace = true
+image = { workspace = true }
 
-[features]
-resvg = ["dep:resvg"]
+[dev-dependencies]
+resvg = { workspace = true }

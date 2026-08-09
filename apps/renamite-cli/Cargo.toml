@@ -13,6 +13,7 @@ path = "src/main.rs"
 renamite-player = { workspace = true, features = ["binary"] }
 renamite-io-ren = { workspace = true, features = ["binary"] }
 renamite-io-lottie.workspace = true
+renamite-io-svg.workspace = true
 renamite-examples.workspace = true
 renamite-render-bridge.workspace = true
 renamite-render-offscreen.workspace = true

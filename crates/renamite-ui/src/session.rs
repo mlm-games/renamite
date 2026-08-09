@@ -128,6 +128,7 @@ pub enum PendingIntent {
     New,
     Open,
     ImportLottie,
+    ImportSvg,
 }
 
 /// A file-lifecycle result produced off-thread by an async platform dialog

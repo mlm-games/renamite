@@ -146,6 +146,10 @@ pub fn FileMenu(
             let session = session.clone();
             Rc::new(move || file::import_lottie(&session))
         }),
+        item("Import SVG…", {
+            let session = session.clone();
+            Rc::new(move || file::import_svg(&session))
+        }),
         item("Import Font…", {
             let session = session.clone();
             Rc::new(move || file::import_font(&session))
@@ -160,6 +164,10 @@ pub fn FileMenu(
         item("Export PNG…", {
             let session = session.clone();
             Rc::new(move || file::export_png(&session))
+        }),
+        item("Export SVG…", {
+            let session = session.clone();
+            Rc::new(move || file::export_svg(&session))
         }),
     ];
 
