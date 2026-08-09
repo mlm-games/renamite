@@ -102,10 +102,13 @@ pub enum Commands {
     /// Scaffold a new .ren project
     New {
         output: PathBuf,
-        /// "blank" or "ellipse"
+        /// Template slug, e.g. "blank", "bouncing-ball" (run `renamite templates`)
         #[arg(long, default_value = "ellipse")]
         template: String,
     },
+
+    /// List built-in project templates
+    Templates {},
 
     /// Headless playback (prints machine events)
     Play {
@@ -181,6 +184,7 @@ fn dispatch(command: Commands) -> Result<()> {
         Commands::Validate { input, fix } => cmd_validate(input, fix),
         Commands::Diff { a, b, fail_on_diff } => cmd_diff(a, b, fail_on_diff),
         Commands::New { output, template } => cmd_new(output, template),
+        Commands::Templates {} => cmd_templates(),
         Commands::Play { input, duration } => cmd_play(input, duration),
         Commands::ExportLottie {
             input,
@@ -506,11 +510,23 @@ fn diff_values(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
 
 fn cmd_new(output: PathBuf, template: String) -> Result<()> {
     let name = name_from_path(&output);
-    let file = match template.as_str() {
-        "blank" => RenFile::new(renamite_model::Document::empty(), name),
-        "ellipse" => scaffold_ellipse(name),
-        other => bail!("unknown template '{other}' (expected 'blank' or 'ellipse')"),
+    let mut file = match template.as_str() {
+        // Legacy alias predating the renamite-examples template set.
+        "ellipse" => scaffold_ellipse(name.clone()),
+        other => match renamite_examples::parse_template(other) {
+            Some(id) => renamite_examples::build_template(id),
+            None => {
+                let known: Vec<&str> = std::iter::once("ellipse")
+                    .chain(renamite_examples::templates().iter().map(|t| t.id.slug()))
+                    .collect();
+                bail!(
+                    "unknown template '{other}' (expected one of: {})",
+                    known.join(", ")
+                )
+            }
+        },
     };
+    file.meta.name = name;
 
     let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("ren");
     match ext {
@@ -519,6 +535,19 @@ fn cmd_new(output: PathBuf, template: String) -> Result<()> {
     }
     println!("Created {}", output.display());
     Ok(())
+}
+
+fn cmd_templates() -> Result<()> {
+    println!("{}", templates_text());
+    Ok(())
+}
+
+fn templates_text() -> String {
+    let mut out = String::from("Available templates (use with `renamite new --template <slug>`):\n");
+    for t in renamite_examples::templates() {
+        out.push_str(&format!("  {:<18} {}\n", t.id.slug(), t.description));
+    }
+    out
 }
 
 fn scaffold_ellipse(name: String) -> RenFile {
@@ -726,6 +755,66 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.ren");
         assert!(cmd_new(path, "not-a-template".into()).is_err());
+    }
+
+    #[test]
+    fn templates_lists_every_builtin_slug() {
+        let text = templates_text();
+        for t in renamite_examples::templates() {
+            assert!(
+                text.contains(t.id.slug()),
+                "templates output must mention {}",
+                t.id.slug()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_template_accepts_slugs_and_display_names() {
+        use renamite_examples::TemplateId;
+        for id in TemplateId::all() {
+            assert_eq!(renamite_examples::parse_template(id.slug()), Some(*id));
+            assert_eq!(
+                renamite_examples::parse_template(id.display_name()),
+                Some(*id)
+            );
+            assert_eq!(
+                renamite_examples::parse_template(&id.slug().to_uppercase()),
+                Some(*id),
+                "template lookup must be case-insensitive"
+            );
+        }
+        assert_eq!(renamite_examples::parse_template("nope"), None);
+    }
+
+    #[test]
+    fn new_with_each_template_roundtrips() {
+        use renamite_examples::TemplateId;
+        for id in TemplateId::all() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("{}.ren", id.slug()));
+            cmd_new(path.clone(), id.slug().into()).unwrap();
+
+            let loaded = load_file(&path).unwrap();
+            let mut expected = renamite_examples::build_template(*id);
+            expected.meta.name = id.slug().to_string();
+            assert_eq!(
+                serde_json::to_value(&loaded).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "template {} must survive save->load roundtrip",
+                id.slug()
+            );
+
+            let renb = dir.path().join(format!("{}.renb", id.slug()));
+            cmd_pack(path, renb.clone()).unwrap();
+            let packed = load_file(&renb).unwrap();
+            assert_eq!(
+                serde_json::to_value(&packed).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "template {} must survive binary pack->unpack roundtrip",
+                id.slug()
+            );
+        }
     }
 
     #[test]

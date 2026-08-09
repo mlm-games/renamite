@@ -24,6 +24,7 @@ renamite-model.workspace = true
 renamite-animation.workspace = true
 renamite-geometry.workspace = true
 renamite-behavior-common.workspace = true
+renamite-examples.workspace = true
 glam.workspace = true
 kurbo.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }

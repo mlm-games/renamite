@@ -5,7 +5,7 @@ use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
-use repose_core::{Color, FocusRequester, Modifier, View, remember, request_frame, theme};
+use repose_core::{AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame, theme};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelSurface};
@@ -20,8 +20,17 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember(FocusRequester::new);
 
+    let show_template_picker = {
+        let s = session.borrow();
+        let main = s.file.document.main;
+        s.file.document.compositions[main].children.is_empty()
+    };
+
     Column(Modifier::new().fill_max_size()).child((
-        Canvas(
+        if show_template_picker {
+            TemplatePicker(session.clone())
+        } else {
+            Canvas(
             Modifier::new()
                 .fill_max_size()
                 .background(theme().surface_container_lowest)
@@ -179,9 +188,72 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 };
                 paint_overlay(scope, &overlay, &view);
             },
-        ),
+        )
+        },
         ViewportControls(session),
     ))
+}
+
+/// Empty-composition launcher: cards for each built-in template.
+fn TemplatePicker(session: SessionRef) -> View {
+    let th = theme();
+    let cards: Vec<View> = renamite_examples::templates()
+        .iter()
+        .map(|t| TemplateCard(session.clone(), t))
+        .collect();
+    let rows: Vec<View> = cards
+        .chunks(3)
+        .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
+        .collect();
+
+    Column(Modifier::new()
+        .fill_max_size()
+        .padding(24.0)
+        .gap(20.0)
+        .justify_content(JustifyContent::CENTER)
+        .align_items(AlignItems::CENTER))
+    .child(
+        Text("Start from a template")
+            .size(th.typography.title_large)
+            .color(th.on_surface),
+    )
+    .child(
+        Text("This composition is empty. Pick a starter project to explore the editor.")
+            .size(th.typography.body_small)
+            .color(th.on_surface_variant),
+    )
+    .child(Column(Modifier::new().gap(12.0)).child(rows))
+}
+
+fn TemplateCard(session: SessionRef, template: &'static renamite_examples::TemplateInfo) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .width(260.0)
+        .padding(14.0)
+        .background(th.surface_container_high)
+        .clip_rounded(10.0)
+        .on_pointer_down({
+            let session = session.clone();
+            let id = template.id;
+            move |_| {
+                let file = renamite_examples::build_template(id);
+                let mut s = session.borrow_mut();
+                s.replace_file(file);
+                s.current_path = None;
+                s.dirty = true;
+                s.status = Some(format!("Created from \"{}\"", id.display_name()));
+            }
+        }))
+    .child(
+        Column(Modifier::new().gap(6.0)).child((
+            Text(template.name)
+                .size(th.typography.title_small)
+                .color(th.on_surface),
+            Text(template.description)
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant),
+        )),
+    )
 }
 
 fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransform) {

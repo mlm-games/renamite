@@ -52,6 +52,7 @@ crates/
   renamite-behavior-common/        # ToolContext, resolve_property_edit, Selection
   renamite-behavior-canvas/        # Select, Transform, Pen, PathEdit, shapes…
   renamite-behavior-timeline/      # Scrub, Keyframe, EasingCurve
+  renamite-examples/               # code-built starter templates (CLI + editor + CI)
   renamite-render-bridge/          # Scene -> repose DrawCommand / SceneNode
   renamite-ui/                     # Material shell + panels (uses repose-*)
   renamite-io-native/              # .rmot
@@ -72,6 +73,21 @@ cargo check --target wasm32-unknown-unknown
 cargo test --workspace
 cargo build -p renamite-editor --release
 ```
+
+## Try the templates
+
+Built-in starter projects cover the vector primitives in the model. Here is an example that lists them,
+creates one, and renders a frame:
+
+```sh
+cargo run -p renamite-cli -- templates
+cargo run -p renamite-cli -- new demo.ren --template bouncing-ball
+cargo run -p renamite-cli -- render demo.ren --frame 0 --out frame.png
+```
+
+Available templates: `blank`,
+`bouncing-ball`, `loader-trim-path`, `masked-text`, `photo-card`,
+`repeater-burst`, `gradient-poster`.
 
 ## Dependency firewall
 

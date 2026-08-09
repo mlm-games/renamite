@@ -460,7 +460,9 @@ impl<'de> Deserialize<'de> for StyleKind {
                                 "width" => content.width = Some(map.next_value()?),
                                 "cap" => content.cap = Some(map.next_value()?),
                                 "join" => content.join = Some(map.next_value()?),
-                                "dash" => content.dash = Some(map.next_value()?),
+                                "dash" => {
+                                    content.dash = map.next_value::<Option<AnimatedDash>>()?
+                                }
                                 "rule" => content.rule = Some(map.next_value()?),
                                 other => {
                                     return Err(A::Error::unknown_field(
@@ -504,10 +506,9 @@ impl<'de> Deserialize<'de> for StyleKind {
                                 seq.next_element()?
                                     .ok_or_else(|| A::Error::invalid_length(3, &"join"))?,
                             );
-                            content.dash = Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(4, &"dash"))?,
-                            );
+                            content.dash = seq
+                                .next_element::<Option<AnimatedDash>>()?
+                                .ok_or_else(|| A::Error::invalid_length(4, &"dash"))?;
                         }
                         Ok(content)
                     }

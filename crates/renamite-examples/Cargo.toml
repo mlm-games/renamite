@@ -1,0 +1,16 @@
+[package]
+name = "renamite-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Built-in Renamite example projects and templates."
+
+[dependencies]
+renamite-animation.workspace = true
+renamite-model.workspace = true
+renamite-io-ren.workspace = true
+glam.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+renamite-io-ren = { workspace = true, features = ["binary"] }

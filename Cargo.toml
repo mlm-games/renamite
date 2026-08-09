@@ -84,6 +84,7 @@ renamite-io-svg = { path = "crates/renamite-io-svg", version = "0.1.0" }
 renamite-test-support = { path = "crates/renamite-test-support", version = "0.1.0" }
 renamite-machine = { path = "crates/renamite-machine", version = "0.1.0" }
 renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.1.0" }
+renamite-examples = { path = "crates/renamite-examples", version = "0.1.0" }
 renamite-player = { path = "crates/renamite-player", version = "0.1.0" }
 
 [workspace.dependencies.graphite-vector-types]

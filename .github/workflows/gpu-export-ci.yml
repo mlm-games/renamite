@@ -34,6 +34,18 @@ jobs:
           cargo test -p renamite-render-offscreen
           cargo test -p renamite-render-offscreen -- --ignored
 
+      - name: Template render smoke (CLI)
+        run: |
+          cargo build -p renamite-cli
+          mkdir -p template-render
+          for t in blank bouncing-ball loader-trim-path masked-text photo-card repeater-burst gradient-poster; do
+            ren="$PWD/template-render/$t.ren"
+            ./target/debug/renamite new "$ren" --template "$t"
+            ./target/debug/renamite render "$ren" --frame 0 --out "template-render/$t.png" --background white
+            magic=$(od -An -tx1 -N8 "template-render/$t.png" | tr -d ' \n')
+            test "$magic" = "89504e470d0a1a0a" || { echo "$t produced an invalid PNG (magic=$magic)"; exit 1; }
+          done
+
       - name: upload golden diffs on failure
         if: failure()
         uses: actions/upload-artifact@v4
