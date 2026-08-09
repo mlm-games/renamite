@@ -5,7 +5,10 @@ use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
-use repose_core::{AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame, theme};
+use repose_core::{
+    AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame,
+    theme,
+};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
 
 use crate::components::CompactIconAction;
@@ -200,12 +203,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 /// Content-sized floating surface used by the stage HUD (must not be a
 /// `fill_max_size` surface — an absolute overlay would collapse to 0×0).
 fn HudSurface(content: View) -> View {
-    Box(
-        Modifier::new()
-            .background(theme().surface_container_high)
-            .clip_rounded(12.0)
-            .border(1.0, theme().outline_variant, 12.0),
-    )
+    Box(Modifier::new()
+        .background(theme().surface_container_high)
+        .clip_rounded(12.0)
+        .border(1.0, theme().outline_variant, 12.0))
     .child(content)
 }
 
@@ -235,16 +236,19 @@ fn ViewportStageHud(session: SessionRef) -> View {
         )
     };
 
-    Box(Modifier::new().absolute().offset(Some(16.0), Some(16.0), None, None)).child(HudSurface(
-        Row(
-            Modifier::new()
-                .padding(8.0)
-                .gap(8.0)
-                .align_items(AlignItems::CENTER),
-        )
+    Box(Modifier::new()
+        .absolute()
+        .offset(Some(16.0), Some(16.0), None, None))
+    .child(HudSurface(
+        Row(Modifier::new()
+            .padding(8.0)
+            .gap(8.0)
+            .align_items(AlignItems::CENTER))
         .child(if record {
             vec![
-                Text("● REC").size(theme().typography.label_medium).color(theme().error),
+                Text("● REC")
+                    .size(theme().typography.label_medium)
+                    .color(theme().error),
                 Text(format!("Frame {frame}"))
                     .size(theme().typography.label_small)
                     .color(theme().on_surface_variant),
@@ -275,7 +279,10 @@ fn ViewportHint() -> View {
     if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
         return ZStack(Modifier::new());
     }
-    Box(Modifier::new().absolute().offset(Some(16.0), None, None, Some(16.0))).child(HudSurface(
+    Box(Modifier::new()
+        .absolute()
+        .offset(Some(16.0), None, None, Some(16.0)))
+    .child(HudSurface(
         Text("Right click menu · Middle mouse pan · Use Animate mode for keyframing")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
@@ -296,12 +303,14 @@ fn TemplatePicker(session: SessionRef) -> View {
         .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
         .collect();
 
-    Column(Modifier::new()
-        .fill_max_size()
-        .padding(24.0)
-        .gap(20.0)
-        .justify_content(JustifyContent::CENTER)
-        .align_items(AlignItems::CENTER))
+    Column(
+        Modifier::new()
+            .fill_max_size()
+            .padding(24.0)
+            .gap(20.0)
+            .justify_content(JustifyContent::CENTER)
+            .align_items(AlignItems::CENTER),
+    )
     .child(
         Text("Start a Renamite project")
             .size(th.typography.headline_small)
@@ -340,17 +349,15 @@ fn TemplatePicker(session: SessionRef) -> View {
         Text("Or dismiss to a blank canvas")
             .size(th.typography.label_medium)
             .color(th.primary)
-            .modifier(
-                Modifier::new().on_pointer_down({
-                    let session = session.clone();
-                    move |_| {
-                        let mut s = session.borrow_mut();
-                        s.welcome = false;
-                        s.revision = s.revision.wrapping_add(1);
-                        request_frame();
-                    }
-                }),
-            ),
+            .modifier(Modifier::new().on_pointer_down({
+                let session = session.clone();
+                move |_| {
+                    let mut s = session.borrow_mut();
+                    s.welcome = false;
+                    s.revision = s.revision.wrapping_add(1);
+                    request_frame();
+                }
+            })),
     )
 }
 
@@ -367,17 +374,17 @@ fn LauncherTile(
     on_click: impl Fn() + 'static,
 ) -> View {
     let th = theme();
-    Box(
-        Modifier::new()
-            .width(180.0)
-            .padding(14.0)
-            .background(th.surface_container_high)
-            .clip_rounded(12.0)
-            .on_pointer_down(move |_| on_click()),
-    )
+    Box(Modifier::new()
+        .width(180.0)
+        .padding(14.0)
+        .background(th.surface_container_high)
+        .clip_rounded(12.0)
+        .on_pointer_down(move |_| on_click()))
     .child(
         Column(Modifier::new().gap(6.0)).child((
-            Text(title).size(th.typography.title_small).color(th.on_surface),
+            Text(title)
+                .size(th.typography.title_small)
+                .color(th.on_surface),
             Text(subtitle)
                 .size(th.typography.body_small)
                 .color(th.on_surface_variant),
@@ -589,12 +596,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             let r = to_screen_rect(*min, *max, view);
             scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
             for point in [rotate, scale] {
-                draw_selection_handle(
-                    scope,
-                    view.world_to_screen(*point),
-                    primary,
-                    th.on_primary,
-                );
+                draw_selection_handle(scope, view.world_to_screen(*point), primary, th.on_primary);
             }
             if let Some(pivot) = pivot {
                 draw_pivot(scope, view.world_to_screen(*pivot), th.tertiary);

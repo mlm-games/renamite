@@ -9,9 +9,9 @@ use glam::DVec2;
 use renamite_animation::{Animated, AnimatedTransform, EasingHandle, Frame, Interpolation};
 use renamite_io_ren::RenFile;
 use renamite_model::{
-    Color, Document, FillRule, GradientStop, GradientStops, MaskProps, ModifierKind, Node, NodeKind,
-    Parent, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign, TextNode,
-    TrimMode,
+    Color, Document, FillRule, GradientStop, GradientStops, MaskProps, ModifierKind, Node,
+    NodeKind, Parent, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign,
+    TextNode, TrimMode,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,9 +127,7 @@ pub fn parse_template(input: &str) -> Option<TemplateId> {
     let input = normalize(input);
     templates()
         .iter()
-        .find(|t| {
-            normalize(t.id.slug()) == input || normalize(t.name) == input
-        })
+        .find(|t| normalize(t.id.slug()) == input || normalize(t.name) == input)
         .map(|t| t.id)
 }
 
@@ -148,7 +146,8 @@ fn attach_group_with(
     for child in children {
         doc.attach(child, Parent::Node(group), usize::MAX).unwrap();
     }
-    doc.attach(group, Parent::Comp(doc.main), usize::MAX).unwrap();
+    doc.attach(group, Parent::Comp(doc.main), usize::MAX)
+        .unwrap();
     group
 }
 
@@ -162,11 +161,7 @@ fn solid_fill(doc: &mut Document, color: Color) -> renamite_model::NodeId {
     ))
 }
 
-fn solid_stroke(
-    doc: &mut Document,
-    color: Color,
-    width: f64,
-) -> renamite_model::NodeId {
+fn solid_stroke(doc: &mut Document, color: Color, width: f64) -> renamite_model::NodeId {
     doc.create_node(Node::new(
         "Stroke",
         NodeKind::Style(StyleKind::Stroke {
@@ -251,11 +246,7 @@ fn loader_trim_path() -> RenFile {
             start: Animated::new(0.0),
             end: Animated {
                 base: 0.2,
-                keyframes: vec![
-                    key_f64(0, 0.15),
-                    key_f64(45, 0.75),
-                    key_f64(90, 0.15),
-                ],
+                keyframes: vec![key_f64(0, 0.15), key_f64(45, 0.75), key_f64(90, 0.15)],
             },
             offset: Animated {
                 base: 0.0,
@@ -323,16 +314,16 @@ fn tiny_png() -> Vec<u8> {
 fn photo_card() -> RenFile {
     let mut doc = doc_named("Photo Card");
 
-    let asset = doc.assets.insert(renamite_model::Asset::Image(
-        renamite_model::ImageAsset {
+    let asset = doc
+        .assets
+        .insert(renamite_model::Asset::Image(renamite_model::ImageAsset {
             name: "placeholder.png".into(),
             mime: "image/png".into(),
             bytes: tiny_png(),
             width: 2,
             height: 2,
             srgb: true,
-        },
-    ));
+        }));
     doc.asset_order.push(asset);
 
     let mut image = Node::new("Image", NodeKind::Image(asset));
@@ -464,11 +455,7 @@ mod tests {
 
             if t.id != TemplateId::Blank {
                 let scene = renamite_model::evaluate(&f.document, f.document.main, 0.0);
-                assert!(
-                    !scene.items.is_empty(),
-                    "{} should render items",
-                    t.name
-                );
+                assert!(!scene.items.is_empty(), "{} should render items", t.name);
             }
         }
     }

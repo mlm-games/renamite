@@ -774,7 +774,10 @@ mod tests {
         let doc = import(&lottie).unwrap();
 
         assert!(doc.nodes.values().any(|node| {
-            matches!(node.kind, NodeKind::Modifier(ModifierKind::PuckerBloat { .. }))
+            matches!(
+                node.kind,
+                NodeKind::Modifier(ModifierKind::PuckerBloat { .. })
+            )
         }));
 
         let exported = export(&doc).unwrap();

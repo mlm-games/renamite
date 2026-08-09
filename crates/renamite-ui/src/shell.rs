@@ -182,11 +182,9 @@ fn color_picker_overlay(session: SessionRef) -> View {
     ZStack(Modifier::new().fill_max_size()).child((
         // Transparent close layer: click anywhere outside the picker to
         // dismiss (cancels). Not a modal scrim - the editor stays visible.
-        Box(Modifier::new()
-            .fill_max_size()
-            .on_pointer_down(move |_| {
-                session_close.borrow_mut().close_color_picker();
-            })),
+        Box(Modifier::new().fill_max_size().on_pointer_down(move |_| {
+            session_close.borrow_mut().close_color_picker();
+        })),
         Box(Modifier::new()
             .absolute()
             .offset(Some(x), Some(y), None, None))
@@ -300,10 +298,8 @@ fn ExpandedDesignWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
         Column(Modifier::new().width(280.0).fill_max_height().gap(8.0)).child((
-            Box(Modifier::new().weight(1.0))
-                .child(PanelSurface(LayersPanel(session.clone()))),
-            Box(Modifier::new().height(220.0))
-                .child(PanelSurface(AssetsPanel(session.clone()))),
+            Box(Modifier::new().weight(1.0)).child(PanelSurface(LayersPanel(session.clone()))),
+            Box(Modifier::new().height(220.0)).child(PanelSurface(AssetsPanel(session.clone()))),
         )),
         Box(Modifier::new().weight(1.0).fill_max_height())
             .child(PanelSurface(ViewportPanel(session.clone()))),
@@ -383,8 +379,7 @@ fn MediumWorkspace(session: SessionRef) -> View {
         Box(Modifier::new().width(320.0).fill_max_height()).child(PanelSurface(
             Column(Modifier::new().fill_max_size()).child((
                 MediumSideTabs(session.clone()),
-                Box(Modifier::new().weight(1.0).fill_max_width())
-                    .child(active_side_panel(session)),
+                Box(Modifier::new().weight(1.0).fill_max_width()).child(active_side_panel(session)),
             )),
         )),
     ))
@@ -403,10 +398,8 @@ fn CompactWorkspace(session: SessionRef) -> View {
 }
 
 fn CompactCanvas(session: SessionRef) -> View {
-    ZStack(Modifier::new().fill_max_size()).child((
-        ViewportPanel(session.clone()),
-        CompactToolPalette(session),
-    ))
+    ZStack(Modifier::new().fill_max_size())
+        .child((ViewportPanel(session.clone()), CompactToolPalette(session)))
 }
 
 fn compact_tool(
@@ -426,26 +419,52 @@ fn compact_tool(
 /// Floating tool palette for the compact canvas (the tool rail is dropped on
 /// phones, so the tools move on top of the stage instead).
 fn CompactToolPalette(session: SessionRef) -> View {
-    Box(
-        Modifier::new()
-            .absolute()
-            .offset(Some(12.0), None, None, Some(12.0)),
-    )
+    Box(Modifier::new()
+        .absolute()
+        .offset(Some(12.0), None, None, Some(12.0)))
     .child(
-        Box(
-            Modifier::new()
-                .padding(6.0)
-                .background(theme().surface_container_high)
-                .clip_rounded(12.0)
-                .border(1.0, theme().outline_variant, 12.0),
-        )
+        Box(Modifier::new()
+            .padding(6.0)
+            .background(theme().surface_container_high)
+            .clip_rounded(12.0)
+            .border(1.0, theme().outline_variant, 12.0))
         .child(Column(Modifier::new().gap(4.0)).child((
-            compact_tool(session.clone(), renamite_history::ToolId::Select, Symbols::arrow_selector_tool, "Select"),
-            compact_tool(session.clone(), renamite_history::ToolId::Rect, Symbols::rectangle, "Rectangle"),
-            compact_tool(session.clone(), renamite_history::ToolId::Ellipse, Symbols::circle, "Ellipse"),
-            compact_tool(session.clone(), renamite_history::ToolId::Text, Symbols::text_fields, "Text"),
-            compact_tool(session.clone(), renamite_history::ToolId::Gradient, Symbols::gradient, "Gradient"),
-            compact_tool(session, renamite_history::ToolId::Fill, Symbols::format_color_fill, "Fill"),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Select,
+                Symbols::arrow_selector_tool,
+                "Select",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Rect,
+                Symbols::rectangle,
+                "Rectangle",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Ellipse,
+                Symbols::circle,
+                "Ellipse",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Text,
+                Symbols::text_fields,
+                "Text",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Gradient,
+                Symbols::gradient,
+                "Gradient",
+            ),
+            compact_tool(
+                session,
+                renamite_history::ToolId::Fill,
+                Symbols::format_color_fill,
+                "Fill",
+            ),
         ))),
     )
 }
@@ -481,7 +500,12 @@ fn BottomNavigation(session: SessionRef) -> View {
                 Symbols::play_arrow,
                 "Animate",
             ),
-            nav_item(session.clone(), PanelPage::Inspect, Symbols::settings, "Inspect"),
+            nav_item(
+                session.clone(),
+                PanelPage::Inspect,
+                Symbols::settings,
+                "Inspect",
+            ),
             nav_item(session, PanelPage::Assets, Symbols::folder_open, "Assets"),
         ],
         NavigationBarConfig::default(),

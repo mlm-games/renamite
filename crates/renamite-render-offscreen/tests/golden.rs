@@ -603,10 +603,7 @@ fn golden_round_corners() {
 #[test]
 fn golden_zigzag() {
     let Some(mut gpu) = gpu() else { return };
-    check_golden(
-        "zigzag",
-        &render_doc(&mut gpu, &fixture_zigzag(), 0.0),
-    );
+    check_golden("zigzag", &render_doc(&mut gpu, &fixture_zigzag(), 0.0));
 }
 
 #[test]

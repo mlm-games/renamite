@@ -295,12 +295,8 @@ impl MachineInstance {
         m.inputs.iter().position(|i| i.name == name)
     }
     /// Current active state per layer, in layer order.
-    pub fn layer_states(
-        &self,
-    ) -> impl Iterator<Item = usize> + '_ {
-        self.layers
-            .iter()
-            .map(|layer| layer.current)
+    pub fn layer_states(&self) -> impl Iterator<Item = usize> + '_ {
+        self.layers.iter().map(|layer| layer.current)
     }
     pub fn set_bool(&mut self, idx: usize, v: bool) {
         if let Some(InputValue::Bool(b)) = self.inputs.get_mut(idx) {

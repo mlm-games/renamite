@@ -389,93 +389,93 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
         NodeKind::Mask(mask) => {
             d.push(pd("Mask", "Inverted", "mask.inverted", PropKind::Bool));
             match &mask.shape {
-            ShapeKind::Path(_) => {}
-            ShapeKind::Rect { .. } => {
-                d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
-                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
-                d.push(pd(
-                    "Mask",
-                    "Corner radius",
-                    "shape.rounded",
-                    PropKind::F64 {
-                        min: Some(0.0),
-                        max: None,
-                        step: 1.0,
-                    },
-                ));
-            }
-            ShapeKind::Ellipse { .. } => {
-                d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
-                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
-            }
-            ShapeKind::Star { .. } => {
-                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
-                d.push(pd(
-                    "Mask",
-                    "Points",
-                    "shape.points",
-                    PropKind::F64 {
-                        min: Some(3.0),
-                        max: Some(64.0),
-                        step: 1.0,
-                    },
-                ));
-                d.push(pd(
-                    "Mask",
-                    "Outer radius",
-                    "shape.outer_r",
-                    PropKind::F64 {
-                        min: Some(0.0),
-                        max: None,
-                        step: 1.0,
-                    },
-                ));
-                d.push(pd(
-                    "Mask",
-                    "Inner radius",
-                    "shape.inner_r",
-                    PropKind::F64 {
-                        min: Some(0.0),
-                        max: None,
-                        step: 1.0,
-                    },
-                ));
-                d.push(pd(
-                    "Mask",
-                    "Roundness",
-                    "shape.roundness",
-                    PropKind::F64 {
-                        min: Some(0.0),
-                        max: None,
-                        step: 0.5,
-                    },
-                ));
-            }
-            ShapeKind::Polygon { .. } => {
-                d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
-                d.push(pd(
-                    "Mask",
-                    "Points",
-                    "shape.points",
-                    PropKind::F64 {
-                        min: Some(3.0),
-                        max: Some(64.0),
-                        step: 1.0,
-                    },
-                ));
-                d.push(pd(
-                    "Mask",
-                    "Outer radius",
-                    "shape.outer_r",
-                    PropKind::F64 {
-                        min: Some(0.0),
-                        max: None,
-                        step: 1.0,
-                    },
-                ));
+                ShapeKind::Path(_) => {}
+                ShapeKind::Rect { .. } => {
+                    d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
+                    d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                    d.push(pd(
+                        "Mask",
+                        "Corner radius",
+                        "shape.rounded",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 1.0,
+                        },
+                    ));
+                }
+                ShapeKind::Ellipse { .. } => {
+                    d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
+                    d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                }
+                ShapeKind::Star { .. } => {
+                    d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                    d.push(pd(
+                        "Mask",
+                        "Points",
+                        "shape.points",
+                        PropKind::F64 {
+                            min: Some(3.0),
+                            max: Some(64.0),
+                            step: 1.0,
+                        },
+                    ));
+                    d.push(pd(
+                        "Mask",
+                        "Outer radius",
+                        "shape.outer_r",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 1.0,
+                        },
+                    ));
+                    d.push(pd(
+                        "Mask",
+                        "Inner radius",
+                        "shape.inner_r",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 1.0,
+                        },
+                    ));
+                    d.push(pd(
+                        "Mask",
+                        "Roundness",
+                        "shape.roundness",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 0.5,
+                        },
+                    ));
+                }
+                ShapeKind::Polygon { .. } => {
+                    d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
+                    d.push(pd(
+                        "Mask",
+                        "Points",
+                        "shape.points",
+                        PropKind::F64 {
+                            min: Some(3.0),
+                            max: Some(64.0),
+                            step: 1.0,
+                        },
+                    ));
+                    d.push(pd(
+                        "Mask",
+                        "Outer radius",
+                        "shape.outer_r",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 1.0,
+                        },
+                    ));
+                }
             }
         }
-        },
         _ => {}
     }
     d

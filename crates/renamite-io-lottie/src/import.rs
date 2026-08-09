@@ -588,37 +588,21 @@ impl Importer {
             "op" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Offset Path"),
                 NodeKind::Modifier(ModifierKind::OffsetPath {
-                    amount: import_scalar(
-                        item.get("a").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
+                    amount: import_scalar(item.get("a").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
             "zz" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Zig Zag"),
                 NodeKind::Modifier(ModifierKind::ZigZag {
-                    amplitude: import_scalar(
-                        item.get("a").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
-                    frequency: import_scalar(
-                        item.get("f").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
+                    amplitude: import_scalar(item.get("a").unwrap_or(&Value::Null), 1.0, 0.0),
+                    frequency: import_scalar(item.get("f").unwrap_or(&Value::Null), 1.0, 0.0),
                     smooth: item.get("s").and_then(Value::as_u64).unwrap_or(0) != 0,
                 }),
             ))),
             "pb" => Some(ImportTree::leaf(Node::new(
                 item_name(item, "Pucker & Bloat"),
                 NodeKind::Modifier(ModifierKind::PuckerBloat {
-                    amount: import_scalar(
-                        item.get("a").unwrap_or(&Value::Null),
-                        1.0,
-                        0.0,
-                    ),
+                    amount: import_scalar(item.get("a").unwrap_or(&Value::Null), 1.0, 0.0),
                 }),
             ))),
             "rp" => Some(ImportTree::leaf(Node::new(

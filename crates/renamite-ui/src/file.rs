@@ -568,42 +568,29 @@ pub fn import_image(session: &SessionRef) {
                 Some(PickedFile::Path(path)) => {
                     let name = path
                         .file_name()
-                        .map(|name| {
-                            name.to_string_lossy().into_owned()
-                        })
+                        .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "Image".into());
 
                     Some(
                         std::fs::read(path)
                             .map_err(anyhow::Error::from)
-                            .and_then(|bytes| {
-                                image_asset_from_bytes(name, bytes)
-                            }),
+                            .and_then(|bytes| image_asset_from_bytes(name, bytes)),
                     )
                 }
 
-                Some(PickedFile::Bytes { name, data }) => {
-                    Some(image_asset_from_bytes(name, data))
-                }
+                Some(PickedFile::Bytes { name, data }) => Some(image_asset_from_bytes(name, data)),
             };
 
             if let Some(result) = result {
                 let operation = match result {
-                    Ok(asset) => {
-                        PendingFileOp::ImportImageDone { asset }
-                    }
+                    Ok(asset) => PendingFileOp::ImportImageDone { asset },
 
                     Err(error) => PendingFileOp::Failed {
-                        message: format!(
-                            "Image import failed: {error}"
-                        ),
+                        message: format!("Image import failed: {error}"),
                     },
                 };
 
-                operations
-                    .lock()
-                    .unwrap()
-                    .push_back(operation);
+                operations.lock().unwrap().push_back(operation);
             }
 
             wake_ui();

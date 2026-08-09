@@ -330,39 +330,38 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
         ),
         // Drag-reorder handle. Pointer-down starts the drag (separate from
         // select / shift-select / double-click rename / expand).
-        Box(
-            Modifier::new()
-                .width(28.0)
-                .height(ROW_HEIGHT)
-                .align_items(AlignItems::CENTER)
-                .on_pointer_down({
-                    let session = session.clone();
-                    move |pe: PointerEvent| {
-                        if !matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
-                            return;
-                        }
-                        let mut s = session.borrow_mut();
-                        if !s.selection.nodes.contains(&id) {
-                            s.selection.nodes = vec![id];
-                        }
-                        s.layer_drag = Some(LayerDragState {
-                            id,
-                            hover_row: index,
-                            before: true,
-                            as_child: false,
-                        });
-                        s.repaint();
+        Box(Modifier::new()
+            .width(28.0)
+            .height(ROW_HEIGHT)
+            .align_items(AlignItems::CENTER)
+            .on_pointer_down({
+                let session = session.clone();
+                move |pe: PointerEvent| {
+                    if !matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
+                        return;
                     }
-                }),
-        )
+                    let mut s = session.borrow_mut();
+                    if !s.selection.nodes.contains(&id) {
+                        s.selection.nodes = vec![id];
+                    }
+                    s.layer_drag = Some(LayerDragState {
+                        id,
+                        hover_row: index,
+                        before: true,
+                        as_child: false,
+                    });
+                    s.repaint();
+                }
+            }))
         .child(AppIcon(Symbols::drag_indicator, 20.0)),
     ))
 }
 
 fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String) -> View {
-    let tf_state = remember_with_key("active_rename_field", || {
-        RefCell::new(TextFieldState::new())
-    });
+    let tf_state = remember_with_key(
+        "active_rename_field",
+        || RefCell::new(TextFieldState::new()),
+    );
     // Seed the field with the current name, selecting it so typing replaces it.
     {
         let mut st = tf_state.borrow_mut();
@@ -379,19 +378,16 @@ fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String)
     .child((
         BasicTextField(
             tf_state,
-            Modifier::new()
-                .flex_grow(1.0)
-                .height(32.0)
-                .on_key_event({
-                    let session = session.clone();
-                    move |ke: KeyEvent| {
-                        if matches!(ke.key, Key::Escape) {
-                            session.borrow_mut().cancel_rename();
-                            return true;
-                        }
-                        false
+            Modifier::new().flex_grow(1.0).height(32.0).on_key_event({
+                let session = session.clone();
+                move |ke: KeyEvent| {
+                    if matches!(ke.key, Key::Escape) {
+                        session.borrow_mut().cancel_rename();
+                        return true;
                     }
-                }),
+                    false
+                }
+            }),
             "",
             TextFieldConfig {
                 line_limits: repose_core::TextFieldLineLimits::SingleLine,

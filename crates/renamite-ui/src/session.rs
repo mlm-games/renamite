@@ -254,10 +254,7 @@ impl Session {
 
     /// Full constructor; the caller supplies the live `RenderContext` used to
     /// upload image assets for editor viewport rendering.
-    pub fn with_render_context(
-        file: RenFile,
-        render_context: repose_core::RenderContext,
-    ) -> Self {
+    pub fn with_render_context(file: RenFile, render_context: repose_core::RenderContext) -> Self {
         let engine = Engine::new(&file).expect("project");
         let range = file.document.compositions[file.document.main].range;
         let active_machine = file
@@ -507,21 +504,16 @@ impl Session {
         };
 
         let scene = self.engine.scene();
-        let Some((min, max)) = selection_bounds(
-            &self.file.document,
-            scene,
-            &self.selection.nodes,
-        ) else {
+        let Some((min, max)) = selection_bounds(&self.file.document, scene, &self.selection.nodes)
+        else {
             return;
         };
 
         let world_center = (min + max) * 0.5;
 
-        let Some(transform) = node_transform_context(
-            &self.file.document,
-            *node,
-            self.playback.head,
-        ) else {
+        let Some(transform) =
+            node_transform_context(&self.file.document, *node, self.playback.head)
+        else {
             return;
         };
 
@@ -792,10 +784,8 @@ impl Session {
     /// Upload/refresh the encoded bytes of every attached image asset, and
     /// evict handles for detached assets. Call after any asset mutation.
     pub fn sync_image_assets(&mut self) {
-        self.renderer.sync_document_images(
-            &self.file.document,
-            &self.render_context,
-        );
+        self.renderer
+            .sync_document_images(&self.file.document, &self.render_context);
     }
 
     /// Import raw font bytes as a project asset (undoable). Derives the family
@@ -836,13 +826,11 @@ impl Session {
         use renamite_model::Asset;
 
         let name = asset.name.clone();
-        let applied = self.history_apply_full(
-            renamite_history::EditorCommand::AddAsset {
-                index: usize::MAX,
-                asset: Asset::Image(asset),
-                id: None,
-            },
-        );
+        let applied = self.history_apply_full(renamite_history::EditorCommand::AddAsset {
+            index: usize::MAX,
+            asset: Asset::Image(asset),
+            id: None,
+        });
 
         if applied.is_none() {
             self.status = Some("Image import failed".into());
@@ -1281,24 +1269,18 @@ impl Session {
     pub fn edit_active_machine(
         &mut self,
         label: impl Into<String>,
-        edit: impl FnOnce(
-            &mut Machine,
-        ) -> renamite_behavior_common::machine::Result<()>,
+        edit: impl FnOnce(&mut Machine) -> renamite_behavior_common::machine::Result<()>,
     ) -> bool {
         let Some(machine_id) = self.active_machine else {
             return false;
         };
 
-        let Some(mut machine) =
-            self.file.machines.get(machine_id).cloned()
-        else {
+        let Some(mut machine) = self.file.machines.get(machine_id).cloned() else {
             return false;
         };
 
         if let Err(error) = edit(&mut machine) {
-            self.status = Some(
-                format!("Machine edit failed: {error}"),
-            );
+            self.status = Some(format!("Machine edit failed: {error}"));
             self.revision = self.revision.wrapping_add(1);
             request_frame();
             return false;
@@ -1306,12 +1288,10 @@ impl Session {
 
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction(label.into()),
-            ToolOutput::Commands(smallvec![
-                EditorCommand::ReplaceMachine {
-                    id: machine_id,
-                    machine,
-                }
-            ]),
+            ToolOutput::Commands(smallvec![EditorCommand::ReplaceMachine {
+                id: machine_id,
+                machine,
+            }]),
             ToolOutput::CommitTransaction,
         ]);
 
@@ -1325,19 +1305,14 @@ impl Session {
     }
 
     /// Switch the active machine (no-op if `id` is not attached).
-    pub fn select_machine(
-        &mut self,
-        machine: MachineId,
-    ) {
-        if !self.file.machines.contains_key(machine)
-            || !self.file.machine_order.contains(&machine)
+    pub fn select_machine(&mut self, machine: MachineId) {
+        if !self.file.machines.contains_key(machine) || !self.file.machine_order.contains(&machine)
         {
             return;
         }
 
         self.active_machine = Some(machine);
-        self.machine_selection =
-            MachineSelection::None;
+        self.machine_selection = MachineSelection::None;
 
         self.reset_machine_preview();
         self.revision = self.revision.wrapping_add(1);
@@ -1347,10 +1322,7 @@ impl Session {
     /// Create a default machine (one layer, one Idle state) and select it.
     pub fn create_machine(&mut self) {
         let machine = Machine {
-            name: format!(
-                "State Machine {}",
-                self.file.machine_order.len() + 1,
-            ),
+            name: format!("State Machine {}", self.file.machine_order.len() + 1,),
             inputs: Vec::new(),
             layers: vec![renamite_machine::MachineLayer {
                 name: "Layer 1".into(),
@@ -1366,18 +1338,14 @@ impl Session {
         };
 
         self.history.begin("Create machine".to_string());
-        let applied = self.history_apply_full(
-            EditorCommand::CreateMachine {
-                index: usize::MAX,
-                machine,
-                id: None,
-            },
-        );
+        let applied = self.history_apply_full(EditorCommand::CreateMachine {
+            index: usize::MAX,
+            machine,
+            id: None,
+        });
         self.history.commit();
 
-        if let Some(machine) =
-            applied.and_then(|value| value.created_machine)
-        {
+        if let Some(machine) = applied.and_then(|value| value.created_machine) {
             self.active_machine = Some(machine);
             self.machine_selection = MachineSelection::None;
             self.reset_machine_preview();
@@ -1398,9 +1366,7 @@ impl Session {
 
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Remove machine".into()),
-            ToolOutput::Commands(smallvec![
-                EditorCommand::DetachMachine { id: machine }
-            ]),
+            ToolOutput::Commands(smallvec![EditorCommand::DetachMachine { id: machine }]),
             ToolOutput::CommitTransaction,
         ]);
 
@@ -1429,30 +1395,18 @@ impl Session {
             .inputs
             .iter()
             .map(|input| match input.kind {
-                InputKind::Bool { default } => {
-                    InputValue::Bool(default)
-                }
+                InputKind::Bool { default } => InputValue::Bool(default),
 
-                InputKind::Number { default } => {
-                    InputValue::Number(default)
-                }
+                InputKind::Number { default } => InputValue::Number(default),
 
-                InputKind::Trigger => {
-                    InputValue::Trigger { fired: false }
-                }
+                InputKind::Trigger => InputValue::Trigger { fired: false },
             })
             .collect();
 
         if self.machine_preview_enabled {
-            self.engine.play_machine(
-                &self.file,
-                machine_id,
-            );
+            self.engine.play_machine(&self.file, machine_id);
         } else {
-            self.engine.play_timeline(
-                &self.file,
-                LoopMode::Loop,
-            );
+            self.engine.play_timeline(&self.file, LoopMode::Loop);
         }
 
         self.engine.reevaluate(&self.file);
@@ -1460,18 +1414,12 @@ impl Session {
         request_frame();
     }
 
-    pub fn set_preview_bool(
-        &mut self,
-        input: usize,
-        value: bool,
-    ) {
+    pub fn set_preview_bool(&mut self, input: usize, value: bool) {
         let Some(machine) = self.active_machine else {
             return;
         };
 
-        if let Some(InputValue::Bool(current)) =
-            self.machine_preview_inputs.get_mut(input)
-        {
+        if let Some(InputValue::Bool(current)) = self.machine_preview_inputs.get_mut(input) {
             *current = value;
             self.engine.set_bool(
                 &self.file,
@@ -1482,18 +1430,12 @@ impl Session {
         }
     }
 
-    pub fn set_preview_number(
-        &mut self,
-        input: usize,
-        value: f64,
-    ) {
+    pub fn set_preview_number(&mut self, input: usize, value: f64) {
         let Some(machine) = self.active_machine else {
             return;
         };
 
-        if let Some(InputValue::Number(current)) =
-            self.machine_preview_inputs.get_mut(input)
-        {
+        if let Some(InputValue::Number(current)) = self.machine_preview_inputs.get_mut(input) {
             *current = value;
             self.engine.set_number(
                 &self.file,
@@ -1504,24 +1446,16 @@ impl Session {
         }
     }
 
-    pub fn fire_preview_trigger(
-        &mut self,
-        input: usize,
-    ) {
+    pub fn fire_preview_trigger(&mut self, input: usize) {
         let Some(machine) = self.active_machine else {
             return;
         };
 
-        let Some(input_def) =
-            self.file.machines[machine].inputs.get(input)
-        else {
+        let Some(input_def) = self.file.machines[machine].inputs.get(input) else {
             return;
         };
 
-        self.engine.fire(
-            &self.file,
-            &input_def.name,
-        );
+        self.engine.fire(&self.file, &input_def.name);
 
         request_frame();
     }
@@ -1789,10 +1723,7 @@ fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {
 fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {
     let [a, b, c, d, _, _] = affine.as_coeffs();
 
-    DVec2::new(
-        a * value.x + c * value.y,
-        b * value.x + d * value.y,
-    )
+    DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
 /// Default empty document with a seeded ellipse so the artboard isn't blank.
@@ -1832,10 +1763,9 @@ pub fn default_file() -> RenFile {
 /// Register the playback driver once and return the shared session.
 pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
     let rc = render_context.clone();
-    let session = remember_with_key(
-        "session",
-        || RefCell::new(Session::with_render_context(default_file(), rc)),
-    );
+    let session = remember_with_key("session", || {
+        RefCell::new(Session::with_render_context(default_file(), rc))
+    });
 
     let registered = remember_state_with_key("pb_reg", || false);
     if !*registered.borrow() {
@@ -1910,7 +1840,10 @@ mod tests {
             ToolOutput::BeginTransaction("No-op".into()),
             ToolOutput::CommitTransaction,
         ]);
-        assert_eq!(s.dirty, before, "empty transaction leaves clean state untouched");
+        assert_eq!(
+            s.dirty, before,
+            "empty transaction leaves clean state untouched"
+        );
     }
 
     #[test]
@@ -1932,14 +1865,22 @@ mod tests {
             renamite_history::SelectionChange::Set(vec![id])
         )]);
         assert_eq!(s.selection.nodes, vec![id]);
-        assert_eq!(s.revision, before + 1, "selection-only output repaints once");
+        assert_eq!(
+            s.revision,
+            before + 1,
+            "selection-only output repaints once"
+        );
     }
 
     #[test]
     fn picker_change_then_commit_is_one_undo_step() {
         let mut s = Session::new(default_file());
         let fill = fill_id_of(&s);
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK, DVec2::ZERO);
+        s.open_color_picker(
+            PickerTarget::StyleColor { style_id: fill },
+            Color::BLACK,
+            DVec2::ZERO,
+        );
         for _ in 0..5 {
             s.apply_picker_change(Color::rgba(0.1, 0.2, 0.3, 1.0));
         }
@@ -1960,7 +1901,11 @@ mod tests {
             };
             st.paint().base_color()
         };
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, orig, DVec2::ZERO);
+        s.open_color_picker(
+            PickerTarget::StyleColor { style_id: fill },
+            orig,
+            DVec2::ZERO,
+        );
         s.apply_picker_change(Color::WHITE);
         s.commit_picker_color(Color::WHITE);
         undo_cmd(&mut s);
@@ -1978,7 +1923,11 @@ mod tests {
     fn close_without_commit_cancels() {
         let mut s = Session::new(default_file());
         let fill = fill_id_of(&s);
-        s.open_color_picker(PickerTarget::StyleColor { style_id: fill }, Color::BLACK, DVec2::ZERO);
+        s.open_color_picker(
+            PickerTarget::StyleColor { style_id: fill },
+            Color::BLACK,
+            DVec2::ZERO,
+        );
         s.apply_picker_change(Color::WHITE);
         s.close_color_picker();
         assert!(
@@ -2008,7 +1957,11 @@ mod tests {
         let mut session = Session::new(default_file());
         let original = session.current_paint.clone();
 
-        session.open_color_picker(PickerTarget::CurrentPaint, original.base_color(), DVec2::ZERO);
+        session.open_color_picker(
+            PickerTarget::CurrentPaint,
+            original.base_color(),
+            DVec2::ZERO,
+        );
         session.apply_picker_change(Color::WHITE);
         session.close_color_picker();
 
@@ -2112,7 +2065,11 @@ mod tests {
 
         for index in 0..3 {
             let ok = session.edit_active_machine(format!("Add input {index}"), move |m| {
-                add_input(m, format!("toggle {index}"), InputKind::Bool { default: false })?;
+                add_input(
+                    m,
+                    format!("toggle {index}"),
+                    InputKind::Bool { default: false },
+                )?;
                 Ok(())
             });
             assert!(ok, "input edit succeeds");
@@ -2131,7 +2088,7 @@ mod tests {
     #[test]
     fn preview_bool_drives_transition() {
         use renamite_behavior_common::machine::{
-            add_input, add_state, add_transition, transition_mut, TransitionSource,
+            TransitionSource, add_input, add_state, add_transition, transition_mut,
         };
         use renamite_machine::Condition;
 

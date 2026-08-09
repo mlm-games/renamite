@@ -7,9 +7,7 @@ use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelHeader, StatusChip};
-use crate::session::{
-    EditorMode, SessionRef, dispatch_timeline, map_modifiers, pe_pos,
-};
+use crate::session::{EditorMode, SessionRef, dispatch_timeline, map_modifiers, pe_pos};
 use crate::symbols::Symbols;
 
 pub fn TimelinePanel(session: SessionRef) -> View {
@@ -46,7 +44,11 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                 }
             }),
             CompactIconAction(
-                if playing { Symbols::pause } else { Symbols::play_arrow },
+                if playing {
+                    Symbols::pause
+                } else {
+                    Symbols::play_arrow
+                },
                 "Play/Pause",
                 {
                     let session = session.clone();
@@ -73,8 +75,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
         TimelineInfoBar(head, range, record),
         Row(Modifier::new().fill_max_size()).child((
             TimelineLabels(session.clone(), &rows),
-            Box(Modifier::new().weight(1.0).fill_max_height())
-                .child(TimelineCanvas(session)),
+            Box(Modifier::new().weight(1.0).fill_max_height()).child(TimelineCanvas(session)),
         )),
     ))
 }
@@ -84,13 +85,11 @@ fn TimelineInfoBar(
     range: (renamite_animation::Frame, renamite_animation::Frame),
     record: bool,
 ) -> View {
-    Row(
-        Modifier::new()
-            .fill_max_width()
-            .padding(8.0)
-            .gap(8.0)
-            .align_items(AlignItems::CENTER),
-    )
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding(8.0)
+        .gap(8.0)
+        .align_items(AlignItems::CENTER))
     .child((
         StatusChip(
             format!("Frame {}", head.round() as i64),
@@ -116,53 +115,55 @@ fn TimelineInfoBar(
     ))
 }
 
-fn prop_label(session: SessionRef, node: renamite_model::NodeId, path: &renamite_model::PropPath) -> Option<String> {
+fn prop_label(
+    session: SessionRef,
+    node: renamite_model::NodeId,
+    path: &renamite_model::PropPath,
+) -> Option<String> {
     let s = session.borrow();
-    renamite_behavior_common::inspect::props_for_node(&s.file.document, node, renamite_animation::Frame(0))
-        .into_iter()
-        .find(|row| &row.desc.path == path)
-        .map(|row| row.desc.label.to_string())
+    renamite_behavior_common::inspect::props_for_node(
+        &s.file.document,
+        node,
+        renamite_animation::Frame(0),
+    )
+    .into_iter()
+    .find(|row| &row.desc.path == path)
+    .map(|row| row.desc.label.to_string())
 }
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
-    Box(Modifier::new().width(170.0).fill_max_height()).child(
-        ScrollArea(
-            Modifier::new().fill_max_size(),
-            remember_scroll_state("timeline_labels_scroll"),
-            Column(Modifier::new().fill_max_width()).child(
-                rows.iter()
-                    .map(|row| {
-                        let label = prop_label(session.clone(), row.node, &row.prop);
-                        let name = match label {
-                            Some(prop) => format!(
-                                "{} · {}",
-                                session.borrow().node_name(row.node),
-                                prop
-                            ),
-                            None => session.borrow().node_name(row.node),
-                        };
-                        Box(
-                            Modifier::new()
-                                .height(22.0)
-                                .fill_max_width()
-                                .padding_values(repose_core::PaddingValues {
-                                    left: 10.0,
-                                    right: 8.0,
-                                    top: 0.0,
-                                    bottom: 0.0,
-                                })
-                                .align_items(AlignItems::CENTER),
-                        )
-                        .child(
-                            Text(name)
-                                .size(theme().typography.body_small)
-                                .color(theme().on_surface),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+    Box(Modifier::new().width(170.0).fill_max_height()).child(ScrollArea(
+        Modifier::new().fill_max_size(),
+        remember_scroll_state("timeline_labels_scroll"),
+        Column(Modifier::new().fill_max_width()).child(
+            rows.iter()
+                .map(|row| {
+                    let label = prop_label(session.clone(), row.node, &row.prop);
+                    let name = match label {
+                        Some(prop) => {
+                            format!("{} · {}", session.borrow().node_name(row.node), prop)
+                        }
+                        None => session.borrow().node_name(row.node),
+                    };
+                    Box(Modifier::new()
+                        .height(22.0)
+                        .fill_max_width()
+                        .padding_values(repose_core::PaddingValues {
+                            left: 10.0,
+                            right: 8.0,
+                            top: 0.0,
+                            bottom: 0.0,
+                        })
+                        .align_items(AlignItems::CENTER))
+                    .child(
+                        Text(name)
+                            .size(theme().typography.body_small)
+                            .color(theme().on_surface),
+                    )
+                })
+                .collect::<Vec<_>>(),
         ),
-    )
+    ))
 }
 
 fn TimelineCanvas(session: SessionRef) -> View {
@@ -254,7 +255,11 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         w: if major { 1.5 } else { 1.0 },
                         h: tick_h,
                     },
-                    if major { th.outline } else { th.outline_variant },
+                    if major {
+                        th.outline
+                    } else {
+                        th.outline_variant
+                    },
                     0.0,
                 );
             }

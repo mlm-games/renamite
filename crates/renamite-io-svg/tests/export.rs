@@ -6,7 +6,7 @@ use renamite_io_svg::{export_frame, export_with_report, import};
 use renamite_model::{
     Color, Document, FillRule, Node, NodeId, NodeKind, Parent, StyleKind, StylePaint,
 };
-use renamite_model::{evaluate, ShapeKind};
+use renamite_model::{ShapeKind, evaluate};
 
 fn usvg_options() -> usvg::Options<'static> {
     let mut options = usvg::Options::default();

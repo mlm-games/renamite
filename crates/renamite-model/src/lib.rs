@@ -1537,13 +1537,16 @@ fn apply_modifier(
                 }
             }
         }
-        ModifierKind::ZigZag { amplitude, frequency, smooth } => {
+        ModifierKind::ZigZag {
+            amplitude,
+            frequency,
+            smooth,
+        } => {
             let amp = ov_f64(ov, id, "zigzag.amplitude", amplitude.value_at(frame));
             let freq = ov_f64(ov, id, "zigzag.frequency", frequency.value_at(frame));
             if amp.abs() > 1e-9 && freq.abs() > 1e-9 {
                 for entry in paths.iter_mut() {
-                    entry.path =
-                        renamite_geometry::zigzag_path(&entry.path, amp, freq, *smooth);
+                    entry.path = renamite_geometry::zigzag_path(&entry.path, amp, freq, *smooth);
                 }
             }
         }
@@ -1552,7 +1555,8 @@ fn apply_modifier(
             if amt.abs() > 1e-9 {
                 for entry in paths.iter_mut() {
                     let vp = renamite_geometry::VectorPath::from_bez_path(&entry.path);
-                    entry.path = renamite_geometry::pucker_bloat_vector_path(&vp, amt).to_bez_path();
+                    entry.path =
+                        renamite_geometry::pucker_bloat_vector_path(&vp, amt).to_bez_path();
                 }
             }
         }
@@ -2097,10 +2101,7 @@ pub fn nodes_bounds(scene: &Scene, nodes: &[NodeId]) -> Option<(glam::DVec2, gla
 fn transform_vector(affine: Affine, value: glam::DVec2) -> glam::DVec2 {
     let [a, b, c, d, _, _] = affine.as_coeffs();
 
-    glam::DVec2::new(
-        a * value.x + c * value.y,
-        b * value.x + d * value.y,
-    )
+    glam::DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
 /// Convert a world-space drag delta to a node's parent coordinate system.
@@ -2144,9 +2145,7 @@ pub fn selected_ancestor_for_pick(
     selection
         .iter()
         .copied()
-        .find(|selected| {
-            *selected == picked || node_is_ancestor(doc, *selected, picked)
-        })
+        .find(|selected| *selected == picked || node_is_ancestor(doc, *selected, picked))
 }
 
 /// Return the immediate child of `ancestor` that contains `descendant`.
@@ -2182,9 +2181,10 @@ pub fn selection_bounds(
     let mut bounds: Option<kurbo::Rect> = None;
 
     for item in &scene.items {
-        let included = selection.iter().copied().any(|selected| {
-            selected == item.node || node_is_ancestor(doc, selected, item.node)
-        });
+        let included = selection
+            .iter()
+            .copied()
+            .any(|selected| selected == item.node || node_is_ancestor(doc, selected, item.node));
 
         if !included {
             continue;
@@ -2577,14 +2577,12 @@ impl Node {
             ("offset.amount", NodeKind::Modifier(ModifierKind::OffsetPath { amount })) => {
                 Some(F64(amount))
             }
-            (
-                "zigzag.amplitude",
-                NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. }),
-            ) => Some(F64(amplitude)),
-            (
-                "zigzag.frequency",
-                NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. }),
-            ) => Some(F64(frequency)),
+            ("zigzag.amplitude", NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. })) => {
+                Some(F64(amplitude))
+            }
+            ("zigzag.frequency", NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. })) => {
+                Some(F64(frequency))
+            }
             ("pucker.amount", NodeKind::Modifier(ModifierKind::PuckerBloat { amount })) => {
                 Some(F64(amount))
             }
@@ -2812,14 +2810,12 @@ impl Node {
             ("offset.amount", NodeKind::Modifier(ModifierKind::OffsetPath { amount })) => {
                 Some(F64(amount))
             }
-            (
-                "zigzag.amplitude",
-                NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. }),
-            ) => Some(F64(amplitude)),
-            (
-                "zigzag.frequency",
-                NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. }),
-            ) => Some(F64(frequency)),
+            ("zigzag.amplitude", NodeKind::Modifier(ModifierKind::ZigZag { amplitude, .. })) => {
+                Some(F64(amplitude))
+            }
+            ("zigzag.frequency", NodeKind::Modifier(ModifierKind::ZigZag { frequency, .. })) => {
+                Some(F64(frequency))
+            }
             ("pucker.amount", NodeKind::Modifier(ModifierKind::PuckerBloat { amount })) => {
                 Some(F64(amount))
             }
@@ -3709,19 +3705,17 @@ mod tests {
         doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
 
         assert_eq!(
-            doc.value_at(id, &PropPath::new("offset.amount"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("offset.amount"), 0.0)
+                .unwrap(),
             Value::F64(5.0),
         );
 
-        doc.set_static(
-            id,
-            &PropPath::new("offset.amount"),
-            &Value::F64(12.0),
-        )
-        .unwrap();
+        doc.set_static(id, &PropPath::new("offset.amount"), &Value::F64(12.0))
+            .unwrap();
 
         assert_eq!(
-            doc.value_at(id, &PropPath::new("offset.amount"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("offset.amount"), 0.0)
+                .unwrap(),
             Value::F64(12.0),
         );
     }
@@ -3814,7 +3808,12 @@ mod tests {
 
         let bloated = evaluate(&doc, comp, 0.0);
         let bloat_bb = bloated.items[0].path.bounding_box();
-        assert!(bloat_bb.width() > base_bb.width(), "w {} vs {}", bloat_bb.width(), base_bb.width());
+        assert!(
+            bloat_bb.width() > base_bb.width(),
+            "w {} vs {}",
+            bloat_bb.width(),
+            base_bb.width()
+        );
         assert!(bloat_bb.height() > base_bb.height());
 
         doc.set_static(bloat, &PropPath::new("pucker.amount"), &Value::F64(-50.0))
@@ -3845,22 +3844,21 @@ mod tests {
         doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
 
         assert_eq!(
-            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0)
+                .unwrap(),
             Value::F64(5.0),
         );
         assert_eq!(
-            doc.value_at(id, &PropPath::new("zigzag.frequency"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("zigzag.frequency"), 0.0)
+                .unwrap(),
             Value::F64(3.0),
         );
 
-        doc.set_static(
-            id,
-            &PropPath::new("zigzag.amplitude"),
-            &Value::F64(12.0),
-        )
-        .unwrap();
+        doc.set_static(id, &PropPath::new("zigzag.amplitude"), &Value::F64(12.0))
+            .unwrap();
         assert_eq!(
-            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("zigzag.amplitude"), 0.0)
+                .unwrap(),
             Value::F64(12.0),
         );
     }
@@ -3877,14 +3875,16 @@ mod tests {
         doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
 
         assert_eq!(
-            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0)
+                .unwrap(),
             Value::F64(20.0),
         );
 
         doc.set_static(id, &PropPath::new("pucker.amount"), &Value::F64(-30.0))
             .unwrap();
         assert_eq!(
-            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0).unwrap(),
+            doc.value_at(id, &PropPath::new("pucker.amount"), 0.0)
+                .unwrap(),
             Value::F64(-30.0),
         );
     }
@@ -4221,8 +4221,7 @@ mod group_transform_tests {
 
         doc.nodes[group].transform.scale = Animated::new(glam::DVec2::splat(200.0));
 
-        let local =
-            world_delta_to_parent(&doc, shape, 0.0, glam::DVec2::new(20.0, 10.0)).unwrap();
+        let local = world_delta_to_parent(&doc, shape, 0.0, glam::DVec2::new(20.0, 10.0)).unwrap();
 
         assert!((local - glam::DVec2::new(10.0, 5.0)).length() < 1e-9);
     }

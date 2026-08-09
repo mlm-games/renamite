@@ -76,9 +76,8 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
 
             if smooth {
                 // Two cubics: start→peak, peak→end with handles along tangent.
-                let h = ((p_end.x - p_start.x).powi(2) + (p_end.y - p_start.y).powi(2))
-                    .sqrt()
-                    * 0.25;
+                let h =
+                    ((p_end.x - p_start.x).powi(2) + (p_end.y - p_start.y).powi(2)).sqrt() * 0.25;
                 let c1 = Point::new(p_start.x + tangent.x * h, p_start.y + tangent.y * h);
                 let c2 = Point::new(peak.x - tangent.x * h, peak.y - tangent.y * h);
                 out.curve_to(c1, c2, peak);
@@ -157,7 +156,9 @@ mod tests {
     fn corner_mode_has_no_curves() {
         let out = zigzag_path(&line(), 10.0, 2.0, false);
         assert!(
-            out.elements().iter().all(|e| !matches!(e, PathEl::CurveTo(..))),
+            out.elements()
+                .iter()
+                .all(|e| !matches!(e, PathEl::CurveTo(..))),
             "corner zig should be polyline only"
         );
     }
@@ -166,7 +167,9 @@ mod tests {
     fn smooth_mode_emits_curves() {
         let out = zigzag_path(&line(), 10.0, 2.0, true);
         assert!(
-            out.elements().iter().any(|e| matches!(e, PathEl::CurveTo(..))),
+            out.elements()
+                .iter()
+                .any(|e| matches!(e, PathEl::CurveTo(..))),
             "smooth zig should use cubics"
         );
     }

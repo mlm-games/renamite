@@ -1,6 +1,4 @@
-use renamite_model::{
-    Asset, AssetId, Document, Node, NodeId, NodeKind, Parent,
-};
+use renamite_model::{Asset, AssetId, Document, Node, NodeId, NodeKind, Parent};
 
 #[derive(Clone, Debug)]
 pub struct FontAssetRow {
@@ -51,17 +49,12 @@ pub fn cmd_place_image(
 ) -> Option<renamite_history::EditorCommand> {
     let image = doc.image_asset(asset)?;
 
-    let mut node = Node::new(
-        image.name.clone(),
-        NodeKind::Image(asset),
-    );
+    let mut node = Node::new(image.name.clone(), NodeKind::Image(asset));
 
-    node.transform.anchor = renamite_animation::Animated::new(
-        glam::DVec2::new(
-            image.width as f64 * 0.5,
-            image.height as f64 * 0.5,
-        ),
-    );
+    node.transform.anchor = renamite_animation::Animated::new(glam::DVec2::new(
+        image.width as f64 * 0.5,
+        image.height as f64 * 0.5,
+    ));
 
     node.transform.position = renamite_animation::Animated::new(position);
 
@@ -118,10 +111,7 @@ pub fn font_usage_count(doc: &Document, family: &str) -> usize {
 }
 
 /// Resolve either a selected Text node or a group containing one Text child.
-pub fn selected_text_node(
-    doc: &Document,
-    selection: &[NodeId],
-) -> Option<NodeId> {
+pub fn selected_text_node(doc: &Document, selection: &[NodeId]) -> Option<NodeId> {
     let [selected] = selection else {
         return None;
     };
@@ -191,9 +181,6 @@ mod tests {
         doc.attach(text, Parent::Node(group), 0).unwrap();
         doc.attach(group, Parent::Comp(doc.main), 0).unwrap();
 
-        assert_eq!(
-            selected_text_node(&doc, &[group]),
-            Some(text)
-        );
+        assert_eq!(selected_text_node(&doc, &[group]), Some(text));
     }
 }

@@ -99,7 +99,11 @@ pub fn ToolAction(
 }
 
 /// Small rounded status pill (save state, record state, frame/range chips).
-pub fn StatusChip(label: impl Into<String>, bg: repose_core::Color, fg: repose_core::Color) -> View {
+pub fn StatusChip(
+    label: impl Into<String>,
+    bg: repose_core::Color,
+    fg: repose_core::Color,
+) -> View {
     Text(label.into())
         .size(theme().typography.label_small)
         .color(fg)
@@ -117,11 +121,7 @@ pub fn StatusChip(label: impl Into<String>, bg: repose_core::Color, fg: repose_c
 }
 
 /// Segmented-mode / tab pill that reports its selected state visually.
-pub fn PillButton(
-    label: &'static str,
-    selected: bool,
-    on_click: impl Fn() + 'static,
-) -> View {
+pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'static) -> View {
     let th = theme();
     let bg = if selected {
         th.secondary_container
@@ -134,17 +134,15 @@ pub fn PillButton(
         th.on_surface_variant
     };
 
-    Box(
-        Modifier::new()
-            .padding_values(repose_core::PaddingValues {
-                left: 10.0,
-                right: 10.0,
-                top: 6.0,
-                bottom: 6.0,
-            })
-            .background(bg)
-            .clip_rounded(999.0)
-            .on_pointer_down(move |_| on_click()),
-    )
+    Box(Modifier::new()
+        .padding_values(repose_core::PaddingValues {
+            left: 10.0,
+            right: 10.0,
+            top: 6.0,
+            bottom: 6.0,
+        })
+        .background(bg)
+        .clip_rounded(999.0)
+        .on_pointer_down(move |_| on_click()))
     .child(Text(label).size(th.typography.label_medium).color(fg))
 }

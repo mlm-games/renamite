@@ -553,7 +553,14 @@ fn apply_command(
         | EditAnchors { .. }
         | ReversePath { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
-            Ok((Created { node, asset: None, machine: None }, inv))
+            Ok((
+                Created {
+                    node,
+                    asset: None,
+                    machine: None,
+                },
+                inv,
+            ))
         }
 
         AddAsset { index, asset, id } => {
@@ -578,7 +585,14 @@ fn apply_command(
             let index = (*index).min(p.document.asset_order.len());
             p.document.asset_order.insert(index, asset_id);
 
-            Ok((Created { node: None, asset: Some(asset_id), machine: None }, vec![DetachAsset { id: asset_id }]))
+            Ok((
+                Created {
+                    node: None,
+                    asset: Some(asset_id),
+                    machine: None,
+                },
+                vec![DetachAsset { id: asset_id }],
+            ))
         }
         AttachAsset { id, index } => {
             if !p.document.assets.contains_key(*id) {
@@ -823,7 +837,10 @@ fn apply_command(
                 .position(|t| t.node == *node && &t.prop == prop)
                 .ok_or(EditError::MissingTrack)?;
             let track = c.tracks.remove(i);
-            Ok((Created::default(), vec![CreateClipTrack { clip: *clip, track }]))
+            Ok((
+                Created::default(),
+                vec![CreateClipTrack { clip: *clip, track }],
+            ))
         }
         AddClipEvent { clip, event } => {
             let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
@@ -849,7 +866,10 @@ fn apply_command(
                 .position(|e| e.frame == *frame && &e.name == name)
                 .ok_or(EditError::NoClipKey(frame.0))?;
             let event = c.events.remove(i);
-            Ok((Created::default(), vec![AddClipEvent { clip: *clip, event }]))
+            Ok((
+                Created::default(),
+                vec![AddClipEvent { clip: *clip, event }],
+            ))
         }
 
         CreateMachine { index, machine, id } => {
@@ -1219,16 +1239,30 @@ fn apply_document_command(
                 return Err(ModelError::WrongNodeKind("Mask").into());
             };
             let old = std::mem::replace(&mut mask.inverted, *inverted);
-            Ok((None, vec![SetMaskInverted { id: *id, inverted: old }]))
+            Ok((
+                None,
+                vec![SetMaskInverted {
+                    id: *id,
+                    inverted: old,
+                }],
+            ))
         }
         SetZigZagSmooth { id, smooth } => {
             let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
-            let NodeKind::Modifier(ModifierKind::ZigZag { smooth: current, .. }) = &mut node.kind
+            let NodeKind::Modifier(ModifierKind::ZigZag {
+                smooth: current, ..
+            }) = &mut node.kind
             else {
                 return Err(ModelError::WrongNodeKind("Modifier").into());
             };
             let old = std::mem::replace(current, *smooth);
-            Ok((None, vec![SetZigZagSmooth { id: *id, smooth: old }]))
+            Ok((
+                None,
+                vec![SetZigZagSmooth {
+                    id: *id,
+                    smooth: old,
+                }],
+            ))
         }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;
@@ -2543,7 +2577,8 @@ mod tests {
             .unwrap();
         history.commit();
 
-        let NodeKind::Shape(renamite_model::ShapeKind::Rect { size, .. }) = &world.doc.nodes[id].kind
+        let NodeKind::Shape(renamite_model::ShapeKind::Rect { size, .. }) =
+            &world.doc.nodes[id].kind
         else {
             panic!("expected rect shape");
         };

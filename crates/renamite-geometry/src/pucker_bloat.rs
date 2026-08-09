@@ -33,10 +33,7 @@ pub fn pucker_bloat_path(path: &BezPath, amount_pct: f64) -> BezPath {
 }
 
 /// Anchor-level pucker/bloat (preserves cubic handles). Preferred for Path shapes.
-pub fn pucker_bloat_vector_path(
-    path: &crate::VectorPath,
-    amount_pct: f64,
-) -> crate::VectorPath {
+pub fn pucker_bloat_vector_path(path: &crate::VectorPath, amount_pct: f64) -> crate::VectorPath {
     use crate::{Anchor, VectorPath};
 
     if !amount_pct.is_finite() || amount_pct.abs() < 1e-9 || path.anchors.is_empty() {

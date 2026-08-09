@@ -9,7 +9,10 @@ use renamite_model::{
 
 use common::{fills, find_all, paths};
 
-fn group_children(doc: &renamite_model::Document, id: renamite_model::NodeId) -> Vec<renamite_model::NodeId> {
+fn group_children(
+    doc: &renamite_model::Document,
+    id: renamite_model::NodeId,
+) -> Vec<renamite_model::NodeId> {
     doc.nodes[id].children.clone()
 }
 
@@ -91,13 +94,21 @@ fn linear_gradient_imports_world_space_coords() {
     </svg>"##;
     let doc = import(svg.as_bytes()).unwrap();
     let gradient_fills = find_all(&doc, |n| {
-        matches!(&n.kind, NodeKind::Style(StyleKind::Fill { paint: StylePaint::Gradient(_), .. }))
+        matches!(
+            &n.kind,
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::Gradient(_),
+                ..
+            })
+        )
     });
     assert_eq!(gradient_fills.len(), 1);
     let NodeKind::Style(StyleKind::Fill { paint, .. }) = &doc.nodes[gradient_fills[0]].kind else {
         panic!("expected fill");
     };
-    let StylePaint::Gradient(g) = paint else { panic!("expected gradient") };
+    let StylePaint::Gradient(g) = paint else {
+        panic!("expected gradient")
+    };
     assert_eq!(g.kind, GradientKind::Linear);
     assert!((g.start.base.x - 0.0).abs() < 1e-3);
     assert!((g.end.base.x - 100.0).abs() < 1e-3);
@@ -118,12 +129,20 @@ fn radial_gradient_imports_center_and_radius() {
     </svg>"##;
     let doc = import(svg.as_bytes()).unwrap();
     let gradient_fills = find_all(&doc, |n| {
-        matches!(&n.kind, NodeKind::Style(StyleKind::Fill { paint: StylePaint::Gradient(_), .. }))
+        matches!(
+            &n.kind,
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::Gradient(_),
+                ..
+            })
+        )
     });
     let NodeKind::Style(StyleKind::Fill { paint, .. }) = &doc.nodes[gradient_fills[0]].kind else {
         panic!("expected fill");
     };
-    let StylePaint::Gradient(g) = paint else { panic!("expected gradient") };
+    let StylePaint::Gradient(g) = paint else {
+        panic!("expected gradient")
+    };
     assert_eq!(g.kind, GradientKind::Radial);
     assert!((g.start.base.x - 50.0).abs() < 1e-3);
     assert!((g.start.base.y - 50.0).abs() < 1e-3);
@@ -139,10 +158,17 @@ fn stroke_width_cap_join_dash_import() {
               stroke-dasharray="8 4" stroke-dashoffset="2"/>
     </svg>"##;
     let doc = import(svg.as_bytes()).unwrap();
-    let strokes = find_all(&doc, |n| matches!(n.kind, NodeKind::Style(StyleKind::Stroke { .. })));
+    let strokes = find_all(&doc, |n| {
+        matches!(n.kind, NodeKind::Style(StyleKind::Stroke { .. }))
+    });
     assert_eq!(strokes.len(), 1);
-    let NodeKind::Style(StyleKind::Stroke { width, cap, join, dash, .. }) =
-        &doc.nodes[strokes[0]].kind
+    let NodeKind::Style(StyleKind::Stroke {
+        width,
+        cap,
+        join,
+        dash,
+        ..
+    }) = &doc.nodes[strokes[0]].kind
     else {
         panic!("expected stroke");
     };
@@ -163,7 +189,10 @@ fn text_imports_as_flattened_path_outlines() {
     </svg>"##;
     let report = import_with_report(svg.as_bytes()).unwrap();
     assert!(
-        report.warnings.iter().any(|w| w.message.contains("path outlines")),
+        report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("path outlines")),
         "expected a text-flattening warning"
     );
     let shapes = paths(&report.value);
@@ -211,7 +240,9 @@ fn clip_path_imports_as_mask_sibling() {
     let doc = import(svg.as_bytes()).unwrap();
     let masks = find_all(&doc, |n| matches!(n.kind, NodeKind::Mask(_)));
     assert_eq!(masks.len(), 1);
-    let NodeKind::Mask(mask) = &doc.nodes[masks[0]].kind else { panic!("expected mask") };
+    let NodeKind::Mask(mask) = &doc.nodes[masks[0]].kind else {
+        panic!("expected mask")
+    };
     assert!(!mask.inverted);
     assert!(matches!(mask.shape, ShapeKind::Path(_)));
 
@@ -219,7 +250,10 @@ fn clip_path_imports_as_mask_sibling() {
     assert_eq!(roots.len(), 1);
     let kids = group_children(&doc, roots[0]);
     assert_eq!(kids.len(), 2);
-    assert!(matches!(doc.nodes[kids[0]].kind, NodeKind::Mask(_)), "mask must lead the group");
+    assert!(
+        matches!(doc.nodes[kids[0]].kind, NodeKind::Mask(_)),
+        "mask must lead the group"
+    );
 }
 
 #[test]
@@ -247,7 +281,10 @@ fn pattern_fill_imports_shape_without_fill() {
     </svg>"##;
     let report = import_with_report(svg.as_bytes()).unwrap();
     assert!(
-        report.warnings.iter().any(|w| w.message.contains("pattern")),
+        report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("pattern")),
         "expected a pattern warning"
     );
     let fills = fills(&report.value);
@@ -261,7 +298,9 @@ fn fill_rule_evenodd_imports() {
         <path d="M0 0h100v100h-100z M20 20h60v60h-60z" fill="#ff0000" fill-rule="evenodd"/>
     </svg>"##;
     let doc = import(svg.as_bytes()).unwrap();
-    let style_fills = find_all(&doc, |n| matches!(n.kind, NodeKind::Style(StyleKind::Fill { .. })));
+    let style_fills = find_all(&doc, |n| {
+        matches!(n.kind, NodeKind::Style(StyleKind::Fill { .. }))
+    });
     assert_eq!(style_fills.len(), 1);
     let NodeKind::Style(StyleKind::Fill { rule, .. }) = &doc.nodes[style_fills[0]].kind else {
         panic!("expected fill");

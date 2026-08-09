@@ -80,8 +80,7 @@ const RENAMITE_IMAGE_NAMESPACE: u64 = 0xA000_0000_0000_0000;
 /// Stable Repose image handle for a model `AssetId`. High bits are reserved so
 /// this never collides with handles allocated by the UI's `RenderContext`.
 pub fn image_handle(asset: renamite_model::AssetId) -> u64 {
-    RENAMITE_IMAGE_NAMESPACE
-        | (asset.data().as_ffi() & 0x0FFF_FFFF_FFFF_FFFF)
+    RENAMITE_IMAGE_NAMESPACE | (asset.data().as_ffi() & 0x0FFF_FFFF_FFFF_FFFF)
 }
 
 /// One prepared clip mask. Vertices are already mapped to screen space
@@ -203,10 +202,7 @@ impl SceneRenderer {
                             w: *width as f32,
                             h: *height as f32,
                         },
-                        transform: Self::affine_to_repose(Self::compose_view_affine(
-                            *affine,
-                            view,
-                        )),
+                        transform: Self::affine_to_repose(Self::compose_view_affine(*affine, view)),
                         tint: Self::model_color_to_repose(*tint, item.opacity),
                         fit: repose_core::ImageFit::Contain,
                         clips: item.clips.clone(),
@@ -268,10 +264,7 @@ impl SceneRenderer {
         }
     }
 
-    fn model_color_to_repose(
-        color: renamite_model::Color,
-        opacity: f64,
-    ) -> repose_core::Color {
+    fn model_color_to_repose(color: renamite_model::Color, opacity: f64) -> repose_core::Color {
         repose_core::Color(
             (color.r.clamp(0.0, 1.0) * 255.0) as u8,
             (color.g.clamp(0.0, 1.0) * 255.0) as u8,
@@ -840,7 +833,12 @@ fn hash_paint(paint: &ScenePaint, h: &mut impl std::hash::Hasher) {
             end.y.to_bits().hash(h);
             hash_stops(stops, h);
         }
-        ScenePaint::Image { asset, width, height, .. } => {
+        ScenePaint::Image {
+            asset,
+            width,
+            height,
+            ..
+        } => {
             3u8.hash(h);
             use slotmap::Key;
             asset.data().as_ffi().hash(h);
