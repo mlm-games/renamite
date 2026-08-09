@@ -7,7 +7,7 @@ use repose_ui::overlay::OverlayHandle;
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
 use std::rc::Rc;
 
-use crate::components::PanelSurface;
+use crate::components::{PanelSurface, PillButton, ToolAction};
 use crate::panels::{
     AssetsPanel, InteractivityPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel,
 };
@@ -80,6 +80,9 @@ fn context_menu_overlay(session: SessionRef) -> View {
     let session_close = session.clone();
     let session_entries = session.clone();
 
+    let x = menu.screen_pos.x as f32;
+    let y = menu.screen_pos.y as f32;
+
     ZStack(Modifier::new().fill_max_size()).child((
         // Transparent scrim: any click outside closes the menu.
         Box(Modifier::new().fill_max_size().on_pointer_down(move |_| {
@@ -87,7 +90,7 @@ fn context_menu_overlay(session: SessionRef) -> View {
         })),
         Box(Modifier::new()
             .absolute()
-            .offset(None, Some(56.0), Some(16.0), None))
+            .offset(Some(x), Some(y), None, None))
         .child(Surface(
             SurfaceConfig {
                 modifier: Modifier::new().width(220.0).padding(4.0),
@@ -300,26 +303,114 @@ fn ExpandedWorkspace(session: SessionRef) -> View {
     ))
 }
 
+/// The side panel shown while on the Canvas page (Layers, so a single-panel
+/// medium layout still has an obvious left nav surface).
+fn effective_side_page(page: PanelPage) -> PanelPage {
+    match page {
+        PanelPage::Canvas => PanelPage::Layers,
+        other => other,
+    }
+}
+
+fn MediumSideTabs(session: SessionRef) -> View {
+    let current = effective_side_page(session.borrow().active_page);
+    Row(Modifier::new().fill_max_width().padding(8.0).gap(6.0)).child((
+        PillButton("Layers", current == PanelPage::Layers, {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_page(PanelPage::Layers)
+        }),
+        PillButton("Inspect", current == PanelPage::Inspect, {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_page(PanelPage::Inspect)
+        }),
+        PillButton("Timeline", current == PanelPage::Timeline, {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_page(PanelPage::Timeline)
+        }),
+        PillButton("Assets", current == PanelPage::Assets, {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_page(PanelPage::Assets)
+        }),
+        PillButton("Logic", current == PanelPage::Interact, {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_page(PanelPage::Interact)
+        }),
+    ))
+}
+
 fn MediumWorkspace(session: SessionRef) -> View {
     Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
         crate::ToolRail(session.clone()),
         Box(Modifier::new().weight(1.0).fill_max_height())
             .child(PanelSurface(ViewportPanel(session.clone()))),
-        Box(Modifier::new().width(288.0).fill_max_height())
-            .child(PanelSurface(active_side_panel(session))),
+        Box(Modifier::new().width(320.0).fill_max_height()).child(PanelSurface(
+            Column(Modifier::new().fill_max_size()).child((
+                MediumSideTabs(session.clone()),
+                Box(Modifier::new().weight(1.0).fill_max_width())
+                    .child(active_side_panel(session)),
+            )),
+        )),
     ))
 }
 
 fn CompactWorkspace(session: SessionRef) -> View {
     let page = session.borrow().active_page;
     match page {
-        PanelPage::Canvas => ViewportPanel(session),
+        PanelPage::Canvas => CompactCanvas(session),
         PanelPage::Layers => LayersPanel(session),
         PanelPage::Timeline => TimelinePanel(session),
         PanelPage::Inspect => PropertiesPanel(session),
         PanelPage::Assets => AssetsPanel(session),
         PanelPage::Interact => InteractivityPanel(session),
     }
+}
+
+fn CompactCanvas(session: SessionRef) -> View {
+    ZStack(Modifier::new().fill_max_size()).child((
+        ViewportPanel(session.clone()),
+        CompactToolPalette(session),
+    ))
+}
+
+fn compact_tool(
+    session: SessionRef,
+    id: renamite_history::ToolId,
+    icon: repose_material::Symbol,
+    label: &'static str,
+) -> View {
+    let selected = session.borrow().active_tool == id;
+    ToolAction(icon, label, selected, move || {
+        let mut s = session.borrow_mut();
+        s.active_tool = id;
+        s.repaint();
+    })
+}
+
+/// Floating tool palette for the compact canvas (the tool rail is dropped on
+/// phones, so the tools move on top of the stage instead).
+fn CompactToolPalette(session: SessionRef) -> View {
+    Box(
+        Modifier::new()
+            .absolute()
+            .offset(Some(12.0), None, None, Some(12.0)),
+    )
+    .child(
+        Box(
+            Modifier::new()
+                .padding(6.0)
+                .background(theme().surface_container_high)
+                .clip_rounded(12.0)
+                .border(1.0, theme().outline_variant, 12.0),
+        )
+        .child(Column(Modifier::new().gap(4.0)).child((
+            compact_tool(session.clone(), renamite_history::ToolId::Select, Symbols::arrow_selector_tool, "Select"),
+            compact_tool(session.clone(), renamite_history::ToolId::Rect, Symbols::rectangle, "Rectangle"),
+            compact_tool(session.clone(), renamite_history::ToolId::Ellipse, Symbols::circle, "Ellipse"),
+            compact_tool(session.clone(), renamite_history::ToolId::Text, Symbols::text_fields, "Text"),
+            compact_tool(session.clone(), renamite_history::ToolId::Gradient, Symbols::gradient, "Gradient"),
+            compact_tool(session, renamite_history::ToolId::Fill, Symbols::format_color_fill, "Fill"),
+        ))),
+    )
 }
 
 fn active_side_panel(session: SessionRef) -> View {
@@ -371,10 +462,7 @@ fn nav_item(
         icon: AppIcon(symbol, 24.0),
         label: label.to_owned(),
         on_click: Rc::new(move || {
-            let mut s = session.borrow_mut();
-            s.active_page = page;
-            s.revision = s.revision.wrapping_add(1);
-            repose_core::request_frame();
+            session.borrow_mut().set_active_page(page);
         }),
         enabled: true,
         interaction_source: None,

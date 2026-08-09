@@ -10,6 +10,7 @@ repose_material::material_symbols! {
     redo:                '\u{e15a}',
     play_arrow:          '\u{e037}',
     pause:               '\u{e034}',
+    skip_previous:       '\u{e045}',
     save:                '\u{e161}',
     save_as:             '\u{e171}',
     folder_open:         '\u{e2c8}',

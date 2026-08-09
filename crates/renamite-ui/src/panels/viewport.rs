@@ -6,12 +6,11 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame, theme};
-use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
 
-use crate::components::{CompactIconAction, PanelSurface};
+use crate::components::CompactIconAction;
 use crate::session::{
-    ContextMenuSource, ContextMenuState, PanelPage, SessionRef, dispatch_canvas, map_modifiers,
-    pe_pos,
+    ContextMenuSource, ContextMenuState, SessionRef, dispatch_canvas, map_modifiers, pe_pos,
 };
 use crate::symbols::Symbols;
 use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
@@ -26,11 +25,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
         s.file.document.compositions[main].children.is_empty()
     };
 
-    Column(Modifier::new().fill_max_size()).child((
-        if show_template_picker {
-            TemplatePicker(session.clone())
-        } else {
-            Canvas(
+    let main_view = if show_template_picker {
+        TemplatePicker(session.clone())
+    } else {
+        Canvas(
             Modifier::new()
                 .fill_max_size()
                 .background(theme().surface_container_lowest)
@@ -43,7 +41,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return false;
                         };
                         let mut s = session.borrow_mut();
-                        if s.active_page == PanelPage::Canvas {
+                        if s.mode != crate::session::EditorMode::Interact {
                             dispatch_canvas(&mut s, CanvasEvent::KeyDown(k), Modifiers::none());
                         }
                         true
@@ -189,12 +187,84 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 paint_overlay(scope, &overlay, &view);
             },
         )
-        },
+    };
+
+    ZStack(Modifier::new().fill_max_size()).child((
+        main_view,
+        ViewportStageHud(session.clone()),
+        ViewportHint(),
         ViewportControls(session),
     ))
 }
 
-/// Empty-composition launcher: cards for each built-in template.
+/// Content-sized floating surface used by the stage HUD (must not be a
+/// `fill_max_size` surface — an absolute overlay would collapse to 0×0).
+fn HudSurface(content: View) -> View {
+    Box(
+        Modifier::new()
+            .background(theme().surface_container_high)
+            .clip_rounded(12.0)
+            .border(1.0, theme().outline_variant, 12.0),
+    )
+    .child(content)
+}
+
+fn ViewportStageHud(session: SessionRef) -> View {
+    let (w, h, frame, tool_label) = {
+        let s = session.borrow();
+        let comp = &s.file.document.compositions[s.file.document.main];
+        let label = match s.active_tool {
+            renamite_history::ToolId::Select => "Select",
+            renamite_history::ToolId::Transform => "Transform",
+            renamite_history::ToolId::Pen => "Pen",
+            renamite_history::ToolId::PathEdit => "Path Edit",
+            renamite_history::ToolId::Rect => "Rectangle",
+            renamite_history::ToolId::Ellipse => "Ellipse",
+            renamite_history::ToolId::Star => "Star",
+            renamite_history::ToolId::Text => "Text",
+            renamite_history::ToolId::Gradient => "Gradient",
+            renamite_history::ToolId::Fill => "Fill",
+        };
+        (comp.size.0, comp.size.1, s.playback.head.round() as i64, label)
+    };
+
+    Box(Modifier::new().absolute().offset(Some(16.0), Some(16.0), None, None)).child(HudSurface(
+        Row(
+            Modifier::new()
+                .padding(8.0)
+                .gap(8.0)
+                .align_items(AlignItems::CENTER),
+        )
+        .child((
+            Text("Main").size(theme().typography.label_medium),
+            Text(format!("{w}×{h}"))
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant),
+            Text(format!("Frame {frame}"))
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant),
+            Text(tool_label)
+                .size(theme().typography.label_small)
+                .color(theme().primary),
+        )),
+    ))
+}
+
+fn ViewportHint() -> View {
+    // The compact canvas floats the tool palette over the same corner, so the
+    // hint would be hidden under it on phones.
+    if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
+        return ZStack(Modifier::new());
+    }
+    Box(Modifier::new().absolute().offset(Some(16.0), None, None, Some(16.0))).child(HudSurface(
+        Text("Right click menu · Middle mouse pan · Use Animate mode for keyframing")
+            .size(theme().typography.label_small)
+            .color(theme().on_surface_variant)
+            .modifier(Modifier::new().padding(8.0)),
+    ))
+}
+
+/// Empty-composition launcher: quick-start actions plus template cards.
 fn TemplatePicker(session: SessionRef) -> View {
     let th = theme();
     let cards: Vec<View> = renamite_examples::templates()
@@ -213,16 +283,63 @@ fn TemplatePicker(session: SessionRef) -> View {
         .justify_content(JustifyContent::CENTER)
         .align_items(AlignItems::CENTER))
     .child(
-        Text("Start from a template")
-            .size(th.typography.title_large)
+        Text("Start a Renamite project")
+            .size(th.typography.headline_small)
             .color(th.on_surface),
     )
     .child(
-        Text("This composition is empty. Pick a starter project to explore the editor.")
-            .size(th.typography.body_small)
+        Text("Open an existing file, import artwork, or start from a motion template.")
+            .size(th.typography.body_medium)
             .color(th.on_surface_variant),
     )
+    .child(Row(Modifier::new().gap(12.0)).child((
+        LauncherTile("New", "Create a fresh project", {
+            let session = session.clone();
+            move || crate::file::new_document(&session)
+        }),
+        LauncherTile("Open", "Open .ren / .renb", {
+            let session = session.clone();
+            move || crate::file::open_document(&session)
+        }),
+        LauncherTile("Import Lottie", "Bring in JSON animation", {
+            let session = session.clone();
+            move || crate::file::import_lottie(&session)
+        }),
+        LauncherTile("Import SVG", "Bring in vector artwork", {
+            let session = session.clone();
+            move || crate::file::import_svg(&session)
+        }),
+    )))
+    .child(
+        Text("Templates")
+            .size(th.typography.title_medium)
+            .color(th.on_surface),
+    )
     .child(Column(Modifier::new().gap(12.0)).child(rows))
+}
+
+fn LauncherTile(
+    title: &'static str,
+    subtitle: &'static str,
+    on_click: impl Fn() + 'static,
+) -> View {
+    let th = theme();
+    Box(
+        Modifier::new()
+            .width(180.0)
+            .padding(14.0)
+            .background(th.surface_container_high)
+            .clip_rounded(12.0)
+            .on_pointer_down(move |_| on_click()),
+    )
+    .child(
+        Column(Modifier::new().gap(6.0)).child((
+            Text(title).size(th.typography.title_small).color(th.on_surface),
+            Text(subtitle)
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant),
+        )),
+    )
 }
 
 fn TemplateCard(session: SessionRef, template: &'static renamite_examples::TemplateInfo) -> View {
@@ -339,9 +456,9 @@ fn ViewportControls(session: SessionRef) -> View {
     Box(Modifier::new()
         .absolute()
         .offset(None, None, Some(16.0), Some(16.0)))
-    .child(PanelSurface(
+    .child(HudSurface(
         Row(Modifier::new()
-            .align_items(repose_core::AlignItems::CENTER)
+            .align_items(AlignItems::CENTER)
             .gap(2.0)
             .padding(4.0))
         .child((

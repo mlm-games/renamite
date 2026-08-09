@@ -34,6 +34,16 @@ pub enum PanelPage {
     Interact = 5,
 }
 
+/// Explicit editor mode (Jitter/Linearity-style Design vs Animate, plus the
+/// Rive-style Interact state-machine mental model). Drives the top-bar switch
+/// and the record/playhead semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorMode {
+    Design,
+    Animate,
+    Interact,
+}
+
 pub type SessionRef = Rc<RefCell<Session>>;
 
 /// Shared editor session (single-threaded UI).
@@ -50,6 +60,7 @@ pub struct Session {
     pub viewport: ViewportState,
     pub active_tool: ToolId,
     pub active_page: PanelPage,
+    pub mode: EditorMode,
     pub playback: Playback,
     pub playing: bool,
     pub tool: ToolSet,
@@ -245,6 +256,7 @@ impl Session {
             viewport: ViewportState::default(),
             active_tool: ToolId::Select,
             active_page: PanelPage::Canvas,
+            mode: EditorMode::Design,
             playback: Playback {
                 state: PlayState::Stopped,
                 head: range.0.0 as f64,
@@ -296,7 +308,6 @@ impl Session {
                 }
                 ToolOutput::CancelTransaction => {
                     apply_cmd(&mut self.history, &mut self.file, None);
-                    self.dirty = true;
                     self.bump();
                 }
                 ToolOutput::Commands(cmds) => {
@@ -314,7 +325,10 @@ impl Session {
                     self.engine.scrub(&self.file, f);
                     self.bump();
                 }
-                ToolOutput::SwitchTool(t) => self.active_tool = t,
+                ToolOutput::SwitchTool(t) => {
+                    self.active_tool = t;
+                    self.repaint();
+                }
                 ToolOutput::RequestSelection(ch) => {
                     match ch {
                         renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
@@ -327,6 +341,7 @@ impl Session {
                         }
                     }
                     self.ensure_selection_visible();
+                    self.repaint();
                 }
                 _ => {}
             }
@@ -334,9 +349,10 @@ impl Session {
     }
 
     pub fn open_context_menu(&mut self, menu: ContextMenuState) {
+        self.cancel_open_picker_state();
+        self.open_picker = None;
         self.context_menu = Some(menu);
-        self.revision = self.revision.wrapping_add(1);
-        request_frame();
+        self.repaint();
     }
 
     pub fn close_context_menu(&mut self) {
@@ -589,6 +605,40 @@ impl Session {
         self.engine.reevaluate(&self.file);
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    /// Request a repaint without re-evaluating the engine (pure view state).
+    pub fn repaint(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn set_active_page(&mut self, page: PanelPage) {
+        self.active_page = page;
+        self.repaint();
+    }
+
+    /// Switch the explicit editor mode, wiring up the record flag and the
+    /// active page so the shell shows the right workspace surface.
+    pub fn set_mode(&mut self, mode: EditorMode) {
+        self.mode = mode;
+        match mode {
+            EditorMode::Design => {
+                self.record = false;
+                if matches!(self.active_page, PanelPage::Timeline | PanelPage::Interact) {
+                    self.active_page = PanelPage::Canvas;
+                }
+            }
+            EditorMode::Animate => {
+                self.record = true;
+                self.active_page = PanelPage::Timeline;
+            }
+            EditorMode::Interact => {
+                self.record = false;
+                self.active_page = PanelPage::Interact;
+            }
+        }
+        self.repaint();
     }
 
     /// Auto-expand ancestor groups so a selected (possibly nested) node's
@@ -869,6 +919,7 @@ impl Session {
     /// Open a color picker editing `initial`. The history transaction is begun
     /// lazily on the first change, so an untouched picker leaves no undo entry.
     pub fn open_color_picker(&mut self, target: PickerTarget, initial: renamite_model::Color) {
+        self.close_context_menu();
         // Cancel only the old picker's own pending work.
         self.cancel_open_picker_state();
 
@@ -884,8 +935,7 @@ impl Session {
             cancel_current_paint,
         });
 
-        self.revision = self.revision.wrapping_add(1);
-        request_frame();
+        self.repaint();
     }
 
     /// Dismiss the picker without committing: an in-progress gesture's changes
@@ -1426,9 +1476,9 @@ pub fn timeline_ctx<'a>(
         target: TimelineTarget::Doc,
         rows,
         layout: TimelineLayout {
-            origin_x: 80.0,
+            origin_x: 0.0,
             px_per_frame: 6.0,
-            row_top: 28.0,
+            row_top: 24.0,
             row_height: 22.0,
             key_tolerance_px: 6.0,
         },

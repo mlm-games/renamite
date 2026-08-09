@@ -23,18 +23,17 @@ use repose_material::material3::{
 };
 use repose_platform::RenderContext;
 use repose_ui::overlay::OverlayHandle;
-use repose_ui::{Box, Column, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use std::rc::Rc;
 use web_time::Instant;
 
 use components::{CompactIconAction, ToolAction};
-use session::{PickerTarget, SessionRef, init_session, redo_cmd, undo_cmd};
+use session::{EditorMode, PickerTarget, SessionRef, init_session, redo_cmd, undo_cmd};
 use shell::EditorShell;
 use symbols::Symbols;
 
 pub fn app(_s: &mut Scheduler, _rc: &RenderContext) -> View {
     let session = init_session(_rc);
-    session.borrow_mut().sync_image_assets();
     if session.borrow_mut().drain_file_ops() {
         file::run_pending_intent(&session);
     }
@@ -50,6 +49,24 @@ pub fn init_wasm() {
             let _ = scope.spawn(|| {}).join();
         });
     }
+}
+
+fn EditorModeSwitch(session: SessionRef) -> View {
+    let mode = session.borrow().mode;
+    Row(Modifier::new().gap(6.0)).child((
+        crate::components::PillButton("Design", mode == EditorMode::Design, {
+            let session = session.clone();
+            move || session.borrow_mut().set_mode(EditorMode::Design)
+        }),
+        crate::components::PillButton("Animate", mode == EditorMode::Animate, {
+            let session = session.clone();
+            move || session.borrow_mut().set_mode(EditorMode::Animate)
+        }),
+        crate::components::PillButton("Interact", mode == EditorMode::Interact, {
+            let session = session.clone();
+            move || session.borrow_mut().set_mode(EditorMode::Interact)
+        }),
+    ))
 }
 
 pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
@@ -68,15 +85,47 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             .unwrap_or_else(|| "Unsaved".to_string());
         (name, s.dirty, s.status.clone(), path)
     };
-    let title = if dirty { format!("● {name}") } else { name };
-    let subtitle = status.unwrap_or(path);
+    let title = if dirty { format!("{name} *") } else { name };
+
+    let save_chip = if dirty {
+        crate::components::StatusChip(
+            "Unsaved",
+            theme().tertiary_container,
+            theme().on_tertiary_container,
+        )
+    } else {
+        crate::components::StatusChip(
+            "Saved",
+            theme().surface_container_high,
+            theme().on_surface_variant,
+        )
+    };
+
+    let record_chip = if session.borrow().record {
+        crate::components::StatusChip(
+            "● Recording",
+            theme().error_container,
+            theme().on_error_container,
+        )
+    } else {
+        crate::components::StatusChip(
+            "Design edits",
+            theme().surface_container_high,
+            theme().on_surface_variant,
+        )
+    };
 
     TopAppBar(
-        Text("renamite").size(theme().typography.title_large),
+        Text(title).size(theme().typography.title_large),
         Some(
-            Text(format!("{title} — {subtitle}"))
-                .size(theme().typography.label_medium)
-                .color(theme().on_surface_variant),
+            Row(Modifier::new().gap(10.0).align_items(repose_core::AlignItems::CENTER)).child((
+                EditorModeSwitch(session.clone()),
+                save_chip,
+                record_chip,
+                Text(status.unwrap_or(path))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+            )),
         ),
         Some(FileMenu(session.clone(), overlay)),
         vec![
@@ -84,13 +133,9 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             SaveButton(session.clone()),
             UndoButton(session.clone()),
             RedoButton(session.clone()),
-            RecordButton(session.clone()),
             PlaybackButton(session),
         ],
-        TopAppBarConfig {
-            modifier: Modifier::new(),
-            ..Default::default()
-        },
+        TopAppBarConfig::default(),
     )
 }
 
@@ -216,21 +261,6 @@ fn RedoButton(session: SessionRef) -> View {
     })
 }
 
-fn RecordButton(session: SessionRef) -> View {
-    let recording = session.borrow().record;
-    if recording {
-        CompactIconAction(Symbols::fiber_manual_record, "Stop recording keys", {
-            let session = session.clone();
-            move || toggle_record(&session)
-        })
-    } else {
-        CompactIconAction(Symbols::radio_button_unchecked, "Record keys on edit", {
-            let session = session.clone();
-            move || toggle_record(&session)
-        })
-    }
-}
-
 fn PlaybackButton(session: SessionRef) -> View {
     let is_playing = session.borrow().playing;
     if is_playing {
@@ -246,7 +276,7 @@ fn PlaybackButton(session: SessionRef) -> View {
     }
 }
 
-fn toggle_playback(session: &SessionRef) {
+pub(crate) fn toggle_playback(session: &SessionRef) {
     let mut s = session.borrow_mut();
     s.playing = !s.playing;
     s.last_tick = Instant::now();
@@ -255,13 +285,6 @@ fn toggle_playback(session: &SessionRef) {
     } else {
         PlayState::Stopped
     };
-    request_frame();
-}
-
-fn toggle_record(session: &SessionRef) {
-    let mut s = session.borrow_mut();
-    s.record = !s.record;
-    s.revision = s.revision.wrapping_add(1);
     request_frame();
 }
 
