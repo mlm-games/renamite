@@ -37,7 +37,7 @@ ttf-parser = "0.25"
 # CI/reference only
 vello = { version = "0.9" }
 velato = { version = "0.11" }
-usvg = { version = "0.48" }
+usvg = { version = "0.48", default-features = false, features = ["text"] }
 resvg = { version = "0.48" }
 
 
@@ -101,17 +101,17 @@ rev = "<SAME_PIN>"
 default-features = false
 features = ["serde"]
 
-[patch.crates-io]
-repose-core = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-core" }
-repose-canvas = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-canvas" }
-repose-ui = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-ui" }
-repose-material = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-material" }
-repose-docking = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-docking" }
-repose-platform = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-platform" }
-repose-render-wgpu = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-render-wgpu" }
-repose-text = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-text" }
-repose-app = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-app" }
-repose-tree = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-tree" }
+# [patch.crates-io]
+# repose-core = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-core" }
+# repose-canvas = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-canvas" }
+# repose-ui = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-ui" }
+# repose-material = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-material" }
+# repose-docking = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-docking" }
+# repose-platform = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-platform" }
+# repose-render-wgpu = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-render-wgpu" }
+# repose-text = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-text" }
+# repose-app = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-app" }
+# repose-tree = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-tree" }
 
 [profile.release]
 lto = "thin"
