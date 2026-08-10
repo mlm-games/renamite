@@ -5,6 +5,9 @@
 //! pointer drag / click into those helpers. Every edit goes through the shared
 //! `resolve_property_edit` authoring loop (static vs key-at-playhead + record).
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use kurbo::{Point as KurboPoint, Shape as _};
 use renamite_animation::{Angle, Frame};
 use renamite_behavior_common::inspect::{
@@ -25,28 +28,30 @@ use renamite_model::{
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
-    AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
+    AlignItems, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardType, Modifier,
+    PaddingValues, TextFieldLineLimits, TextInputConfig, View, ViewKind, remember_with_key,
+    request_frame, theme,
 };
 use repose_material::material3::{
     IconButton, IconButtonConfig, TextField, TextFieldConfig, TooltipBox, TooltipConfig,
     TooltipState,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
-use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, FlowRow, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{InspectorDrag, PickerTarget, Session, SessionRef};
+use crate::session::{EditorMode, InspectorDrag, PickerTarget, Session, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 
 pub fn PropertiesPanel(session: SessionRef) -> View {
     let th = theme();
-    let (rows, playhead, record, ids) = {
+    let (rows, playhead, record, ids, diamond_quiet) = {
         let s = session.borrow();
         let ids = s.selection.nodes.clone();
         let playhead = Frame(s.playback.head.round() as i64);
         let rows = props_for_selection(&s.file.document, &ids, playhead);
-        (rows, playhead, s.record, ids)
+        (rows, playhead, s.record, ids, s.mode == EditorMode::Design)
     };
 
     if ids.is_empty() {
@@ -144,7 +149,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     // Single selected stroke: dash section (offset, dash/gap values, enable /
     // disable / add-pair / remove-pair controls).
     if ids.len() == 1
-        && let Some(section) = stroke_dash_section(session.clone(), ids[0], playhead, record)
+        && let Some(section) =
+            stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
     {
         children.push(section);
     }
@@ -178,6 +184,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                             prop.clone(),
                             playhead,
                             record,
+                            diamond_quiet,
                         )
                     })
                     .collect::<Vec<_>>(),
@@ -202,6 +209,7 @@ fn PropRowView(
     row: PropRow,
     playhead: Frame,
     record: bool,
+    diamond_quiet: bool,
 ) -> View {
     let th = theme();
     let path = row.desc.path.clone();
@@ -222,7 +230,7 @@ fn PropRowView(
     }
 
     Row(Modifier::new()
-        .height(36.0)
+        .min_height(36.0)
         .fill_max_width()
         .padding_values(PaddingValues {
             left: 12.0,
@@ -239,6 +247,7 @@ fn PropRowView(
             path.clone(),
             row.diamond,
             playhead,
+            diamond_quiet,
         ),
         Text(row.desc.label)
             .size(th.typography.body_medium)
@@ -269,13 +278,22 @@ fn PropRowView(
 
 /// Keyframe diamond: filled at playhead (remove on click), outline otherwise
 /// (add at playhead). Always routes through `resolve_property_edit` semantics.
+///
+/// In Design mode the diamonds go quiet: props without keys render a spacer
+/// (no affordance) and already-keyed props render at 40% opacity so authoring
+/// static art doesn't look like keyframing.
 fn diamond_button(
     session: SessionRef,
     ids: Vec<NodeId>,
     path: PropPath,
     state: DiamondState,
     playhead: Frame,
+    diamond_quiet: bool,
 ) -> View {
+    if diamond_quiet && state == DiamondState::Empty {
+        return Box(Modifier::new().width(32.0));
+    }
+
     let (sym, tip) = match state {
         DiamondState::Empty => (Symbols::radio_button_unchecked, "Add keyframe"),
         DiamondState::HasKeys => (Symbols::radio_button_unchecked, "Add keyframe at playhead"),
@@ -283,10 +301,11 @@ fn diamond_button(
     };
     let key = format!("diamond_{}", path.as_str());
     let tooltip_state = remember_with_key(key, TooltipState::new);
+    let alpha = if diamond_quiet { 128 } else { 255 };
     let color = if state == DiamondState::AtPlayhead {
-        theme().primary
+        theme().primary.with_alpha(alpha)
     } else {
-        theme().on_surface_variant
+        theme().on_surface_variant.with_alpha(alpha)
     };
 
     TooltipBox(
@@ -340,7 +359,114 @@ fn scrub_f64_w(
     let th = theme();
     let label = format!("{value:.3}");
 
-    Text(label)
+    // Click-to-type editing: a tap on the value opens a single-line input that
+    // commits on Enter and reverts on Escape/focus-loss. Dragging still scrubs.
+    let key = format!("numedit_{}_{}", path.as_str(), channel);
+    let editing: Rc<RefCell<bool>> = remember_with_key(format!("{key}_ed"), || RefCell::new(false));
+    let draft: Rc<RefCell<String>> =
+        remember_with_key(format!("{key}_dr"), || RefCell::new(label.clone()));
+    let focused_once: Rc<RefCell<bool>> =
+        remember_with_key(format!("{key}_fo"), || RefCell::new(false));
+    let focus: Rc<Cell<bool>> = remember_with_key(format!("{key}_fs"), || Cell::new(false));
+    let focus_requester: Rc<FocusRequester> =
+        remember_with_key(format!("{key}_fr"), FocusRequester::new);
+
+    let commit = {
+        let session = session.clone();
+        let ids = ids.clone();
+        let path = path.clone();
+        let editing = editing.clone();
+        move |text: String| {
+            let parsed = text.trim().parse::<f64>().ok();
+            let mut s = session.borrow_mut();
+            if let Some(v) = parsed {
+                let origin = current_value(&s, &ids, &path, channel);
+                let new_v = apply_channel(&origin, channel, |_| {
+                    let mut vv = v;
+                    if let Some(lo) = min {
+                        vv = vv.max(lo);
+                    }
+                    if let Some(hi) = max {
+                        vv = vv.min(hi);
+                    }
+                    vv
+                });
+                let cmds =
+                    apply_value_to_each(&s.file.document, &ids, &path, new_v, playhead, record);
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Edit property".into()),
+                    ToolOutput::Commands(cmds.into()),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+            drop(s);
+            *editing.borrow_mut() = false;
+            request_frame();
+        }
+    };
+
+    if *editing.borrow() {
+        if focus.get() {
+            *focused_once.borrow_mut() = true;
+        }
+        // Focus was granted and then lost without a submit: revert to the
+        // pre-edit value and close the editor.
+        if *focused_once.borrow() && !focus.get() {
+            *editing.borrow_mut() = false;
+            request_frame();
+            return Box(Modifier::new().min_width(min_width)).child(
+                Text(label)
+                    .size(th.typography.body_medium)
+                    .color(th.primary),
+            );
+        }
+        // Keep requesting focus until the runtime actually grants it (the
+        // requester's target id is only set once this field has been laid out).
+        if !focus.get() {
+            focus_requester.request_focus();
+        }
+        return Box(Modifier::new().width(min_width)).child(
+            View::new(0, ViewKind::Box).modifier(
+                Modifier::new()
+                    .fill_max_height()
+                    .focus_requester(focus_requester.as_ref().clone())
+                    .text_input(TextInputConfig {
+                        hint: String::new(),
+                        multiline: false,
+                        on_change: Some({
+                            let draft = draft.clone();
+                            Rc::new(move |text: String| {
+                                *draft.borrow_mut() = text;
+                            }) as Rc<dyn Fn(String)>
+                        }),
+                        on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
+                        focus_tracker: Some(focus.clone()),
+                        value: draft.borrow().clone(),
+                        visual_transformation: None,
+                        keyboard_type: KeyboardType::Decimal,
+                        capitalization: KeyboardCapitalization::None,
+                        ime_action: ImeAction::Done,
+                        auto_correct_enabled: Some(false),
+                        enabled: true,
+                        read_only: false,
+                        max_lines: Some(1),
+                        min_lines: 1,
+                        cursor_color: Some(th.primary),
+                        on_text_layout: None,
+                        text_style: Some(repose_core::TextStyle {
+                            font_size: 14.0,
+                            color: Some(th.primary),
+                            ..Default::default()
+                        }),
+                        keyboard_actions: None,
+                        interaction_source: None,
+                        line_limits: Some(TextFieldLineLimits::SingleLine),
+                    }),
+            ),
+        );
+    }
+
+    Text(label.clone())
         .size(th.typography.body_medium)
         .color(th.primary)
         .modifier(
@@ -408,14 +534,23 @@ fn scrub_f64_w(
                 })
                 .on_pointer_up({
                     let session = session.clone();
+                    let editing = editing.clone();
+                    let draft = draft.clone();
+                    let focused_once = focused_once.clone();
+                    let label = label.clone();
                     move |_pe: PointerEvent| {
                         let mut s = session.borrow_mut();
-                        if let Some(d) = s.inspector_drag.take() {
-                            if d.txn {
-                                s.apply_outputs(smallvec![ToolOutput::CommitTransaction]);
-                            } else {
-                                request_frame();
-                            }
+                        let was_drag = s.inspector_drag.take().map(|d| d.txn).unwrap_or(false);
+                        if was_drag {
+                            s.apply_outputs(smallvec![ToolOutput::CommitTransaction]);
+                        }
+                        drop(s);
+                        // A tap (no scrub) opens the exact-value editor.
+                        if !was_drag {
+                            *focused_once.borrow_mut() = false;
+                            *draft.borrow_mut() = label.clone();
+                            *editing.borrow_mut() = true;
+                            request_frame();
                         }
                     }
                 }),
@@ -465,70 +600,181 @@ fn color_row(
     playhead: Frame,
     record: bool,
 ) -> View {
+    let th = theme();
+    // The swatch is the primary affordance; RGBA channel scrubbing is tucked
+    // behind a disclosure so the row reads "Color [swatch] #FFCC00 100%".
+    let open: Rc<RefCell<bool>> = remember_with_key(format!("colorrow_{}", path.as_str()), || {
+        RefCell::new(false)
+    });
+    let hex = format!(
+        "#{:02X}{:02X}{:02X}",
+        (c.r * 255.0) as u8,
+        (c.g * 255.0) as u8,
+        (c.b * 255.0) as u8
+    );
+    let alpha_pct = (c.a * 100.0).round() as i64;
+
+    // When a single style node is selected, the swatch opens the color picker.
+    let picker_target = if ids.len() == 1 {
+        match &session
+            .borrow()
+            .file
+            .document
+            .nodes
+            .get(ids[0])
+            .map(|n| &n.kind)
+        {
+            Some(NodeKind::Style(StyleKind::Fill { .. }))
+            | Some(NodeKind::Style(StyleKind::Stroke { .. })) => {
+                Some(PickerTarget::StyleColor { style_id: ids[0] })
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let swatch = Box(Modifier::new()
         .width(20.0)
         .height(20.0)
+        .clip_rounded(4.0)
+        .border(1.0, th.outline_variant, 4.0)
         .background(repose_core::Color(
             (c.r * 255.0) as u8,
             (c.g * 255.0) as u8,
             (c.b * 255.0) as u8,
             (c.a * 255.0) as u8,
-        )));
-    Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+        ))
+        .on_pointer_down({
+            let session = session.clone();
+            let color = c;
+            move |pe: PointerEvent| {
+                if let Some(target) = picker_target {
+                    let anchor = glam::DVec2::new(
+                        pe.position_in_window().x as f64,
+                        pe.position_in_window().y as f64,
+                    );
+                    session
+                        .borrow_mut()
+                        .open_color_picker(target, color, anchor);
+                }
+            }
+        }));
+
+    let is_open = *open.borrow();
+    let summary = Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
         swatch,
-        scrub_f64_w(
-            session.clone(),
-            ids.clone(),
-            path.clone(),
-            c.r,
-            0.01,
-            Some(0.0),
-            Some(1.0),
-            playhead,
-            record,
-            0,
-            40.0,
-        ),
-        scrub_f64_w(
-            session.clone(),
-            ids.clone(),
-            path.clone(),
-            c.g,
-            0.01,
-            Some(0.0),
-            Some(1.0),
-            playhead,
-            record,
-            1,
-            40.0,
-        ),
-        scrub_f64_w(
-            session.clone(),
-            ids.clone(),
-            path.clone(),
-            c.b,
-            0.01,
-            Some(0.0),
-            Some(1.0),
-            playhead,
-            record,
-            2,
-            40.0,
-        ),
-        scrub_f64_w(
-            session,
-            ids,
-            path,
-            c.a,
-            0.01,
-            Some(0.0),
-            Some(1.0),
-            playhead,
-            record,
-            3,
-            40.0,
-        ),
-    ))
+        Text(hex)
+            .size(th.typography.body_medium)
+            .color(th.on_surface),
+        Text(format!("{alpha_pct}%"))
+            .size(th.typography.body_medium)
+            .color(th.on_surface_variant),
+        Box(Modifier::new().flex_grow(1.0)),
+        Text("RGBA")
+            .size(th.typography.label_medium)
+            .color(if is_open {
+                th.primary
+            } else {
+                th.on_surface_variant
+            })
+            .modifier(
+                Modifier::new()
+                    .padding_values(PaddingValues {
+                        left: 8.0,
+                        right: 8.0,
+                        top: 3.0,
+                        bottom: 3.0,
+                    })
+                    .background(if is_open {
+                        th.secondary_container
+                    } else {
+                        th.surface
+                    })
+                    .clip_rounded(999.0)
+                    .on_pointer_down({
+                        let open = open.clone();
+                        move |_pe: PointerEvent| {
+                            let next = !*open.borrow();
+                            *open.borrow_mut() = next;
+                            request_frame();
+                        }
+                    }),
+            ),
+    ));
+
+    let mut children: Vec<View> = vec![summary];
+    if is_open {
+        children.push(
+            Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+                Text("R")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant),
+                scrub_f64_w(
+                    session.clone(),
+                    ids.clone(),
+                    path.clone(),
+                    c.r,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    0,
+                    44.0,
+                ),
+                Text("G")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant),
+                scrub_f64_w(
+                    session.clone(),
+                    ids.clone(),
+                    path.clone(),
+                    c.g,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    1,
+                    44.0,
+                ),
+                Text("B")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant),
+                scrub_f64_w(
+                    session.clone(),
+                    ids.clone(),
+                    path.clone(),
+                    c.b,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    2,
+                    44.0,
+                ),
+                Text("A")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant),
+                scrub_f64_w(
+                    session,
+                    ids,
+                    path,
+                    c.a,
+                    0.01,
+                    Some(0.0),
+                    Some(1.0),
+                    playhead,
+                    record,
+                    3,
+                    44.0,
+                ),
+            )),
+        );
+    }
+    Column(Modifier::new().fill_max_width()).child(children)
 }
 
 fn current_value(s: &Session, ids: &[NodeId], path: &PropPath, _ch: usize) -> Value {
@@ -586,7 +832,6 @@ fn apply_channel(origin: &Value, channel: usize, f: impl FnOnce(f64) -> f64) -> 
 /// Trim Path applies to any shape; Round Corners is gated to rect/path (the
 /// corner-bearing shapes - ellipse/star/polygon have their own roundness).
 fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
-    let th = theme();
     let can_round = {
         let s = session.borrow();
         match &s.file.document.nodes.get(id)?.kind {
@@ -595,145 +840,125 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             _ => return None,
         }
     };
-    let add_trim = Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-        CompactIconAction(Symbols::add, "Add Trim Path", {
+
+    let mut buttons: Vec<View> = Vec::new();
+    buttons.push(modifier_chip("Trim Path", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            if let Some(cmd) = cmd_add_trim_path_after(&s.file.document, id) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Trim Path".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+    buttons.push(modifier_chip("Offset Path", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            if let Some(cmd) = cmd_add_offset_path_after(&s.file.document, id, 10.0) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Offset Path".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+    if can_round {
+        buttons.push(modifier_chip("Round Corners", {
             let session = session.clone();
             move || {
                 let mut s = session.borrow_mut();
-                if let Some(cmd) = cmd_add_trim_path_after(&s.file.document, id) {
+                if let Some(cmd) = cmd_add_round_corners_after(&s.file.document, id, 10.0) {
                     s.apply_outputs(smallvec![
-                        ToolOutput::BeginTransaction("Add Trim Path".into()),
+                        ToolOutput::BeginTransaction("Add Round Corners".into()),
                         ToolOutput::Commands(smallvec![cmd]),
                         ToolOutput::CommitTransaction,
                     ]);
                 }
             }
-        }),
-        Text("Trim Path")
-            .size(th.typography.body_medium)
-            .color(th.on_surface_variant),
-    ));
-    let mut buttons = vec![add_trim];
-    buttons.push(
-        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-            CompactIconAction(Symbols::add, "Add Offset Path", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    if let Some(cmd) = cmd_add_offset_path_after(&s.file.document, id, 10.0) {
-                        s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Add Offset Path".into()),
-                            ToolOutput::Commands(smallvec![cmd]),
-                            ToolOutput::CommitTransaction,
-                        ]);
-                    }
-                }
-            }),
-            Text("Offset Path")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
-        )),
-    );
-    if can_round {
-        buttons.push(
-            Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-                CompactIconAction(Symbols::add, "Add Round Corners", {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        if let Some(cmd) = cmd_add_round_corners_after(&s.file.document, id, 10.0) {
-                            s.apply_outputs(smallvec![
-                                ToolOutput::BeginTransaction("Add Round Corners".into()),
-                                ToolOutput::Commands(smallvec![cmd]),
-                                ToolOutput::CommitTransaction,
-                            ]);
-                        }
-                    }
-                }),
-                Text("Round Corners")
-                    .size(th.typography.body_medium)
-                    .color(th.on_surface_variant),
-            )),
-        );
+        }));
     }
-    buttons.push(
-        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-            CompactIconAction(Symbols::add, "Add Repeater", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    if let Some(cmd) = cmd_add_repeater_after(&s.file.document, id) {
-                        s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Add Repeater".into()),
-                            ToolOutput::Commands(smallvec![cmd]),
-                            ToolOutput::CommitTransaction,
-                        ]);
-                    }
-                }
-            }),
-            Text("Repeater")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
-        )),
-    );
-    buttons.push(
-        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-            CompactIconAction(Symbols::add, "Add Zig Zag", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    if let Some(cmd) = cmd_add_zigzag_after(&s.file.document, id) {
-                        s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Add Zig Zag".into()),
-                            ToolOutput::Commands(smallvec![cmd]),
-                            ToolOutput::CommitTransaction,
-                        ]);
-                    }
-                }
-            }),
-            Text("Zig Zag")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
-        )),
-    );
-    buttons.push(
-        Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
-            CompactIconAction(Symbols::add, "Add Pucker & Bloat", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    if let Some(cmd) = cmd_add_pucker_bloat_after(&s.file.document, id, 50.0) {
-                        s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Add Pucker & Bloat".into()),
-                            ToolOutput::Commands(smallvec![cmd]),
-                            ToolOutput::CommitTransaction,
-                        ]);
-                    }
-                }
-            }),
-            Text("Pucker & Bloat")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
-        )),
-    );
-    Some(
-        Row(Modifier::new()
-            .height(40.0)
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
-            })
-            .align_items(AlignItems::CENTER)
-            .gap(12.0))
-        .child((
-            Text("Add modifier")
-                .size(th.typography.label_medium)
-                .color(th.on_surface_variant),
-            Box(Modifier::new().flex_grow(1.0))
-                .child(Row(Modifier::new().gap(12.0)).child(buttons)),
+    buttons.push(modifier_chip("Repeater", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            if let Some(cmd) = cmd_add_repeater_after(&s.file.document, id) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Repeater".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+    buttons.push(modifier_chip("Zig Zag", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            if let Some(cmd) = cmd_add_zigzag_after(&s.file.document, id) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Zig Zag".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+    buttons.push(modifier_chip("Pucker & Bloat", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            if let Some(cmd) = cmd_add_pucker_bloat_after(&s.file.document, id, 50.0) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Pucker & Bloat".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+
+    Some(crate::components::CollapsibleSection(
+        "add_modifier_section",
+        "Modifiers",
+        vec![],
+        FlowRow(
+            Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 12.0,
+                    top: 8.0,
+                    bottom: 8.0,
+                })
+                .gap(8.0),
+        )
+        .child(buttons),
+    ))
+}
+
+fn modifier_chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .padding_values(PaddingValues {
+            left: 10.0,
+            right: 10.0,
+            top: 6.0,
+            bottom: 6.0,
+        })
+        .background(th.surface_container_high)
+        .clip_rounded(999.0)
+        .border(1.0, th.outline_variant.with_alpha(140), 999.0)
+        .on_pointer_down(move |_| on_click()))
+    .child(
+        Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+            AppIcon(Symbols::add, 18.0),
+            Text(label).size(th.typography.label_medium),
         )),
     )
 }
@@ -977,17 +1202,11 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
         ));
     }
 
-    Some(
+    Some(crate::components::CollapsibleSection(
+        "text_section",
+        "Text",
+        vec![],
         Column(Modifier::new().fill_max_width()).child((
-            Text("Text")
-                .size(th.typography.label_medium)
-                .color(th.on_surface_variant)
-                .modifier(Modifier::new().padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 12.0,
-                    top: 12.0,
-                    bottom: 4.0,
-                })),
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
@@ -1038,7 +1257,7 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                 .gap(6.0))
             .child(chips),
         )),
-    )
+    ))
 }
 
 /// One selectable font-family chip in the text properties section.
@@ -1059,17 +1278,7 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
     };
 
     let th = theme();
-    let mut children: Vec<View> = vec![
-        Text("Image")
-            .size(th.typography.label_medium)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 4.0,
-            })),
-    ];
+    let mut children: Vec<View> = Vec::new();
 
     for (label, value) in [
         ("Name", name),
@@ -1098,7 +1307,12 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
         );
     }
 
-    Some(Column(Modifier::new().fill_max_width()).child(children))
+    Some(crate::components::CollapsibleSection(
+        "image_meta_section",
+        "Image",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(children),
+    ))
 }
 
 fn font_chip(
@@ -1265,31 +1479,16 @@ fn paint_section(
         ),
     ));
 
-    let mut children = vec![
-        Text(section_label)
-            .size(theme().typography.label_medium)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 4.0,
-            })),
-        toggle,
-    ];
+    let mut children = vec![toggle];
 
     match &paint {
         StylePaint::Solid { .. } => {
-            // Color row bound to the style node's solid-color property.
+            // Color row bound to the style node's solid-color property. The
+            // row's own swatch opens the picker for this style node.
             let path = PropPath::new(solid_path);
-            let swatch = paint_swatch_button(
-                session.clone(),
-                PickerTarget::StyleColor { style_id },
-                paint.base_color(),
-            );
             children.push(
                 Row(Modifier::new()
-                    .height(36.0)
+                    .min_height(36.0)
                     .fill_max_width()
                     .padding_values(PaddingValues {
                         left: 12.0,
@@ -1305,7 +1504,6 @@ fn paint_section(
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
                         .modifier(Modifier::new().width(96.0)),
-                    swatch,
                     Box(Modifier::new().flex_grow(1.0)).child(color_row(
                         session.clone(),
                         vec![style_id],
@@ -1437,7 +1635,12 @@ fn paint_section(
         )),
     );
 
-    Some(Column(Modifier::new().fill_max_width()).child(children))
+    Some(crate::components::CollapsibleSection(
+        "paint_section",
+        section_label,
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(children),
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -1523,34 +1726,6 @@ fn paint_segment(
                     }
                 }),
         )
-}
-
-/// A small clickable fill-color swatch that opens the picker for `target`.
-fn paint_swatch_button(session: SessionRef, target: PickerTarget, color: Color) -> View {
-    let th = theme();
-    Box(Modifier::new()
-        .width(28.0)
-        .height(28.0)
-        .clip_rounded(6.0)
-        .border(1.0, th.outline_variant, 6.0)
-        .background(repose_core::Color(
-            (color.r * 255.0) as u8,
-            (color.g * 255.0) as u8,
-            (color.b * 255.0) as u8,
-            (color.a * 255.0) as u8,
-        ))
-        .on_pointer_down({
-            let session = session.clone();
-            move |pe: repose_core::input::PointerEvent| {
-                let anchor = glam::DVec2::new(
-                    pe.position_in_window().x as f64,
-                    pe.position_in_window().y as f64,
-                );
-                session
-                    .borrow_mut()
-                    .open_color_picker(target, color, anchor);
-            }
-        }))
 }
 
 fn axis_row(
@@ -1725,6 +1900,7 @@ fn stroke_dash_section(
     id: NodeId,
     playhead: Frame,
     record: bool,
+    diamond_quiet: bool,
 ) -> Option<View> {
     let (is_stroke, dash) = {
         let session = session.borrow();
@@ -1742,17 +1918,7 @@ fn stroke_dash_section(
     }
 
     let th = theme();
-    let mut children = vec![
-        Text("Dash")
-            .size(th.typography.label_medium)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 4.0,
-            })),
-    ];
+    let mut children: Vec<View> = Vec::new();
 
     let Some(dash) = dash else {
         children.push(
@@ -1792,7 +1958,12 @@ fn stroke_dash_section(
             )),
         );
 
-        return Some(Column(Modifier::new().fill_max_width()).child(children));
+        return Some(crate::components::CollapsibleSection(
+            "stroke_dash_section",
+            "Dash",
+            vec![],
+            Column(Modifier::new().fill_max_width()).child(children),
+        ));
     };
 
     // Offset
@@ -1801,6 +1972,7 @@ fn stroke_dash_section(
         id,
         playhead,
         record,
+        diamond_quiet,
         "Offset",
         PropPath::new("stroke.dash.offset"),
         dash.offset.value_at(playhead.0 as f64),
@@ -1820,6 +1992,7 @@ fn stroke_dash_section(
             id,
             playhead,
             record,
+            diamond_quiet,
             label,
             PropPath::new(format!("stroke.dash.{index}")),
             value.value_at(playhead.0 as f64),
@@ -1875,7 +2048,12 @@ fn stroke_dash_section(
         )),
     );
 
-    Some(Column(Modifier::new().fill_max_width()).child(children))
+    Some(crate::components::CollapsibleSection(
+        "stroke_dash_section",
+        "Dash",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(children),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1884,6 +2062,7 @@ fn dash_scalar_row(
     id: NodeId,
     playhead: Frame,
     record: bool,
+    diamond_quiet: bool,
     label: impl Into<String>,
     path: PropPath,
     value: f64,
@@ -1921,7 +2100,14 @@ fn dash_scalar_row(
         .align_items(AlignItems::CENTER)
         .gap(8.0))
     .child((
-        diamond_button(session.clone(), vec![id], path.clone(), state, playhead),
+        diamond_button(
+            session.clone(),
+            vec![id],
+            path.clone(),
+            state,
+            playhead,
+            diamond_quiet,
+        ),
         Text(label)
             .size(theme().typography.body_medium)
             .color(theme().on_surface)

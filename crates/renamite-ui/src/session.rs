@@ -803,42 +803,39 @@ impl Session {
         self.repaint();
     }
 
-    /// Jump the playhead to the previous or next keyframe on the first selected
-    /// node's first animated property, falling back to the composition bounds.
     pub fn step_to_keyframe(&mut self, direction: i64) {
         let frame = renamite_animation::Frame(self.playback.head.round() as i64);
         let doc = &self.file.document;
         let rows = crate::session::timeline_rows(self);
+
+        let selected = &self.selection.nodes;
+
+        let mut ordered: Vec<&TimelineRow> = rows
+            .iter()
+            .filter(|row| selected.contains(&row.node))
+            .collect();
+
+        ordered.extend(rows.iter().filter(|row| !selected.contains(&row.node)));
+
         let mut candidate: Option<i64> = None;
-        for row in rows.iter().take(4) {
-            let frames = doc
-                .key_frames(row.node, &row.prop)
-                .iter()
-                .map(|f| f.0)
-                .collect::<Vec<_>>();
-            for &f in &frames {
-                let better = match direction {
-                    d if d < 0 => f < frame.0 && candidate.map(|c| f > c).unwrap_or(true),
-                    _ => f > frame.0 && candidate.map(|c| f < c).unwrap_or(true),
+
+        for row in ordered {
+            for f in doc.key_frames(row.node, &row.prop).iter().map(|f| f.0) {
+                let better = if direction < 0 {
+                    f < frame.0 && candidate.map(|c| f > c).unwrap_or(true)
+                } else {
+                    f > frame.0 && candidate.map(|c| f < c).unwrap_or(true)
                 };
+
                 if better {
                     candidate = Some(f);
                 }
             }
-            if candidate.is_some() && rows.len() > 1 {
-                // Prefer the same row when possible; a hit anywhere is fine.
-                if frames.contains(&candidate.unwrap()) {
-                    break;
-                }
-            }
         }
+
         let target = candidate.unwrap_or_else(|| {
             let range = doc.compositions[doc.main].range;
-            if direction < 0 {
-                range.0.0
-            } else {
-                range.1.0
-            }
+            if direction < 0 { range.0.0 } else { range.1.0 }
         });
         self.playback.head = target as f64;
         let crate::session::Session {
@@ -1714,6 +1711,7 @@ pub fn timeline_ctx<'a>(
     rows: &'a [TimelineRow],
     range: (Frame, Frame),
     playhead: f64,
+    px_per_frame: f64,
 ) -> TimelineCtx<'a> {
     TimelineCtx {
         doc,
@@ -1722,7 +1720,7 @@ pub fn timeline_ctx<'a>(
         rows,
         layout: TimelineLayout {
             origin_x: 0.0,
-            px_per_frame: 6.0,
+            px_per_frame: px_per_frame.clamp(0.5, 48.0),
             row_top: 24.0,
             row_height: 22.0,
             key_tolerance_px: 6.0,
@@ -1736,20 +1734,53 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     let rows = timeline_rows(s);
     let (head, comp) = (s.playback.head, s.file.document.main);
     let range = s.file.document.compositions[comp].range;
-    let ctx = timeline_ctx(&s.file.document, &s.file.clips, &rows, range, head);
+    let zoom = s.timeline_zoom;
+    let ctx = timeline_ctx(&s.file.document, &s.file.clips, &rows, range, head, zoom);
     let outs = s.keys.handle(&ctx, ev);
     s.apply_outputs(outs);
 }
 
 pub fn timeline_rows(s: &Session) -> Vec<TimelineRow> {
     let comp = &s.file.document.compositions[s.file.document.main];
-    comp.children
-        .iter()
-        .map(|&id| TimelineRow {
+    let mut out = Vec::new();
+    for &id in &comp.children {
+        append_timeline_rows_for_node(s, id, &mut out);
+    }
+    out
+}
+
+fn append_timeline_rows_for_node(
+    s: &Session,
+    id: renamite_model::NodeId,
+    out: &mut Vec<TimelineRow>,
+) {
+    let doc = &s.file.document;
+    let mut added_any = false;
+
+    for row in renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0)) {
+        if doc.property_is_animated(id, &row.desc.path) {
+            out.push(TimelineRow {
+                node: id,
+                prop: row.desc.path,
+            });
+            added_any = true;
+        }
+    }
+
+    if !added_any && s.selection.nodes.contains(&id) {
+        out.push(TimelineRow {
             node: id,
-            prop: timeline_row_prop(&s.file.document, id),
-        })
-        .collect()
+            prop: timeline_row_prop(doc, id),
+        });
+    }
+
+    if s.expanded_layers.contains(&id)
+        && let Some(node) = doc.nodes.get(id)
+    {
+        for &child in &node.children {
+            append_timeline_rows_for_node(s, child, out);
+        }
+    }
 }
 
 /// Which animatable property a layer's timeline row edits. Uses the first

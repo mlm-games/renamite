@@ -2,7 +2,7 @@ use renamite_behavior_timeline::{TimelineEvent, TimelineLayout, TimelineRow};
 use repose_canvas::Canvas;
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
-use repose_core::{AlignItems, Modifier, View, theme};
+use repose_core::{AlignItems, JustifyContent, Modifier, View, theme};
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
@@ -86,6 +86,37 @@ pub fn TimelinePanel(session: SessionRef) -> View {
         ],
     );
 
+    if rows.is_empty() {
+        let th = theme();
+        return Column(Modifier::new().fill_max_size()).child((
+            header,
+            TimelineInfoBar(head, range, record),
+            Box(Modifier::new()
+                .fill_max_size()
+                .padding_values(repose_core::PaddingValues {
+                    left: 24.0,
+                    right: 24.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                })
+                .align_items(AlignItems::CENTER)
+                .justify_content(JustifyContent::CENTER))
+            .child(
+                Column(Modifier::new().gap(8.0).align_items(AlignItems::CENTER)).child((
+                    Text("No animated properties yet")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface),
+                    Text(
+                        "Select a layer, switch to Animate, then click a diamond in \
+                        Properties, or enable Record and edit a value at the playhead.",
+                    )
+                    .size(th.typography.body_small)
+                    .color(th.on_surface_variant),
+                )),
+            ),
+        ));
+    }
+
     Column(Modifier::new().fill_max_size()).child((
         header,
         TimelineInfoBar(head, range, record),
@@ -124,7 +155,7 @@ fn TimelineInfoBar(
                 theme().on_error_container,
             )
         } else {
-            Text("One transform property per layer")
+            Text("One row per keyed property")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
         },
@@ -287,6 +318,29 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     },
                     0.0,
                 );
+            }
+
+            for (i, row) in rows.iter().enumerate() {
+                let y = layout.row_top + i as f64 * layout.row_height + layout.row_height * 0.5;
+
+                for frame in s.file.document.key_frames(row.node, &row.prop) {
+                    let x = layout.frame_to_x(frame.0 as f64) as f32;
+                    let at_playhead = (frame.0 as f64 - s.playback.head).abs() < 0.5;
+                    scope.draw_rect(
+                        Rect {
+                            x: x - 4.0,
+                            y: y as f32 - 4.0,
+                            w: 8.0,
+                            h: 8.0,
+                        },
+                        if at_playhead {
+                            th.primary
+                        } else {
+                            th.primary_container
+                        },
+                        2.0,
+                    );
+                }
             }
 
             // Playhead.
