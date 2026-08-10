@@ -17,7 +17,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{ContextMenuSource, ContextMenuState, LayerDragState, SessionRef};
+use crate::session::{
+    ContextMenuSource, ContextMenuState, LayerDragState, SessionRef, overlay_anchor,
+};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::{MenuContext, layers_menu};
 
@@ -162,10 +164,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                         layers_menu(&ctx, row.id)
                     };
                     s.open_context_menu(ContextMenuState {
-                        screen_pos: glam::DVec2::new(
-                            pe.position_in_window().x as f64,
-                            pe.position_in_window().y as f64,
-                        ),
+                        screen_pos: overlay_anchor(&pe),
                         entries,
                         source: ContextMenuSource::Layers { row: row.id },
                     });

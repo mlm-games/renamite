@@ -677,11 +677,14 @@ impl Session {
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let doc = &self.file.document;
         let mut all = std::collections::HashSet::new();
-        fn collect(node: renamite_model::NodeId, doc: &renamite_model::Document, out: &mut std::collections::HashSet<renamite_model::NodeId>) {
+        fn collect(
+            node: renamite_model::NodeId,
+            doc: &renamite_model::Document,
+            out: &mut std::collections::HashSet<renamite_model::NodeId>,
+        ) {
             if let Some(n) = doc.nodes.get(node) {
                 match &n.kind {
-                    renamite_model::NodeKind::Group { .. }
-                    | renamite_model::NodeKind::Shape(_) => {
+                    renamite_model::NodeKind::Group { .. } | renamite_model::NodeKind::Shape(_) => {
                         out.insert(node);
                     }
                     _ => {}
@@ -1679,6 +1682,10 @@ impl ViewportState {
         let resized = (surface - self.surface_size).abs().max_element() > 0.5;
         self.surface_size = surface;
 
+        if self.pan_last.is_some() {
+            return;
+        }
+
         if self.fit_pending || resized {
             self.fit(artboard);
         }
@@ -1915,6 +1922,12 @@ pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
         ctrl: pe.modifiers.ctrl,
         alt: pe.modifiers.alt,
     }
+}
+
+/// Canonical anchor for cursor-anchored popovers (context menu / color picker).
+pub fn overlay_anchor(pe: &PointerEvent) -> DVec2 {
+    let p = pe.position_in_window();
+    DVec2::new(p.x as f64, p.y as f64)
 }
 
 pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {

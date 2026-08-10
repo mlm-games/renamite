@@ -28,7 +28,9 @@ use std::rc::Rc;
 use web_time::Instant;
 
 use components::{CompactIconAction, ToolAction};
-use session::{EditorMode, PickerTarget, SessionRef, init_session, redo_cmd, undo_cmd};
+use session::{
+    EditorMode, PickerTarget, SessionRef, init_session, overlay_anchor, redo_cmd, undo_cmd,
+};
 use shell::EditorShell;
 use symbols::Symbols;
 
@@ -391,8 +393,7 @@ pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
                     s.close_color_picker();
                 } else {
                     let c = s.current_paint.base_color();
-                    let anchor =
-                        glam::DVec2::new(pe.position_in_window().x as f64, pe.position_in_window().y as f64);
+                    let anchor = overlay_anchor(&pe);
                     s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
                 }
             }

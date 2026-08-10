@@ -41,7 +41,9 @@ use repose_ui::{Box, Column, FlowRow, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
 use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{EditorMode, InspectorDrag, PickerTarget, Session, SessionRef};
+use crate::session::{
+    EditorMode, InspectorDrag, PickerTarget, Session, SessionRef, overlay_anchor,
+};
 use crate::symbols::{AppIcon, Symbols};
 
 pub fn PropertiesPanel(session: SessionRef) -> View {
@@ -162,13 +164,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         children.push(section);
     }
 
-    // Single selected shape: offer to add a modifier as its sibling.
-    if ids.len() == 1
-        && let Some(v) = add_modifier_row(session.clone(), ids[0])
-    {
-        children.push(v);
-    }
-
     for (section, props) in sections {
         children.push(crate::components::CollapsibleSection(
             format!("props_section_{section}"),
@@ -190,6 +185,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     .collect::<Vec<_>>(),
             ),
         ));
+    }
+
+    if ids.len() == 1
+        && let Some(v) = add_modifier_row(session.clone(), ids[0])
+    {
+        children.push(v);
     }
 
     let header = children.remove(0);
@@ -649,10 +650,7 @@ fn color_row(
             let color = c;
             move |pe: PointerEvent| {
                 if let Some(target) = picker_target {
-                    let anchor = glam::DVec2::new(
-                        pe.position_in_window().x as f64,
-                        pe.position_in_window().y as f64,
-                    );
+                    let anchor = overlay_anchor(&pe);
                     session
                         .borrow_mut()
                         .open_color_picker(target, color, anchor);
@@ -1794,10 +1792,7 @@ fn stop_rows(
                 .on_pointer_down({
                     let session = session.clone();
                     move |pe: repose_core::input::PointerEvent| {
-                        let anchor = glam::DVec2::new(
-                            pe.position_in_window().x as f64,
-                            pe.position_in_window().y as f64,
-                        );
+                        let anchor = overlay_anchor(&pe);
                         session.borrow_mut().open_color_picker(
                             PickerTarget::GradientStop { style_id, index: i },
                             stop_color,

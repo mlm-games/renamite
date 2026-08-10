@@ -15,7 +15,8 @@ use std::cell::Cell;
 
 use crate::components::CompactIconAction;
 use crate::session::{
-    ContextMenuSource, ContextMenuState, SessionRef, dispatch_canvas, map_modifiers, pe_pos,
+    ContextMenuSource, ContextMenuState, SessionRef, dispatch_canvas, map_modifiers, overlay_anchor,
+    pe_pos,
 };
 use crate::symbols::Symbols;
 use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
@@ -79,10 +80,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 canvas_menu(&ctx)
                             };
                             s.open_context_menu(ContextMenuState {
-                                screen_pos: DVec2::new(
-                                    pe.position_in_window().x as f64,
-                                    pe.position_in_window().y as f64,
-                                ),
+                                screen_pos: overlay_anchor(&pe),
                                 entries,
                                 source: ContextMenuSource::Canvas { world },
                             });
@@ -114,7 +112,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let pos = pe_pos(&pe);
 
                         if s.viewport.update_pan(pos) {
-                            s.revision = s.revision.wrapping_add(1);
                             request_frame();
                             return;
                         }
@@ -155,7 +152,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         if s.viewport.pan_last.is_some() {
                             s.viewport.end_pan();
-                            s.revision = s.revision.wrapping_add(1);
                             request_frame();
                         }
                     }
