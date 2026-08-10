@@ -6,11 +6,12 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame,
-    theme,
+    AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, remember_with_key,
+    request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
+use std::cell::Cell;
 
 use crate::components::CompactIconAction;
 use crate::session::{
@@ -304,13 +305,45 @@ fn ViewportHint() -> View {
 /// Empty-composition launcher: quick-start actions plus template cards.
 fn TemplatePicker(session: SessionRef) -> View {
     let th = theme();
+    let panel_w = remember_with_key("welcome_panel_w", || Cell::new(0.0f32));
+
+    let available = welcome_available_width(panel_w.get());
+    let content_w = (available - 48.0).max(0.0);
+
+    let cols = launcher_cols(content_w);
+    let card_w = launcher_card_width(content_w, cols);
+    let tile_cols = launcher_tile_cols(content_w);
+    let tile_w = launcher_tile_width(content_w, tile_cols);
+
     let cards: Vec<View> = renamite_examples::templates()
         .iter()
-        .map(|t| TemplateCard(session.clone(), t))
+        .map(|t| TemplateCard(session.clone(), t, card_w))
         .collect();
-    let cols = launcher_cols().max(1);
     let rows: Vec<View> = cards
         .chunks(cols)
+        .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
+        .collect();
+
+    let tiles: Vec<View> = vec![
+        LauncherTile("New", "Create a fresh project", tile_w, {
+            let session = session.clone();
+            move || crate::file::new_document(&session)
+        }),
+        LauncherTile("Open", "Open .ren / .renb", tile_w, {
+            let session = session.clone();
+            move || crate::file::open_document(&session)
+        }),
+        LauncherTile("Import Lottie", "Bring in JSON animation", tile_w, {
+            let session = session.clone();
+            move || crate::file::import_lottie(&session)
+        }),
+        LauncherTile("Import SVG", "Bring in vector artwork", tile_w, {
+            let session = session.clone();
+            move || crate::file::import_svg(&session)
+        }),
+    ];
+    let tile_rows: Vec<View> = tiles
+        .chunks(tile_cols)
         .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
         .collect();
 
@@ -320,7 +353,17 @@ fn TemplatePicker(session: SessionRef) -> View {
             .padding(24.0)
             .gap(20.0)
             .justify_content(JustifyContent::CENTER)
-            .align_items(AlignItems::CENTER),
+            .align_items(AlignItems::CENTER)
+            .on_size_changed({
+                let panel_w = panel_w.clone();
+                move |size: repose_core::Vec2| {
+                    let w = size.x;
+                    if (panel_w.get() - w).abs() > 0.5 {
+                        panel_w.set(w);
+                        request_frame();
+                    }
+                }
+            }),
     )
     .child(
         Text("Start a Renamite project")
@@ -332,24 +375,7 @@ fn TemplatePicker(session: SessionRef) -> View {
             .size(th.typography.body_medium)
             .color(th.on_surface_variant),
     )
-    .child(Row(Modifier::new().gap(12.0)).child((
-        LauncherTile("New", "Create a fresh project", {
-            let session = session.clone();
-            move || crate::file::new_document(&session)
-        }),
-        LauncherTile("Open", "Open .ren / .renb", {
-            let session = session.clone();
-            move || crate::file::open_document(&session)
-        }),
-        LauncherTile("Import Lottie", "Bring in JSON animation", {
-            let session = session.clone();
-            move || crate::file::import_lottie(&session)
-        }),
-        LauncherTile("Import SVG", "Bring in vector artwork", {
-            let session = session.clone();
-            move || crate::file::import_svg(&session)
-        }),
-    )))
+    .child(Column(Modifier::new().gap(12.0)).child(tile_rows))
     .child(ScrollArea(
         Modifier::new().fill_max_size(),
         remember_scroll_state("template_picker_scroll"),
@@ -382,21 +408,46 @@ fn TemplatePicker(session: SessionRef) -> View {
     )
 }
 
-/// Template grid columns from the available viewport width so the launcher
-/// doesn't blow out on narrow windows. Cards are 260px + 12px gap.
-fn launcher_cols() -> usize {
-    let width = repose_core::get_window_container_width() as f64;
-    (((width - 48.0) / 272.0).floor() as usize).clamp(1, 4)
+fn welcome_available_width(measured: f32) -> f64 {
+    if measured > 0.0 {
+        return measured as f64;
+    }
+    let win = repose_core::get_window_container_width() as f64;
+    match crate::shell::platform_shell_class() {
+        crate::shell::ShellClass::Expanded => win * 0.55,
+        // Medium: tool rail (72) + 320px side panel + paddings/gaps (~24).
+        crate::shell::ShellClass::Medium => (win - 416.0).max(0.0),
+        crate::shell::ShellClass::Compact => win,
+    }
+}
+
+fn launcher_cols(content_w: f64) -> usize {
+    ((content_w / 272.0).floor() as usize).clamp(1, 4)
+}
+
+fn launcher_card_width(content_w: f64, cols: usize) -> f32 {
+    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
+    w.clamp(120.0, 260.0) as f32
+}
+
+fn launcher_tile_cols(content_w: f64) -> usize {
+    ((content_w / 192.0).floor() as usize).clamp(1, 4)
+}
+
+fn launcher_tile_width(content_w: f64, cols: usize) -> f32 {
+    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
+    w.clamp(140.0, 180.0) as f32
 }
 
 fn LauncherTile(
     title: &'static str,
     subtitle: &'static str,
+    width: f32,
     on_click: impl Fn() + 'static,
 ) -> View {
     let th = theme();
     Box(Modifier::new()
-        .width(180.0)
+        .width(width)
         .padding(14.0)
         .background(th.surface_container_high)
         .clip_rounded(12.0)
@@ -413,10 +464,14 @@ fn LauncherTile(
     )
 }
 
-fn TemplateCard(session: SessionRef, template: &'static renamite_examples::TemplateInfo) -> View {
+fn TemplateCard(
+    session: SessionRef,
+    template: &'static renamite_examples::TemplateInfo,
+    width: f32,
+) -> View {
     let th = theme();
     Box(Modifier::new()
-        .width(260.0)
+        .width(width)
         .padding(14.0)
         .background(th.surface_container_high)
         .clip_rounded(10.0)
