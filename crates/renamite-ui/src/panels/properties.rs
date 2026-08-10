@@ -1542,7 +1542,10 @@ fn paint_swatch_button(session: SessionRef, target: PickerTarget, color: Color) 
         .on_pointer_down({
             let session = session.clone();
             move |pe: repose_core::input::PointerEvent| {
-                let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
+                let anchor = glam::DVec2::new(
+                    pe.position_in_window().x as f64,
+                    pe.position_in_window().y as f64,
+                );
                 session
                     .borrow_mut()
                     .open_color_picker(target, color, anchor);
@@ -1617,7 +1620,10 @@ fn stop_rows(
                 .on_pointer_down({
                     let session = session.clone();
                     move |pe: repose_core::input::PointerEvent| {
-                        let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
+                        let anchor = glam::DVec2::new(
+                            pe.position_in_window().x as f64,
+                            pe.position_in_window().y as f64,
+                        );
                         session.borrow_mut().open_color_picker(
                             PickerTarget::GradientStop { style_id, index: i },
                             stop_color,

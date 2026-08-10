@@ -391,7 +391,8 @@ pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
                     s.close_color_picker();
                 } else {
                     let c = s.current_paint.base_color();
-                    let anchor = glam::DVec2::new(pe.position.x as f64, pe.position.y as f64);
+                    let anchor =
+                        glam::DVec2::new(pe.position_in_window().x as f64, pe.position_in_window().y as f64);
                     s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
                 }
             }

@@ -78,7 +78,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 canvas_menu(&ctx)
                             };
                             s.open_context_menu(ContextMenuState {
-                                screen_pos: pos,
+                                screen_pos: DVec2::new(
+                                    pe.position_in_window().x as f64,
+                                    pe.position_in_window().y as f64,
+                                ),
                                 entries,
                                 source: ContextMenuSource::Canvas { world },
                             });

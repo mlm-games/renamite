@@ -162,7 +162,10 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                         layers_menu(&ctx, row.id)
                     };
                     s.open_context_menu(ContextMenuState {
-                        screen_pos: glam::DVec2::new(pe.position.x as f64, pe.position.y as f64),
+                        screen_pos: glam::DVec2::new(
+                            pe.position_in_window().x as f64,
+                            pe.position_in_window().y as f64,
+                        ),
                         entries,
                         source: ContextMenuSource::Layers { row: row.id },
                     });
