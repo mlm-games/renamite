@@ -428,7 +428,6 @@ fn scrub_f64_w(
         return Box(Modifier::new().width(min_width)).child(
             View::new(0, ViewKind::Box).modifier(
                 Modifier::new()
-                    .fill_max_height()
                     .focus_requester(focus_requester.as_ref().clone())
                     .text_input(TextInputConfig {
                         hint: String::new(),
