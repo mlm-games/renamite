@@ -4,7 +4,9 @@ use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
+use repose_core::input::{
+    Key as ReposeKey, KeyEvent, KeyEventType, PointerEvent, PointerEventKind,
+};
 use repose_core::{
     AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, remember_with_key,
     request_frame, theme,
@@ -39,10 +41,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_key_event({
                     let session = session.clone();
                     move |ke: KeyEvent| {
+                        let mut s = session.borrow_mut();
+                        if ke.key == ReposeKey::Space {
+                            s.viewport.space_held = ke.event_type == KeyEventType::Down;
+                            return true;
+                        }
                         let Some(k) = map_key(ke.key) else {
                             return false;
                         };
-                        let mut s = session.borrow_mut();
                         if s.mode != crate::session::EditorMode::Interact {
                             dispatch_canvas(&mut s, CanvasEvent::KeyDown(k), Modifiers::none());
                         }
@@ -87,7 +93,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
 
-                        if map_button(&pe) == PointerButton::Middle {
+                        let is_middle_pan = map_button(&pe) == PointerButton::Middle;
+                        let is_space_pan = map_button(&pe) == PointerButton::Primary
+                            && s.viewport.space_held;
+                        if is_middle_pan || is_space_pan {
                             s.viewport.begin_pan(pos);
                             request_frame();
                             return;

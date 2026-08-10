@@ -1664,6 +1664,7 @@ pub struct ViewportState {
     pub surface_size: DVec2,
     pub fit_pending: bool,
     pub pan_last: Option<DVec2>,
+    pub space_held: bool,
 }
 
 impl Default for ViewportState {
@@ -1673,6 +1674,7 @@ impl Default for ViewportState {
             surface_size: DVec2::ZERO,
             fit_pending: true,
             pan_last: None,
+            space_held: false,
         }
     }
 }

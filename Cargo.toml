@@ -104,16 +104,16 @@ default-features = false
 features = ["serde"]
 
 # [patch.crates-io]
-# repose-core = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-core" }
-# repose-canvas = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-canvas" }
-# repose-ui = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-ui" }
-# repose-material = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-material" }
-# repose-docking = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-docking" }
-# repose-platform = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-platform" }
-# repose-render-wgpu = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-render-wgpu" }
-# repose-text = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-text" }
-# repose-app = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-app" }
-# repose-tree = { path = "/home/ymsr/Documents/Repos/repose/crates/repose-tree" }
+# repose-core = { path = "../repose/crates/repose-core" }
+# repose-canvas = { path = "../repose/crates/repose-canvas" }
+# repose-ui = { path = "../repose/crates/repose-ui" }
+# repose-material = { path = "../repose/crates/repose-material" }
+# repose-docking = { path = "../repose/crates/repose-docking" }
+# repose-platform = { path = "../repose/crates/repose-platform" }
+# repose-render-wgpu = { path = "../repose/crates/repose-render-wgpu" }
+# repose-text = { path = "../repose/crates/repose-text" }
+# repose-app = { path = "../repose/crates/repose-app" }
+# repose-tree = { path = "../repose/crates/repose-tree" }
 
 [profile.release]
 lto = "thin"
