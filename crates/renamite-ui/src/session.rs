@@ -117,6 +117,8 @@ pub struct Session {
     pub machine_preview_enabled: bool,
     /// Active scrubbable-drag on a machine preview Number input.
     pub machine_preview_drag: Option<MachinePreviewDrag>,
+    /// Active rubber-band gesture on the state-machine graph (view state).
+    pub machine_graph_gesture: Option<MachineGraphGesture>,
     /// Draft of the listener being authored (view state).
     pub listener_draft: ListenerDraft,
     /// Timeline zoom: pixels per frame in the ruler/canvas (view state).
@@ -129,6 +131,17 @@ pub struct MachinePreviewDrag {
     pub input: usize,
     pub origin: f64,
     pub press_x: f32,
+}
+
+/// Live gesture on the state-machine graph (view state).
+#[derive(Clone, Debug)]
+pub enum MachineGraphGesture {
+    /// Rubber-band a new transition from `from_state` on `layer`.
+    WireTransition {
+        layer: usize,
+        from_state: usize,
+        current: DVec2,
+    },
 }
 
 /// Draft fields for the "add listener" row in the Interactivity panel (view
@@ -311,6 +324,7 @@ impl Session {
             machine_preview_inputs: Vec::new(),
             machine_preview_enabled: false,
             machine_preview_drag: None,
+            machine_graph_gesture: None,
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
         }
@@ -400,6 +414,21 @@ impl Session {
         // Begin/Commit pair still marks the project dirty.
         if mutated_outside_transaction {
             self.dirty = true;
+        }
+
+        // Drop dangling timeline keyframe selection after undo/doc edits.
+        if document_changed {
+            let rows = timeline_rows(self);
+            let range = self.file.document.compositions[self.file.document.main].range;
+            let ctx = timeline_ctx(
+                &self.file.document,
+                &self.file.clips,
+                &rows,
+                range,
+                self.playback.head,
+                self.timeline_zoom,
+            );
+            self.keys.retain_valid(&ctx);
         }
 
         // Batch invalidation: at most one re-evaluation + one repaint per
@@ -1036,6 +1065,7 @@ impl Session {
         self.machine_preview_inputs = Vec::new();
         self.machine_preview_enabled = false;
         self.machine_preview_drag = None;
+        self.machine_graph_gesture = None;
         self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
         self.viewport.pan_last = None;
@@ -1466,6 +1496,7 @@ impl Session {
 
         self.active_machine = Some(machine);
         self.machine_selection = MachineSelection::None;
+        self.machine_graph_gesture = None;
 
         self.reset_machine_preview();
         self.revision = self.revision.wrapping_add(1);
@@ -1736,8 +1767,29 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     let range = s.file.document.compositions[comp].range;
     let zoom = s.timeline_zoom;
     let ctx = timeline_ctx(&s.file.document, &s.file.clips, &rows, range, head, zoom);
-    let outs = s.keys.handle(&ctx, ev);
+
+    // Drop dangling selection after undo/doc edits.
+    s.keys.retain_valid(&ctx);
+
+    // Ruler band (above first row) → scrub playhead.
+    // Track area → keyframe behavior (hit diamond / box-select / drag).
+    let scrub = match &ev {
+        TimelineEvent::Press { pos, .. }
+        | TimelineEvent::Move { pos, .. }
+        | TimelineEvent::Release { pos, .. }
+        | TimelineEvent::DoubleClick { pos, .. } => {
+            pos.y < ctx.layout.row_top || s.scrub.is_dragging()
+        }
+        _ => false,
+    };
+    let outs = if scrub {
+        s.scrub.handle(&ctx, ev)
+    } else {
+        s.keys.handle(&ctx, ev)
+    };
     s.apply_outputs(outs);
+    s.revision = s.revision.wrapping_add(1);
+    request_frame();
 }
 
 pub fn timeline_rows(s: &Session) -> Vec<TimelineRow> {

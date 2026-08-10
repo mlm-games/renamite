@@ -616,6 +616,10 @@ pub struct TimelineScrubBehavior {
 }
 
 impl TimelineScrubBehavior {
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
     pub fn handle(&mut self, ctx: &TimelineCtx, ev: TimelineEvent) -> OutputVec {
         let set = |x: f64| -> OutputVec {
             let f = ctx

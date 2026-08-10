@@ -597,6 +597,59 @@ pub fn hit_state(layout: &[GraphState], position: glam::DVec2) -> Option<(usize,
         .map(|state| (state.layer, state.state))
 }
 
+/// Hit a transition edge near `position`. Returns (layer, source, transition).
+pub fn hit_transition(
+    machine: &Machine,
+    layout: &[GraphState],
+    position: glam::DVec2,
+    tolerance: f64,
+) -> Option<(usize, TransitionSource, usize)> {
+    let mut best: Option<(f64, usize, TransitionSource, usize)> = None;
+
+    for (li, layer) in machine.layers.iter().enumerate() {
+        for (si, state) in layer.states.iter().enumerate() {
+            let from = state_center(layout, li, si);
+            for (ti, tr) in state.transitions.iter().enumerate() {
+                let to = state_center(layout, li, tr.to);
+                let d = dist_point_segment(position, from, to);
+                if d <= tolerance && best.as_ref().map(|(bd, ..)| d < *bd).unwrap_or(true) {
+                    best = Some((d, li, TransitionSource::State(si), ti));
+                }
+            }
+        }
+        if !layer.states.is_empty() {
+            let first = state_center(layout, li, 0);
+            let from = glam::DVec2::new(first.x - 48.0, first.y);
+            for (ti, tr) in layer.any_transitions.iter().enumerate() {
+                let to = state_center(layout, li, tr.to);
+                let d = dist_point_segment(position, from, to);
+                if d <= tolerance && best.as_ref().map(|(bd, ..)| d < *bd).unwrap_or(true) {
+                    best = Some((d, li, TransitionSource::Any, ti));
+                }
+            }
+        }
+    }
+    best.map(|(_, l, s, t)| (l, s, t))
+}
+
+fn state_center(layout: &[GraphState], layer: usize, state: usize) -> glam::DVec2 {
+    layout
+        .iter()
+        .find(|g| g.layer == layer && g.state == state)
+        .map(|g| g.rect.center())
+        .unwrap_or(glam::DVec2::ZERO)
+}
+
+fn dist_point_segment(p: glam::DVec2, a: glam::DVec2, b: glam::DVec2) -> f64 {
+    let ab = b - a;
+    let t = if ab.length_squared() < 1e-9 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+    };
+    (a + ab * t - p).length()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
