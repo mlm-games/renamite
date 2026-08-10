@@ -9,6 +9,7 @@ use repose_core::{
     AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, request_frame,
     theme,
 };
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
 
 use crate::components::CompactIconAction;
@@ -142,6 +143,17 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             },
                             map_modifiers(&pe),
                         );
+                    }
+                })
+                .on_pointer_cancel({
+                    let session = session.clone();
+                    move |_| {
+                        let mut s = session.borrow_mut();
+                        if s.viewport.pan_last.is_some() {
+                            s.viewport.end_pan();
+                            s.revision = s.revision.wrapping_add(1);
+                            request_frame();
+                        }
                     }
                 }),
             move |scope| {
@@ -335,12 +347,22 @@ fn TemplatePicker(session: SessionRef) -> View {
             move || crate::file::import_svg(&session)
         }),
     )))
-    .child(
-        Text("Templates")
-            .size(th.typography.title_medium)
-            .color(th.on_surface),
-    )
-    .child(Column(Modifier::new().gap(12.0)).child(rows))
+    .child(ScrollArea(
+        Modifier::new().fill_max_size(),
+        remember_scroll_state("template_picker_scroll"),
+        Column(
+            Modifier::new()
+                .fill_max_width()
+                .gap(12.0)
+                .align_items(AlignItems::CENTER),
+        )
+        .child(
+            Text("Templates")
+                .size(th.typography.title_medium)
+                .color(th.on_surface),
+        )
+        .child(Column(Modifier::new().gap(12.0)).child(rows)),
+    ))
     .child(
         Text("Or dismiss to a blank canvas")
             .size(th.typography.label_medium)

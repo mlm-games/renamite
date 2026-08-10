@@ -1041,6 +1041,7 @@ impl Session {
         self.machine_preview_drag = None;
         self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
+        self.viewport.pan_last = None;
         self.dirty = false;
         self.exporting_png = false;
         self.sync_image_assets();
@@ -1693,10 +1694,11 @@ impl ViewportState {
     }
 
     pub fn update_pan(&mut self, position: DVec2) -> bool {
-        let Some(previous) = self.pan_last.replace(position) else {
+        let Some(previous) = self.pan_last else {
             return false;
         };
 
+        self.pan_last = Some(position);
         self.view.offset += position - previous;
         true
     }

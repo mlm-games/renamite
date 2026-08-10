@@ -13,10 +13,9 @@ pub fn desktop_main() -> anyhow::Result<()> {
 #[wasm_bindgen(start)]
 pub fn wasm_start() -> Result<(), JsValue> {
     renamite_ui::init_wasm();
-    repose_platform::web::run_web_app(
-        renamite_ui::app,
-        repose_platform::web::WebOptions::new(None),
-    )
+    let mut options = repose_platform::web::WebOptions::new(None);
+    options.set_prevent_default(true);
+    repose_platform::web::run_web_app(renamite_ui::app, options)
 }
 
 #[cfg(target_os = "android")]
