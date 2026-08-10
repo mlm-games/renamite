@@ -119,6 +119,8 @@ pub struct Session {
     pub machine_preview_drag: Option<MachinePreviewDrag>,
     /// Draft of the listener being authored (view state).
     pub listener_draft: ListenerDraft,
+    /// Timeline zoom: pixels per frame in the ruler/canvas (view state).
+    pub timeline_zoom: f64,
 }
 
 /// A scrubbable-drag on a machine preview Number input (view state).
@@ -310,6 +312,7 @@ impl Session {
             machine_preview_enabled: false,
             machine_preview_drag: None,
             listener_draft: ListenerDraft::default(),
+            timeline_zoom: 6.0,
         }
     }
 
@@ -603,6 +606,76 @@ impl Session {
         }
     }
 
+    pub fn add_ellipse_layer(&mut self) {
+        use renamite_history::NodeTree;
+        use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
+
+        let comp = self.file.document.main;
+        let (w, h) = self.file.document.compositions[comp].size;
+        let center = DVec2::new(w as f64 * 0.5, h as f64 * 0.5);
+        let shape = Node::new(
+            "Ellipse",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: renamite_animation::Animated::new(center),
+                size: renamite_animation::Animated::new(DVec2::new(120.0, 120.0)),
+            }),
+        );
+        let fill = Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: self.current_paint.clone(),
+                rule: FillRule::NonZero,
+            }),
+        );
+        let tree = NodeTree::with_children(shape, vec![NodeTree::leaf(fill)]);
+
+        self.history.begin("Add layer".to_owned());
+        if let Some(id) = self.history_apply(EditorCommand::InsertNode {
+            parent: Parent::Comp(comp),
+            index: 0,
+            tree,
+        }) {
+            self.selection.nodes = vec![id];
+            self.ensure_selection_visible();
+        }
+        self.history.commit();
+        self.dirty = true;
+        self.bump();
+    }
+
+    /// Expand (true) or collapse (false) every transform group in the Layers
+    /// panel (view state only, no undo).
+    pub fn set_all_expanded(&mut self, expanded: bool) {
+        let doc = &self.file.document;
+        let mut all = std::collections::HashSet::new();
+        fn collect(node: renamite_model::NodeId, doc: &renamite_model::Document, out: &mut std::collections::HashSet<renamite_model::NodeId>) {
+            if let Some(n) = doc.nodes.get(node) {
+                match &n.kind {
+                    renamite_model::NodeKind::Group { .. }
+                    | renamite_model::NodeKind::Shape(_) => {
+                        out.insert(node);
+                    }
+                    _ => {}
+                }
+                for &child in &n.children {
+                    collect(child, doc, out);
+                }
+            }
+        }
+        let main = doc.main;
+        if let Some(comp) = doc.compositions.get(main) {
+            for child in &comp.children {
+                collect(*child, doc, &mut all);
+            }
+        }
+        if expanded {
+            self.expanded_layers = all;
+        } else {
+            self.expanded_layers.clear();
+        }
+        self.repaint();
+    }
+
     fn insert_trees(
         &mut self,
         trees: Vec<renamite_history::NodeTree>,
@@ -696,6 +769,87 @@ impl Session {
             }
         }
         self.repaint();
+    }
+
+    /// Zoom the timeline by a multiplicative factor, clamped to sane bounds.
+    pub fn zoom_timeline(&mut self, factor: f64) {
+        let old = self.timeline_zoom.max(0.5);
+        self.timeline_zoom = (old * factor).clamp(0.5, 48.0);
+        self.repaint();
+    }
+
+    /// Move the playhead by a fixed number of frames (transport step).
+    pub fn step_frames(&mut self, delta: f64) {
+        let range = self.file.document.compositions[self.file.document.main].range;
+        self.playback.head = (self.playback.head + delta).clamp(range.0.0 as f64, range.1.0 as f64);
+        let crate::session::Session {
+            file,
+            engine,
+            playback,
+            ..
+        } = self;
+        let head = playback.head;
+        engine.scrub(file, head);
+        self.bump();
+    }
+
+    /// Cycle the playback loop mode (Once → Loop → PingPong).
+    pub fn cycle_loop_mode(&mut self) {
+        self.playback.loop_mode = match self.playback.loop_mode {
+            LoopMode::Once => LoopMode::Loop,
+            LoopMode::Loop => LoopMode::PingPong,
+            LoopMode::PingPong => LoopMode::Once,
+        };
+        self.repaint();
+    }
+
+    /// Jump the playhead to the previous or next keyframe on the first selected
+    /// node's first animated property, falling back to the composition bounds.
+    pub fn step_to_keyframe(&mut self, direction: i64) {
+        let frame = renamite_animation::Frame(self.playback.head.round() as i64);
+        let doc = &self.file.document;
+        let rows = crate::session::timeline_rows(self);
+        let mut candidate: Option<i64> = None;
+        for row in rows.iter().take(4) {
+            let frames = doc
+                .key_frames(row.node, &row.prop)
+                .iter()
+                .map(|f| f.0)
+                .collect::<Vec<_>>();
+            for &f in &frames {
+                let better = match direction {
+                    d if d < 0 => f < frame.0 && candidate.map(|c| f > c).unwrap_or(true),
+                    _ => f > frame.0 && candidate.map(|c| f < c).unwrap_or(true),
+                };
+                if better {
+                    candidate = Some(f);
+                }
+            }
+            if candidate.is_some() && rows.len() > 1 {
+                // Prefer the same row when possible; a hit anywhere is fine.
+                if frames.contains(&candidate.unwrap()) {
+                    break;
+                }
+            }
+        }
+        let target = candidate.unwrap_or_else(|| {
+            let range = doc.compositions[doc.main].range;
+            if direction < 0 {
+                range.0.0
+            } else {
+                range.1.0
+            }
+        });
+        self.playback.head = target as f64;
+        let crate::session::Session {
+            file,
+            engine,
+            playback,
+            ..
+        } = self;
+        let head = playback.head;
+        engine.scrub(file, head);
+        self.bump();
     }
 
     /// Auto-expand ancestor groups so a selected (possibly nested) node's
@@ -997,11 +1151,12 @@ impl Session {
         run_intent
     }
 
-    /// Defer `intent` behind the unsaved-changes dialog and show it.
+    /// Defer `intent` behind the unsaved-changes dialog and show it. Showing a
+    /// dialog is pure UI state - repaint without re-evaluating the engine.
     pub fn request_discard(&mut self, intent: PendingIntent) {
         self.pending_intent = Some(intent);
         self.confirm_dialog.show();
-        self.bump();
+        self.repaint();
     }
 
     /// Take the deferred intent (clearing it).
@@ -1012,7 +1167,7 @@ impl Session {
     /// Drop a deferred intent (e.g. the user canceled the guard's Save).
     pub fn clear_pending_intent(&mut self) {
         if self.pending_intent.take().is_some() {
-            self.bump();
+            self.repaint();
         }
     }
 
@@ -1726,8 +1881,16 @@ fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {
     DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
-/// Default empty document with a seeded ellipse so the artboard isn't blank.
-pub fn default_file() -> RenFile {
+/// Blank document used by the launcher / "New" template flow. Empty artboard
+/// so the template picker is the first thing users see on a fresh project.
+pub fn blank_file() -> RenFile {
+    RenFile::new(renamite_model::Document::empty(), "Untitled")
+}
+
+/// Seeded demo document: one ellipse + fill so the artboard isn't blank.
+/// Only used by tests and as a debug/fallback surface - the launcher path
+/// deliberately starts from [`blank_file`] instead.
+pub fn seeded_demo_file() -> RenFile {
     use renamite_animation::Animated;
     use renamite_model::{
         Color, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint,
@@ -1764,7 +1927,7 @@ pub fn default_file() -> RenFile {
 pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
     let rc = render_context.clone();
     let session = remember_with_key("session", || {
-        RefCell::new(Session::with_render_context(default_file(), rc))
+        RefCell::new(Session::with_render_context(blank_file(), rc))
     });
 
     let registered = remember_state_with_key("pb_reg", || false);
@@ -1813,7 +1976,7 @@ mod tests {
 
     #[test]
     fn edit_batch_increments_revision_once() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let text = add_text_node(&mut s);
         let before = s.revision;
         s.apply_outputs(smallvec![
@@ -1834,7 +1997,7 @@ mod tests {
 
     #[test]
     fn empty_transaction_does_not_mark_dirty() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let before = s.dirty;
         s.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("No-op".into()),
@@ -1848,7 +2011,7 @@ mod tests {
 
     #[test]
     fn playhead_update_batches_invalidation() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let before = s.revision;
         s.apply_outputs(smallvec![ToolOutput::SetPlayhead(12.0)]);
         assert_eq!(s.playback.head, 12.0);
@@ -1857,7 +2020,7 @@ mod tests {
 
     #[test]
     fn selection_only_output_does_not_reevaluate_document() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let comp = s.file.document.main;
         let id = s.file.document.compositions[comp].children[0];
         let before = s.revision;
@@ -1874,7 +2037,7 @@ mod tests {
 
     #[test]
     fn picker_change_then_commit_is_one_undo_step() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let fill = fill_id_of(&s);
         s.open_color_picker(
             PickerTarget::StyleColor { style_id: fill },
@@ -1892,7 +2055,7 @@ mod tests {
 
     #[test]
     fn undoing_picker_restores_original_color() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let fill = fill_id_of(&s);
         let orig = {
             let s = &s;
@@ -1921,7 +2084,7 @@ mod tests {
 
     #[test]
     fn close_without_commit_cancels() {
-        let mut s = Session::new(default_file());
+        let mut s = Session::new(seeded_demo_file());
         let fill = fill_id_of(&s);
         s.open_color_picker(
             PickerTarget::StyleColor { style_id: fill },
@@ -1938,7 +2101,7 @@ mod tests {
 
     #[test]
     fn current_paint_picker_does_not_open_history() {
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
 
         session.open_color_picker(
             PickerTarget::CurrentPaint,
@@ -1954,7 +2117,7 @@ mod tests {
 
     #[test]
     fn cancelling_current_paint_restores_original() {
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         let original = session.current_paint.clone();
 
         session.open_color_picker(
@@ -1970,7 +2133,7 @@ mod tests {
 
     #[test]
     fn import_font_adds_font_asset() {
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         let bytes = include_bytes!("../../renamite-text/assets/default.ttf").to_vec();
         let family = renamite_text::font_family_name(&bytes).expect("bundled font has a name");
 
@@ -1990,7 +2153,7 @@ mod tests {
 
     #[test]
     fn undoing_font_import_removes_asset() {
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         let bytes = include_bytes!("../../renamite-text/assets/default.ttf").to_vec();
         let family = renamite_text::font_family_name(&bytes).expect("bundled font has a name");
 
@@ -2014,7 +2177,7 @@ mod tests {
 
     #[test]
     fn set_text_font_round_trips_through_history() {
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         // A text node + sibling fill, grouped like the Text tool creates.
         let text = session.file.document.create_node(renamite_model::Node::new(
             "t",
@@ -2059,7 +2222,7 @@ mod tests {
     fn machine_edit_is_one_undo_step() {
         use renamite_behavior_common::machine::add_input;
 
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         session.create_machine();
         let machine = session.active_machine.expect("machine created");
 
@@ -2092,7 +2255,7 @@ mod tests {
         };
         use renamite_machine::Condition;
 
-        let mut session = Session::new(default_file());
+        let mut session = Session::new(seeded_demo_file());
         session.create_machine();
         let machine = session.active_machine.expect("machine created");
 

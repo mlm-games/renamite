@@ -74,7 +74,24 @@ pub fn LayersPanel(session: SessionRef) -> View {
     );
 
     Column(Modifier::new().fill_max_size()).child((
-        PanelHeader(Symbols::layers, "Layers", vec![]),
+        PanelHeader(
+            Symbols::layers,
+            "Layers",
+            vec![
+                CompactIconAction(Symbols::add, "Add ellipse layer", {
+                    let session = session.clone();
+                    move || session.borrow_mut().add_ellipse_layer()
+                }),
+                CompactIconAction(Symbols::unfold_more, "Expand all layers", {
+                    let session = session.clone();
+                    move || session.borrow_mut().set_all_expanded(true)
+                }),
+                CompactIconAction(Symbols::unfold_less, "Collapse all layers", {
+                    let session = session.clone();
+                    move || session.borrow_mut().set_all_expanded(false)
+                }),
+            ],
+        ),
         ScrollArea(
             Modifier::new().fill_max_size(),
             remember_scroll_state("layers_scroll"),

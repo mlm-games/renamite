@@ -8,7 +8,7 @@
 //! hand the UI thread ready-to-apply [`PendingFileOp`]s via
 //! [`Session::drain_file_ops`].
 
-use crate::session::{PendingFileOp, PendingIntent, SessionRef, default_file};
+use crate::session::{PendingFileOp, PendingIntent, SessionRef, blank_file};
 
 use std::path::Path;
 
@@ -184,7 +184,7 @@ pub fn new_document(session: &SessionRef) {
 
 fn new_document_inner(session: &SessionRef) {
     let mut s = session.borrow_mut();
-    let mut file = default_file();
+    let mut file = blank_file();
     file.meta.name = "Untitled".into();
     s.replace_file(file);
     s.welcome = true;

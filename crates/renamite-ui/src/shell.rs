@@ -1,11 +1,16 @@
 use repose_core::{JustifyContent, Modifier, PaddingValues, View, remember_with_key, theme};
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
-    Scaffold, ScaffoldConfig, Surface, SurfaceConfig, TextButton,
+    Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, Surface, SurfaceConfig, TextButton,
 };
-use repose_ui::overlay::OverlayHandle;
+use repose_ui::overlay::{OverlayHandle, SnackbarController, SnackbarRequest};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
+use std::cell::RefCell;
 use std::rc::Rc;
+
+use repose_docking::{
+    DockArea, DockCallbacks, DockKind, DockNode, DockPanel, DockState, PanelId, SplitDir,
+};
 
 use crate::components::{PanelSurface, PillButton, ToolAction};
 use crate::panels::{
@@ -37,6 +42,30 @@ pub fn EditorShell(session: SessionRef) -> View {
     let class = platform_shell_class();
     let session_body = session.clone();
 
+    let snackbar = remember_with_key("shell_snackbar", {
+        let overlay = (*overlay).clone();
+        move || SnackbarController::new(overlay)
+    });
+    {
+        let mut s = session.borrow_mut();
+        if s.status.is_some() {
+            let message = s.status.take().unwrap_or_default();
+            (*snackbar).show(SnackbarRequest {
+                message: message.clone(),
+                action: None,
+                duration_ms: 3500,
+                builder: Rc::new(move || {
+                    Snackbar(
+                        message.clone(),
+                        None,
+                        Modifier::new(),
+                        SnackbarConfig::default(),
+                    )
+                }),
+            });
+        }
+    }
+
     let scaffold = Scaffold(
         move |_content_padding| match class {
             ShellClass::Expanded => ExpandedWorkspace(session_body.clone()),
@@ -47,6 +76,7 @@ pub fn EditorShell(session: SessionRef) -> View {
             top_bar: Some(crate::AppTopBar(session.clone(), (*overlay).clone())),
             bottom_bar: match class {
                 ShellClass::Compact => Some(BottomNavigation(session.clone())),
+                // status (file actions, errors) is surfaced as a snackbar.
                 _ => None,
             },
             container_color: theme().surface_container_lowest,
@@ -73,8 +103,7 @@ fn context_menu_overlay(session: SessionRef) -> View {
     let session_close = session.clone();
     let session_entries = session.clone();
 
-    let x = menu.screen_pos.x as f32;
-    let y = menu.screen_pos.y as f32;
+    let (x, y) = menu_placement(menu.screen_pos, &entries);
 
     ZStack(Modifier::new().fill_max_size()).child((
         // Transparent scrim: any click outside closes the menu.
@@ -99,6 +128,41 @@ fn context_menu_overlay(session: SessionRef) -> View {
             },
         )),
     ))
+}
+
+/// Clamp a context menu near its anchor, then inside the window edges (mirrors
+/// the color picker placement so right/bottom-edge opens don't run off-screen).
+fn menu_placement(anchor: glam::DVec2, entries: &[MenuEntry]) -> (f32, f32) {
+    const W: f32 = 220.0;
+    const M: f32 = 8.0;
+    let height = menu_entries_height(entries)
+        .min(repose_core::get_window_container_height() - M * 2.0)
+        .max(8.0);
+    let vw = repose_core::get_window_container_width().max(1.0);
+    let vh = repose_core::get_window_container_height().max(1.0);
+    let mut x = anchor.x as f32;
+    let mut y = anchor.y as f32;
+    // Prefer opening below the cursor; flip above when there's no room.
+    if y + height > vh - M {
+        y = (anchor.y as f32 - height).max(M);
+    }
+    x = x.clamp(M, (vw - W - M).max(M));
+    y = y.clamp(M, (vh - height - M).max(M));
+    (x, y)
+}
+
+fn menu_entries_height(entries: &[MenuEntry]) -> f32 {
+    let mut h = 0.0;
+    for e in entries {
+        match e {
+            MenuEntry::Separator => h += 5.0,
+            MenuEntry::Action { .. } => h += 36.0 + 2.0,
+            MenuEntry::Submenu { children, .. } => {
+                h += 24.0 + menu_entries_height(children);
+            }
+        }
+    }
+    h
 }
 
 fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> {
@@ -286,54 +350,189 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 }
 
 fn ExpandedWorkspace(session: SessionRef) -> View {
-    let mode = session.borrow().mode;
-    match mode {
-        EditorMode::Design => ExpandedDesignWorkspace(session),
-        EditorMode::Animate => ExpandedAnimateWorkspace(session),
-        EditorMode::Interact => ExpandedInteractWorkspace(session),
+    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
+        crate::ToolRail(session.clone()),
+        Box(Modifier::new().weight(1.0).fill_max_height())
+            .child(DockWorkspace(session.clone(), session.borrow().mode)),
+    ))
+}
+
+/// Panel ids for the dockable workspace; stable so per-mode default layouts
+/// reference the same panels across sessions.
+const PANEL_VIEWPORT: PanelId = 1;
+const PANEL_LAYERS: PanelId = 2;
+const PANEL_PROPERTIES: PanelId = 3;
+const PANEL_ASSETS: PanelId = 4;
+const PANEL_TIMELINE: PanelId = 5;
+const PANEL_INTERACT: PanelId = 6;
+
+/// Default dock tree per editor mode: a left rail grouping Layers + Assets for
+/// design (Timeline for animate), a big center canvas, and Properties on the
+/// right — matching the prior fixed Expanded layout, but now resizable.
+fn default_dock_state(mode: EditorMode) -> DockState {
+    let root = match mode {
+        EditorMode::Design => DockNode {
+            id: 1,
+            kind: DockKind::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.22,
+                a: Box::new(DockNode {
+                    id: 11,
+                    kind: DockKind::Split {
+                        dir: SplitDir::Vertical,
+                        ratio: 0.72,
+                        a: Box::new(tabs_node(101, PANEL_LAYERS)),
+                        b: Box::new(tabs_node(102, PANEL_ASSETS)),
+                    },
+                }),
+                b: Box::new(DockNode {
+                    id: 12,
+                    kind: DockKind::Split {
+                        dir: SplitDir::Horizontal,
+                        ratio: 0.78,
+                        a: Box::new(tabs_node(121, PANEL_VIEWPORT)),
+                        b: Box::new(tabs_node(122, PANEL_PROPERTIES)),
+                    },
+                }),
+            },
+        },
+        EditorMode::Animate => DockNode {
+            id: 2,
+            kind: DockKind::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.2,
+                a: Box::new(tabs_node(21, PANEL_LAYERS)),
+                b: Box::new(DockNode {
+                    id: 22,
+                    kind: DockKind::Split {
+                        dir: SplitDir::Horizontal,
+                        ratio: 0.8,
+                        a: Box::new(DockNode {
+                            id: 23,
+                            kind: DockKind::Split {
+                                dir: SplitDir::Vertical,
+                                ratio: 0.72,
+                                a: Box::new(tabs_node(231, PANEL_VIEWPORT)),
+                                b: Box::new(tabs_node(232, PANEL_TIMELINE)),
+                            },
+                        }),
+                        b: Box::new(tabs_node(24, PANEL_PROPERTIES)),
+                    },
+                }),
+            },
+        },
+        EditorMode::Interact => DockNode {
+            id: 3,
+            kind: DockKind::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.22,
+                a: Box::new(tabs_node(31, PANEL_INTERACT)),
+                b: Box::new(DockNode {
+                    id: 32,
+                    kind: DockKind::Split {
+                        dir: SplitDir::Horizontal,
+                        ratio: 0.78,
+                        a: Box::new(tabs_node(321, PANEL_VIEWPORT)),
+                        b: Box::new(tabs_node(322, PANEL_PROPERTIES)),
+                    },
+                }),
+            },
+        },
+    };
+    DockState::from_root(root, 999)
+}
+
+fn tabs_node(id: u64, panel: PanelId) -> DockNode {
+    DockNode {
+        id,
+        kind: DockKind::Tabs {
+            tabs: vec![panel],
+            active: Some(panel),
+        },
     }
 }
 
-fn ExpandedDesignWorkspace(session: SessionRef) -> View {
-    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
-        crate::ToolRail(session.clone()),
-        Column(Modifier::new().width(280.0).fill_max_height().gap(8.0)).child((
-            Box(Modifier::new().weight(1.0)).child(PanelSurface(LayersPanel(session.clone()))),
-            Box(Modifier::new().height(220.0)).child(PanelSurface(AssetsPanel(session.clone()))),
-        )),
-        Box(Modifier::new().weight(1.0).fill_max_height())
-            .child(PanelSurface(ViewportPanel(session.clone()))),
-        Box(Modifier::new().width(320.0).fill_max_height())
-            .child(PanelSurface(PropertiesPanel(session))),
-    ))
+/// Build the dock panels available for a mode. Panels carry their own header
+/// chrome (titles/toolbars), so the dock registry only tags them by id/title.
+fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
+    let mut panels = vec![
+        DockPanel {
+            id: PANEL_VIEWPORT,
+            title: "Canvas".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || ViewportPanel(session.clone())
+            }),
+        },
+        DockPanel {
+            id: PANEL_LAYERS,
+            title: "Layers".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || PanelSurface(LayersPanel(session.clone()))
+            }),
+        },
+        DockPanel {
+            id: PANEL_PROPERTIES,
+            title: "Properties".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || PanelSurface(PropertiesPanel(session.clone()))
+            }),
+        },
+    ];
+    match mode {
+        EditorMode::Design => panels.push(DockPanel {
+            id: PANEL_ASSETS,
+            title: "Assets".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || PanelSurface(AssetsPanel(session.clone()))
+            }),
+        }),
+        EditorMode::Animate => panels.push(DockPanel {
+            id: PANEL_TIMELINE,
+            title: "Timeline".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || PanelSurface(TimelinePanel(session.clone()))
+            }),
+        }),
+        EditorMode::Interact => panels.push(DockPanel {
+            id: PANEL_INTERACT,
+            title: "Interactivity".into(),
+            content: Rc::new({
+                let session = session.clone();
+                move || PanelSurface(InteractivityPanel(session.clone()))
+            }),
+        }),
+    }
+    panels
 }
 
-fn ExpandedAnimateWorkspace(session: SessionRef) -> View {
-    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
-        crate::ToolRail(session.clone()),
-        Box(Modifier::new().width(280.0).fill_max_height())
-            .child(PanelSurface(LayersPanel(session.clone()))),
-        Column(Modifier::new().weight(1.0).fill_max_height().gap(8.0)).child((
-            Box(Modifier::new().weight(1.0).fill_max_width())
-                .child(PanelSurface(ViewportPanel(session.clone()))),
-            Box(Modifier::new().height(260.0).fill_max_width())
-                .child(PanelSurface(TimelinePanel(session.clone()))),
-        )),
-        Box(Modifier::new().width(320.0).fill_max_height())
-            .child(PanelSurface(PropertiesPanel(session))),
-    ))
+fn dock_key(mode: EditorMode) -> &'static str {
+    match mode {
+        EditorMode::Design => "dock_design",
+        EditorMode::Animate => "dock_animate",
+        EditorMode::Interact => "dock_interact",
+    }
 }
 
-fn ExpandedInteractWorkspace(session: SessionRef) -> View {
-    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
-        crate::ToolRail(session.clone()),
-        Box(Modifier::new().width(320.0).fill_max_height())
-            .child(PanelSurface(InteractivityPanel(session.clone()))),
-        Box(Modifier::new().weight(1.0).fill_max_height())
-            .child(PanelSurface(ViewportPanel(session.clone()))),
-        Box(Modifier::new().width(320.0).fill_max_height())
-            .child(PanelSurface(PropertiesPanel(session))),
-    ))
+fn DockWorkspace(session: SessionRef, mode: EditorMode) -> View {
+    let key = dock_key(mode);
+    let state = remember_with_key(key, || Rc::new(RefCell::new(default_dock_state(mode))));
+    let panels = dock_panels(mode, session.clone());
+
+    DockArea(
+        key,
+        Modifier::new().fill_max_size(),
+        (*state).clone(),
+        panels,
+        DockCallbacks {
+            on_popout: None,
+            on_close: None,
+        },
+    )
 }
 
 /// The side panel shown while on the Canvas page (Layers, so a single-panel
@@ -346,29 +545,29 @@ fn effective_side_page(page: PanelPage) -> PanelPage {
 }
 
 fn MediumSideTabs(session: SessionRef) -> View {
-    let current = effective_side_page(session.borrow().active_page);
-    Row(Modifier::new().fill_max_width().padding(8.0).gap(6.0)).child((
-        PillButton("Layers", current == PanelPage::Layers, {
-            let session = session.clone();
-            move || session.borrow_mut().set_active_page(PanelPage::Layers)
-        }),
-        PillButton("Inspect", current == PanelPage::Inspect, {
-            let session = session.clone();
-            move || session.borrow_mut().set_active_page(PanelPage::Inspect)
-        }),
-        PillButton("Timeline", current == PanelPage::Timeline, {
-            let session = session.clone();
-            move || session.borrow_mut().set_active_page(PanelPage::Timeline)
-        }),
-        PillButton("Assets", current == PanelPage::Assets, {
-            let session = session.clone();
-            move || session.borrow_mut().set_active_page(PanelPage::Assets)
-        }),
-        PillButton("Logic", current == PanelPage::Interact, {
-            let session = session.clone();
-            move || session.borrow_mut().set_active_page(PanelPage::Interact)
-        }),
-    ))
+    let (mode, current) = {
+        let s = session.borrow();
+        (s.mode, effective_side_page(s.active_page))
+    };
+    let tabs = medium_nav_pages(mode);
+    let current_id = tabs
+        .iter()
+        .position(|&p| p == current)
+        .map(|i| tabs[i])
+        .unwrap_or(tabs[0]);
+
+    Row(Modifier::new().fill_max_width().padding(8.0).gap(6.0)).child(
+        tabs.iter()
+            .enumerate()
+            .map(|(i, &page)| {
+                let label = page_label(page);
+                PillButton(label, tabs[i] == current_id, {
+                    let session = session.clone();
+                    move || session.borrow_mut().set_active_page(page)
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn MediumWorkspace(session: SessionRef) -> View {
@@ -417,7 +616,8 @@ fn compact_tool(
 }
 
 /// Floating tool palette for the compact canvas (the tool rail is dropped on
-/// phones, so the tools move on top of the stage instead).
+/// phones, so the tools move on top of the stage instead). Wider than a rail
+/// on desktop but still compact: one button per tool, same set everywhere.
 fn CompactToolPalette(session: SessionRef) -> View {
     Box(Modifier::new()
         .absolute()
@@ -428,12 +628,30 @@ fn CompactToolPalette(session: SessionRef) -> View {
             .background(theme().surface_container_high)
             .clip_rounded(12.0)
             .border(1.0, theme().outline_variant, 12.0))
-        .child(Column(Modifier::new().gap(4.0)).child((
+        .child(Column(Modifier::new().gap(4.0)).child(vec![
             compact_tool(
                 session.clone(),
                 renamite_history::ToolId::Select,
                 Symbols::arrow_selector_tool,
                 "Select",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Transform,
+                Symbols::transform,
+                "Transform / pivot",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Pen,
+                Symbols::draw,
+                "Pen",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::PathEdit,
+                Symbols::edit,
+                "Edit path",
             ),
             compact_tool(
                 session.clone(),
@@ -446,6 +664,12 @@ fn CompactToolPalette(session: SessionRef) -> View {
                 renamite_history::ToolId::Ellipse,
                 Symbols::circle,
                 "Ellipse",
+            ),
+            compact_tool(
+                session.clone(),
+                renamite_history::ToolId::Star,
+                Symbols::star,
+                "Star",
             ),
             compact_tool(
                 session.clone(),
@@ -465,7 +689,7 @@ fn CompactToolPalette(session: SessionRef) -> View {
                 Symbols::format_color_fill,
                 "Fill",
             ),
-        ))),
+        ])),
     )
 }
 
@@ -482,34 +706,78 @@ fn active_side_panel(session: SessionRef) -> View {
 }
 
 fn BottomNavigation(session: SessionRef) -> View {
-    let selected = session.borrow().active_page as usize;
+    let (mode, active_page) = {
+        let s = session.borrow();
+        (s.mode, s.active_page)
+    };
+    let pages = compact_nav_pages(mode);
+    // Selection is position-based, not `page as usize`: `Interact` no longer
+    // overruns the nav item list, and the nav changes meaningfully per mode.
+    let selected = pages
+        .iter()
+        .position(|&p| p == active_page)
+        .unwrap_or(0)
+        .min(pages.len().saturating_sub(1));
 
     NavigationBar(
         selected,
-        vec![
-            nav_item(session.clone(), PanelPage::Canvas, Symbols::edit, "Canvas"),
-            nav_item(
-                session.clone(),
-                PanelPage::Layers,
-                Symbols::layers,
-                "Layers",
-            ),
-            nav_item(
-                session.clone(),
-                PanelPage::Timeline,
-                Symbols::play_arrow,
-                "Animate",
-            ),
-            nav_item(
-                session.clone(),
-                PanelPage::Inspect,
-                Symbols::settings,
-                "Inspect",
-            ),
-            nav_item(session, PanelPage::Assets, Symbols::folder_open, "Assets"),
-        ],
+        pages
+            .iter()
+            .map(|&page| nav_item(session.clone(), page, page_symbol(page), page_label(page)))
+            .collect(),
         NavigationBarConfig::default(),
     )
+}
+
+/// Compact bottom-nav page order per mode, so editing, animating, and logic
+/// work each surface only the destinations that matter for that mode.
+fn compact_nav_pages(mode: EditorMode) -> Vec<PanelPage> {
+    match mode {
+        EditorMode::Design => vec![
+            PanelPage::Canvas,
+            PanelPage::Layers,
+            PanelPage::Inspect,
+            PanelPage::Assets,
+        ],
+        EditorMode::Animate => vec![
+            PanelPage::Canvas,
+            PanelPage::Timeline,
+            PanelPage::Inspect,
+            PanelPage::Layers,
+        ],
+        EditorMode::Interact => vec![PanelPage::Canvas, PanelPage::Interact, PanelPage::Inspect],
+    }
+}
+
+/// The tabbed side rail (medium) also list only the pages that matter per mode.
+fn medium_nav_pages(mode: EditorMode) -> Vec<PanelPage> {
+    match mode {
+        EditorMode::Design => vec![PanelPage::Layers, PanelPage::Inspect, PanelPage::Assets],
+        EditorMode::Animate => vec![PanelPage::Timeline, PanelPage::Layers, PanelPage::Inspect],
+        EditorMode::Interact => vec![PanelPage::Interact, PanelPage::Inspect],
+    }
+}
+
+fn page_label(page: PanelPage) -> &'static str {
+    match page {
+        PanelPage::Canvas => "Canvas",
+        PanelPage::Layers => "Layers",
+        PanelPage::Timeline => "Timeline",
+        PanelPage::Inspect => "Inspect",
+        PanelPage::Assets => "Assets",
+        PanelPage::Interact => "Logic",
+    }
+}
+
+fn page_symbol(page: PanelPage) -> repose_material::Symbol {
+    match page {
+        PanelPage::Canvas => Symbols::edit,
+        PanelPage::Layers => Symbols::layers,
+        PanelPage::Timeline => Symbols::play_arrow,
+        PanelPage::Inspect => Symbols::settings,
+        PanelPage::Assets => Symbols::folder_open,
+        PanelPage::Interact => Symbols::account_tree,
+    }
 }
 
 fn nav_item(

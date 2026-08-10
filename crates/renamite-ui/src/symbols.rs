@@ -47,12 +47,22 @@ repose_material::material_symbols! {
     lock:                '\u{e897}',
     lock_open:           '\u{e898}',
     expand_more:         '\u{e5cf}',
+    expand_less:         '\u{e5ce}',
+    unfold_more:         '\u{e7b2}',
+    unfold_less:         '\u{e7b3}',
     chevron_right:       '\u{e5cc}',
     drag_indicator:      '\u{e945}',
 
     radio_button_unchecked: '\u{e836}',
     stop_circle:            '\u{ef71}',
     fiber_manual_record:    '\u{eb61}',
+
+    fast_rewind:            '\u{e020}',
+    fast_forward:           '\u{e01f}',
+    skip_next:              '\u{e044}',
+    sync:                   '\u{e627}',
+    swap_horiz:             '\u{e8d4}',
+    arrow_right_alt:        '\u{e941}',
 
     remove:                '\u{e15b}',
     delete:                '\u{e872}',

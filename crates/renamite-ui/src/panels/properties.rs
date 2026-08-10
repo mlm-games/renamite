@@ -164,26 +164,25 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     }
 
     for (section, props) in sections {
-        children.push(
-            Text(section)
-                .size(theme().typography.label_medium)
-                .color(th.on_surface_variant)
-                .modifier(Modifier::new().padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 12.0,
-                    top: 12.0,
-                    bottom: 4.0,
-                })),
-        );
-        for prop in props {
-            children.push(PropRowView(
-                session.clone(),
-                ids.clone(),
-                prop,
-                playhead,
-                record,
-            ));
-        }
+        children.push(crate::components::CollapsibleSection(
+            format!("props_section_{section}"),
+            section,
+            vec![],
+            Column(Modifier::new().fill_max_width()).child(
+                props
+                    .iter()
+                    .map(|prop| {
+                        PropRowView(
+                            session.clone(),
+                            ids.clone(),
+                            prop.clone(),
+                            playhead,
+                            record,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ));
     }
 
     let header = children.remove(0);

@@ -71,7 +71,7 @@ fn EditorModeSwitch(session: SessionRef) -> View {
 }
 
 pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
-    let (name, dirty, status, path) = {
+    let (name, dirty, mode, playing) = {
         let s = session.borrow();
         let name = s
             .current_path
@@ -79,34 +79,44 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| s.file.meta.name.clone());
-        let path = s
-            .current_path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "Unsaved".to_string());
-        (name, s.dirty, s.status.clone(), path)
+        (name, s.dirty, s.mode, s.playing)
     };
     let title = if dirty { format!("{name} *") } else { name };
 
     let mut actions: Vec<View> = Vec::new();
-    if shell::platform_shell_class() == shell::ShellClass::Expanded {
-        actions.push(UndoButton(session.clone()));
-        actions.push(RedoButton(session.clone()));
+    let expanded = shell::platform_shell_class() == shell::ShellClass::Expanded;
+    let agent = session.clone();
+    if expanded {
+        actions.push(UndoButton(agent.clone()));
+        actions.push(RedoButton(agent.clone()));
+        // Playback controls live in the timeline by default; the top bar only
+        // surfaces them in Animate mode, where scrubbing is the main job.
+        if mode == EditorMode::Animate {
+            actions.push(CompactIconAction(
+                if playing {
+                    Symbols::pause
+                } else {
+                    Symbols::play_arrow
+                },
+                if playing { "Pause" } else { "Play" },
+                move || toggle_playback(&agent),
+            ));
+        }
+        // Save icon only when there is something to save (reduces chrome when
+        // the document is clean).
+        if dirty {
+            actions.push(CompactIconAction(Symbols::save, "Save", {
+                let session = session.clone();
+                move || {
+                    file::save_document(&session);
+                }
+            }));
+        }
     }
 
     TopAppBar(
         Text(title).size(theme().typography.title_large),
-        Some(
-            Row(Modifier::new()
-                .gap(10.0)
-                .align_items(repose_core::AlignItems::CENTER))
-            .child((
-                EditorModeSwitch(session.clone()),
-                Text(status.unwrap_or(path))
-                    .size(theme().typography.label_small)
-                    .color(theme().on_surface_variant),
-            )),
-        ),
+        Some(EditorModeSwitch(session.clone())),
         Some(FileMenu(session.clone(), overlay)),
         actions,
         TopAppBarConfig::default(),

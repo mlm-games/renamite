@@ -22,11 +22,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember(FocusRequester::new);
 
-    let show_template_picker = {
-        let s = session.borrow();
-        let main = s.file.document.main;
-        s.welcome && s.file.document.compositions[main].children.is_empty()
-    };
+    let show_template_picker = { session.borrow().welcome };
 
     let main_view = if show_template_picker {
         TemplatePicker(session.clone())

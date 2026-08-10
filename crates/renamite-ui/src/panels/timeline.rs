@@ -7,11 +7,11 @@ use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CompactIconAction, PanelHeader, StatusChip};
-use crate::session::{EditorMode, SessionRef, dispatch_timeline, map_modifiers, pe_pos};
+use crate::session::{SessionRef, dispatch_timeline, map_modifiers, pe_pos};
 use crate::symbols::Symbols;
 
 pub fn TimelinePanel(session: SessionRef) -> View {
-    let (rows, head, range, playing, record) = {
+    let (rows, head, range, playing, record, loop_mode) = {
         let s = session.borrow();
         (
             crate::session::timeline_rows(&s),
@@ -19,29 +19,27 @@ pub fn TimelinePanel(session: SessionRef) -> View {
             s.file.document.compositions[s.file.document.main].range,
             s.playing,
             s.record,
+            s.playback.loop_mode,
         )
+    };
+
+    let loop_icon = match loop_mode {
+        renamite_animation::LoopMode::Once => Symbols::arrow_right_alt,
+        renamite_animation::LoopMode::Loop => Symbols::sync,
+        renamite_animation::LoopMode::PingPong => Symbols::swap_horiz,
     };
 
     let header = PanelHeader(
         Symbols::play_arrow,
         "Timeline",
         vec![
-            CompactIconAction(Symbols::skip_previous, "Jump to start", {
+            CompactIconAction(Symbols::skip_previous, "Previous keyframe / start", {
                 let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    let range = s.file.document.compositions[s.file.document.main].range;
-                    s.playback.head = range.0.0 as f64;
-                    let crate::session::Session {
-                        file,
-                        engine,
-                        playback,
-                        ..
-                    } = &mut *s;
-                    let head = playback.head;
-                    engine.scrub(file, head);
-                    s.bump();
-                }
+                move || session.borrow_mut().step_to_keyframe(-1)
+            }),
+            CompactIconAction(Symbols::fast_rewind, "Step back 1 frame", {
+                let session = session.clone();
+                move || session.borrow_mut().step_frames(-1.0)
             }),
             CompactIconAction(
                 if playing {
@@ -55,18 +53,36 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                     move || crate::toggle_playback(&session)
                 },
             ),
-            CompactIconAction(
-                if record {
-                    Symbols::fiber_manual_record
-                } else {
-                    Symbols::radio_button_unchecked
-                },
-                "Animate mode",
-                {
-                    let session = session.clone();
-                    move || session.borrow_mut().set_mode(EditorMode::Animate)
-                },
-            ),
+            CompactIconAction(Symbols::fast_forward, "Step forward 1 frame", {
+                let session = session.clone();
+                move || session.borrow_mut().step_frames(1.0)
+            }),
+            CompactIconAction(Symbols::skip_next, "Next keyframe / end", {
+                let session = session.clone();
+                move || session.borrow_mut().step_to_keyframe(1)
+            }),
+            CompactIconAction(loop_icon, "Loop mode (Once / Loop / Ping-Pong)", {
+                let session = session.clone();
+                move || session.borrow_mut().cycle_loop_mode()
+            }),
+            CompactIconAction(Symbols::zoom_in, "Zoom in", {
+                let session = session.clone();
+                move || session.borrow_mut().zoom_timeline(1.25)
+            }),
+            CompactIconAction(Symbols::zoom_out, "Zoom out", {
+                let session = session.clone();
+                move || session.borrow_mut().zoom_timeline(0.8)
+            }),
+            CompactIconAction(Symbols::fit_screen, "Fit range", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    let range = s.file.document.compositions[s.file.document.main].range;
+                    let frames = (range.1.0 - range.0.0).max(1) as f64;
+                    s.timeline_zoom = (300.0 / frames).clamp(0.5, 48.0);
+                    s.repaint();
+                }
+            }),
         ],
     );
 
@@ -171,6 +187,15 @@ fn TimelineCanvas(session: SessionRef) -> View {
     Canvas(
         Modifier::new()
             .fill_max_size()
+            .on_scroll({
+                let session = session.clone();
+                move |delta: repose_core::Vec2| {
+                    let mut s = session.borrow_mut();
+                    let factor = (1.0 + (delta.y as f64) * 0.002).clamp(0.5, 2.0);
+                    s.zoom_timeline(factor);
+                    repose_core::Vec2::ZERO
+                }
+            })
             .on_pointer_down({
                 let session = session.clone();
                 move |pe: PointerEvent| {
@@ -216,7 +241,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
             let rows = crate::session::timeline_rows(&s);
             let layout = TimelineLayout {
                 origin_x: 0.0,
-                px_per_frame: 6.0,
+                px_per_frame: s.timeline_zoom,
                 row_top: 24.0,
                 row_height: 22.0,
                 key_tolerance_px: 6.0,

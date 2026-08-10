@@ -1,11 +1,15 @@
-use repose_core::{AlignItems, Modifier, View, remember_with_key, theme};
+use repose_core::{
+    AlignItems, Modifier, PaddingValues, View, remember_state_with_key, remember_with_key,
+    request_frame, theme,
+};
 use repose_material::Symbol;
 use repose_material::material3::{
     FilledTonalIconButton, IconButton, IconButtonConfig, Surface, SurfaceConfig, TooltipBox,
     TooltipConfig, TooltipState,
 };
-use repose_ui::{Box, Row, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
+use crate::symbols::Symbols;
 use crate::symbols::AppIcon;
 
 pub fn PanelSurface(content: View) -> View {
@@ -43,6 +47,84 @@ pub fn PanelHeader(symbol: Symbol, title: impl Into<String>, actions: Vec<View>)
         Box(Modifier::new().flex_grow(1.0)),
         Row(Modifier::new().align_items(AlignItems::CENTER)).child(actions),
     ))
+}
+
+/// A Material-style collapsible card: a tappable section header with a chevron
+/// that expands/collapses the body underneath. Collapse state is remembered
+/// per `key` so it survives recomposition (but resets across sessions).
+pub fn CollapsibleSection(
+    key: impl Into<String>,
+    title: impl Into<String>,
+    actions: Vec<View>,
+    body: View,
+) -> View {
+    let title = title.into();
+    let open = remember_state_with_key(key, || true);
+    let is_open = *open.borrow();
+    let th = theme();
+    let toggle_open = {
+        let open = open.clone();
+        move |_| {
+            let next = !*open.borrow();
+            *open.borrow_mut() = next;
+            request_frame();
+        }
+    };
+
+    Surface(
+        SurfaceConfig {
+            modifier: Modifier::new().fill_max_width(),
+            color: th.surface_container_low,
+            content_color: th.on_surface,
+            shape_radius: 12.0,
+            border: Some((1.0, th.outline_variant.with_alpha(140))),
+            ..Default::default()
+        },
+        move || {
+            Column(Modifier::new().fill_max_width()).child((
+                Row(Modifier::new()
+                    .height(40.0)
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(4.0)
+                    .clickable()
+                    .cursor(repose_core::CursorIcon::Pointer)
+                    .on_pointer_down(toggle_open))
+                .child((
+                    Text(title.clone())
+                        .size(th.typography.title_small)
+                        .color(th.on_surface)
+                        .modifier(Modifier::new().weight(1.0)),
+                    Row(Modifier::new().align_items(AlignItems::CENTER)).child(actions),
+                    AppIcon(
+                        if is_open {
+                            Symbols::expand_more
+                        } else {
+                            Symbols::chevron_right
+                        },
+                        20.0,
+                    ),
+                )),
+                if is_open {
+                    Box(Modifier::new().fill_max_width().padding_values(PaddingValues {
+                        left: 0.0,
+                        right: 0.0,
+                        top: 0.0,
+                        bottom: 4.0,
+                    }))
+                    .child(body)
+                } else {
+                    Box(Modifier::new())
+                },
+            ))
+        },
+    )
 }
 
 pub fn CompactIconAction(
