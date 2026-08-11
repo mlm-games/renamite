@@ -73,7 +73,7 @@ fn EditorModeSwitch(session: SessionRef) -> View {
 }
 
 pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
-    let (name, dirty, mode, playing) = {
+    let (name, dirty, mode, playing, preview_enabled) = {
         let s = session.borrow();
         let name = s
             .current_path
@@ -81,7 +81,13 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| s.file.meta.name.clone());
-        (name, s.dirty, s.mode, s.playing)
+        (
+            name,
+            s.dirty,
+            s.mode,
+            s.playing,
+            s.machine_preview_enabled,
+        )
     };
     let title = if dirty { format!("{name} *") } else { name };
 
@@ -102,6 +108,30 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
                 },
                 if playing { "Pause" } else { "Play" },
                 move || toggle_playback(&agent),
+            ));
+        }
+        // In Interact mode surface the machine preview toggle, not timeline
+        // playback: driving the state machine is the main job.
+        if mode == EditorMode::Interact {
+            actions.push(CompactIconAction(
+                if preview_enabled {
+                    Symbols::pause
+                } else {
+                    Symbols::play_arrow
+                },
+                if preview_enabled {
+                    "Stop preview"
+                } else {
+                    "Play machine"
+                },
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.machine_preview_enabled = !s.machine_preview_enabled;
+                        s.reset_machine_preview();
+                    }
+                },
             ));
         }
         // Save icon only when there is something to save (reduces chrome when

@@ -115,8 +115,8 @@ pub struct Session {
     pub machine_preview_inputs: Vec<InputValue>,
     /// Live preview drives the engine in machine mode.
     pub machine_preview_enabled: bool,
-    /// Active scrubbable-drag on a machine preview Number input.
-    pub machine_preview_drag: Option<MachinePreviewDrag>,
+    /// Active scrubbable-drag in the Interactivity panel (view state).
+    pub machine_drag: Option<MachineDrag>,
     /// Active rubber-band gesture on the state-machine graph (view state).
     pub machine_graph_gesture: Option<MachineGraphGesture>,
     /// Draft of the listener being authored (view state).
@@ -125,21 +125,32 @@ pub struct Session {
     pub timeline_zoom: f64,
 }
 
-/// A scrubbable-drag on a machine preview Number input (view state).
+/// Live scrub gesture in the Interactivity panel (view state).
 #[derive(Clone, Copy, Debug)]
-pub struct MachinePreviewDrag {
-    pub input: usize,
-    pub origin: f64,
-    pub press_x: f32,
+pub enum MachineDrag {
+    /// Preview Number input (does not touch history).
+    PreviewNumber {
+        input: usize,
+        origin: f64,
+        press_x: f32,
+    },
+    /// Scrubbing a machine field (duration, speed, threshold, …).
+    /// `txn` is true after the first move opened a history transaction.
+    MachineField {
+        origin: f64,
+        press_x: f32,
+        txn: bool,
+    },
 }
 
 /// Live gesture on the state-machine graph (view state).
 #[derive(Clone, Debug)]
 pub enum MachineGraphGesture {
-    /// Rubber-band a new transition from `from_state` on `layer`.
+    /// Rubber-band a new transition from `from_state` (None = from Any) on
+    /// `layer`.
     WireTransition {
         layer: usize,
-        from_state: usize,
+        from_state: Option<usize>,
         current: DVec2,
     },
 }
@@ -323,7 +334,7 @@ impl Session {
             machine_selection: MachineSelection::None,
             machine_preview_inputs: Vec::new(),
             machine_preview_enabled: false,
-            machine_preview_drag: None,
+            machine_drag: None,
             machine_graph_gesture: None,
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
@@ -643,7 +654,7 @@ impl Session {
         // or keep applying into a closed batch.
         self.inspector_drag = None;
         self.layer_drag = None;
-        self.machine_preview_drag = None;
+        self.machine_drag = None;
         // Reset tool gesture machines (select/path/gradient mid-drag, etc.).
         self.tool = renamite_behavior_canvas::ToolSet::default();
     }
@@ -842,14 +853,27 @@ impl Session {
                 if matches!(self.active_page, PanelPage::Timeline | PanelPage::Interact) {
                     self.active_page = PanelPage::Canvas;
                 }
+                if self.machine_preview_enabled {
+                    self.machine_preview_enabled = false;
+                    self.reset_machine_preview();
+                }
             }
             EditorMode::Animate => {
                 self.record = true;
                 self.active_page = PanelPage::Timeline;
+                if self.machine_preview_enabled {
+                    self.machine_preview_enabled = false;
+                    self.reset_machine_preview();
+                }
             }
             EditorMode::Interact => {
                 self.record = false;
                 self.active_page = PanelPage::Interact;
+                // Live preview is the point of Interact mode.
+                if !self.machine_preview_enabled {
+                    self.machine_preview_enabled = true;
+                    self.reset_machine_preview();
+                }
             }
         }
         self.repaint();
@@ -1138,7 +1162,7 @@ impl Session {
         self.machine_selection = MachineSelection::None;
         self.machine_preview_inputs = Vec::new();
         self.machine_preview_enabled = false;
-        self.machine_preview_drag = None;
+        self.machine_drag = None;
         self.machine_graph_gesture = None;
         self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
@@ -1717,6 +1741,172 @@ impl Session {
         self.engine.fire(&self.file, &input_def.name);
 
         request_frame();
+    }
+
+    pub fn engine_pointer_down(&mut self, world: DVec2) {
+        self.engine.pointer_down(&self.file, world);
+        let _ = self.engine.tick(&self.file, 0.0);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn engine_pointer_move(&mut self, world: DVec2) {
+        self.engine.pointer_move(&self.file, world);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn engine_pointer_up(&mut self, world: DVec2) {
+        self.engine.pointer_up(&self.file, world);
+        let _ = self.engine.tick(&self.file, 0.0);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    /// Rename the active machine (undoable via ReplaceMachine).
+    pub fn rename_active_machine(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        self.edit_active_machine("Rename machine", move |machine| {
+            machine.name = name;
+            Ok(())
+        });
+    }
+
+    /// Mark the active machine as the project's start machine.
+    pub fn set_active_as_start_machine(&mut self) {
+        let Some(id) = self.active_machine else {
+            return;
+        };
+        if self.file.start_machine == Some(id) {
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Set start machine".into()),
+            ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine { start: Some(id) }]),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    /// Begin a coalesced machine-field scrub (mirrors Properties inspector_drag).
+    pub fn begin_machine_field_scrub(&mut self, origin: f64, press_x: f32) {
+        self.machine_drag = Some(MachineDrag::MachineField {
+            origin,
+            press_x,
+            txn: false,
+        });
+    }
+
+    /// Apply one scrub step. Opens a single history transaction on first move.
+    pub fn scrub_machine_field(
+        &mut self,
+        press_x_now: f32,
+        step: f64,
+        shift: bool,
+        edit: impl FnOnce(&mut Machine, f64),
+    ) {
+        let Some(MachineDrag::MachineField {
+            origin,
+            press_x,
+            txn,
+        }) = self.machine_drag.clone()
+        else {
+            return;
+        };
+        let dx = (press_x_now - press_x) as f64;
+        let mult = if shift { 0.1 } else { 1.0 };
+        let new_value = origin + dx * step * mult;
+
+        let Some(machine_id) = self.active_machine else {
+            return;
+        };
+        let Some(mut machine) = self.file.machines.get(machine_id).cloned() else {
+            return;
+        };
+        edit(&mut machine, new_value);
+
+        if !txn {
+            self.history.begin("Edit machine".to_owned());
+            if let Some(MachineDrag::MachineField { txn, .. }) = self.machine_drag.as_mut() {
+                *txn = true;
+            }
+        }
+        let _ = self.history_apply(EditorCommand::ReplaceMachine {
+            id: machine_id,
+            machine,
+        });
+        if self.machine_preview_enabled {
+            // Keep runtime inputs; only re-bind definition if structure changed.
+            // Field scrubs are value-only — reevaluate without full reset.
+            self.engine.reevaluate(&self.file);
+        }
+        self.dirty = true;
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn end_machine_field_scrub(&mut self) {
+        if let Some(MachineDrag::MachineField { txn: true, .. }) = self.machine_drag.take() {
+            self.history.commit();
+        } else {
+            self.machine_drag = None;
+        }
+        request_frame();
+    }
+
+    pub fn begin_preview_number_scrub(&mut self, input: usize, origin: f64, press_x: f32) {
+        self.machine_drag = Some(MachineDrag::PreviewNumber {
+            input,
+            origin,
+            press_x,
+        });
+    }
+
+    pub fn scrub_preview_number(&mut self, press_x_now: f32, step: f64, shift: bool) {
+        let Some(MachineDrag::PreviewNumber {
+            input,
+            origin,
+            press_x,
+        }) = self.machine_drag.clone()
+        else {
+            return;
+        };
+        let dx = (press_x_now - press_x) as f64;
+        let mult = if shift { 0.1 } else { 1.0 };
+        self.set_preview_number(input, origin + dx * step * mult);
+    }
+
+    pub fn end_preview_number_scrub(&mut self) {
+        if matches!(self.machine_drag, Some(MachineDrag::PreviewNumber { .. })) {
+            self.machine_drag = None;
+        }
+    }
+
+    /// Create an empty clip and return its id (for state binding).
+    pub fn create_clip(&mut self, name: impl Into<String>) -> Option<renamite_machine::ClipId> {
+        use renamite_animation::Frame;
+        use renamite_machine::Clip;
+        let name = name.into();
+        let clip = Clip {
+            name,
+            range: (Frame(0), Frame(60)),
+            tracks: Vec::new(),
+            events: Vec::new(),
+        };
+        self.history.begin("Create clip".to_owned());
+        let _ = self.history_apply_full(EditorCommand::CreateClip {
+            index: usize::MAX,
+            clip,
+            id: None,
+        });
+        self.history.commit();
+        self.dirty = true;
+        let created = self.file.clip_order.last().copied();
+        self.bump();
+        created
     }
 
     /// Node display name for a scene node, falling back to its id string.

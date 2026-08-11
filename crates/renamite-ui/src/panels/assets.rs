@@ -3,6 +3,7 @@ use renamite_behavior_common::assets::{
 };
 use renamite_history::{EditorCommand, ToolOutput};
 use repose_core::{AlignItems, Modifier, View, theme};
+use repose_material::material3::{Button, ButtonConfig};
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, ImageExt, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
@@ -70,6 +71,77 @@ pub fn AssetsPanel(session: SessionRef) -> View {
         for row in image_rows {
             children.push(ImageRow(session.clone(), row));
         }
+    }
+
+    children.push(
+        Text("Clips")
+            .size(theme().typography.label_medium)
+            .color(theme().on_surface_variant)
+            .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 12.0,
+                bottom: 4.0,
+            })),
+    );
+    children.push(
+        Row(Modifier::new().padding_values(repose_core::PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 4.0,
+        }))
+        .child(Button(
+            Modifier::new(),
+            {
+                let session = session.clone();
+                move || {
+                    let n = session.borrow().file.clip_order.len() + 1;
+                    session.borrow_mut().create_clip(format!("Clip {n}"));
+                }
+            },
+            ButtonConfig::default(),
+            || Text("New clip").size(theme().typography.label_medium),
+        )),
+    );
+
+    let clips = session.borrow().file.clip_order.clone();
+    for id in clips {
+        let (name, range) = {
+            let s = session.borrow();
+            let c = &s.file.clips[id];
+            (c.name.clone(), c.range)
+        };
+        children.push(
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(repose_core::PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 2.0,
+                    bottom: 2.0,
+                })
+                .gap(6.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text(name)
+                    .size(theme().typography.body_medium)
+                    .modifier(Modifier::new().flex_grow(1.0)),
+                Text(format!("{}–{}", range.0.0, range.1.0))
+                    .size(theme().typography.label_small)
+                    .color(theme().on_surface_variant),
+                CompactIconAction(Symbols::delete, "Detach clip", {
+                    let session = session.clone();
+                    move || {
+                        session.borrow_mut().apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Detach clip".into()),
+                            ToolOutput::Commands(smallvec![EditorCommand::DetachClip { id }]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+            )),
+        );
     }
 
     let header = children.remove(0);

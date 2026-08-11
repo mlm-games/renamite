@@ -650,6 +650,80 @@ fn dist_point_segment(p: glam::DVec2, a: glam::DVec2, b: glam::DVec2) -> f64 {
     (a + ab * t - p).length()
 }
 
+pub fn remove_transition(
+    machine: &mut Machine,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+) -> Result<Transition> {
+    let layer = machine
+        .layers
+        .get_mut(layer)
+        .ok_or(MachineEditError::OutOfRange)?;
+    let transitions = match source {
+        TransitionSource::Any => &mut layer.any_transitions,
+        TransitionSource::State(state) => &mut layer
+            .states
+            .get_mut(state)
+            .ok_or(MachineEditError::OutOfRange)?
+            .transitions,
+    };
+    if transition >= transitions.len() {
+        return Err(MachineEditError::OutOfRange);
+    }
+    Ok(transitions.remove(transition))
+}
+
+pub fn set_transition_target(
+    machine: &mut Machine,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+    target: usize,
+) -> Result<()> {
+    let layer_ref = machine
+        .layers
+        .get(layer)
+        .ok_or(MachineEditError::OutOfRange)?;
+    if target >= layer_ref.states.len() {
+        return Err(MachineEditError::OutOfRange);
+    }
+    transition_mut(machine, layer, source, transition)?.to = target;
+    Ok(())
+}
+
+pub fn rename_machine(machine: &mut Machine, name: impl Into<String>) -> Result<()> {
+    let name = name.into();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(MachineEditError::EmptyName);
+    }
+    machine.name = name.to_owned();
+    Ok(())
+}
+
+pub fn set_blend_children(
+    machine: &mut Machine,
+    layer: usize,
+    state: usize,
+    children: Vec<renamite_machine::BlendChild>,
+) -> Result<()> {
+    let st = machine
+        .layers
+        .get_mut(layer)
+        .ok_or(MachineEditError::OutOfRange)?
+        .states
+        .get_mut(state)
+        .ok_or(MachineEditError::OutOfRange)?;
+    match &mut st.kind {
+        StateKind::Blend1D { children: c, .. } => {
+            *c = children;
+            Ok(())
+        }
+        _ => Err(MachineEditError::OutOfRange),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

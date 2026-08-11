@@ -6,13 +6,14 @@ use std::rc::Rc;
 use glam::DVec2;
 use renamite_animation::LoopMode;
 use renamite_behavior_common::machine::{
-    MachineSelection, TransitionSource, add_condition, add_input, add_listener, add_state,
-    add_transition, auto_layout, default_condition, hit_state, hit_transition, input_is_referenced,
-    remove_input, remove_state, rename_input, rename_state, set_entry_state,
+    GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
+    add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
+    hit_transition, input_is_referenced, remove_input, remove_state, remove_transition,
+    rename_input, rename_state, set_entry_state, set_transition_target, transition_mut,
 };
 use renamite_machine::{
-    BlendChild, ClipId, Condition, InputDef, InputKind, InputValue, Listener, ListenerAction,
-    Machine, MachineId, PointerEventKind, State, StateKind,
+    BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
+    ListenerAction, Machine, MachineId, PointerEventKind, StateKind,
 };
 use renamite_model::NodeId;
 use repose_canvas::{Canvas, DrawScope};
@@ -29,8 +30,8 @@ use repose_ui::overlay::OverlayHandle;
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
-use crate::components::{CompactIconAction, PanelHeader};
-use crate::session::{MachineGraphGesture, MachinePreviewDrag, SessionRef};
+use crate::components::{CollapsibleSection, CompactIconAction, PanelHeader};
+use crate::session::{MachineGraphGesture, SessionRef};
 use crate::symbols::Symbols;
 
 pub fn InteractivityPanel(session: SessionRef) -> View {
@@ -64,6 +65,7 @@ pub fn InteractivityPanel(session: SessionRef) -> View {
     )];
 
     children.push(MachineSelector(session.clone()));
+    children.push(PreviewStatusBar(session.clone()));
 
     match active {
         Some(machine) => {
@@ -73,12 +75,68 @@ pub fn InteractivityPanel(session: SessionRef) -> View {
                 MachineBody(session.clone(), machine),
             ));
         }
-        None => {
-            children.push(EmptyMachineState(session));
-        }
+        None => children.push(EmptyMachineState(session)),
     }
 
     Column(Modifier::new().fill_max_size()).child(children)
+}
+
+fn PreviewStatusBar(session: SessionRef) -> View {
+    let th = theme();
+    let (enabled, states, name) = {
+        let s = session.borrow();
+        let name = s
+            .active_machine
+            .and_then(|id| s.file.machines.get(id).map(|m| m.name.clone()))
+            .unwrap_or_default();
+        let states = s.engine.active_machine_states();
+        (s.machine_preview_enabled, states, name)
+    };
+    if !enabled {
+        return Text("Preview off — press play to drive the machine")
+            .size(th.typography.label_small)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 2.0,
+                bottom: 6.0,
+            }));
+    }
+    let label = match states {
+        Some(st) if !st.is_empty() => {
+            let names = {
+                let s = session.borrow();
+                let Some(id) = s.active_machine else {
+                    return Box(Modifier::new());
+                };
+                let m = &s.file.machines[id];
+                st.iter()
+                    .enumerate()
+                    .map(|(li, si)| {
+                        m.layers
+                            .get(li)
+                            .and_then(|l| l.states.get(*si))
+                            .map(|s| s.name.as_str())
+                            .unwrap_or("?")
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            };
+            format!("▶ {name}  ·  {names}")
+        }
+        _ => format!("▶ {name}  ·  waiting"),
+    };
+    Text(label)
+        .size(th.typography.label_small)
+        .color(th.primary)
+        .modifier(Modifier::new().padding_values(PaddingValues {
+            left: 12.0,
+            right: 12.0,
+            top: 2.0,
+            bottom: 6.0,
+        }))
 }
 
 fn EmptyMachineState(session: SessionRef) -> View {
@@ -88,6 +146,15 @@ fn EmptyMachineState(session: SessionRef) -> View {
             .size(th.typography.body_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding(16.0)),
+        Text("State machines drive clips from inputs and pointer listeners — like Rive Interact.")
+            .size(th.typography.body_small)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 16.0,
+                right: 16.0,
+                top: 0.0,
+                bottom: 8.0,
+            })),
         Box(Modifier::new().padding_values(PaddingValues {
             left: 16.0,
             right: 16.0,
@@ -107,15 +174,18 @@ fn EmptyMachineState(session: SessionRef) -> View {
 }
 
 fn MachineSelector(session: SessionRef) -> View {
-    let (machines, active) = {
+    let (machines, active, start) = {
         let s = session.borrow();
-        (s.file.machine_order.clone(), s.active_machine)
+        (
+            s.file.machine_order.clone(),
+            s.active_machine,
+            s.file.start_machine,
+        )
     };
     if machines.is_empty() {
         return Box(Modifier::new().height(8.0));
     }
     let th = theme();
-
     let mut chips = Vec::new();
     for id in machines {
         let name = session
@@ -126,8 +196,14 @@ fn MachineSelector(session: SessionRef) -> View {
             .map(|m| m.name.clone())
             .unwrap_or_else(|| "Machine".into());
         let is_active = active == Some(id);
+        let is_start = start == Some(id);
+        let label = if is_start {
+            format!("★ {name}")
+        } else {
+            name
+        };
         chips.push(
-            Text(name)
+            Text(label)
                 .size(th.typography.label_medium)
                 .color(if is_active {
                     th.primary
@@ -159,6 +235,10 @@ fn MachineSelector(session: SessionRef) -> View {
     }
 
     if active.is_some() {
+        chips.push(CompactIconAction(Symbols::star, "Set as start machine", {
+            let session = session.clone();
+            move || session.borrow_mut().set_active_as_start_machine()
+        }));
         chips.push(CompactIconAction(Symbols::delete, "Delete machine", {
             let session = session.clone();
             move || session.borrow_mut().remove_active_machine()
@@ -179,12 +259,100 @@ fn MachineSelector(session: SessionRef) -> View {
 }
 
 fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
-    Column(Modifier::new().fill_max_width()).child((
-        InputsSection(session.clone(), machine_id),
-        MachineGraph(session.clone(), machine_id),
-        SelectionInspector(session.clone(), machine_id),
-        ListenersSection(session, machine_id),
+    let name = session.borrow().file.machines[machine_id].name.clone();
+
+    Column(Modifier::new().fill_max_width().gap(8.0)).child((
+        // Rename
+        Row(Modifier::new()
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 4.0,
+                bottom: 0.0,
+            })
+            .gap(6.0)
+            .align_items(AlignItems::CENTER))
+        .child(TextField(
+            Modifier::new().fill_max_width(),
+            name,
+            {
+                let session = session.clone();
+                move |text: String| {
+                    session.borrow_mut().rename_active_machine(text);
+                }
+            },
+            TextFieldConfig::default(),
+        )),
+        CollapsibleSection(
+            "sm_inputs",
+            "Inputs",
+            vec![],
+            InputsSection(session.clone(), machine_id),
+        ),
+        CollapsibleSection(
+            "sm_graph",
+            "Graph",
+            vec![
+                CompactIconAction(Symbols::add, "Add state", {
+                    let session = session.clone();
+                    move || add_state_ui(&session, machine_id, 0)
+                }),
+                CompactIconAction(Symbols::layers, "Add layer", {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        let n = s
+                            .file
+                            .machines
+                            .get(machine_id)
+                            .map(|m| m.layers.len() + 1)
+                            .unwrap_or(1);
+                        s.edit_active_machine("Add layer", move |m| {
+                            add_layer(m, format!("Layer {n}"))?;
+                            Ok(())
+                        });
+                    }
+                }),
+            ],
+            MachineGraph(session.clone(), machine_id),
+        ),
+        CollapsibleSection(
+            "sm_inspector",
+            "Selection",
+            vec![],
+            SelectionInspector(session.clone(), machine_id),
+        ),
+        CollapsibleSection(
+            "sm_listeners",
+            "Listeners",
+            vec![],
+            ListenersSection(session, machine_id),
+        ),
     ))
+}
+
+fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
+    let mut s = session.borrow_mut();
+    let name = {
+        let m = &s.file.machines[machine_id];
+        let n = m.layers.get(layer).map(|l| l.states.len()).unwrap_or(0) + 1;
+        format!("State {n}")
+    };
+    let ok = s.edit_active_machine("Add state", move |machine| {
+        add_state(machine, layer, name, StateKind::Empty)?;
+        Ok(())
+    });
+    if ok {
+        if let Some(m) = s.file.machines.get(machine_id) {
+            if let Some(l) = m.layers.get(layer) {
+                s.machine_selection = MachineSelection::State {
+                    layer,
+                    state: l.states.len().saturating_sub(1),
+                };
+            }
+        }
+    }
 }
 
 fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
@@ -206,35 +374,49 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
                 top: 0.0,
                 bottom: 0.0,
             })
-            .align_items(AlignItems::CENTER))
+            .align_items(AlignItems::CENTER)
+            .gap(4.0))
         .child((
-            Text("Inputs")
-                .size(theme().typography.label_medium)
-                .color(theme().on_surface_variant)
-                .modifier(Modifier::new().flex_grow(1.0)),
-            CompactIconAction(
-                Symbols::add,
-                "Add boolean input",
-                add_input_action(session.clone(), machine_id, "Boolean", || InputKind::Bool {
-                    default: false,
-                }),
-            ),
-            CompactIconAction(
-                Symbols::add,
-                "Add number input",
-                add_input_action(session.clone(), machine_id, "Number", || {
-                    InputKind::Number { default: 0.0 }
-                }),
-            ),
-            CompactIconAction(
-                Symbols::add,
-                "Add trigger",
-                add_input_action(session.clone(), machine_id, "Trigger", || {
-                    InputKind::Trigger
-                }),
-            ),
+            Text("Add")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant),
+            chip("Bool", false, {
+                let session = session.clone();
+                move || {
+                    add_input_named(
+                        &session,
+                        machine_id,
+                        "Boolean",
+                        InputKind::Bool { default: false },
+                    )
+                }
+            }),
+            chip("Number", false, {
+                let session = session.clone();
+                move || {
+                    add_input_named(
+                        &session,
+                        machine_id,
+                        "Number",
+                        InputKind::Number { default: 0.0 },
+                    )
+                }
+            }),
+            chip("Trigger", false, {
+                let session = session.clone();
+                move || add_input_named(&session, machine_id, "Trigger", InputKind::Trigger)
+            }),
         )),
     ];
+
+    if inputs.is_empty() {
+        rows.push(
+            Text("No inputs — add Bool / Number / Trigger to drive transitions")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+                .modifier(Modifier::new().padding(12.0)),
+        );
+    }
 
     for (index, input) in inputs.into_iter().enumerate() {
         rows.push(InputRow(
@@ -249,26 +431,18 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
     Column(Modifier::new().fill_max_width()).child(rows)
 }
 
-fn add_input_action(
-    session: SessionRef,
-    machine_id: MachineId,
-    base: &'static str,
-    kind: impl Fn() -> InputKind + 'static,
-) -> impl Fn() + 'static {
-    move || {
-        let mut s = session.borrow_mut();
-        let name = {
-            let machine = s.file.machines.get(machine_id);
-            machine
-                .map(|m| unique_input_name(m, base))
-                .unwrap_or_else(|| base.to_string())
-        };
-        let kind = kind();
-        s.edit_active_machine("Add input", move |machine| {
-            add_input(machine, name, kind)?;
-            Ok(())
-        });
-    }
+fn add_input_named(session: &SessionRef, machine_id: MachineId, base: &str, kind: InputKind) {
+    let mut s = session.borrow_mut();
+    let name = s
+        .file
+        .machines
+        .get(machine_id)
+        .map(|m| unique_input_name(m, base))
+        .unwrap_or_else(|| base.to_string());
+    s.edit_active_machine("Add input", move |machine| {
+        add_input(machine, name, kind)?;
+        Ok(())
+    });
 }
 
 fn unique_input_name(machine: &Machine, base: &str) -> String {
@@ -279,6 +453,14 @@ fn unique_input_name(machine: &Machine, base: &str) -> String {
         i += 1;
     }
     name
+}
+
+fn input_kind_badge(kind: InputKind) -> &'static str {
+    match kind {
+        InputKind::Bool { .. } => "B",
+        InputKind::Number { .. } => "N",
+        InputKind::Trigger => "T",
+    }
 }
 
 fn InputRow(
@@ -295,7 +477,22 @@ fn InputRow(
         !input_is_referenced(&s.file.machines[machine_id], index)
     };
 
-    let mut controls: Vec<View> = Vec::new();
+    let mut controls: Vec<View> = vec![
+        Text(input_kind_badge(input.kind))
+            .size(th.typography.label_small)
+            .color(th.on_secondary_container)
+            .modifier(
+                Modifier::new()
+                    .padding_values(PaddingValues {
+                        left: 6.0,
+                        right: 6.0,
+                        top: 2.0,
+                        bottom: 2.0,
+                    })
+                    .background(th.secondary_container)
+                    .clip_rounded(4.0),
+            ),
+    ];
 
     match (input.kind, preview) {
         (InputKind::Bool { .. }, Some(InputValue::Bool(value))) => {
@@ -309,12 +506,7 @@ fn InputRow(
             }));
         }
         (InputKind::Number { .. }, Some(InputValue::Number(value))) => {
-            controls.push(machine_scrub_number(
-                session.clone(),
-                value,
-                0.01,
-                Rc::new(move |_machine, _v| {}),
-            ));
+            controls.push(preview_scrub_number(session.clone(), index, value, 0.01));
         }
         (InputKind::Trigger, _) => {
             controls.push(Button(
@@ -327,7 +519,13 @@ fn InputRow(
                 || Text("Fire").size(th.typography.label_medium),
             ));
         }
-        _ => {}
+        _ => {
+            controls.push(
+                Text("enable preview")
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+            );
+        }
     }
 
     controls.push(Box(Modifier::new().flex_grow(1.0)).child(TextField(
@@ -380,138 +578,28 @@ fn InputRow(
 
 fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
     let draw_session = session.clone();
-    let last_click =
-        std::rc::Rc::new(std::cell::RefCell::new(None::<(DVec2, web_time::Instant)>));
+    let last_click = std::rc::Rc::new(std::cell::RefCell::new(None::<(DVec2, web_time::Instant)>));
 
     Column(Modifier::new().fill_max_width()).child((
-        Row(Modifier::new()
-            .fill_max_width()
-            .padding_values(PaddingValues {
+        Text("Shift+drag state or Any → wire · double-click empty → add state · click edge to select")
+            .size(theme().typography.label_small)
+            .color(theme().on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
                 left: 12.0,
                 right: 8.0,
                 top: 4.0,
                 bottom: 4.0,
-            })
-            .gap(6.0)
-            .align_items(AlignItems::CENTER))
-        .child((
-            Text("Graph")
-                .size(theme().typography.label_medium)
-                .color(theme().on_surface_variant)
-                .modifier(Modifier::new().flex_grow(1.0)),
-            CompactIconAction(Symbols::add, "Add state", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    let layer = match s.machine_selection {
-                        MachineSelection::State { layer, .. }
-                        | MachineSelection::Transition { layer, .. }
-                        | MachineSelection::Layer { layer } => layer,
-                        _ => 0,
-                    };
-                    let name = {
-                        let m = &s.file.machines[machine_id];
-                        let n = m.layers.get(layer).map(|l| l.states.len()).unwrap_or(0) + 1;
-                        format!("State {n}")
-                    };
-                    let ok = s.edit_active_machine("Add state", move |machine| {
-                        add_state(machine, layer, name, StateKind::Empty)?;
-                        Ok(())
-                    });
-                    if ok {
-                        if let Some(m) = s.file.machines.get(machine_id) {
-                            if let Some(l) = m.layers.get(layer) {
-                                let state = l.states.len().saturating_sub(1);
-                                s.machine_selection = MachineSelection::State { layer, state };
-                            }
-                        }
-                    }
-                }
-            }),
-            Text("Shift+drag state → wire transition · click edge to select")
-                .size(theme().typography.label_small)
-                .color(theme().on_surface_variant),
-        )),
+            })),
         Canvas(
             Modifier::new()
                 .fill_max_width()
-                .height(280.0)
+                .height(320.0)
                 .background(theme().surface_container_lowest)
                 .on_pointer_down({
                     let session = session.clone();
                     let last_click = last_click.clone();
                     move |event: PointerEvent| {
-                        let position =
-                            DVec2::new(event.position.x as f64, event.position.y as f64);
-                        let shift = event.modifiers.shift;
-                        let now = web_time::Instant::now();
-                        let is_double = {
-                            let mut lc = last_click.borrow_mut();
-                            let dbl = lc
-                                .map(|(p, t)| {
-                                    (now - t).as_millis() < 350 && (p - position).length() < 8.0
-                                })
-                                .unwrap_or(false);
-                            *lc = Some((position, now));
-                            dbl
-                        };
-
-                        let machine = session.borrow().file.machines[machine_id].clone();
-                        let layout = auto_layout(&machine);
-
-                        let mut s = session.borrow_mut();
-
-                        if is_double {
-                            if hit_state(&layout, position).is_none() {
-                                // Double-click empty → add state on layer 0.
-                                let name = format!(
-                                    "State {}",
-                                    machine.layers.first().map(|l| l.states.len()).unwrap_or(0) + 1
-                                );
-                                let ok = s.edit_active_machine("Add state", move |m| {
-                                    add_state(m, 0, name, StateKind::Empty)?;
-                                    Ok(())
-                                });
-                                if ok {
-                                    if let Some(m) = s.file.machines.get(machine_id) {
-                                        if let Some(l) = m.layers.first() {
-                                            s.machine_selection = MachineSelection::State {
-                                                layer: 0,
-                                                state: l.states.len().saturating_sub(1),
-                                            };
-                                        }
-                                    }
-                                }
-                            }
-                            request_frame();
-                            return;
-                        }
-
-                        if let Some((layer, state)) = hit_state(&layout, position) {
-                            s.machine_selection = MachineSelection::State { layer, state };
-                            if shift {
-                                s.machine_graph_gesture = Some(MachineGraphGesture::WireTransition {
-                                    layer,
-                                    from_state: state,
-                                    current: position,
-                                });
-                            } else {
-                                s.machine_graph_gesture = None;
-                            }
-                        } else if let Some((layer, source, transition)) =
-                            hit_transition(&machine, &layout, position, 8.0)
-                        {
-                            s.machine_selection = MachineSelection::Transition {
-                                layer,
-                                source,
-                                transition,
-                            };
-                            s.machine_graph_gesture = None;
-                        } else {
-                            s.machine_selection = MachineSelection::None;
-                            s.machine_graph_gesture = None;
-                        }
-                        request_frame();
+                        handle_graph_down(&session, machine_id, &event, &last_click);
                     }
                 })
                 .on_pointer_move({
@@ -531,50 +619,7 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 .on_pointer_up({
                     let session = session.clone();
                     move |event: PointerEvent| {
-                        let position =
-                            DVec2::new(event.position.x as f64, event.position.y as f64);
-                        let mut s = session.borrow_mut();
-                        let gesture = s.machine_graph_gesture.take();
-                        if let Some(MachineGraphGesture::WireTransition {
-                            layer,
-                            from_state,
-                            ..
-                        }) = gesture
-                        {
-                            let machine = s.file.machines[machine_id].clone();
-                            let layout = auto_layout(&machine);
-                            if let Some((to_layer, to_state)) = hit_state(&layout, position) {
-                                if to_layer == layer && to_state != from_state {
-                                    let ok = s.edit_active_machine("Add transition", move |m| {
-                                        add_transition(
-                                            m,
-                                            layer,
-                                            TransitionSource::State(from_state),
-                                            to_state,
-                                        )?;
-                                        Ok(())
-                                    });
-                                    if ok {
-                                        if let Some(m) = s.file.machines.get(machine_id) {
-                                            if let Some(st) = m
-                                                .layers
-                                                .get(layer)
-                                                .and_then(|l| l.states.get(from_state))
-                                            {
-                                                let transition =
-                                                    st.transitions.len().saturating_sub(1);
-                                                s.machine_selection = MachineSelection::Transition {
-                                                    layer,
-                                                    source: TransitionSource::State(from_state),
-                                                    transition,
-                                                };
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        request_frame();
+                        handle_graph_up(&session, machine_id, &event);
                     }
                 }),
             move |scope| {
@@ -590,9 +635,13 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     current,
                 }) = &session.machine_graph_gesture
                 {
-                    let from = layer_state_center(machine, &layout, *layer, *from_state);
+                    let from = match from_state {
+                        Some(si) => layer_state_center(machine, &layout, *layer, *si),
+                        None => any_node_center(machine, &layout, *layer),
+                    };
                     draw_edge(scope, from, *current, theme().primary.with_alpha(220));
                 }
+                draw_any_nodes(scope, machine, &layout, &session.machine_selection);
                 draw_machine_states(
                     scope,
                     machine,
@@ -605,23 +654,222 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
     ))
 }
 
+fn handle_graph_down(
+    session: &SessionRef,
+    machine_id: MachineId,
+    event: &PointerEvent,
+    last_click: &std::rc::Rc<std::cell::RefCell<Option<(DVec2, web_time::Instant)>>>,
+) {
+    let position = DVec2::new(event.position.x as f64, event.position.y as f64);
+    let shift = event.modifiers.shift;
+    let now = web_time::Instant::now();
+    let is_double = {
+        let mut lc = last_click.borrow_mut();
+        let dbl = lc
+            .map(|(p, t)| (now - t).as_millis() < 350 && (p - position).length() < 8.0)
+            .unwrap_or(false);
+        *lc = Some((position, now));
+        dbl
+    };
+
+    let machine = session.borrow().file.machines[machine_id].clone();
+    let layout = auto_layout(&machine);
+    let mut s = session.borrow_mut();
+
+    if is_double {
+        if hit_state(&layout, position).is_none() && hit_any(&machine, &layout, position).is_none()
+        {
+            let name = format!(
+                "State {}",
+                machine.layers.first().map(|l| l.states.len()).unwrap_or(0) + 1
+            );
+            let ok = s.edit_active_machine("Add state", move |m| {
+                add_state(m, 0, name, StateKind::Empty)?;
+                Ok(())
+            });
+            if ok {
+                if let Some(m) = s.file.machines.get(machine_id) {
+                    if let Some(l) = m.layers.first() {
+                        s.machine_selection = MachineSelection::State {
+                            layer: 0,
+                            state: l.states.len().saturating_sub(1),
+                        };
+                    }
+                }
+            }
+        }
+        request_frame();
+        return;
+    }
+
+    if let Some(layer) = hit_any(&machine, &layout, position) {
+        s.machine_selection = MachineSelection::Layer { layer };
+        if shift {
+            s.machine_graph_gesture = Some(MachineGraphGesture::WireTransition {
+                layer,
+                from_state: None,
+                current: position,
+            });
+        } else {
+            s.machine_graph_gesture = None;
+        }
+    } else if let Some((layer, state)) = hit_state(&layout, position) {
+        s.machine_selection = MachineSelection::State { layer, state };
+        if shift {
+            s.machine_graph_gesture = Some(MachineGraphGesture::WireTransition {
+                layer,
+                from_state: Some(state),
+                current: position,
+            });
+        } else {
+            s.machine_graph_gesture = None;
+        }
+    } else if let Some((layer, source, transition)) =
+        hit_transition(&machine, &layout, position, 8.0)
+    {
+        s.machine_selection = MachineSelection::Transition {
+            layer,
+            source,
+            transition,
+        };
+        s.machine_graph_gesture = None;
+    } else {
+        s.machine_selection = MachineSelection::None;
+        s.machine_graph_gesture = None;
+    }
+    request_frame();
+}
+
+fn handle_graph_up(session: &SessionRef, machine_id: MachineId, event: &PointerEvent) {
+    let position = DVec2::new(event.position.x as f64, event.position.y as f64);
+    let mut s = session.borrow_mut();
+    let gesture = s.machine_graph_gesture.take();
+    if let Some(MachineGraphGesture::WireTransition {
+        layer, from_state, ..
+    }) = gesture
+    {
+        let machine = s.file.machines[machine_id].clone();
+        let layout = auto_layout(&machine);
+        if let Some((to_layer, to_state)) = hit_state(&layout, position) {
+            if to_layer == layer {
+                let source = match from_state {
+                    Some(from) if from != to_state => TransitionSource::State(from),
+                    None => TransitionSource::Any,
+                    _ => {
+                        request_frame();
+                        return;
+                    }
+                };
+                let ok = s.edit_active_machine("Add transition", move |m| {
+                    add_transition(m, layer, source, to_state)?;
+                    Ok(())
+                });
+                if ok {
+                    if let Some(m) = s.file.machines.get(machine_id) {
+                        let count = match source {
+                            TransitionSource::Any => m.layers[layer].any_transitions.len(),
+                            TransitionSource::State(si) => {
+                                m.layers[layer].states[si].transitions.len()
+                            }
+                        };
+                        s.machine_selection = MachineSelection::Transition {
+                            layer,
+                            source,
+                            transition: count.saturating_sub(1),
+                        };
+                    }
+                }
+            }
+        }
+    }
+    request_frame();
+}
+
+fn any_node_center(machine: &Machine, layout: &[GraphState], layer: usize) -> DVec2 {
+    let first = layer_state_center(machine, layout, layer, 0);
+    DVec2::new(first.x - 48.0, first.y)
+}
+
+fn hit_any(machine: &Machine, layout: &[GraphState], position: DVec2) -> Option<usize> {
+    for (li, layer) in machine.layers.iter().enumerate() {
+        if layer.states.is_empty() {
+            continue;
+        }
+        let c = any_node_center(machine, layout, li);
+        let rect = GraphRect {
+            x: c.x - 18.0,
+            y: c.y - 12.0,
+            width: 36.0,
+            height: 24.0,
+        };
+        if rect.contains(position) {
+            return Some(li);
+        }
+    }
+    None
+}
+
 fn layer_state_center(
-    machine: &Machine,
+    _machine: &Machine,
     layout: &[GraphState],
     layer: usize,
     state: usize,
 ) -> DVec2 {
-    let mut offset = 0usize;
-    for (li, l) in machine.layers.iter().enumerate() {
-        if li == layer {
-            return layout[offset + state].rect.center();
-        }
-        offset += l.states.len();
-    }
-    DVec2::ZERO
+    layout
+        .iter()
+        .find(|g| g.layer == layer && g.state == state)
+        .map(|g| g.rect.center())
+        .unwrap_or(DVec2::ZERO)
 }
 
-use renamite_behavior_common::machine::GraphState;
+fn draw_any_nodes(
+    scope: &mut DrawScope,
+    machine: &Machine,
+    layout: &[GraphState],
+    selection: &MachineSelection,
+) {
+    let th = theme();
+    for (li, layer) in machine.layers.iter().enumerate() {
+        if layer.states.is_empty() {
+            continue;
+        }
+        let from = any_node_center(machine, layout, li);
+        let selected = matches!(selection, MachineSelection::Layer { layer } if *layer == li);
+        scope.draw_rect(
+            Rect {
+                x: (from.x - 18.0) as f32,
+                y: (from.y - 12.0) as f32,
+                w: 36.0,
+                h: 24.0,
+            },
+            if selected {
+                th.primary_container
+            } else {
+                th.tertiary_container
+            },
+            6.0,
+        );
+        scope.draw_text(
+            "Any",
+            Vec2 {
+                x: (from.x - 12.0) as f32,
+                y: (from.y - 6.0) as f32,
+            },
+            th.on_tertiary_container,
+            10.0,
+        );
+        // layer label
+        scope.draw_text(
+            &layer.name,
+            Vec2 {
+                x: (from.x - 18.0) as f32,
+                y: (from.y - 28.0) as f32,
+            },
+            th.on_surface_variant,
+            9.0,
+        );
+    }
+}
 
 fn draw_machine_edges(
     scope: &mut DrawScope,
@@ -646,33 +894,13 @@ fn draw_machine_edges(
                         transition,
                     } if *layer == li && *src == si && *transition == ti
                 );
-                draw_edge(scope, from, to, if is_sel { selected_color } else { normal });
-                draw_arrow_head(scope, from, to, if is_sel { selected_color } else { normal });
+                let c = if is_sel { selected_color } else { normal };
+                draw_edge(scope, from, to, c);
+                draw_arrow_head(scope, from, to, c);
             }
         }
-
-        if !layer.any_transitions.is_empty() && !layer.states.is_empty() {
-            let first_center = layer_state_center(machine, layout, li, 0);
-            let from = DVec2::new(first_center.x - 48.0, first_center.y);
-            scope.draw_rect(
-                Rect {
-                    x: (from.x - 18.0) as f32,
-                    y: (from.y - 12.0) as f32,
-                    w: 36.0,
-                    h: 24.0,
-                },
-                th.tertiary_container,
-                6.0,
-            );
-            scope.draw_text(
-                "Any",
-                Vec2 {
-                    x: (from.x - 12.0) as f32,
-                    y: (from.y - 6.0) as f32,
-                },
-                th.on_tertiary_container,
-                10.0,
-            );
+        if !layer.states.is_empty() {
+            let from = any_node_center(machine, layout, li);
             for (ti, tr) in layer.any_transitions.iter().enumerate() {
                 let to = layer_state_center(machine, layout, li, tr.to);
                 let is_sel = matches!(
@@ -683,8 +911,9 @@ fn draw_machine_edges(
                         transition,
                     } if *layer == li && *transition == ti
                 );
-                draw_edge(scope, from, to, if is_sel { selected_color } else { normal });
-                draw_arrow_head(scope, from, to, if is_sel { selected_color } else { normal });
+                let c = if is_sel { selected_color } else { normal };
+                draw_edge(scope, from, to, c);
+                draw_arrow_head(scope, from, to, c);
             }
         }
     }
@@ -697,7 +926,7 @@ fn draw_arrow_head(scope: &mut DrawScope, from: DVec2, to: DVec2, color: Color) 
         return;
     }
     let n = dir / len;
-    let tip = to - n * 28.0; // stop short of node
+    let tip = to - n * 28.0;
     let perp = DVec2::new(-n.y, n.x);
     let left = tip - n * 10.0 + perp * 5.0;
     let right = tip - n * 10.0 - perp * 5.0;
@@ -722,7 +951,6 @@ fn draw_machine_states(
     active: Option<&[usize]>,
 ) {
     let th = theme();
-
     for gs in layout {
         let state = &machine.layers[gs.layer].states[gs.state];
         let rect = Rect {
@@ -762,7 +990,7 @@ fn draw_machine_states(
             12.0,
         );
         scope.draw_text(
-            kind_label(&state.kind),
+            &kind_label(&state.kind),
             Vec2 {
                 x: rect.x + 8.0,
                 y: rect.y + rect.h - 15.0,
@@ -777,13 +1005,12 @@ fn kind_label(kind: &StateKind) -> String {
     match kind {
         StateKind::Empty => "empty".into(),
         StateKind::Clip { .. } => "clip".into(),
-        StateKind::Blend1D { .. } => "blend".into(),
+        StateKind::Blend1D { children, .. } => format!("blend · {}", children.len()),
     }
 }
 
 fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
     let selection = session.borrow().machine_selection.clone();
-
     match selection {
         MachineSelection::State { layer, state } => {
             StateInspector(session, machine_id, layer, state)
@@ -793,12 +1020,71 @@ fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
             source,
             transition,
         } => TransitionInspector(session, machine_id, layer, source, transition),
-        MachineSelection::Input { input } => {
-            let _ = input;
-            Box(Modifier::new().height(4.0))
-        }
-        _ => Box(Modifier::new().height(4.0)),
+        MachineSelection::Layer { layer } => LayerInspector(session, machine_id, layer),
+        _ => Text("Select a state, edge, or Any node")
+            .size(theme().typography.label_small)
+            .color(theme().on_surface_variant)
+            .modifier(Modifier::new().padding(12.0)),
     }
+}
+
+fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> View {
+    let th = theme();
+    let (name, any_count, state_count) = {
+        let s = session.borrow();
+        let Some(l) = s.file.machines[machine_id].layers.get(layer) else {
+            return Box(Modifier::new());
+        };
+        (l.name.clone(), l.any_transitions.len(), l.states.len())
+    };
+    Column(Modifier::new().fill_max_width().gap(4.0)).child((
+        Text(format!("Layer · {name}"))
+            .size(th.typography.label_medium)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding(12.0)),
+        Text(format!(
+            "{state_count} states · {any_count} any-transitions"
+        ))
+        .size(th.typography.body_small)
+        .color(th.on_surface_variant)
+        .modifier(Modifier::new().padding_values(PaddingValues {
+            left: 12.0,
+            right: 12.0,
+            top: 0.0,
+            bottom: 4.0,
+        })),
+        Text("Shift+drag from Any to wire a global transition")
+            .size(th.typography.label_small)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 0.0,
+                bottom: 8.0,
+            })),
+        Row(Modifier::new()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 0.0,
+                bottom: 8.0,
+            })
+            .gap(6.0))
+        .child((
+            Text("Add any →")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+            Box(Modifier::new()).child(transition_target_dropdown(
+                session,
+                machine_id,
+                layer,
+                0,
+                TransitionSource::Any,
+                state_count,
+                true,
+            )),
+        )),
+    ))
 }
 
 fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, state: usize) -> View {
@@ -828,7 +1114,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             .modifier(Modifier::new().padding_values(PaddingValues {
                 left: 12.0,
                 right: 12.0,
-                top: 12.0,
+                top: 8.0,
                 bottom: 2.0,
             })),
         Row(Modifier::new()
@@ -843,7 +1129,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             .align_items(AlignItems::CENTER))
         .child(TextField(
             Modifier::new().fill_max_width(),
-            name.clone(),
+            name,
             {
                 let session = session.clone();
                 move |text: String| {
@@ -869,7 +1155,6 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
         .child((
             Text("Kind")
                 .size(th.typography.body_medium)
-                .color(th.on_surface)
                 .modifier(Modifier::new().width(48.0)),
             chip(
                 "Empty",
@@ -881,7 +1166,8 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
                 move || {
                     let mut s = session.borrow_mut();
                     let Some(clip) = s.file.clip_order.first().copied() else {
-                        s.status = Some("Add a clip in the Assets panel first".into());
+                        s.status = Some("Create a clip in Assets first".into());
+                        s.repaint();
                         return;
                     };
                     s.edit_active_machine("Change state", move |machine| {
@@ -916,132 +1202,110 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             speed,
             loop_mode,
         } => {
-            rows.push(
-                Row(Modifier::new()
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 2.0,
-                        bottom: 2.0,
-                    })
-                    .gap(6.0)
-                    .align_items(AlignItems::CENTER))
-                .child((
-                    Text("Clip")
-                        .size(th.typography.body_medium)
-                        .color(th.on_surface)
-                        .modifier(Modifier::new().width(48.0)),
-                    Box(Modifier::new().flex_grow(1.0)).child(clip_dropdown(
-                        session.clone(),
-                        machine_id,
-                        layer,
-                        state,
-                        *clip,
-                    )),
-                )),
-            );
+            rows.push(labeled_row(
+                "Clip",
+                clip_dropdown(session.clone(), machine_id, layer, state, *clip),
+            ));
             let speed = *speed;
-            rows.push(
-                Row(Modifier::new()
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 2.0,
-                        bottom: 2.0,
-                    })
-                    .gap(6.0)
-                    .align_items(AlignItems::CENTER))
-                .child((
-                    Text("Speed")
-                        .size(th.typography.body_medium)
-                        .color(th.on_surface)
-                        .modifier(Modifier::new().width(48.0)),
-                    machine_scrub_number(
-                        session.clone(),
-                        speed,
-                        0.1,
-                        Rc::new(move |machine, value| {
-                            if let StateKind::Clip { speed, .. } =
-                                &mut machine.layers[layer].states[state].kind
-                            {
-                                *speed = value.max(0.0);
-                            }
-                        }),
-                    ),
-                )),
-            );
+            rows.push(labeled_row(
+                "Speed",
+                machine_scrub_number(
+                    session.clone(),
+                    speed,
+                    0.1,
+                    Rc::new(move |machine, value| {
+                        if let StateKind::Clip { speed, .. } =
+                            &mut machine.layers[layer].states[state].kind
+                        {
+                            *speed = value.max(0.0);
+                        }
+                    }),
+                ),
+            ));
             let loop_mode = *loop_mode;
             rows.push(
                 Row(Modifier::new()
                     .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 2.0,
-                        bottom: 2.0,
-                    })
+                    .padding_values(pad_row())
                     .gap(6.0)
                     .align_items(AlignItems::CENTER))
                 .child((
                     Text("Loop")
                         .size(th.typography.body_medium)
-                        .color(th.on_surface)
                         .modifier(Modifier::new().width(48.0)),
                     chip("Once", loop_mode == LoopMode::Once, {
                         let session = session.clone();
-                        move || {
-                            set_state_kind(session.clone(), layer, state, |k| match k {
-                                StateKind::Clip { clip, speed, .. } => StateKind::Clip {
-                                    clip,
-                                    speed,
-                                    loop_mode: LoopMode::Once,
-                                },
-                                other => other,
-                            })
-                        }
+                        move || set_clip_loop(session.clone(), layer, state, LoopMode::Once)
                     }),
                     chip("Loop", loop_mode == LoopMode::Loop, {
                         let session = session.clone();
-                        move || {
-                            set_state_kind(session.clone(), layer, state, |k| match k {
-                                StateKind::Clip { clip, speed, .. } => StateKind::Clip {
-                                    clip,
-                                    speed,
-                                    loop_mode: LoopMode::Loop,
-                                },
-                                other => other,
-                            })
-                        }
+                        move || set_clip_loop(session.clone(), layer, state, LoopMode::Loop)
+                    }),
+                    chip("PingPong", loop_mode == LoopMode::PingPong, {
+                        let session = session.clone();
+                        move || set_clip_loop(session.clone(), layer, state, LoopMode::PingPong)
                     }),
                 )),
             );
         }
-        StateKind::Blend1D { input, .. } => {
+        StateKind::Blend1D { input, children } => {
+            rows.push(labeled_row(
+                "Input",
+                blend_input_dropdown(session.clone(), machine_id, layer, state, *input),
+            ));
+            rows.push(
+                Text("Blend children")
+                    .size(th.typography.label_medium)
+                    .color(th.on_surface_variant)
+                    .modifier(Modifier::new().padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 12.0,
+                        top: 8.0,
+                        bottom: 2.0,
+                    })),
+            );
+            for (ci, child) in children.iter().enumerate() {
+                rows.push(blend_child_row(
+                    session.clone(),
+                    machine_id,
+                    layer,
+                    state,
+                    ci,
+                    child.clone(),
+                ));
+            }
             rows.push(
                 Row(Modifier::new()
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 2.0,
-                        bottom: 2.0,
-                    })
+                    .padding_values(pad_row())
                     .gap(6.0)
                     .align_items(AlignItems::CENTER))
-                .child((
-                    Text("Input")
-                        .size(th.typography.body_medium)
-                        .color(th.on_surface)
-                        .modifier(Modifier::new().width(48.0)),
-                    Box(Modifier::new().flex_grow(1.0)).child(blend_input_dropdown(
-                        session.clone(),
-                        machine_id,
-                        layer,
-                        state,
-                        *input,
-                    )),
+                .child(Button(
+                    Modifier::new(),
+                    {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            let Some(clip) = s.file.clip_order.first().copied() else {
+                                s.status = Some("Create a clip in Assets first".into());
+                                s.repaint();
+                                return;
+                            };
+                            s.edit_active_machine("Add blend child", move |machine| {
+                                let st = &mut machine.layers[layer].states[state];
+                                if let StateKind::Blend1D { children, .. } = &mut st.kind {
+                                    let thr =
+                                        children.last().map(|c| c.threshold + 0.5).unwrap_or(0.0);
+                                    children.push(BlendChild {
+                                        threshold: thr,
+                                        clip,
+                                    });
+                                }
+                                Ok(())
+                            });
+                        }
+                    },
+                    ButtonConfig::default(),
+                    || Text("Add child").size(th.typography.label_medium),
                 )),
             );
         }
@@ -1051,12 +1315,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
     rows.push(
         Row(Modifier::new()
             .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
+            .padding_values(pad_row())
             .gap(6.0)
             .align_items(AlignItems::CENTER))
         .child((
@@ -1086,7 +1345,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
         )),
     );
 
-    // Outgoing transitions.
+    // Outgoing transitions from THIS state only (not Any).
     rows.push(
         Text("Transitions")
             .size(th.typography.label_medium)
@@ -1099,12 +1358,11 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             })),
     );
 
-    let (transitions, any_transitions) = {
+    let transitions = {
         let s = session.borrow();
-        let machine = &s.file.machines[machine_id];
-        let l = &machine.layers[layer];
-        let st = &l.states[state];
-        (st.transitions.clone(), l.any_transitions.clone())
+        s.file.machines[machine_id].layers[layer].states[state]
+            .transitions
+            .clone()
     };
 
     for (index, tr) in transitions.iter().enumerate() {
@@ -1119,27 +1377,10 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
         ));
     }
 
-    for (index, tr) in any_transitions.iter().enumerate() {
-        rows.push(transition_row(
-            session.clone(),
-            machine_id,
-            layer,
-            TransitionSource::Any,
-            index,
-            tr.to,
-            &tr.conditions,
-        ));
-    }
-
     rows.push(
         Row(Modifier::new()
             .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
+            .padding_values(pad_row())
             .gap(6.0)
             .align_items(AlignItems::CENTER))
         .child((
@@ -1148,12 +1389,13 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
             Box(Modifier::new().flex_grow(0.0)).child(transition_target_dropdown(
-                session.clone(),
+                session,
                 machine_id,
                 layer,
                 state,
                 TransitionSource::State(state),
                 states,
+                true,
             )),
         )),
     );
@@ -1161,236 +1403,68 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
     Column(Modifier::new().fill_max_width()).child(rows)
 }
 
-fn set_kind_action(
-    session: SessionRef,
-    layer: usize,
-    state: usize,
-    kind: StateKind,
-) -> impl Fn() + 'static {
-    move || {
-        let mut s = session.borrow_mut();
-        s.edit_active_machine("Change state", |machine| {
-            machine.layers[layer].states[state].kind = kind.clone();
-            Ok(())
-        });
-    }
-}
-
-fn set_state_kind(
-    session: SessionRef,
-    layer: usize,
-    state: usize,
-    map: impl Fn(StateKind) -> StateKind,
-) {
-    let mut s = session.borrow_mut();
-    s.edit_active_machine("Change state", move |machine| {
-        let kind = machine.layers[layer].states[state].kind.clone();
-        machine.layers[layer].states[state].kind = map(kind);
-        Ok(())
+fn set_clip_loop(session: SessionRef, layer: usize, state: usize, mode: LoopMode) {
+    set_state_kind(session, layer, state, |k| match k {
+        StateKind::Clip { clip, speed, .. } => StateKind::Clip {
+            clip,
+            speed,
+            loop_mode: mode,
+        },
+        other => other,
     });
 }
 
-fn number_input_index(inputs: &[InputDef]) -> Option<usize> {
-    inputs
-        .iter()
-        .position(|input| matches!(input.kind, InputKind::Number { .. }))
-}
-
-fn clip_dropdown(
+fn blend_child_row(
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
     state: usize,
-    current: ClipId,
-) -> View {
-    let clips = {
-        let s = session.borrow();
-        s.file.clip_order.clone()
-    };
-    let names: Vec<(ClipId, String)> = {
-        let s = session.borrow();
-        clips
-            .iter()
-            .map(|&id| {
-                let name = s
-                    .file
-                    .clips
-                    .get(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "—".into());
-                (id, name)
-            })
-            .collect()
-    };
-    let current_name = names
-        .iter()
-        .find(|(id, _)| *id == current)
-        .map(|(_, n)| n.clone())
-        .unwrap_or_else(|| "No clip".into());
-
-    let items = names
-        .into_iter()
-        .map(|(id, name)| {
-            DropdownMenuEntry::Item(DropdownMenuItem::new(name, {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    s.edit_active_machine("Change state", move |machine| {
-                        let st = &mut machine.layers[layer].states[state];
-                        st.kind = StateKind::Clip {
-                            clip: id,
-                            speed: 1.0,
-                            loop_mode: LoopMode::Once,
-                        };
-                        Ok(())
-                    });
-                }
-            }))
-        })
-        .collect();
-
-    dropdown(
-        format!("clip_{machine_id:?}_{layer}_{state}"),
-        format!("{current_name} ▾"),
-        items,
-    )
-}
-
-fn blend_input_dropdown(
-    session: SessionRef,
-    machine_id: MachineId,
-    layer: usize,
-    state: usize,
-    current: usize,
-) -> View {
-    let inputs = {
-        let s = session.borrow();
-        s.file.machines[machine_id].inputs.clone()
-    };
-    let current_name = inputs
-        .get(current)
-        .map(|i| i.name.clone())
-        .unwrap_or_else(|| "—".into());
-
-    let items = inputs
-        .into_iter()
-        .filter(|i| matches!(i.kind, InputKind::Number { .. }))
-        .map(|i| {
-            let idx = {
-                let s = session.borrow();
-                s.file.machines[machine_id]
-                    .inputs
-                    .iter()
-                    .position(|x| x.name == i.name)
-                    .unwrap_or(0)
-            };
-            DropdownMenuEntry::Item(DropdownMenuItem::new(i.name, {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    s.edit_active_machine("Change state", move |machine| {
-                        let st = &mut machine.layers[layer].states[state];
-                        let children = blend_children(st);
-                        st.kind = StateKind::Blend1D {
-                            input: idx,
-                            children,
-                        };
-                        Ok(())
-                    });
-                }
-            }))
-        })
-        .collect();
-
-    dropdown(
-        format!("blend_{machine_id:?}_{layer}_{state}"),
-        format!("{current_name} ▾"),
-        items,
-    )
-}
-
-fn blend_children(state: &State) -> Vec<BlendChild> {
-    match &state.kind {
-        StateKind::Blend1D { children, .. } => children.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn transition_row(
-    session: SessionRef,
-    machine_id: MachineId,
-    layer: usize,
-    source: TransitionSource,
     index: usize,
-    target: usize,
-    conditions: &[Condition],
+    child: BlendChild,
 ) -> View {
     let th = theme();
-    let target_name = {
-        let s = session.borrow();
-        s.file.machines[machine_id].layers[layer]
-            .states
-            .get(target)
-            .map(|st| st.name.clone())
-            .unwrap_or_else(|| "—".into())
-    };
-    let conds = conditions.len();
-    let cond_label = if conds == 0 {
-        "no conditions".to_string()
-    } else {
-        format!("{conds} condition{}", if conds == 1 { "" } else { "s" })
-    };
-
-    let source_label = match source {
-        TransitionSource::Any => "Any".to_string(),
-        TransitionSource::State(_) => "→".to_string(),
-    };
-
     Row(Modifier::new()
         .fill_max_width()
-        .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 2.0,
-            bottom: 2.0,
-        })
+        .padding_values(pad_row())
         .gap(6.0)
-        .align_items(AlignItems::CENTER)
-        .background(th.surface_container)
-        .clip_rounded(6.0)
-        .on_pointer_down({
-            let session = session.clone();
-            move |_| {
-                let mut s = session.borrow_mut();
-                s.machine_selection = MachineSelection::Transition {
-                    layer,
-                    source,
-                    transition: index,
-                };
-                request_frame();
-            }
-        }))
+        .align_items(AlignItems::CENTER))
     .child((
-        Text(format!("{source_label} {target_name}"))
-            .size(th.typography.body_medium)
-            .color(th.on_surface)
-            .modifier(Modifier::new().flex_grow(1.0)),
-        Text(cond_label)
+        Text("thr")
             .size(th.typography.label_small)
             .color(th.on_surface_variant),
-        CompactIconAction(Symbols::delete, "Remove transition", {
+        machine_scrub_number(
+            session.clone(),
+            child.threshold,
+            0.01,
+            Rc::new(move |machine, value| {
+                if let StateKind::Blend1D { children, .. } =
+                    &mut machine.layers[layer].states[state].kind
+                {
+                    if let Some(c) = children.get_mut(index) {
+                        c.threshold = value;
+                    }
+                }
+            }),
+        ),
+        Box(Modifier::new().flex_grow(1.0)).child(clip_dropdown_for_blend(
+            session.clone(),
+            machine_id,
+            layer,
+            state,
+            index,
+            child.clip,
+        )),
+        CompactIconAction(Symbols::delete, "Remove child", {
             let session = session.clone();
             move || {
                 let mut s = session.borrow_mut();
-                s.edit_active_machine("Remove transition", move |machine| {
-                    let transitions = match source {
-                        TransitionSource::Any => &mut machine.layers[layer].any_transitions,
-                        TransitionSource::State(si) => {
-                            &mut machine.layers[layer].states[si].transitions
+                s.edit_active_machine("Remove blend child", move |machine| {
+                    if let StateKind::Blend1D { children, .. } =
+                        &mut machine.layers[layer].states[state].kind
+                    {
+                        if index < children.len() {
+                            children.remove(index);
                         }
-                    };
-                    if index < transitions.len() {
-                        transitions.remove(index);
                     }
                     Ok(())
                 });
@@ -1399,47 +1473,44 @@ fn transition_row(
     ))
 }
 
-fn transition_target_dropdown(
+fn clip_dropdown_for_blend(
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
-    source_state: usize,
-    source: TransitionSource,
-    state_count: usize,
+    state: usize,
+    child_index: usize,
+    current: ClipId,
 ) -> View {
-    let items = (0..state_count)
-        .map(|target| {
-            let target_name = {
-                let s = session.borrow();
-                s.file.machines[machine_id].layers[layer]
-                    .states
-                    .get(target)
-                    .map(|st| st.name.clone())
-                    .unwrap_or_else(|| target.to_string())
-            };
-            DropdownMenuEntry::Item(DropdownMenuItem::new(target_name, {
+    let names = clip_names(&session);
+    let current_name = names
+        .iter()
+        .find(|(id, _)| *id == current)
+        .map(|(_, n)| n.clone())
+        .unwrap_or_else(|| "—".into());
+    let items = names
+        .into_iter()
+        .map(|(id, name)| {
+            DropdownMenuEntry::Item(DropdownMenuItem::new(name, {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();
-                    let ok = s.edit_active_machine("Add transition", move |machine| {
-                        add_transition(machine, layer, source, target)?;
+                    s.edit_active_machine("Blend child clip", move |machine| {
+                        if let StateKind::Blend1D { children, .. } =
+                            &mut machine.layers[layer].states[state].kind
+                        {
+                            if let Some(c) = children.get_mut(child_index) {
+                                c.clip = id;
+                            }
+                        }
                         Ok(())
                     });
-                    if ok {
-                        s.machine_selection = MachineSelection::Transition {
-                            layer,
-                            source,
-                            transition: 0,
-                        };
-                    }
                 }
             }))
         })
         .collect();
-
     dropdown(
-        format!("target_{machine_id:?}_{layer}_{source_state}"),
-        format!("{} ▾", Symbols::add.name),
+        format!("bclip_{machine_id:?}_{layer}_{state}_{child_index}"),
+        format!("{current_name} ▾"),
         items,
     )
 }
@@ -1452,7 +1523,7 @@ fn TransitionInspector(
     transition: usize,
 ) -> View {
     let th = theme();
-    let (state_count, duration, exit_time, conditions, inputs) = {
+    let (state_count, duration, exit_time, conditions, inputs, target) = {
         let s = session.borrow();
         let machine = &s.file.machines[machine_id];
         let Some(l) = machine.layers.get(layer) else {
@@ -1460,7 +1531,12 @@ fn TransitionInspector(
         };
         let transitions = match source {
             TransitionSource::Any => &l.any_transitions,
-            TransitionSource::State(si) => &l.states[si].transitions,
+            TransitionSource::State(si) => {
+                if si >= l.states.len() {
+                    return Box(Modifier::new().height(4.0));
+                }
+                &l.states[si].transitions
+            }
         };
         let Some(tr) = transitions.get(transition) else {
             return Box(Modifier::new().height(4.0));
@@ -1471,114 +1547,67 @@ fn TransitionInspector(
             tr.exit_time,
             tr.conditions.clone(),
             machine.inputs.clone(),
+            tr.to,
         )
     };
 
     let mut rows: Vec<View> = vec![
-        Text("Transition")
-            .size(th.typography.label_medium)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 2.0,
-            })),
-        Row(Modifier::new()
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
-            .gap(6.0)
-            .align_items(AlignItems::CENTER))
-        .child((
-            Text("Target")
-                .size(th.typography.body_medium)
-                .color(th.on_surface)
-                .modifier(Modifier::new().width(48.0)),
-            Box(Modifier::new().flex_grow(1.0)).child(transition_target_dropdown(
+        Text(match source {
+            TransitionSource::Any => "Transition · Any",
+            TransitionSource::State(_) => "Transition",
+        })
+        .size(th.typography.label_medium)
+        .color(th.on_surface_variant)
+        .modifier(Modifier::new().padding_values(PaddingValues {
+            left: 12.0,
+            right: 12.0,
+            top: 8.0,
+            bottom: 2.0,
+        })),
+        labeled_row(
+            "Target",
+            retarget_dropdown(
                 session.clone(),
                 machine_id,
                 layer,
-                0,
                 source,
+                transition,
+                target,
                 state_count,
-            )),
-        )),
-        Row(Modifier::new()
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
-            .gap(6.0)
-            .align_items(AlignItems::CENTER))
-        .child((
-            Text("Duration")
-                .size(th.typography.body_medium)
-                .color(th.on_surface)
-                .modifier(Modifier::new().width(48.0)),
+            ),
+        ),
+        labeled_row(
+            "Duration",
             machine_scrub_number(
                 session.clone(),
                 duration,
                 1.0,
                 Rc::new(move |machine, value| {
-                    let transitions = match source {
-                        TransitionSource::Any => &mut machine.layers[layer].any_transitions,
-                        TransitionSource::State(si) => {
-                            &mut machine.layers[layer].states[si].transitions
-                        }
-                    };
-                    if let Some(tr) = transitions.get_mut(transition) {
+                    if let Ok(tr) = transition_mut(machine, layer, source, transition) {
                         tr.duration = value.max(0.0);
                     }
                 }),
             ),
-        )),
-    ];
-
-    rows.push(
+        ),
         Row(Modifier::new()
             .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
+            .padding_values(pad_row())
             .gap(6.0)
             .align_items(AlignItems::CENTER))
         .child((
-            Text("Exit time")
+            Text("Exit")
                 .size(th.typography.body_medium)
-                .color(th.on_surface)
                 .modifier(Modifier::new().width(48.0)),
             chip("When finished", exit_time.is_some(), {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();
-                    s.edit_active_machine("Transition", move |machine| {
-                        let transitions = match source {
-                            TransitionSource::Any => &mut machine.layers[layer].any_transitions,
-                            TransitionSource::State(si) => {
-                                &mut machine.layers[layer].states[si].transitions
-                            }
-                        };
-                        if let Some(tr) = transitions.get_mut(transition) {
-                            tr.exit_time = match tr.exit_time {
-                                Some(v) => {
-                                    if v >= 1.0 {
-                                        None
-                                    } else {
-                                        Some(1.0)
-                                    }
-                                }
-                                None => Some(1.0),
+                    s.edit_active_machine("Transition exit", move |machine| {
+                        if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                            tr.exit_time = if tr.exit_time.is_some() {
+                                None
+                            } else {
+                                Some(1.0)
                             };
                         }
                         Ok(())
@@ -1586,47 +1615,26 @@ fn TransitionInspector(
                 }
             }),
         )),
-    );
+    ];
 
     if let Some(exit) = exit_time {
-        rows.push(
-            Row(Modifier::new()
-                .fill_max_width()
-                .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 2.0,
-                    bottom: 2.0,
-                })
-                .gap(6.0)
-                .align_items(AlignItems::CENTER))
-            .child((
-                Text("Value")
-                    .size(th.typography.body_medium)
-                    .color(th.on_surface)
-                    .modifier(Modifier::new().width(48.0)),
-                machine_scrub_number(
-                    session.clone(),
-                    exit,
-                    0.01,
-                    Rc::new(move |machine, value| {
-                        let transitions = match source {
-                            TransitionSource::Any => &mut machine.layers[layer].any_transitions,
-                            TransitionSource::State(si) => {
-                                &mut machine.layers[layer].states[si].transitions
-                            }
-                        };
-                        if let Some(tr) = transitions.get_mut(transition) {
-                            tr.exit_time = Some(value.clamp(0.0, 1.0));
-                        }
-                    }),
-                ),
-            )),
-        );
+        rows.push(labeled_row(
+            "Value",
+            machine_scrub_number(
+                session.clone(),
+                exit,
+                0.01,
+                Rc::new(move |machine, value| {
+                    if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                        tr.exit_time = Some(value.clamp(0.0, 1.0));
+                    }
+                }),
+            ),
+        ));
     }
 
     rows.push(
-        Text("Conditions")
+        Text("Conditions (AND)")
             .size(th.typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -1638,56 +1646,21 @@ fn TransitionInspector(
     );
 
     for (index, condition) in conditions.iter().enumerate() {
-        let label = condition_label(&inputs, condition);
-        rows.push(
-            Row(Modifier::new()
-                .fill_max_width()
-                .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 2.0,
-                    bottom: 2.0,
-                })
-                .gap(6.0)
-                .align_items(AlignItems::CENTER))
-            .child((
-                Text(label)
-                    .size(th.typography.body_medium)
-                    .color(th.on_surface)
-                    .modifier(Modifier::new().flex_grow(1.0)),
-                CompactIconAction(Symbols::delete, "Remove condition", {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.edit_active_machine("Remove condition", move |machine| {
-                            let transitions = match source {
-                                TransitionSource::Any => &mut machine.layers[layer].any_transitions,
-                                TransitionSource::State(si) => {
-                                    &mut machine.layers[layer].states[si].transitions
-                                }
-                            };
-                            if let Some(tr) = transitions.get_mut(transition)
-                                && index < tr.conditions.len()
-                            {
-                                tr.conditions.remove(index);
-                            }
-                            Ok(())
-                        });
-                    }
-                }),
-            )),
-        );
+        rows.push(condition_editor_row(
+            session.clone(),
+            layer,
+            source,
+            transition,
+            index,
+            condition.clone(),
+            &inputs,
+        ));
     }
 
     rows.push(
         Row(Modifier::new()
             .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
+            .padding_values(pad_row())
             .gap(6.0)
             .align_items(AlignItems::CENTER))
         .child((
@@ -1695,7 +1668,7 @@ fn TransitionInspector(
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
-            Box(Modifier::new().flex_grow(0.0)).child(condition_dropdown(
+            Box(Modifier::new()).child(condition_dropdown(
                 session.clone(),
                 machine_id,
                 layer,
@@ -1706,65 +1679,143 @@ fn TransitionInspector(
         )),
     );
 
-    Column(Modifier::new().fill_max_width()).child(rows)
-}
-
-fn condition_dropdown(
-    session: SessionRef,
-    machine_id: MachineId,
-    layer: usize,
-    source: TransitionSource,
-    transition: usize,
-    inputs: Vec<InputDef>,
-) -> View {
-    let items = inputs
-        .iter()
-        .map(|input| {
-            let name = input.name.clone();
-            let idx = {
-                let s = session.borrow();
-                s.file.machines[machine_id]
-                    .inputs
-                    .iter()
-                    .position(|x| x.name == name)
-                    .unwrap_or(0)
-            };
-            DropdownMenuEntry::Item(DropdownMenuItem::new(name, {
+    rows.push(
+        Row(Modifier::new().padding_values(pad_row())).child(CompactIconAction(
+            Symbols::delete,
+            "Delete transition",
+            {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();
-                    s.edit_active_machine("Add condition", move |machine| {
-                        let condition = default_condition(machine, idx)?;
-                        add_condition(machine, layer, source, transition, condition)?;
+                    let ok = s.edit_active_machine("Remove transition", move |machine| {
+                        remove_transition(machine, layer, source, transition)?;
+                        Ok(())
+                    });
+                    if ok {
+                        s.machine_selection = MachineSelection::None;
+                    }
+                }
+            },
+        )),
+    );
+
+    Column(Modifier::new().fill_max_width()).child(rows)
+}
+
+fn condition_editor_row(
+    session: SessionRef,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+    index: usize,
+    condition: Condition,
+    inputs: &[InputDef],
+) -> View {
+    let th = theme();
+    let mut parts: Vec<View> = vec![
+        Text(condition_label(inputs, &condition))
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().flex_grow(1.0)),
+    ];
+
+    match condition {
+        Condition::BoolIs { value, .. } => {
+            parts.push(chip(if value { "true" } else { "false" }, true, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Edit condition", move |machine| {
+                        if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                            if let Some(Condition::BoolIs { value: v, .. }) =
+                                tr.conditions.get_mut(index)
+                            {
+                                *v = !value;
+                            }
+                        }
                         Ok(())
                     });
                 }
-            }))
-        })
-        .collect();
+            }));
+        }
+        Condition::NumberCmp { op, value, .. } => {
+            parts.push(chip(cmp_label(op), false, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Edit condition", move |machine| {
+                        if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                            if let Some(Condition::NumberCmp { op: o, .. }) =
+                                tr.conditions.get_mut(index)
+                            {
+                                *o = next_cmp(*o);
+                            }
+                        }
+                        Ok(())
+                    });
+                }
+            }));
+            parts.push(machine_scrub_number(
+                session.clone(),
+                value,
+                0.01,
+                Rc::new(move |machine, v| {
+                    if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                        if let Some(Condition::NumberCmp { value, .. }) =
+                            tr.conditions.get_mut(index)
+                        {
+                            *value = v;
+                        }
+                    }
+                }),
+            ));
+        }
+        Condition::Triggered { .. } => {}
+    }
 
-    dropdown(
-        format!("cond_{machine_id:?}_{layer}_{transition:?}"),
-        format!("{} ▾", Symbols::add.name),
-        items,
-    )
+    parts.push(CompactIconAction(Symbols::delete, "Remove condition", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            s.edit_active_machine("Remove condition", move |machine| {
+                if let Ok(tr) = transition_mut(machine, layer, source, transition) {
+                    if index < tr.conditions.len() {
+                        tr.conditions.remove(index);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }));
+
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding_values(pad_row())
+        .gap(6.0)
+        .align_items(AlignItems::CENTER))
+    .child(parts)
 }
 
-fn condition_label(inputs: &[InputDef], condition: &Condition) -> String {
-    match condition {
-        Condition::BoolIs { input, value } => format!("{} == {value}", input_name(inputs, *input)),
-        Condition::NumberCmp { input, op, value } => {
-            format!("{} {:?} {value:.2}", input_name(inputs, *input), op)
-        }
-        Condition::Triggered { input } => format!("{} fired", input_name(inputs, *input)),
+fn cmp_label(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Eq => "==",
+        CmpOp::Ne => "!=",
+        CmpOp::Lt => "<",
+        CmpOp::Le => "≤",
+        CmpOp::Gt => ">",
+        CmpOp::Ge => "≥",
     }
 }
 
-fn input_name(inputs: &[InputDef], index: usize) -> String {
-    inputs
-        .get(index)
-        .map(|i| i.name.clone())
-        .unwrap_or_else(|| "?".into())
+fn next_cmp(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Ge => CmpOp::Gt,
+        CmpOp::Gt => CmpOp::Le,
+        CmpOp::Le => CmpOp::Lt,
+        CmpOp::Lt => CmpOp::Eq,
+        CmpOp::Eq => CmpOp::Ne,
+        CmpOp::Ne => CmpOp::Ge,
+    }
 }
 
 fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
@@ -2087,6 +2138,367 @@ fn listener_action_label(inputs: &[InputDef], action: &ListenerAction) -> String
     }
 }
 
+fn set_kind_action(
+    session: SessionRef,
+    layer: usize,
+    state: usize,
+    kind: StateKind,
+) -> impl Fn() + 'static {
+    move || {
+        let mut s = session.borrow_mut();
+        s.edit_active_machine("Change state", |machine| {
+            machine.layers[layer].states[state].kind = kind.clone();
+            Ok(())
+        });
+    }
+}
+
+fn set_state_kind(
+    session: SessionRef,
+    layer: usize,
+    state: usize,
+    map: impl Fn(StateKind) -> StateKind,
+) {
+    let mut s = session.borrow_mut();
+    s.edit_active_machine("Change state", move |machine| {
+        let kind = machine.layers[layer].states[state].kind.clone();
+        machine.layers[layer].states[state].kind = map(kind);
+        Ok(())
+    });
+}
+
+fn number_input_index(inputs: &[InputDef]) -> Option<usize> {
+    inputs
+        .iter()
+        .position(|input| matches!(input.kind, InputKind::Number { .. }))
+}
+
+fn clip_names(session: &SessionRef) -> Vec<(ClipId, String)> {
+    let s = session.borrow();
+    s.file
+        .clip_order
+        .iter()
+        .map(|&id| {
+            let name = s
+                .file
+                .clips
+                .get(id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "—".into());
+            (id, name)
+        })
+        .collect()
+}
+
+fn clip_dropdown(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    state: usize,
+    current: ClipId,
+) -> View {
+    let names = clip_names(&session);
+    let current_name = names
+        .iter()
+        .find(|(id, _)| *id == current)
+        .map(|(_, n)| n.clone())
+        .unwrap_or_else(|| "No clip".into());
+    let items = names
+        .into_iter()
+        .map(|(id, name)| {
+            DropdownMenuEntry::Item(DropdownMenuItem::new(name, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Change state", move |machine| {
+                        let st = &mut machine.layers[layer].states[state];
+                        let (speed, loop_mode) = match &st.kind {
+                            StateKind::Clip {
+                                speed, loop_mode, ..
+                            } => (*speed, *loop_mode),
+                            _ => (1.0, LoopMode::Once),
+                        };
+                        st.kind = StateKind::Clip {
+                            clip: id,
+                            speed,
+                            loop_mode,
+                        };
+                        Ok(())
+                    });
+                }
+            }))
+        })
+        .collect();
+    dropdown(
+        format!("clip_{machine_id:?}_{layer}_{state}"),
+        format!("{current_name} ▾"),
+        items,
+    )
+}
+
+fn blend_input_dropdown(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    state: usize,
+    current: usize,
+) -> View {
+    let inputs = session.borrow().file.machines[machine_id].inputs.clone();
+    let current_name = inputs
+        .get(current)
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| "—".into());
+    let items = inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| matches!(i.kind, InputKind::Number { .. }))
+        .map(|(idx, i)| {
+            DropdownMenuEntry::Item(DropdownMenuItem::new(i.name.clone(), {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Change state", move |machine| {
+                        let st = &mut machine.layers[layer].states[state];
+                        let children = match &st.kind {
+                            StateKind::Blend1D { children, .. } => children.clone(),
+                            _ => Vec::new(),
+                        };
+                        st.kind = StateKind::Blend1D {
+                            input: idx,
+                            children,
+                        };
+                        Ok(())
+                    });
+                }
+            }))
+        })
+        .collect();
+    dropdown(
+        format!("blend_{machine_id:?}_{layer}_{state}"),
+        format!("{current_name} ▾"),
+        items,
+    )
+}
+
+fn transition_row(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    source: TransitionSource,
+    index: usize,
+    target: usize,
+    conditions: &[Condition],
+) -> View {
+    let th = theme();
+    let target_name = session.borrow().file.machines[machine_id].layers[layer]
+        .states
+        .get(target)
+        .map(|st| st.name.clone())
+        .unwrap_or_else(|| "—".into());
+    let cond_label = if conditions.is_empty() {
+        "no conditions".into()
+    } else {
+        format!(
+            "{} condition{}",
+            conditions.len(),
+            if conditions.len() == 1 { "" } else { "s" }
+        )
+    };
+    let source_label = match source {
+        TransitionSource::Any => "Any →",
+        TransitionSource::State(_) => "→",
+    };
+
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding_values(pad_row())
+        .gap(6.0)
+        .align_items(AlignItems::CENTER)
+        .background(th.surface_container)
+        .clip_rounded(6.0)
+        .on_pointer_down({
+            let session = session.clone();
+            move |_| {
+                let mut s = session.borrow_mut();
+                s.machine_selection = MachineSelection::Transition {
+                    layer,
+                    source,
+                    transition: index,
+                };
+                request_frame();
+            }
+        }))
+    .child((
+        Text(format!("{source_label} {target_name}"))
+            .size(th.typography.body_medium)
+            .modifier(Modifier::new().flex_grow(1.0)),
+        Text(cond_label)
+            .size(th.typography.label_small)
+            .color(th.on_surface_variant),
+        CompactIconAction(Symbols::delete, "Remove transition", {
+            let session = session.clone();
+            move || {
+                let mut s = session.borrow_mut();
+                s.edit_active_machine("Remove transition", move |machine| {
+                    remove_transition(machine, layer, source, index)?;
+                    Ok(())
+                });
+            }
+        }),
+    ))
+}
+
+/// `add_mode`: true = add new transition to target; false unused (use retarget_dropdown).
+fn transition_target_dropdown(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    _source_state: usize,
+    source: TransitionSource,
+    state_count: usize,
+    add_mode: bool,
+) -> View {
+    let items = (0..state_count)
+        .map(|target| {
+            let target_name = session.borrow().file.machines[machine_id].layers[layer]
+                .states
+                .get(target)
+                .map(|st| st.name.clone())
+                .unwrap_or_else(|| target.to_string());
+            DropdownMenuEntry::Item(DropdownMenuItem::new(target_name, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    if add_mode {
+                        let ok = s.edit_active_machine("Add transition", move |machine| {
+                            add_transition(machine, layer, source, target)?;
+                            Ok(())
+                        });
+                        if ok {
+                            if let Some(m) = s.file.machines.get(machine_id) {
+                                let n = match source {
+                                    TransitionSource::Any => m.layers[layer].any_transitions.len(),
+                                    TransitionSource::State(si) => {
+                                        m.layers[layer].states[si].transitions.len()
+                                    }
+                                };
+                                s.machine_selection = MachineSelection::Transition {
+                                    layer,
+                                    source,
+                                    transition: n.saturating_sub(1),
+                                };
+                            }
+                        }
+                    }
+                }
+            }))
+        })
+        .collect();
+    dropdown(
+        format!("target_add_{machine_id:?}_{layer}_{source:?}"),
+        format!("{} ▾", Symbols::add.name),
+        items,
+    )
+}
+
+fn retarget_dropdown(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+    current: usize,
+    state_count: usize,
+) -> View {
+    let current_name = session.borrow().file.machines[machine_id].layers[layer]
+        .states
+        .get(current)
+        .map(|st| st.name.clone())
+        .unwrap_or_else(|| "—".into());
+    let items = (0..state_count)
+        .map(|target| {
+            let target_name = session.borrow().file.machines[machine_id].layers[layer]
+                .states
+                .get(target)
+                .map(|st| st.name.clone())
+                .unwrap_or_else(|| target.to_string());
+            DropdownMenuEntry::Item(DropdownMenuItem::new(target_name, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Retarget transition", move |machine| {
+                        set_transition_target(machine, layer, source, transition, target)?;
+                        Ok(())
+                    });
+                }
+            }))
+        })
+        .collect();
+    dropdown(
+        format!("retarget_{machine_id:?}_{layer}_{transition}"),
+        format!("{current_name} ▾"),
+        items,
+    )
+}
+
+fn condition_dropdown(
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+    inputs: Vec<InputDef>,
+) -> View {
+    if inputs.is_empty() {
+        return Text("add inputs first")
+            .size(theme().typography.label_small)
+            .color(theme().on_surface_variant);
+    }
+    let items = inputs
+        .iter()
+        .enumerate()
+        .map(|(idx, input)| {
+            DropdownMenuEntry::Item(DropdownMenuItem::new(input.name.clone(), {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Add condition", move |machine| {
+                        let condition = default_condition(machine, idx)?;
+                        add_condition(machine, layer, source, transition, condition)?;
+                        Ok(())
+                    });
+                }
+            }))
+        })
+        .collect();
+    dropdown(
+        format!("cond_{machine_id:?}_{layer}_{transition:?}"),
+        format!("{} ▾", Symbols::add.name),
+        items,
+    )
+}
+
+fn condition_label(inputs: &[InputDef], condition: &Condition) -> String {
+    match condition {
+        Condition::BoolIs { input, value } => format!("{} == {value}", input_name(inputs, *input)),
+        Condition::NumberCmp { input, op, value } => {
+            format!(
+                "{} {} {value:.2}",
+                input_name(inputs, *input),
+                cmp_label(*op)
+            )
+        }
+        Condition::Triggered { input } => format!("{} fired", input_name(inputs, *input)),
+    }
+}
+
+fn input_name(inputs: &[InputDef], index: usize) -> String {
+    inputs
+        .get(index)
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| "?".into())
+}
+
 fn chip(label: &'static str, active: bool, on_click: impl Fn() + 'static) -> View {
     let th = theme();
     Text(label)
@@ -2114,64 +2526,105 @@ fn chip(label: &'static str, active: bool, on_click: impl Fn() + 'static) -> Vie
         )
 }
 
-/// Scrubbable number that writes back into the machine via `edit`. The drag
-/// gesture is tracked in `session.machine_preview_drag`.
+fn pad_row() -> PaddingValues {
+    PaddingValues {
+        left: 12.0,
+        right: 8.0,
+        top: 2.0,
+        bottom: 2.0,
+    }
+}
+
+fn labeled_row(label: &'static str, child: View) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding_values(pad_row())
+        .gap(6.0)
+        .align_items(AlignItems::CENTER))
+    .child((
+        Text(label)
+            .size(th.typography.body_medium)
+            .modifier(Modifier::new().width(56.0)),
+        Box(Modifier::new().flex_grow(1.0)).child(child),
+    ))
+}
+
 type MachineScrub = Rc<dyn Fn(&mut Machine, f64)>;
 
 fn machine_scrub_number(session: SessionRef, value: f64, step: f64, edit: MachineScrub) -> View {
     let th = theme();
     let label = format!("{value:.2}");
-    let key = remember_with_key(format!("scrub_{label}_{value}"), || 0u8);
-    let _ = key;
-
     Text(label)
         .size(th.typography.body_medium)
         .color(th.primary)
         .modifier(
             Modifier::new()
                 .min_width(52.0)
+                .cursor(repose_core::CursorIcon::EwResize)
                 .on_pointer_down({
                     let session = session.clone();
                     move |pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        s.machine_preview_drag = Some(MachinePreviewDrag {
-                            input: usize::MAX,
-                            origin: value,
-                            press_x: pe.position.x,
-                        });
+                        session
+                            .borrow_mut()
+                            .begin_machine_field_scrub(value, pe.position.x);
                     }
                 })
                 .on_pointer_move({
                     let session = session.clone();
                     let edit = edit.clone();
                     move |pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        let Some(drag) = s.machine_preview_drag else {
-                            return;
-                        };
-                        if drag.input != usize::MAX {
-                            return;
-                        }
-                        let dx = (pe.position.x - drag.press_x) as f64;
-                        let mult = if pe.modifiers.shift { 0.1 } else { 1.0 };
-                        let new_value = drag.origin + dx * step * mult;
                         let edit = edit.clone();
-                        s.edit_active_machine("Edit machine", move |machine| {
-                            edit(machine, new_value);
-                            Ok(())
-                        });
+                        session.borrow_mut().scrub_machine_field(
+                            pe.position.x,
+                            step,
+                            pe.modifiers.shift,
+                            move |machine, v| edit(machine, v),
+                        );
                     }
                 })
                 .on_pointer_up({
                     let session = session.clone();
-                    move |_pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        if s.machine_preview_drag
-                            .is_some_and(|drag| drag.input == usize::MAX)
-                        {
-                            s.machine_preview_drag = None;
-                        }
-                        request_frame();
+                    move |_| {
+                        session.borrow_mut().end_machine_field_scrub();
+                    }
+                }),
+        )
+}
+
+fn preview_scrub_number(session: SessionRef, input: usize, value: f64, step: f64) -> View {
+    let th = theme();
+    Text(format!("{value:.2}"))
+        .size(th.typography.body_medium)
+        .color(th.primary)
+        .modifier(
+            Modifier::new()
+                .min_width(52.0)
+                .cursor(repose_core::CursorIcon::EwResize)
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |pe: PointerEvent| {
+                        session.borrow_mut().begin_preview_number_scrub(
+                            input,
+                            value,
+                            pe.position.x,
+                        );
+                    }
+                })
+                .on_pointer_move({
+                    let session = session.clone();
+                    move |pe: PointerEvent| {
+                        session.borrow_mut().scrub_preview_number(
+                            pe.position.x,
+                            step,
+                            pe.modifiers.shift,
+                        );
+                    }
+                })
+                .on_pointer_up({
+                    let session = session.clone();
+                    move |_| {
+                        session.borrow_mut().end_preview_number_scrub();
                     }
                 }),
         )
@@ -2221,7 +2674,7 @@ fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
     if pts.len() < 2 {
         return;
     }
-    let t = 1.0; // half thickness (px)
+    let t = 1.0;
     let c = [
         color.0 as f32 / 255.0,
         color.1 as f32 / 255.0,

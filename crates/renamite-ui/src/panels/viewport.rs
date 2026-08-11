@@ -214,6 +214,24 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 
                         focus.request_focus();
                         let world = s.viewport.view.screen_to_world(pos);
+                        if s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled
+                        {
+                            // Still allow selection with Alt for listener authoring.
+                            if pe.modifiers.alt {
+                                dispatch_canvas(
+                                    &mut s,
+                                    CanvasEvent::PointerDown {
+                                        pos: world,
+                                        button: map_button(&pe),
+                                    },
+                                    map_modifiers(&pe),
+                                );
+                            } else {
+                                s.engine_pointer_down(world);
+                            }
+                            return;
+                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerDown {
@@ -238,6 +256,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pos);
+                        if s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled
+                        {
+                            if !pe.modifiers.alt {
+                                s.engine_pointer_move(world);
+                                return;
+                            }
+                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerMove { pos: world },
@@ -258,6 +284,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pe_pos(&pe));
+                        if s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled
+                        {
+                            if !pe.modifiers.alt {
+                                s.engine_pointer_up(world);
+                                return;
+                            }
+                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerUp {
@@ -326,7 +360,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     ZStack(Modifier::new().fill_max_size()).child((
         main_view,
         ViewportStageHud(session.clone()),
-        ViewportHint(),
+        ViewportHint(session.clone()),
         ViewportControls(session),
     ))
 }
@@ -342,7 +376,7 @@ fn HudSurface(content: View) -> View {
 }
 
 fn ViewportStageHud(session: SessionRef) -> View {
-    let (w, h, frame, tool_label, sel_count, record) = {
+    let (w, h, frame, tool_label, sel_count, record, is_interact, states) = {
         let s = session.borrow();
         let comp = &s.file.document.compositions[s.file.document.main];
         let label = match s.active_tool {
@@ -364,6 +398,8 @@ fn ViewportStageHud(session: SessionRef) -> View {
             label,
             s.selection.nodes.len(),
             s.record,
+            s.mode == crate::session::EditorMode::Interact,
+            s.engine.active_machine_states(),
         )
     };
 
@@ -375,7 +411,40 @@ fn ViewportStageHud(session: SessionRef) -> View {
             .padding(8.0)
             .gap(8.0)
             .align_items(AlignItems::CENTER))
-        .child(if record {
+        .child(if is_interact {
+            let names = states
+                .as_deref()
+                .map(|st| {
+                    let s = session.borrow();
+                    st.iter()
+                        .enumerate()
+                        .filter_map(|(li, si)| {
+                            s.active_machine.and_then(|id| {
+                                s.file
+                                    .machines
+                                    .get(id)
+                                    .and_then(|m| m.layers.get(li))
+                                    .and_then(|l| l.states.get(*si))
+                                    .map(|st| st.name.clone())
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
+                .unwrap_or_default();
+            vec![
+                Text("▶ Interact · Preview")
+                    .size(theme().typography.label_medium)
+                    .color(theme().primary),
+                Text(if names.is_empty() {
+                    "waiting".into()
+                } else {
+                    names
+                })
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant),
+            ]
+        } else if record {
             vec![
                 Text("● REC")
                     .size(theme().typography.label_medium)
@@ -404,17 +473,23 @@ fn ViewportStageHud(session: SessionRef) -> View {
     ))
 }
 
-fn ViewportHint() -> View {
+fn ViewportHint(session: SessionRef) -> View {
     // The compact canvas floats the tool palette over the same corner, so the
     // hint would be hidden under it on phones.
     if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
         return ZStack(Modifier::new());
     }
+    let is_interact = session.borrow().mode == crate::session::EditorMode::Interact;
+    let text = if is_interact {
+        "Click shapes to fire listeners · Alt+click to select · Preview inputs in the panel"
+    } else {
+        "Middle or Space drag to pan · Wheel to zoom · F to fit · V/P/R/E tools"
+    };
     Box(Modifier::new()
         .absolute()
         .offset(Some(16.0), None, None, Some(16.0)))
     .child(HudSurface(
-        Text("Middle or Space drag to pan · Wheel to zoom · F to fit · V/P/R/E tools")
+        Text(text)
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding(8.0)),
