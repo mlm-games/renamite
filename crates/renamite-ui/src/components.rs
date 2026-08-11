@@ -1,13 +1,16 @@
 use repose_core::{
-    AlignItems, Modifier, PaddingValues, View, remember_state_with_key, remember_with_key,
-    request_frame, theme,
+    AlignItems, Modifier, PaddingValues, TextFieldLineLimits, View, remember_state_with_key,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
     FilledTonalIconButton, IconButton, IconButtonConfig, Surface, SurfaceConfig, TooltipBox,
     TooltipConfig, TooltipState,
 };
+use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::symbols::Symbols;
 use crate::symbols::AppIcon;
@@ -227,4 +230,63 @@ pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'st
         .clip_rounded(999.0)
         .on_pointer_down(move |_| on_click()))
     .child(Text(label).size(th.typography.label_medium).color(fg))
+}
+
+/// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).
+///
+/// The model `value` is synced into the field state on recomposition; edits flow
+/// back through `on_change`, so the field never fights the value-driven model
+/// and pasted text stays visible.
+pub fn AppTextField(
+    key: impl Into<String>,
+    value: String,
+    hint: impl Into<String>,
+    single_line: bool,
+    min_height: f32,
+    on_change: impl Fn(String) + 'static,
+) -> View {
+    let key = key.into();
+    let hint = hint.into();
+    let tf_state = remember_with_key(key, || RefCell::new(TextFieldState::new()));
+    {
+        let mut st = tf_state.borrow_mut();
+        if st.text != value {
+            st.text = value.clone();
+            let len = st.text.len();
+            st.selection = len..len;
+        }
+    }
+    let th = theme();
+    BasicTextField(
+        tf_state,
+        Modifier::new()
+            .fill_max_width()
+            .height(min_height)
+            .padding_values(PaddingValues {
+                left: 8.0,
+                right: 8.0,
+                top: 6.0,
+                bottom: 6.0,
+            })
+            .background(th.surface_container_highest)
+            .clip_rounded(8.0),
+        hint,
+        TextFieldConfig {
+            line_limits: if single_line {
+                TextFieldLineLimits::SingleLine
+            } else {
+                TextFieldLineLimits::MultiLine {
+                    min_height_in_lines: 2,
+                    max_height_in_lines: 8,
+                }
+            },
+            on_change: Some(Rc::new(on_change)),
+            text_style: repose_core::TextStyle {
+                font_size: th.typography.body_medium,
+                color: Some(th.on_surface),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
 }

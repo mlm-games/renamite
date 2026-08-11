@@ -24,7 +24,7 @@ use repose_core::{
 };
 use repose_material::material3::{
     Button, ButtonConfig, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
-    MenuState, TextField, TextFieldConfig,
+    MenuState,
 };
 use repose_ui::overlay::OverlayHandle;
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
@@ -273,16 +273,18 @@ fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(TextField(
-            Modifier::new().fill_max_width(),
+        .child(crate::components::AppTextField(
+            format!("machine_name_{machine_id:?}"),
             name,
+            "Machine name",
+            true,
+            36.0,
             {
                 let session = session.clone();
                 move |text: String| {
                     session.borrow_mut().rename_active_machine(text);
                 }
             },
-            TextFieldConfig::default(),
         )),
         CollapsibleSection(
             "sm_inputs",
@@ -528,9 +530,12 @@ fn InputRow(
         }
     }
 
-    controls.push(Box(Modifier::new().flex_grow(1.0)).child(TextField(
-        Modifier::new().width(120.0),
+    controls.push(Box(Modifier::new().flex_grow(1.0)).child(crate::components::AppTextField(
+        format!("machine_input_name_{index}"),
         name,
+        "Name",
+        true,
+        32.0,
         {
             let session = session.clone();
             move |text: String| {
@@ -541,7 +546,6 @@ fn InputRow(
                 });
             }
         },
-        TextFieldConfig::default(),
     )));
 
     if removable {
@@ -1127,9 +1131,12 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(TextField(
-            Modifier::new().fill_max_width(),
-            name,
+        .child(crate::components::AppTextField(
+            format!("machine_state_name_{layer}_{state}"),
+            name.clone(),
+            "State name",
+            true,
+            36.0,
             {
                 let session = session.clone();
                 move |text: String| {
@@ -1140,7 +1147,6 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
                     });
                 }
             },
-            TextFieldConfig::default(),
         )),
         Row(Modifier::new()
             .fill_max_width()

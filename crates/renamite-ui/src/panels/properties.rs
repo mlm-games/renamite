@@ -33,8 +33,7 @@ use repose_core::{
     request_frame, theme,
 };
 use repose_material::material3::{
-    IconButton, IconButtonConfig, TextField, TextFieldConfig, TooltipBox, TooltipConfig,
-    TooltipState,
+    IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, FlowRow, Row, Text, TextStyle, ViewExt};
@@ -1212,9 +1211,12 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                     top: 0.0,
                     bottom: 4.0,
                 }))
-            .child(TextField(
-                Modifier::new().fill_max_width(),
+            .child(crate::components::AppTextField(
+                format!("text_content_{text_id:?}"),
                 content,
+                "Text content",
+                false,
+                96.0,
                 {
                     let session = session.clone();
                     move |text: String| {
@@ -1228,10 +1230,6 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                             ToolOutput::CommitTransaction,
                         ]);
                     }
-                },
-                TextFieldConfig {
-                    single_line: false,
-                    ..Default::default()
                 },
             )),
             Text("Font")

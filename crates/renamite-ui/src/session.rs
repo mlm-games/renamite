@@ -708,11 +708,15 @@ impl Session {
         created
     }
 
-    fn paste_clipboard(&mut self) {
+    pub fn paste_clipboard(&mut self) {
         let Some(trees) = self.clipboard.clone() else {
+            self.status = Some("Clipboard empty".into());
+            self.repaint();
             return;
         };
         if trees.is_empty() {
+            self.status = Some("Clipboard empty".into());
+            self.repaint();
             return;
         }
         let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Paste");
@@ -824,6 +828,67 @@ impl Session {
             self.expanded_layers.clear();
         }
         self.repaint();
+    }
+
+    /// Commit the active layers-panel drag. Safe to call even when the pointer
+    /// left the list (no-op), and rejects cycle-producing moves.
+    pub fn finish_layer_drag(&mut self) {
+        let Some(drag) = self.layer_drag.take() else {
+            return;
+        };
+        let rows = renamite_behavior_common::layers::flatten_layers(
+            &self.file.document,
+            self.file.document.main,
+            &self.expanded_layers,
+        );
+        let Some(target) = rows.get(drag.hover_row) else {
+            self.repaint();
+            return;
+        };
+        if drag.id == target.id {
+            self.repaint();
+            return;
+        }
+        // Block parenting under self / moving into own subtree.
+        if renamite_behavior_common::layers::is_ancestor(
+            &self.file.document,
+            drag.id,
+            target.id,
+        ) {
+            self.repaint();
+            return;
+        }
+        if let renamite_model::Parent::Node(p) = target.parent {
+            if p == drag.id
+                || renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, p)
+            {
+                self.repaint();
+                return;
+            }
+        }
+
+        let Some(cmd) = renamite_behavior_common::layers::drop_command(
+            drag.id,
+            target,
+            drag.before,
+            drag.as_child,
+        ) else {
+            self.repaint();
+            return;
+        };
+        if renamite_behavior_common::layers::move_is_noop(&self.file.document, &cmd) {
+            self.repaint();
+            return;
+        }
+        // Auto-expand when nesting.
+        if drag.as_child {
+            self.expanded_layers.insert(target.id);
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Reorder layer".into()),
+            ToolOutput::Commands(smallvec![cmd]),
+            ToolOutput::CommitTransaction,
+        ]);
     }
 
     pub fn bump(&mut self) {
@@ -2164,6 +2229,16 @@ pub fn undo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.undo(&mut pm).is_ok() {
         s.dirty = true;
+        // Drop selection entries that no longer exist / aren't attached.
+        s.selection.nodes.retain(|&id| {
+            s.file.document.nodes.get(id).and_then(|n| n.parent).is_some()
+                || s.file
+                    .document
+                    .compositions
+                    .get(s.file.document.main)
+                    .map(|c| c.children.contains(&id))
+                    .unwrap_or(false)
+        });
     }
     sync_playback_range(s);
 }
@@ -2174,6 +2249,16 @@ pub fn redo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.redo(&mut pm).is_ok() {
         s.dirty = true;
+        // Drop selection entries that no longer exist / aren't attached.
+        s.selection.nodes.retain(|&id| {
+            s.file.document.nodes.get(id).and_then(|n| n.parent).is_some()
+                || s.file
+                    .document
+                    .compositions
+                    .get(s.file.document.main)
+                    .map(|c| c.children.contains(&id))
+                    .unwrap_or(false)
+        });
     }
     sync_playback_range(s);
 }

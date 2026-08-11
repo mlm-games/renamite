@@ -64,96 +64,98 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     let session = session.clone();
                     move |ke: KeyEvent| {
                         let mut s = session.borrow_mut();
-                        match ke.key {
-                            ReposeKey::Space => {
-                                s.viewport.space_held = ke.event_type == KeyEventType::Down;
+                        if ke.event_type != KeyEventType::Down {
+                            // still track Space up/down
+                            if matches!(ke.key, ReposeKey::Space) {
+                                s.viewport.space_held = false;
                                 return true;
                             }
-                            ReposeKey::Character('f' | 'F')
-                                if ke.event_type == KeyEventType::Down =>
-                            {
+                            return false;
+                        }
+
+                        let cmd = ke.modifiers.command; // ctrl on Win/Linux, meta on macOS
+
+                        // --- App shortcuts (consume so tools don't also see them) ---
+                        match ke.key {
+                            ReposeKey::Character('z' | 'Z') if cmd && ke.modifiers.shift => {
+                                crate::session::redo_cmd(&mut s);
+                                s.bump();
+                                return true;
+                            }
+                            ReposeKey::Character('z' | 'Z') if cmd => {
+                                crate::session::undo_cmd(&mut s);
+                                s.bump();
+                                return true;
+                            }
+                            ReposeKey::Character('y' | 'Y') if cmd => {
+                                crate::session::redo_cmd(&mut s);
+                                s.bump();
+                                return true;
+                            }
+                            ReposeKey::Character('c' | 'C') if cmd => {
+                                s.copy_selection();
+                                return true;
+                            }
+                            ReposeKey::Character('x' | 'X') if cmd => {
+                                s.cut_selection();
+                                return true;
+                            }
+                            ReposeKey::Character('v' | 'V') if cmd => {
+                                s.paste_clipboard();
+                                return true;
+                            }
+                            ReposeKey::Character('d' | 'D') if cmd => {
+                                s.duplicate_selection();
+                                return true;
+                            }
+                            ReposeKey::Space => {
+                                s.viewport.space_held = true;
+                                return true;
+                            }
+                            ReposeKey::Character('f' | 'F') if !cmd => {
                                 s.viewport.fit_pending = true;
                                 request_frame();
                                 return true;
                             }
-                            ReposeKey::Character('x' | 'X')
-                                if ke.event_type == KeyEventType::Down
-                                    && ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.cut_selection();
-                                return true;
-                            }
-                            ReposeKey::Character('c' | 'C')
-                                if ke.event_type == KeyEventType::Down
-                                    && ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.copy_selection();
-                                return true;
-                            }
+                            // tool letters only when NOT command
                             ReposeKey::Character('v' | 'V')
-                                if ke.event_type == KeyEventType::Down
-                                    && ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.paste_selection();
-                                return true;
-                            }
-                            ReposeKey::Character('v' | 'V')
-                                if ke.event_type == KeyEventType::Down
-                                    && !ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
+                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
                             {
                                 s.active_tool = renamite_history::ToolId::Select;
                                 s.repaint();
                                 return true;
                             }
                             ReposeKey::Character('p' | 'P')
-                                if ke.event_type == KeyEventType::Down
-                                    && !ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
+                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
                             {
                                 s.active_tool = renamite_history::ToolId::Pen;
                                 s.repaint();
                                 return true;
                             }
                             ReposeKey::Character('t' | 'T')
-                                if ke.event_type == KeyEventType::Down
-                                    && !ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
+                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
                             {
                                 s.active_tool = renamite_history::ToolId::Text;
                                 s.repaint();
                                 return true;
                             }
                             ReposeKey::Character('r' | 'R')
-                                if ke.event_type == KeyEventType::Down
-                                    && !ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
+                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
                             {
                                 s.active_tool = renamite_history::ToolId::Rect;
                                 s.repaint();
                                 return true;
                             }
                             ReposeKey::Character('e' | 'E')
-                                if ke.event_type == KeyEventType::Down
-                                    && !ke.modifiers.command
-                                    && s.mode != crate::session::EditorMode::Interact =>
+                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
                             {
                                 s.active_tool = renamite_history::ToolId::Ellipse;
                                 s.repaint();
                                 return true;
                             }
-                            ReposeKey::Character('d' | 'D')
-                                if ke.event_type == KeyEventType::Down
-                                    && ke.modifiers.command =>
-                            {
-                                s.duplicate_selection();
-                                return true;
-                            }
                             _ => {}
                         }
+
                         let Some(k) = map_key(ke.key) else {
                             return false;
                         };

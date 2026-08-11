@@ -1,8 +1,8 @@
 //! Layers panel: M3 list with visibility, lock, expand, select, reorder, rename.
 
 use renamite_behavior_common::layers::{
-    LayerKind, LayerRow, cmd_toggle_locked, cmd_toggle_visible, drop_command, flatten_layers,
-    is_ancestor, move_is_noop, select_only, toggle_in_selection,
+    LayerKind, LayerRow, cmd_toggle_locked, cmd_toggle_visible, flatten_layers, select_only,
+    toggle_in_selection,
 };
 use renamite_history::ToolOutput;
 use repose_core::input::{Key, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
@@ -48,7 +48,27 @@ pub fn LayersPanel(session: SessionRef) -> View {
                 top: 0.0,
                 bottom: 8.0,
             })
-            .gap(ROW_GAP),
+            .gap(ROW_GAP)
+            // Safety net: a drag can end even if the pointer was released
+            // outside any row.
+            .on_pointer_up({
+                let session = session.clone();
+                move |pe: PointerEvent| {
+                    if session.borrow().layer_drag.is_some() {
+                        pe.consume();
+                        session.borrow_mut().finish_layer_drag();
+                    }
+                }
+            })
+            .on_pointer_cancel({
+                let session = session.clone();
+                move |_pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    if s.layer_drag.take().is_some() {
+                        s.repaint();
+                    }
+                }
+            }),
     )
     .child(
         rows.iter()
@@ -64,6 +84,10 @@ pub fn LayersPanel(session: SessionRef) -> View {
                         is_drop_target: drag
                             .as_ref()
                             .map(|d| d.hover_row == i && d.id != row.id)
+                            .unwrap_or(false),
+                        drop_as_child: drag
+                            .as_ref()
+                            .map(|d| d.as_child && row.kind == LayerKind::Group)
                             .unwrap_or(false),
                         rename_draft: renaming
                             .as_ref()
@@ -107,7 +131,18 @@ struct LayerRowState {
     is_selected: bool,
     is_expanded: bool,
     is_drop_target: bool,
+    drop_as_child: bool,
     rename_draft: Option<String>,
+}
+
+/// Pointer position relative to the widget that captured the event. Repose
+/// reports `position` in window coords and `origin` as the capture origin;
+/// the difference is the local position used by drop-zone math.
+fn local_pos(pe: &PointerEvent) -> (f32, f32) {
+    (
+        pe.position.x - pe.origin.x,
+        pe.position.y - pe.origin.y,
+    )
 }
 
 fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
@@ -115,7 +150,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     let bg = if st.is_selected {
         th.secondary_container
     } else if st.is_drop_target {
-        th.primary_container
+        th.primary_container.with_alpha(180)
     } else {
         th.surface_container
     };
@@ -141,6 +176,15 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
         .align_items(AlignItems::CENTER)
         .gap(2.0)
         .background(bg)
+        .border(
+            if st.is_drop_target && !st.drop_as_child {
+                2.0
+            } else {
+                0.0
+            },
+            th.primary,
+            4.0,
+        )
         .on_pointer_down({
             let session = session.clone();
             let row = row.clone();
@@ -195,48 +239,32 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             let row = row.clone();
             move |pe: PointerEvent| {
                 let mut s = session.borrow_mut();
-                if s.layer_drag.is_none() {
+                let Some(d) = s.layer_drag.as_mut() else {
                     return;
-                }
-                let d = s.layer_drag.as_mut().unwrap();
+                };
+                let (lx, ly) = local_pos(&pe);
                 d.hover_row = index;
-                d.before = pe.position.y < ROW_HEIGHT * 0.5;
-                d.as_child = row.kind == LayerKind::Group && pe.position.x > indent + 48.0;
-                s.revision = s.revision.wrapping_add(1);
-                request_frame();
+                d.before = ly < ROW_HEIGHT * 0.5;
+                // Nest when over a group and pointer is in the right half of the row content.
+                d.as_child = row.kind == LayerKind::Group && lx > 64.0;
+                pe.consume();
+                s.repaint();
             }
         })
         .on_pointer_up({
             let session = session.clone();
-            move |_pe: PointerEvent| {
+            move |pe: PointerEvent| {
+                pe.consume();
+                session.borrow_mut().finish_layer_drag();
+            }
+        })
+        .on_pointer_cancel({
+            let session = session.clone();
+            move |pe: PointerEvent| {
+                pe.consume();
                 let mut s = session.borrow_mut();
-                let Some(drag) = s.layer_drag.take() else {
-                    return;
-                };
-                let rows =
-                    flatten_layers(&s.file.document, s.file.document.main, &s.expanded_layers);
-                let target = rows.get(drag.hover_row);
-                let committed = match target {
-                    Some(target) => {
-                        let cyclic =
-                            drag.as_child && is_ancestor(&s.file.document, drag.id, target.id);
-                        !cyclic
-                            && drop_command(drag.id, target, drag.before, drag.as_child)
-                                .filter(|cmd| !move_is_noop(&s.file.document, cmd))
-                                .is_some_and(|cmd| {
-                                    s.apply_outputs(smallvec![
-                                        ToolOutput::BeginTransaction("Reorder layer".into()),
-                                        ToolOutput::Commands(smallvec![cmd]),
-                                        ToolOutput::CommitTransaction,
-                                    ]);
-                                    true
-                                })
-                    }
-                    None => false,
-                };
-                if !committed {
-                    s.revision = s.revision.wrapping_add(1);
-                    request_frame();
+                if s.layer_drag.take().is_some() {
+                    s.repaint();
                 }
             }
         })
@@ -359,7 +387,11 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                     if !matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
                         return;
                     }
+                    pe.consume();
                     let mut s = session.borrow_mut();
+                    if s.renaming.is_some() {
+                        s.commit_rename();
+                    }
                     if !s.selection.nodes.contains(&id) {
                         s.selection.nodes = vec![id];
                     }

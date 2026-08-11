@@ -129,6 +129,12 @@ pub fn drop_command(
     if as_child && target.kind == LayerKind::Group {
         return Some(cmd_move(dragged, Parent::Node(target.id), usize::MAX));
     }
+    // Sibling insert: refuse if target's parent is inside dragged (would cycle).
+    if let Parent::Node(p) = target.parent {
+        if p == dragged {
+            return None;
+        }
+    }
     let index = if before {
         target.sibling_index
     } else {
