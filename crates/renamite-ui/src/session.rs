@@ -107,9 +107,6 @@ pub struct Session {
     pub welcome: bool,
     /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
     pub clipboard: Option<Vec<renamite_history::NodeTree>>,
-    /// World-space bounds of the clipboard contents at copy time, used to
-    /// recenter pasted content at a canvas right-click point.
-    pub clipboard_bounds: Option<(DVec2, DVec2)>,
     /// Machine edited by the Interactivity panel.
     pub active_machine: Option<MachineId>,
     /// Graph selection within the active machine (view state).
@@ -322,7 +319,6 @@ impl Session {
             exporting_png: false,
             welcome: true,
             clipboard: None,
-            clipboard_bounds: None,
             active_machine,
             machine_selection: MachineSelection::None,
             machine_preview_inputs: Vec::new(),
@@ -491,18 +487,18 @@ impl Session {
                 self.close_context_menu();
                 return;
             }
-            MenuAction::Copy | MenuAction::Cut => {
-                let cut = matches!(action, MenuAction::Cut);
-                self.clipboard_from_selection(cut);
+            MenuAction::Copy => {
+                self.copy_selection();
+                self.close_context_menu();
+                return;
+            }
+            MenuAction::Cut => {
+                self.cut_selection();
                 self.close_context_menu();
                 return;
             }
             MenuAction::Paste => {
-                let world = self.context_menu.as_ref().and_then(|m| match m.source {
-                    ContextMenuSource::Canvas { world } => Some(world),
-                    ContextMenuSource::Layers { .. } => None,
-                });
-                self.paste_clipboard_at(world);
+                self.paste_selection();
                 self.close_context_menu();
                 return;
             }
@@ -618,7 +614,9 @@ impl Session {
             .get(id)
             .map(|n| n.children.clone())
             .unwrap_or_default();
-        let node = self.file.document.nodes.get(id).cloned().unwrap();
+        let mut node = self.file.document.nodes.get(id).cloned().unwrap();
+        node.parent = None;
+        node.children.clear();
         renamite_history::NodeTree {
             node,
             id: None,
@@ -626,15 +624,37 @@ impl Session {
         }
     }
 
+    fn finalize_open_edit(&mut self) {
+        // Color picker owns its own transaction flag.
+        if let Some(open) = self.open_picker.clone() {
+            if open.transaction_open {
+                let color = open.state.borrow().color();
+                self.commit_picker_color(color);
+            }
+            // Keep picker open; only seal the history batch.
+        }
+
+        if self.history.transaction_open() {
+            self.history.commit();
+            self.dirty = true;
+        }
+
+        // Drop view-state drag flags so a later pointer-up doesn't double-commit
+        // or keep applying into a closed batch.
+        self.inspector_drag = None;
+        self.layer_drag = None;
+        self.machine_preview_drag = None;
+        // Reset tool gesture machines (select/path/gradient mid-drag, etc.).
+        self.tool = renamite_behavior_canvas::ToolSet::default();
+    }
+
     fn clipboard_from_selection(&mut self, cut: bool) {
+        self.finalize_open_edit();
         let roots = self.selected_roots();
         if roots.is_empty() {
             return;
         }
-        self.clipboard_bounds = {
-            let scene = self.engine.scene();
-            selection_bounds(&self.file.document, scene, &roots)
-        };
+        // Snapshot BEFORE removing anything.
         self.clipboard = Some(roots.iter().map(|&id| self.tree_of(id)).collect());
         if cut {
             let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = roots
@@ -647,7 +667,79 @@ impl Session {
                 ToolOutput::CommitTransaction,
                 ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![])),
             ]);
+        } else {
+            // Copy is view-state only; still repaint so menus refresh has_clipboard.
+            self.repaint();
         }
+    }
+
+    fn insert_trees(
+        &mut self,
+        trees: Vec<renamite_history::NodeTree>,
+        offset: DVec2,
+        label: &str,
+    ) -> Vec<renamite_model::NodeId> {
+        self.finalize_open_edit();
+        let mut created = Vec::new();
+        self.history.begin(label.to_owned());
+        for mut t in trees {
+            nudge_tree(&mut t, offset);
+            if let Some(id) = self.history_apply(renamite_history::EditorCommand::InsertNode {
+                parent: renamite_model::Parent::Comp(self.file.document.main),
+                index: 0,
+                tree: t,
+            }) {
+                created.push(id);
+            }
+        }
+        self.history.commit();
+        self.dirty = true;
+        created
+    }
+
+    fn paste_clipboard(&mut self) {
+        let Some(trees) = self.clipboard.clone() else {
+            return;
+        };
+        if trees.is_empty() {
+            return;
+        }
+        let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Paste");
+        if !created.is_empty() {
+            self.selection.nodes = created;
+            self.ensure_selection_visible();
+            self.bump();
+        }
+    }
+
+    pub fn duplicate_selection(&mut self) {
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            return;
+        }
+        let created = self.insert_trees(
+            roots.iter().map(|&id| self.tree_of(id)).collect(),
+            DVec2::new(20.0, 20.0),
+            "Duplicate",
+        );
+        if !created.is_empty() {
+            self.selection.nodes = created;
+            self.ensure_selection_visible();
+            self.bump();
+        }
+    }
+
+    /// Public entry points for keyboard shortcuts / menus.
+    pub fn cut_selection(&mut self) {
+        self.clipboard_from_selection(true);
+    }
+
+    pub fn copy_selection(&mut self) {
+        self.clipboard_from_selection(false);
+    }
+
+    pub fn paste_selection(&mut self) {
+        self.paste_clipboard();
     }
 
     pub fn add_ellipse_layer(&mut self) {
@@ -721,68 +813,6 @@ impl Session {
             self.expanded_layers.clear();
         }
         self.repaint();
-    }
-
-    fn insert_trees(
-        &mut self,
-        trees: Vec<renamite_history::NodeTree>,
-        offset: DVec2,
-        label: &str,
-    ) -> Vec<renamite_model::NodeId> {
-        let mut created = Vec::new();
-        self.history.begin(label.to_owned());
-        for mut t in trees {
-            nudge_tree(&mut t, offset);
-            if let Some(id) = self.history_apply(renamite_history::EditorCommand::InsertNode {
-                parent: renamite_model::Parent::Comp(self.file.document.main),
-                index: 0,
-                tree: t,
-            }) {
-                created.push(id);
-            }
-        }
-        self.history.commit();
-        self.dirty = true;
-        created
-    }
-
-    fn paste_clipboard_at(&mut self, world: Option<DVec2>) {
-        let Some(trees) = self.clipboard.clone() else {
-            return;
-        };
-        if trees.is_empty() {
-            return;
-        }
-        let offset = match (world, self.clipboard_bounds) {
-            (Some(world), Some((min, max))) => {
-                let center = (min + max) * 0.5;
-                world - center
-            }
-            _ => DVec2::new(20.0, 20.0),
-        };
-        let created = self.insert_trees(trees, offset, "Paste");
-        if !created.is_empty() {
-            self.selection.nodes = created;
-            self.ensure_selection_visible();
-            self.bump();
-        }
-    }
-
-    pub fn duplicate_selection(&mut self) {
-        let roots = self.selected_roots();
-        if roots.is_empty() {
-            return;
-        }
-        let created = self.insert_trees(
-            roots.iter().map(|&id| self.tree_of(id)).collect(),
-            DVec2::new(20.0, 20.0),
-            "Duplicate",
-        );
-        if !created.is_empty() {
-            self.selection.nodes = created;
-            self.ensure_selection_visible();
-            self.bump();
-        }
     }
 
     pub fn bump(&mut self) {
@@ -2570,5 +2600,66 @@ mod tests {
             s.engine.head()
         );
         assert!(s.engine.head() <= 300.0);
+    }
+
+    #[test]
+    fn cut_paste_preserves_child_count_and_edits() {
+        let mut s = Session::new(seeded_demo_file());
+        // Build Group{Shape, Fill} like the shape tool.
+        use renamite_history::{EditorCommand, NodeTree};
+        use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint};
+        let tree = NodeTree::with_children(
+            Node::new("Ellipse", NodeKind::Group),
+            vec![
+                NodeTree::leaf(Node::new(
+                    "Shape",
+                    NodeKind::Shape(ShapeKind::Ellipse {
+                        pos: renamite_animation::Animated::new(DVec2::new(50.0, 50.0)),
+                        size: renamite_animation::Animated::new(DVec2::new(40.0, 40.0)),
+                    }),
+                )),
+                NodeTree::leaf(Node::new(
+                    "Fill",
+                    NodeKind::Style(StyleKind::Fill {
+                        paint: StylePaint::solid(renamite_model::Color::rgba(1.0, 0.0, 0.0, 1.0)),
+                        rule: FillRule::NonZero,
+                    }),
+                )),
+            ],
+        );
+        s.history.begin("seed");
+        let root = s
+            .history_apply(EditorCommand::InsertNode {
+                parent: Parent::Comp(s.file.document.main),
+                index: 0,
+                tree,
+            })
+            .expect("insert");
+        s.history.commit();
+        s.selection.nodes = vec![root];
+
+        s.cut_selection();
+        assert!(s.file.document.locate(root).is_none());
+        assert!(s.clipboard.is_some());
+
+        s.paste_selection();
+        assert_eq!(s.selection.nodes.len(), 1);
+        let pasted = s.selection.nodes[0];
+        let kids = s.file.document.nodes.get(pasted).unwrap().children.clone();
+        assert_eq!(kids.len(), 2, "no stale children after cut/paste");
+        // Edit the fill on the pasted tree — must stick.
+        let fill = kids[1];
+        s.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Edit color".into()),
+            ToolOutput::Commands(smallvec![EditorCommand::SetPaint {
+                id: fill,
+                paint: StylePaint::solid(renamite_model::Color::WHITE),
+            }]),
+            ToolOutput::CommitTransaction,
+        ]);
+        let NodeKind::Style(st) = &s.file.document.nodes.get(fill).unwrap().kind else {
+            panic!("fill");
+        };
+        assert!((st.paint().base_color().r - 1.0).abs() < 1e-6);
     }
 }

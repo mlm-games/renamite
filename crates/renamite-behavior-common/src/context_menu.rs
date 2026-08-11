@@ -85,6 +85,10 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
         action(MenuAction::Duplicate, "Duplicate", true),
         action(MenuAction::Delete, "Delete", !locked),
         MenuEntry::Separator,
+        action(MenuAction::Cut, "Cut", !locked),
+        action(MenuAction::Copy, "Copy", true),
+        action(MenuAction::Paste, "Paste", ctx.has_clipboard),
+        MenuEntry::Separator,
         action(
             MenuAction::ToggleVisible,
             if visible { "Hide" } else { "Show" },

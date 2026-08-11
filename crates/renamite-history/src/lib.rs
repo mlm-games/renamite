@@ -407,6 +407,11 @@ impl History {
     }
 
     pub fn begin(&mut self, label: impl Into<String>) {
+        // Never drop an open transaction: commit any leftover batch so live
+        // drags / property scrubs aren't lost when a new edit starts.
+        if self.open.is_some() {
+            self.commit();
+        }
         self.open = Some(AppliedTransaction {
             label: label.into(),
             forward: Vec::new(),
@@ -1544,7 +1549,13 @@ fn ensure_tree(doc: &mut Document, tree: &mut NodeTree) -> Result<NodeId, ModelE
     for child in &mut tree.children {
         child_ids.push(ensure_tree(doc, child)?);
     }
-    let id = doc.create_node(tree.node.clone());
+    // Fresh arena payload: strip any stale topology from the snapshot.
+    let mut node = tree.node.clone();
+    node.parent = None;
+    node.children.clear();
+    let id = doc.create_node(node);
+    tree.node.parent = None;
+    tree.node.children.clear();
     for cid in child_ids {
         doc.attach(cid, Parent::Node(id), usize::MAX)?;
     }
@@ -2736,5 +2747,113 @@ mod tests {
             (Frame(0), Frame(180)),
             "live range scrub is a single undo step"
         );
+    }
+
+    #[test]
+    fn insert_from_live_snapshot_does_not_import_stale_children() {
+        // Simulates cut/copy: NodeTree built from a live node that still has
+        // parent/children filled in the payload.
+        let mut w = World::new();
+        let parent = Parent::Comp(w.doc.main);
+
+        let fill = w.doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: renamite_model::FillRule::NonZero,
+            }),
+        ));
+        let shape = w.doc.create_node(Node::new(
+            "Shape",
+            NodeKind::Shape(renamite_model::ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::new(10.0, 10.0)),
+            }),
+        ));
+        let group = w.doc.create_node(Node::new("Group", NodeKind::Group));
+        w.doc.attach(group, parent, 0).unwrap();
+        w.doc.attach(shape, Parent::Node(group), 0).unwrap();
+        w.doc.attach(fill, Parent::Node(group), 1).unwrap();
+
+        // Snapshot like the UI clipboard: clone nodes WITH live topology.
+        let snap_fill = w.doc.nodes.get(fill).unwrap().clone();
+        let snap_shape = w.doc.nodes.get(shape).unwrap().clone();
+        let snap_group = w.doc.nodes.get(group).unwrap().clone();
+        assert_eq!(snap_group.children, vec![shape, fill]);
+
+        let tree = NodeTree {
+            node: snap_group,
+            id: None,
+            children: vec![
+                NodeTree {
+                    node: snap_shape,
+                    id: None,
+                    children: vec![],
+                },
+                NodeTree {
+                    node: snap_fill,
+                    id: None,
+                    children: vec![],
+                },
+            ],
+        };
+
+        let mut h = History::new();
+        let created = h
+            .apply(
+                &mut w.pm(),
+                EditorCommand::InsertNode {
+                    parent,
+                    index: 0,
+                    tree,
+                },
+            )
+            .unwrap()
+            .created
+            .unwrap();
+        h.commit();
+
+        let kids = w.doc.nodes.get(created).unwrap().children.clone();
+        assert_eq!(
+            kids.len(),
+            2,
+            "pasted group must have exactly the new children, not old+new"
+        );
+        assert!(!kids.contains(&shape) && !kids.contains(&fill));
+        assert_eq!(w.doc.nodes.get(kids[0]).unwrap().parent, Some(created));
+        assert_eq!(w.doc.nodes.get(kids[1]).unwrap().parent, Some(created));
+        assert!(w.doc.nodes.get(created).unwrap().parent.is_none());
+    }
+
+    #[test]
+    fn begin_commits_previous_open_transaction() {
+        let mut w = World::new();
+        let id = w.node();
+        let mut h = History::new();
+        h.begin("First");
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetNodeName {
+                id,
+                name: "A".into(),
+            },
+        )
+        .unwrap();
+        // Second begin must not drop the first edit.
+        h.begin("Second");
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetNodeName {
+                id,
+                name: "B".into(),
+            },
+        )
+        .unwrap();
+        h.commit();
+        assert_eq!(w.doc.nodes[id].name, "B");
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.nodes[id].name, "A");
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.nodes[id].name, "n");
     }
 }

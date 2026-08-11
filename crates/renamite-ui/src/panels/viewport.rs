@@ -76,6 +76,30 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 request_frame();
                                 return true;
                             }
+                            ReposeKey::Character('x' | 'X')
+                                if ke.event_type == KeyEventType::Down
+                                    && ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.cut_selection();
+                                return true;
+                            }
+                            ReposeKey::Character('c' | 'C')
+                                if ke.event_type == KeyEventType::Down
+                                    && ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.copy_selection();
+                                return true;
+                            }
+                            ReposeKey::Character('v' | 'V')
+                                if ke.event_type == KeyEventType::Down
+                                    && ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.paste_selection();
+                                return true;
+                            }
                             ReposeKey::Character('v' | 'V')
                                 if ke.event_type == KeyEventType::Down
                                     && !ke.modifiers.command
