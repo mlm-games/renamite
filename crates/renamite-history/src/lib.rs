@@ -6,8 +6,9 @@ use renamite_animation::{Animated, EasingHandle, Frame, Interpolation};
 use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
-    Asset, AssetId, Document, GradientKind, GradientStop, GradientStops, KeyframeData, ModelError,
-    ModifierKind, Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind, StylePaint, Value,
+    Asset, AssetId, CompId, Document, GradientKind, GradientStop, GradientStops, KeyframeData,
+    ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind,
+    StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -228,9 +229,13 @@ pub enum EditorCommand {
         id: NodeId,
     },
 
-    // clips (arena + order, like nodes)
-    /// `id` is None until first apply, then filled so redo re-attaches the
-    /// SAME arena clip (ClipIds referenced by machines stay valid).
+    /// Extend/shrink a composition's playable frame range.
+    SetCompositionRange {
+        comp: CompId,
+        start: Option<Frame>,
+        end: Option<Frame>,
+    },
+
     CreateClip {
         index: usize,
         clip: Clip,
@@ -551,7 +556,8 @@ fn apply_command(
         | MoveKeyframes { .. }
         | SetEasing { .. }
         | EditAnchors { .. }
-        | ReversePath { .. } => {
+        | ReversePath { .. }
+        | SetCompositionRange { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
             Ok((
                 Created {
@@ -1388,6 +1394,28 @@ fn apply_document_command(
             }
             Ok((None, vec![ReversePath { id: *id }]))
         }
+        SetCompositionRange { comp, start, end } => {
+            let c = doc
+                .compositions
+                .get_mut(*comp)
+                .ok_or(ModelError::MissingComp)?;
+            let old_start = start.is_some().then_some(c.range.0);
+            let old_end = end.is_some().then_some(c.range.1);
+            if let Some(s) = start {
+                c.range.0 = *s;
+            }
+            if let Some(e) = end {
+                c.range.1 = *e;
+            }
+            Ok((
+                None,
+                vec![SetCompositionRange {
+                    comp: *comp,
+                    start: old_start,
+                    end: old_end,
+                }],
+            ))
+        }
         _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
 }
@@ -1462,6 +1490,14 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
             },
         ) => *clip == *nc && *node == *nn && *prop == *np && key.frame == nk.frame,
         (SetClipMeta { id, .. }, SetClipMeta { id: nid, .. }) => *id == *nid,
+        (
+            SetCompositionRange { comp, start, .. },
+            SetCompositionRange {
+                comp: ncomp,
+                start: nstart,
+                ..
+            },
+        ) => *comp == *ncomp && *start == *nstart,
         (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,
         (MoveClipKeys { moves }, MoveClipKeys { moves: nmoves }) => {
             moves.len() == nmoves.len()
@@ -1581,6 +1617,8 @@ pub enum ToolOutput {
     SwitchTool(ToolId),
     /// Timeline scrub - app signal, not doc command.
     SetPlayhead(f64),
+    /// Pure overlay/view change.
+    Invalidate,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2632,5 +2670,71 @@ mod tests {
             panic!("expected mask");
         };
         assert!(mask.inverted);
+    }
+
+    #[test]
+    fn composition_range_edit_round_trips_and_coalesces() {
+        let mut w = World::new();
+        let mut h = History::new();
+        let comp = w.doc.main;
+
+        h.begin("Duration");
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetCompositionRange {
+                comp,
+                start: None,
+                end: Some(Frame(240)),
+            },
+        )
+        .unwrap();
+        h.commit();
+        assert_eq!(w.doc.compositions[comp].range, (Frame(0), Frame(240)));
+
+        h.begin("Duration");
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetCompositionRange {
+                comp,
+                start: Some(Frame(5)),
+                end: None,
+            },
+        )
+        .unwrap();
+        h.commit();
+        assert_eq!(w.doc.compositions[comp].range, (Frame(5), Frame(240)));
+
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.compositions[comp].range, (Frame(0), Frame(240)));
+        h.undo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.compositions[comp].range, (Frame(0), Frame(180)));
+
+        // Redo restores the edited range.
+        h.redo(&mut w.pm()).unwrap();
+        assert_eq!(w.doc.compositions[comp].range, (Frame(0), Frame(240)));
+
+        let mut w2 = World::new();
+        let comp2 = w2.doc.main;
+        let mut h2 = History::new();
+        for end in [Frame(200), Frame(240), Frame(300)] {
+            h2.begin("Duration");
+            h2.apply(
+                &mut w2.pm(),
+                EditorCommand::SetCompositionRange {
+                    comp: comp2,
+                    start: None,
+                    end: Some(end),
+                },
+            )
+            .unwrap();
+            h2.commit();
+        }
+        assert_eq!(w2.doc.compositions[comp2].range, (Frame(0), Frame(300)));
+        h2.undo(&mut w2.pm()).unwrap();
+        assert_eq!(
+            w2.doc.compositions[comp2].range,
+            (Frame(0), Frame(180)),
+            "live range scrub is a single undo step"
+        );
     }
 }

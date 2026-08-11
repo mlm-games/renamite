@@ -166,6 +166,14 @@ impl Engine {
         self.mode = PlayMode::Timeline { playback };
     }
 
+    pub fn set_timeline_playback(&mut self, pb: Playback) {
+        match &mut self.mode {
+            PlayMode::Timeline { playback } => *playback = pb,
+            PlayMode::Scrub { .. } => self.mode = PlayMode::Timeline { playback: pb },
+            PlayMode::Machine { .. } => {}
+        }
+    }
+
     /// Lock to a frame (editor scrubbing). Machine state is discarded.
     pub fn scrub(&mut self, project: &RenFile, frame: f64) {
         self.mode = PlayMode::Scrub { frame };
@@ -375,6 +383,9 @@ impl Player {
     pub fn play_timeline(&mut self, loop_mode: LoopMode) {
         self.engine.play_timeline(&self.project, loop_mode)
     }
+    pub fn set_timeline_playback(&mut self, pb: Playback) {
+        self.engine.set_timeline_playback(pb)
+    }
 }
 
 #[cfg(test)]
@@ -551,6 +562,73 @@ mod tests {
         e.tick(&proj, 1.0); // must not advance
         assert_eq!(e.head(), 30.0);
         assert!((e.scene().items[0].opacity - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn range_edit_is_reflected_in_loop_bounds() {
+        let (mut proj, _, _) = static_box();
+        let mut e = Engine::new(&proj).unwrap();
+        assert_eq!(e.head(), 0.0);
+
+        // Editor widens the comp (e.g. 0-180 -> 0-300) and pushes playback state.
+        proj.document.compositions[proj.document.main].range = (Frame(0), Frame(300));
+        e.set_timeline_playback(Playback {
+            state: PlayState::Playing,
+            head: 0.0,
+            loop_mode: LoopMode::Loop,
+            range: (Frame(0), Frame(300)),
+            dir: 1.0,
+        });
+
+        // Old bound would wrap at 180; a 300-wide comp must keep advancing past it.
+        e.tick(&proj, 3.1); // 186 frames @ 60fps
+        assert!(
+            e.head() > 180.0,
+            "loop must use the new end frame, head={}",
+            e.head()
+        );
+        assert!(e.head() <= 300.0);
+
+        // And it wraps at 300, not at 180.
+        e.tick(&proj, 2.0); // +120 frames -> 306 -> wraps to 6
+        assert!(
+            e.head() < 180.0,
+            "loop must wrap at the new end frame, head={}",
+            e.head()
+        );
+    }
+
+    #[test]
+    fn scrub_unlocks_on_play() {
+        let (mut proj, _, fill) = static_box();
+        let prop = PropPath::new("opacity");
+        proj.document
+            .add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0))
+            .unwrap();
+        proj.document
+            .add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0))
+            .unwrap();
+
+        let mut e = Engine::new(&proj).unwrap();
+        e.scrub(&proj, 30.0);
+        e.tick(&proj, 1.0); // locked by scrub
+        assert_eq!(e.head(), 30.0);
+
+        // Editor presses play: pushes its playback state, leaving the lock.
+        let mut e2 = e;
+        e2.set_timeline_playback(Playback {
+            state: PlayState::Playing,
+            head: 30.0,
+            loop_mode: LoopMode::Loop,
+            range: (Frame(0), Frame(180)),
+            dir: 1.0,
+        });
+        e2.tick(&proj, 1.0); // 60 frames later
+        assert!(
+            e2.head() > 30.0,
+            "play after scrub must advance, head={}",
+            e2.head()
+        );
     }
 
     #[test]

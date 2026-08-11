@@ -4,12 +4,16 @@ use renamite_behavior_timeline::{
 };
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::PointerEvent;
+use repose_core::input::{Key, KeyEvent, PointerEvent};
 use repose_core::{
-    AlignItems, Color, JustifyContent, Modifier, Vec2, View, theme,
+    AlignItems, Color, JustifyContent, Modifier, TextFieldLineLimits, Vec2, View,
+    remember_with_key, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
+use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::components::{CompactIconAction, PanelHeader, StatusChip};
 use crate::session::{SessionRef, dispatch_timeline, map_modifiers, pe_pos};
@@ -82,10 +86,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();
-                    dispatch_timeline(
-                        &mut s,
-                        TimelineEvent::KeyDown(TimelineKey::Delete),
-                    );
+                    dispatch_timeline(&mut s, TimelineEvent::KeyDown(TimelineKey::Delete));
                 }
             }),
             CompactIconAction(Symbols::fit_screen, "Fit range", {
@@ -105,7 +106,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
         let th = theme();
         return Column(Modifier::new().fill_max_size()).child((
             header,
-            TimelineInfoBar(head, range, record),
+            TimelineInfoBar(session.clone(), head, range, record),
             Box(Modifier::new()
                 .fill_max_size()
                 .padding_values(repose_core::PaddingValues {
@@ -134,7 +135,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
 
     Column(Modifier::new().fill_max_size()).child((
         header,
-        TimelineInfoBar(head, range, record),
+        TimelineInfoBar(session.clone(), head, range, record),
         Row(Modifier::new().fill_max_size()).child((
             TimelineLabels(session.clone(), &rows),
             Box(Modifier::new().weight(1.0).fill_max_height()).child(TimelineCanvas(session)),
@@ -143,6 +144,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
 }
 
 fn TimelineInfoBar(
+    session: SessionRef,
     head: f64,
     range: (renamite_animation::Frame, renamite_animation::Frame),
     record: bool,
@@ -158,11 +160,7 @@ fn TimelineInfoBar(
             theme().surface_container_high,
             theme().on_surface_variant,
         ),
-        StatusChip(
-            format!("Range {}–{}", range.0.0, range.1.0),
-            theme().surface_container_high,
-            theme().on_surface_variant,
-        ),
+        RangeEditor(session, range),
         if record {
             StatusChip(
                 "● REC — edits add keys".to_string(),
@@ -175,6 +173,97 @@ fn TimelineInfoBar(
                 .color(theme().on_surface_variant)
         },
     ))
+}
+
+/// Read-only duration chip that turns into an inline field on click, letting
+/// the user type a new end frame (e.g. "300" for a 5s @60fps comp). Enter
+/// applies an undoable `SetCompositionRange`; Escape cancels.
+fn RangeEditor(
+    session: SessionRef,
+    range: (renamite_animation::Frame, renamite_animation::Frame),
+) -> View {
+    let editing = remember_with_key("timeline_range_editing", || RefCell::new(false));
+    let tf_state = remember_with_key("timeline_range_field", || {
+        RefCell::new(TextFieldState::new())
+    });
+    let focus = remember_with_key("timeline_range_focus", repose_core::FocusRequester::new);
+    let th = theme();
+    let end = range.1.0;
+
+    if *editing.borrow() {
+        // `request_focus()` takes effect on the frame after the field is laid
+        // out, so call it here on every edit-mode build - the field becomes
+        // focused one frame after it appears and stays focused while typing.
+        focus.request_focus();
+        BasicTextField(
+            tf_state.clone(),
+            Modifier::new()
+                .width(72.0)
+                .height(28.0)
+                .focus_requester(focus.as_ref().clone())
+                .on_key_event({
+                    let editing = editing.clone();
+                    move |ke: KeyEvent| {
+                        if matches!(ke.key, Key::Escape) {
+                            *editing.borrow_mut() = false;
+                            return true;
+                        }
+                        false
+                    }
+                }),
+            "",
+            TextFieldConfig {
+                line_limits: TextFieldLineLimits::SingleLine,
+                on_submit: Some(Rc::new({
+                    let session = session.clone();
+                    let editing = editing.clone();
+                    let tf_state = tf_state.clone();
+                    move |_| {
+                        let parsed = tf_state
+                            .borrow()
+                            .text
+                            .trim()
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|&f| f > range.0.0);
+                        if let Some(frame) = parsed {
+                            session.borrow_mut().set_composition_range(
+                                None,
+                                Some(renamite_animation::Frame(frame)),
+                            );
+                        }
+                        *editing.borrow_mut() = false;
+                    }
+                })),
+                text_style: repose_core::TextStyle {
+                    font_size: th.typography.body_small,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    } else {
+        StatusChip(
+            format!("Range {}–{}", range.0.0, range.1.0),
+            th.surface_container_high,
+            th.on_surface_variant,
+        )
+        .modifier(Modifier::new().on_pointer_down({
+            // Seed the field with the current end frame only when entering
+            // edit mode. Re-seeding on every rebuild would clobber the text
+            // the user is typing (the panel repaints mid-drag).
+            let editing = editing.clone();
+            let tf_state = tf_state.clone();
+            move |_| {
+                {
+                    let mut st = tf_state.borrow_mut();
+                    st.text = end.to_string();
+                    st.select_all();
+                }
+                *editing.borrow_mut() = true;
+            }
+        }))
+    }
 }
 
 fn prop_label(
@@ -255,9 +344,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     let is_double = {
                         let mut lc = last_click.borrow_mut();
                         let dbl = lc
-                            .map(|(p, t)| {
-                                (now - t).as_millis() < 350 && (p - pos).length() < 6.0
-                            })
+                            .map(|(p, t)| (now - t).as_millis() < 350 && (p - pos).length() < 6.0)
                             .unwrap_or(false);
                         *lc = Some((pos, now));
                         dbl
@@ -360,11 +447,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
             for frame in range.0.0..=range.1.0 {
                 let x = layout.frame_to_x(frame as f64) as f32;
                 let major = frame % 10 == 0;
-                let tick_h = if major {
-                    layout.row_top as f32
-                } else {
-                    8.0
-                };
+                let tick_h = if major { layout.row_top as f32 } else { 8.0 };
                 scope.draw_rect(
                     Rect {
                         x,
@@ -382,10 +465,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 if major {
                     scope.draw_text(
                         &frame.to_string(),
-                        Vec2 {
-                            x: x + 3.0,
-                            y: 4.0,
-                        },
+                        Vec2 { x: x + 3.0, y: 4.0 },
                         th.on_surface_variant,
                         10.0,
                     );
@@ -398,19 +478,15 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let frames = s.file.document.key_frames(row.node, &row.prop);
                 for frame in frames {
                     let cx = layout.frame_to_x(frame.0 as f64) as f32;
-                    let is_sel = selected.iter().any(|k| {
-                        k.node == row.node && k.prop == row.prop && k.frame == frame
-                    });
+                    let is_sel = selected
+                        .iter()
+                        .any(|k| k.node == row.node && k.prop == row.prop && k.frame == frame);
                     draw_diamond(
                         scope,
                         cx,
                         cy,
                         if is_sel { 7.0 } else { 5.5 },
-                        if is_sel {
-                            th.primary
-                        } else {
-                            th.secondary
-                        },
+                        if is_sel { th.primary } else { th.secondary },
                         if is_sel {
                             Some(th.on_primary)
                         } else {
@@ -449,7 +525,14 @@ fn TimelineCanvas(session: SessionRef) -> View {
             // Playhead on top.
             let x = layout.frame_to_x(s.playback.head) as f32;
             // triangle head in ruler
-            draw_diamond(scope, x, (layout.row_top * 0.45) as f32, 6.0, th.primary, None);
+            draw_diamond(
+                scope,
+                x,
+                (layout.row_top * 0.45) as f32,
+                6.0,
+                th.primary,
+                None,
+            );
             scope.draw_rect(
                 Rect {
                     x: x - 1.0,
@@ -508,12 +591,7 @@ fn draw_diamond(
             inner.2 as f32 / 255.0,
             inner.3 as f32 / 255.0,
         ];
-        let pts2 = [
-            [cx, cy - ih],
-            [cx + ih, cy],
-            [cx, cy + ih],
-            [cx - ih, cy],
-        ];
+        let pts2 = [[cx, cy - ih], [cx + ih, cy], [cx, cy + ih], [cx - ih, cy]];
         let vertices: Vec<_> = pts2
             .iter()
             .map(|p| repose_core::view::VectorVertex {

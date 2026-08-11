@@ -567,7 +567,7 @@ impl SelectTool {
             }
             SelState::RubberBand { current, .. } => {
                 *current = pos;
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             SelState::Idle => smallvec![],
         }
@@ -1102,13 +1102,15 @@ impl ShapeTool {
                 button: PointerButton::Primary,
             } => {
                 self.drag = Some((pos, pos));
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             CanvasEvent::PointerMove { pos } => {
                 if let Some((_, c)) = &mut self.drag {
                     *c = pos;
+                    smallvec![ToolOutput::Invalidate]
+                } else {
+                    smallvec![]
                 }
-                smallvec![]
             }
             CanvasEvent::PointerUp {
                 pos,
@@ -1199,7 +1201,7 @@ impl ShapeTool {
             }
             CanvasEvent::KeyDown(Key::Escape) => {
                 self.drag = None;
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             _ => smallvec![],
         }
@@ -1274,7 +1276,7 @@ impl PenTool {
             CanvasEvent::KeyDown(Key::Enter) => self.finish(ctx, false),
             CanvasEvent::KeyDown(Key::Escape) => {
                 self.state = PenState::Idle;
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             CanvasEvent::KeyDown(Key::Backspace) => self.backspace(),
             _ => smallvec![],
@@ -1290,7 +1292,7 @@ impl PenTool {
                     anchors: vec![Anchor::corner(pos)],
                     index: 0,
                 };
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             PenState::Building { anchors, .. } => {
                 if anchors.len() >= 2 {
@@ -1306,9 +1308,9 @@ impl PenTool {
                     anchors,
                     index: idx,
                 };
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
-            PenState::DraggingTangent { .. } => smallvec![],
+            PenState::DraggingTangent { .. } => smallvec![ToolOutput::Invalidate],
         }
     }
 
@@ -1317,7 +1319,7 @@ impl PenTool {
             PenState::Idle => smallvec![],
             PenState::Building { hover, .. } => {
                 *hover = pos;
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
             PenState::DraggingTangent { anchors, index } => {
                 let a = &mut anchors[*index];
@@ -1333,7 +1335,7 @@ impl PenTool {
                     a.tan_in = -tan;
                     a.mode = TangentMode::Symmetric;
                 }
-                smallvec![]
+                smallvec![ToolOutput::Invalidate]
             }
         }
     }
@@ -1346,7 +1348,7 @@ impl PenTool {
                 hover: pos,
             };
         }
-        smallvec![]
+        smallvec![ToolOutput::Invalidate]
     }
 
     fn backspace(&mut self) -> OutputVec {
@@ -1368,7 +1370,7 @@ impl PenTool {
                 }
             }
         }
-        smallvec![]
+        smallvec![ToolOutput::Invalidate]
     }
 
     fn finish(&mut self, ctx: &ToolContext, closed: bool) -> OutputVec {

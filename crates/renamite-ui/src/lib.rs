@@ -254,6 +254,10 @@ pub(crate) fn toggle_playback(session: &SessionRef) {
     } else {
         PlayState::Stopped
     };
+    if s.playing {
+        let pb = s.playback;
+        s.engine.set_timeline_playback(pb);
+    }
     request_frame();
 }
 

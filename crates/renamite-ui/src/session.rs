@@ -392,6 +392,9 @@ impl Session {
                     self.active_tool = t;
                     needs_repaint = true;
                 }
+                ToolOutput::Invalidate => {
+                    needs_repaint = true;
+                }
                 ToolOutput::RequestSelection(ch) => {
                     match ch {
                         renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
@@ -810,6 +813,23 @@ impl Session {
         self.repaint();
     }
 
+    /// Edit the main composition's playable frame range. `start`/`end` may be
+    /// `None` to leave that edge untouched. The edit is one undo step, and the
+    /// playback range follows the composition range.
+    pub fn set_composition_range(&mut self, start: Option<Frame>, end: Option<Frame>) {
+        let comp = self.file.document.main;
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Duration".into()),
+            ToolOutput::Commands(smallvec![EditorCommand::SetCompositionRange {
+                comp,
+                start,
+                end
+            }]),
+            ToolOutput::CommitTransaction,
+        ]);
+        sync_playback_range(self);
+    }
+
     /// Move the playhead by a fixed number of frames (transport step).
     pub fn step_frames(&mut self, delta: f64) {
         let range = self.file.document.compositions[self.file.document.main].range;
@@ -832,6 +852,8 @@ impl Session {
             LoopMode::Loop => LoopMode::PingPong,
             LoopMode::PingPong => LoopMode::Once,
         };
+        let pb = self.playback;
+        self.engine.set_timeline_playback(pb);
         self.repaint();
     }
 
@@ -1904,6 +1926,7 @@ pub fn undo_cmd(s: &mut Session) {
     if his.undo(&mut pm).is_ok() {
         s.dirty = true;
     }
+    sync_playback_range(s);
 }
 
 pub fn redo_cmd(s: &mut Session) {
@@ -1913,6 +1936,22 @@ pub fn redo_cmd(s: &mut Session) {
     if his.redo(&mut pm).is_ok() {
         s.dirty = true;
     }
+    sync_playback_range(s);
+}
+
+/// Keep `playback.range` aligned with the composition range (e.g. after a
+/// duration edit or its undo), clamping the playhead if it fell outside, and
+/// push the result into the engine so `tick` loops against the new bounds.
+fn sync_playback_range(s: &mut Session) {
+    let range = s.file.document.compositions[s.file.document.main].range;
+    s.playback.range = range;
+    let head = s.playback.head.clamp(range.0.0 as f64, range.1.0 as f64);
+    if head != s.playback.head {
+        s.playback.head = head;
+    }
+    let pb = s.playback;
+    s.engine.set_timeline_playback(pb);
+    s.engine.reevaluate(&s.file);
 }
 
 fn pe_to_dvec(pe: &PointerEvent) -> DVec2 {
@@ -2395,5 +2434,119 @@ mod tests {
             .active_machine_states()
             .expect("engine in machine mode");
         assert_eq!(states[0], 1, "true bool advances to the Active state");
+    }
+
+    #[test]
+    fn pen_drag_requests_frame_for_overlay() {
+        use repose_core::take_frame_request;
+
+        let mut s = Session::new(seeded_demo_file());
+        s.active_tool = ToolId::Pen;
+        take_frame_request();
+
+        dispatch_canvas(
+            &mut s,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(10.0, 10.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        assert!(
+            take_frame_request(),
+            "pen press (first anchor) must schedule a repaint"
+        );
+
+        dispatch_canvas(
+            &mut s,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(40.0, 20.0),
+            },
+            Modifiers::none(),
+        );
+        assert!(
+            take_frame_request(),
+            "pen tangent drag must schedule a repaint"
+        );
+    }
+
+    #[test]
+    fn shape_drag_requests_frame_for_preview() {
+        use repose_core::take_frame_request;
+
+        let mut s = Session::new(seeded_demo_file());
+        s.active_tool = ToolId::Rect;
+        take_frame_request();
+
+        dispatch_canvas(
+            &mut s,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(10.0, 10.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        assert!(take_frame_request(), "shape press must schedule a repaint");
+
+        dispatch_canvas(
+            &mut s,
+            CanvasEvent::PointerMove {
+                pos: DVec2::new(60.0, 40.0),
+            },
+            Modifiers::none(),
+        );
+        assert!(
+            take_frame_request(),
+            "shape rubber-band drag must schedule a repaint"
+        );
+    }
+
+    #[test]
+    fn composition_range_edit_updates_playback_and_is_undoable() {
+        let mut s = Session::new(seeded_demo_file());
+        let comp = s.file.document.main;
+        assert_eq!(
+            s.file.document.compositions[comp].range,
+            (Frame(0), Frame(180))
+        );
+        assert_eq!(s.playback.range, (Frame(0), Frame(180)));
+
+        // Playhead beyond the new end gets clamped when the range shrinks.
+        s.playback.head = 300.0;
+        s.set_composition_range(None, Some(Frame(120)));
+        assert_eq!(
+            s.file.document.compositions[comp].range,
+            (Frame(0), Frame(120))
+        );
+        assert_eq!(s.playback.range, (Frame(0), Frame(120)));
+        assert_eq!(s.playback.head, 120.0, "playhead clamps to new end");
+        assert!(s.history.can_undo());
+
+        undo_cmd(&mut s);
+        assert_eq!(
+            s.file.document.compositions[comp].range,
+            (Frame(0), Frame(180)),
+            "undo restores the original duration"
+        );
+        assert_eq!(s.playback.range, (Frame(0), Frame(180)));
+    }
+
+    #[test]
+    fn range_edit_reaches_the_engine_loop_bounds() {
+        let mut s = Session::new(seeded_demo_file());
+        s.set_composition_range(None, Some(Frame(300)));
+        s.playback.state = renamite_animation::PlayState::Playing;
+        let pb = s.playback;
+        s.engine.set_timeline_playback(pb);
+
+        // 186 frames @ 60fps: with the stale 0-180 range this would wrap; the
+        // widened 0-300 range must let the head advance past the old bound.
+        s.engine.tick(&s.file, 3.1);
+        assert!(
+            s.engine.head() > 180.0,
+            "engine must loop at the new end frame, head={}",
+            s.engine.head()
+        );
+        assert!(s.engine.head() <= 300.0);
     }
 }
