@@ -223,7 +223,7 @@ pub struct OpenPicker {
     pub target: PickerTarget,
     pub state: Rc<RefCell<crate::color_picker::PickerState>>,
 
-    /// Screen-space anchor (from the opening pointer event) for the popover.
+    /// Layout/dp-space anchor (via `overlay_anchor`) for the popover.
     pub anchor: DVec2,
 
     /// Only picker-owned transactions may be committed/cancelled by the picker.
@@ -247,10 +247,10 @@ pub enum PickerTarget {
     },
 }
 
-/// An open context-menu popover: its screen anchor, entries, and source.
+/// An open context-menu popover: its anchor, entries, and source.
 #[derive(Clone, Debug)]
 pub struct ContextMenuState {
-    /// Screen-space anchor for the popover (clamped by the overlay).
+    /// Layout/dp-space anchor for the popover (via `overlay_anchor`).
     pub screen_pos: DVec2,
     pub entries: Vec<renamite_behavior_common::context_menu::MenuEntry>,
     pub source: ContextMenuSource,
@@ -1977,10 +1977,13 @@ pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
     }
 }
 
-/// Canonical anchor for cursor-anchored popovers (context menu / color picker).
+/// Pointer position in layout space (dp).
 pub fn overlay_anchor(pe: &PointerEvent) -> DVec2 {
     let p = pe.position_in_window();
-    DVec2::new(p.x as f64, p.y as f64)
+    DVec2::new(
+        repose_core::px_to_dp(p.x) as f64,
+        repose_core::px_to_dp(p.y) as f64,
+    )
 }
 
 pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {

@@ -162,7 +162,7 @@ fn menu_entries_height(entries: &[MenuEntry]) -> f32 {
             }
         }
     }
-    h
+    h + 8.0 // Surface padding (4 + 4)
 }
 
 fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> {
