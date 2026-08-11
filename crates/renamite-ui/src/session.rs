@@ -746,7 +746,7 @@ impl Session {
         }
     }
 
-    fn duplicate_selection(&mut self) {
+    pub fn duplicate_selection(&mut self) {
         let roots = self.selected_roots();
         if roots.is_empty() {
             return;
@@ -1072,6 +1072,7 @@ impl Session {
         self.listener_draft = ListenerDraft::default();
         self.viewport.fit_pending = true;
         self.viewport.pan_last = None;
+        self.viewport.last_pointer = DVec2::ZERO;
         self.dirty = false;
         self.exporting_png = false;
         self.sync_image_assets();
@@ -1665,6 +1666,9 @@ pub struct ViewportState {
     pub fit_pending: bool,
     pub pan_last: Option<DVec2>,
     pub space_held: bool,
+    /// Most recent pointer position in canvas-local screen px.
+    /// HACK: Tracked so wheel zoom can anchor on the cursor (`on_scroll` callbacks don't carry a pos yet).
+    pub last_pointer: DVec2,
 }
 
 impl Default for ViewportState {
@@ -1675,6 +1679,7 @@ impl Default for ViewportState {
             fit_pending: true,
             pan_last: None,
             space_held: false,
+            last_pointer: DVec2::ZERO,
         }
     }
 }
@@ -1718,12 +1723,19 @@ impl ViewportState {
         if self.surface_size == DVec2::ZERO {
             return;
         }
+        self.zoom_at(self.surface_size * 0.5, factor);
+    }
 
-        let screen_center = self.surface_size * 0.5;
-        let world_center = self.view.screen_to_world(screen_center);
-
+    /// Zoom by `factor` keeping the world point under `screen_pos` (canvas-local
+    /// screen px) anchored at that screen position. Negative factors clamp like
+    /// the +/- buttons; `factor` is multiplicative (1.2 = zoom in).
+    pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64) {
+        if self.surface_size == DVec2::ZERO {
+            return;
+        }
+        let world = self.view.screen_to_world(screen_pos);
         self.view.scale = (self.view.scale * factor).clamp(0.05, 64.0);
-        self.view.offset = screen_center - world_center * self.view.scale;
+        self.view.offset = screen_pos - world * self.view.scale;
     }
 
     pub fn begin_pan(&mut self, position: DVec2) {

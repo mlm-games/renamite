@@ -8,8 +8,8 @@ use repose_core::input::{
     Key as ReposeKey, KeyEvent, KeyEventType, PointerEvent, PointerEventKind,
 };
 use repose_core::{
-    AlignItems, Color, FocusRequester, JustifyContent, Modifier, View, remember, remember_with_key,
-    request_frame, theme,
+    AlignItems, Color, CursorIcon, FocusRequester, JustifyContent, Modifier, View, remember,
+    remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -32,19 +32,103 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let main_view = if show_template_picker {
         TemplatePicker(session.clone())
     } else {
+        let panning = session.borrow().viewport.pan_last.is_some();
         Canvas(
             Modifier::new()
                 .fill_max_size()
                 .background(theme().surface_container_lowest)
                 .focusable(true)
                 .focus_requester((*focus).clone())
+                .cursor(if panning {
+                    CursorIcon::Grabbing
+                } else {
+                    CursorIcon::Default
+                })
+                .on_scroll({
+                    let session = session.clone();
+                    move |delta: repose_core::Vec2| {
+                        let mut s = session.borrow_mut();
+                        if delta.y.abs() < delta.x.abs() {
+                            // Horizontal wheel: pan the canvas along X.
+                            s.viewport.view.offset += DVec2::new(delta.x as f64, 0.0);
+                        } else {
+                            let anchor = s.viewport.last_pointer;
+                            let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
+                            s.viewport.zoom_at(anchor, factor);
+                        }
+                        request_frame();
+                        repose_core::Vec2::ZERO
+                    }
+                })
                 .on_key_event({
                     let session = session.clone();
                     move |ke: KeyEvent| {
                         let mut s = session.borrow_mut();
-                        if ke.key == ReposeKey::Space {
-                            s.viewport.space_held = ke.event_type == KeyEventType::Down;
-                            return true;
+                        match ke.key {
+                            ReposeKey::Space => {
+                                s.viewport.space_held = ke.event_type == KeyEventType::Down;
+                                return true;
+                            }
+                            ReposeKey::Character('f' | 'F')
+                                if ke.event_type == KeyEventType::Down =>
+                            {
+                                s.viewport.fit_pending = true;
+                                request_frame();
+                                return true;
+                            }
+                            ReposeKey::Character('v' | 'V')
+                                if ke.event_type == KeyEventType::Down
+                                    && !ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.active_tool = renamite_history::ToolId::Select;
+                                s.repaint();
+                                return true;
+                            }
+                            ReposeKey::Character('p' | 'P')
+                                if ke.event_type == KeyEventType::Down
+                                    && !ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.active_tool = renamite_history::ToolId::Pen;
+                                s.repaint();
+                                return true;
+                            }
+                            ReposeKey::Character('t' | 'T')
+                                if ke.event_type == KeyEventType::Down
+                                    && !ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.active_tool = renamite_history::ToolId::Text;
+                                s.repaint();
+                                return true;
+                            }
+                            ReposeKey::Character('r' | 'R')
+                                if ke.event_type == KeyEventType::Down
+                                    && !ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.active_tool = renamite_history::ToolId::Rect;
+                                s.repaint();
+                                return true;
+                            }
+                            ReposeKey::Character('e' | 'E')
+                                if ke.event_type == KeyEventType::Down
+                                    && !ke.modifiers.command
+                                    && s.mode != crate::session::EditorMode::Interact =>
+                            {
+                                s.active_tool = renamite_history::ToolId::Ellipse;
+                                s.repaint();
+                                return true;
+                            }
+                            ReposeKey::Character('d' | 'D')
+                                if ke.event_type == KeyEventType::Down
+                                    && ke.modifiers.command =>
+                            {
+                                s.duplicate_selection();
+                                return true;
+                            }
+                            _ => {}
                         }
                         let Some(k) = map_key(ke.key) else {
                             return false;
@@ -60,6 +144,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |pe: PointerEvent| {
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
+                        s.viewport.last_pointer = pos;
 
                         if map_button(&pe) == PointerButton::Secondary {
                             // Right-click: pick/select under cursor, then menu.
@@ -97,6 +182,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let is_space_pan = map_button(&pe) == PointerButton::Primary
                             && s.viewport.space_held;
                         if is_middle_pan || is_space_pan {
+                            pe.consume();
                             s.viewport.begin_pan(pos);
                             request_frame();
                             return;
@@ -119,8 +205,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |pe: PointerEvent| {
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
+                        s.viewport.last_pointer = pos;
 
                         if s.viewport.update_pan(pos) {
+                            pe.consume();
                             request_frame();
                             return;
                         }
@@ -139,6 +227,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
 
                         if s.viewport.pan_last.is_some() {
+                            pe.consume();
                             s.viewport.end_pan();
                             request_frame();
                             return;
@@ -157,7 +246,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_pointer_cancel({
                     let session = session.clone();
-                    move |_| {
+                    move |pe| {
+                        pe.consume();
                         let mut s = session.borrow_mut();
                         if s.viewport.pan_last.is_some() {
                             s.viewport.end_pan();
@@ -300,7 +390,7 @@ fn ViewportHint() -> View {
         .absolute()
         .offset(Some(16.0), None, None, Some(16.0)))
     .child(HudSurface(
-        Text("Right click menu · Middle mouse pan · Use Animate mode for keyframing")
+        Text("Middle or Space drag to pan · Wheel to zoom · F to fit · V/P/R/E tools")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding(8.0)),
