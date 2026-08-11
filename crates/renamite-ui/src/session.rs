@@ -5,7 +5,7 @@ use glam::DVec2;
 use kurbo::Point;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
-use renamite_behavior_common::machine::MachineSelection;
+use renamite_behavior_common::machine::{MachineSelection, remove_state, remove_transition};
 use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
@@ -850,11 +850,7 @@ impl Session {
             return;
         }
         // Block parenting under self / moving into own subtree.
-        if renamite_behavior_common::layers::is_ancestor(
-            &self.file.document,
-            drag.id,
-            target.id,
-        ) {
+        if renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, target.id) {
             self.repaint();
             return;
         }
@@ -908,40 +904,65 @@ impl Session {
         self.repaint();
     }
 
-    /// Switch the explicit editor mode, wiring up the record flag and the
-    /// active page so the shell shows the right workspace surface.
+    /// Switch the explicit editor mode, wiring up the record flag, the active
+    /// page, and the machine-preview / playback lifecycle.
     pub fn set_mode(&mut self, mode: EditorMode) {
+        if self.mode == mode {
+            return;
+        }
+        let previous = self.mode;
         self.mode = mode;
         match mode {
             EditorMode::Design => {
                 self.record = false;
+                self.stop_timeline_playback();
+                self.disable_machine_preview();
                 if matches!(self.active_page, PanelPage::Timeline | PanelPage::Interact) {
                     self.active_page = PanelPage::Canvas;
-                }
-                if self.machine_preview_enabled {
-                    self.machine_preview_enabled = false;
-                    self.reset_machine_preview();
                 }
             }
             EditorMode::Animate => {
                 self.record = true;
+                self.disable_machine_preview();
                 self.active_page = PanelPage::Timeline;
-                if self.machine_preview_enabled {
-                    self.machine_preview_enabled = false;
-                    self.reset_machine_preview();
-                }
+                // Keep the playhead; the user hits Play explicitly.
             }
             EditorMode::Interact => {
                 self.record = false;
+                self.stop_timeline_playback();
                 self.active_page = PanelPage::Interact;
-                // Live preview is the point of Interact mode.
-                if !self.machine_preview_enabled {
+                if self.active_machine.is_some() {
                     self.machine_preview_enabled = true;
                     self.reset_machine_preview();
                 }
             }
         }
+        // Clear a dangling wire gesture when leaving Interact so it can't fire
+        // after the mode switch.
+        if previous == EditorMode::Interact && mode != EditorMode::Interact {
+            self.machine_graph_gesture = None;
+        }
         self.repaint();
+    }
+
+    fn stop_timeline_playback(&mut self) {
+        if self.playing {
+            self.playing = false;
+            self.playback.state = PlayState::Stopped;
+        }
+    }
+
+    /// Turn off machine preview and return the engine to timeline evaluation.
+    pub fn disable_machine_preview(&mut self) {
+        if !self.machine_preview_enabled && self.machine_preview_inputs.is_empty() {
+            return;
+        }
+        self.machine_preview_enabled = false;
+        if matches!(self.machine_drag, Some(MachineDrag::PreviewNumber { .. })) {
+            self.machine_drag = None;
+        }
+        self.engine.play_timeline(&self.file, LoopMode::Loop);
+        self.engine.reevaluate(&self.file);
     }
 
     /// Zoom the timeline by a multiplicative factor, clamped to sane bounds.
@@ -1696,6 +1717,9 @@ impl Session {
         if let Some(machine) = applied.and_then(|value| value.created_machine) {
             self.active_machine = Some(machine);
             self.machine_selection = MachineSelection::None;
+            if self.mode == EditorMode::Interact {
+                self.machine_preview_enabled = true;
+            }
             self.reset_machine_preview();
         }
 
@@ -1841,6 +1865,35 @@ impl Session {
         });
     }
 
+    pub fn delete_machine_selection(&mut self) {
+        let selection = self.machine_selection.clone();
+        match selection {
+            MachineSelection::State { layer, state } => {
+                let ok = self.edit_active_machine("Delete state", move |machine| {
+                    remove_state(machine, layer, state)?;
+                    Ok(())
+                });
+                if ok {
+                    self.machine_selection = MachineSelection::None;
+                }
+            }
+            MachineSelection::Transition {
+                layer,
+                source,
+                transition,
+            } => {
+                let ok = self.edit_active_machine("Remove transition", move |machine| {
+                    remove_transition(machine, layer, source, transition)?;
+                    Ok(())
+                });
+                if ok {
+                    self.machine_selection = MachineSelection::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Mark the active machine as the project's start machine.
     pub fn set_active_as_start_machine(&mut self) {
         let Some(id) = self.active_machine else {
@@ -1851,7 +1904,9 @@ impl Session {
         }
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Set start machine".into()),
-            ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine { start: Some(id) }]),
+            ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine {
+                start: Some(id)
+            }]),
             ToolOutput::CommitTransaction,
         ]);
     }
@@ -2231,7 +2286,12 @@ pub fn undo_cmd(s: &mut Session) {
         s.dirty = true;
         // Drop selection entries that no longer exist / aren't attached.
         s.selection.nodes.retain(|&id| {
-            s.file.document.nodes.get(id).and_then(|n| n.parent).is_some()
+            s.file
+                .document
+                .nodes
+                .get(id)
+                .and_then(|n| n.parent)
+                .is_some()
                 || s.file
                     .document
                     .compositions
@@ -2251,7 +2311,12 @@ pub fn redo_cmd(s: &mut Session) {
         s.dirty = true;
         // Drop selection entries that no longer exist / aren't attached.
         s.selection.nodes.retain(|&id| {
-            s.file.document.nodes.get(id).and_then(|n| n.parent).is_some()
+            s.file
+                .document
+                .nodes
+                .get(id)
+                .and_then(|n| n.parent)
+                .is_some()
                 || s.file
                     .document
                     .compositions

@@ -17,8 +17,8 @@ use std::cell::Cell;
 
 use crate::components::CompactIconAction;
 use crate::session::{
-    ContextMenuSource, ContextMenuState, SessionRef, dispatch_canvas, map_modifiers, overlay_anchor,
-    pe_pos,
+    ContextMenuSource, ContextMenuState, SessionRef, dispatch_canvas, map_modifiers,
+    overlay_anchor, pe_pos,
 };
 use crate::symbols::Symbols;
 use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
@@ -106,6 +106,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             }
                             ReposeKey::Character('d' | 'D') if cmd => {
                                 s.duplicate_selection();
+                                return true;
+                            }
+                            ReposeKey::Delete | ReposeKey::Backspace
+                                if s.mode == crate::session::EditorMode::Interact =>
+                            {
+                                s.delete_machine_selection();
                                 return true;
                             }
                             ReposeKey::Space => {
@@ -205,8 +211,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let is_middle_pan = map_button(&pe) == PointerButton::Middle;
-                        let is_space_pan = map_button(&pe) == PointerButton::Primary
-                            && s.viewport.space_held;
+                        let is_space_pan =
+                            map_button(&pe) == PointerButton::Primary && s.viewport.space_held;
                         if is_middle_pan || is_space_pan {
                             pe.consume();
                             s.viewport.begin_pan(pos);

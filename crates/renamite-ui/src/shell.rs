@@ -425,8 +425,16 @@ fn default_dock_state(mode: EditorMode) -> DockState {
             id: 3,
             kind: DockKind::Split {
                 dir: SplitDir::Horizontal,
-                ratio: 0.22,
-                a: Box::new(tabs_node(31, PANEL_INTERACT)),
+                ratio: 0.24,
+                a: Box::new(DockNode {
+                    id: 31,
+                    kind: DockKind::Split {
+                        dir: SplitDir::Vertical,
+                        ratio: 0.55,
+                        a: Box::new(tabs_node(311, PANEL_INTERACT)),
+                        b: Box::new(tabs_node(312, PANEL_LAYERS)),
+                    },
+                }),
                 b: Box::new(DockNode {
                     id: 32,
                     kind: DockKind::Split {
@@ -745,7 +753,12 @@ fn compact_nav_pages(mode: EditorMode) -> Vec<PanelPage> {
             PanelPage::Inspect,
             PanelPage::Layers,
         ],
-        EditorMode::Interact => vec![PanelPage::Canvas, PanelPage::Interact, PanelPage::Inspect],
+        EditorMode::Interact => vec![
+            PanelPage::Canvas,
+            PanelPage::Interact,
+            PanelPage::Layers,
+            PanelPage::Inspect,
+        ],
     }
 }
 
@@ -754,7 +767,7 @@ fn medium_nav_pages(mode: EditorMode) -> Vec<PanelPage> {
     match mode {
         EditorMode::Design => vec![PanelPage::Layers, PanelPage::Inspect, PanelPage::Assets],
         EditorMode::Animate => vec![PanelPage::Timeline, PanelPage::Layers, PanelPage::Inspect],
-        EditorMode::Interact => vec![PanelPage::Interact, PanelPage::Inspect],
+        EditorMode::Interact => vec![PanelPage::Interact, PanelPage::Layers, PanelPage::Inspect],
     }
 }
 
