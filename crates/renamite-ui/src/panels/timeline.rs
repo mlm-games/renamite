@@ -337,7 +337,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
 fn TimelineCanvas(session: SessionRef) -> View {
     let sess_draw = session.clone();
     // Simple double-click detector (repose has no on_double_click on Modifier yet).
-    let last_click = std::rc::Rc::new(std::cell::RefCell::new(None::<(DVec2, web_time::Instant)>));
+    let last_click = Rc::new(RefCell::new(None::<(DVec2, web_time::Instant)>));
 
     Canvas(
         Modifier::new()

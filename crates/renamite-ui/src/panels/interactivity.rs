@@ -1,7 +1,9 @@
 //! Interactivity panel: author state machines (inputs, states, transitions,
 //! listeners) and run them live against the editor `Engine`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use glam::DVec2;
 use renamite_animation::LoopMode;
@@ -530,23 +532,25 @@ fn InputRow(
         }
     }
 
-    controls.push(Box(Modifier::new().flex_grow(1.0)).child(crate::components::AppTextField(
-        format!("machine_input_name_{index}"),
-        name,
-        "Name",
-        true,
-        32.0,
-        {
-            let session = session.clone();
-            move |text: String| {
-                let mut s = session.borrow_mut();
-                s.edit_active_machine("Rename input", move |machine| {
-                    rename_input(machine, index, text)?;
-                    Ok(())
-                });
-            }
-        },
-    )));
+    controls.push(
+        Box(Modifier::new().flex_grow(1.0)).child(crate::components::AppTextField(
+            format!("machine_input_name_{index}"),
+            name,
+            "Name",
+            true,
+            32.0,
+            {
+                let session = session.clone();
+                move |text: String| {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Rename input", move |machine| {
+                        rename_input(machine, index, text)?;
+                        Ok(())
+                    });
+                }
+            },
+        )),
+    );
 
     if removable {
         controls.push(CompactIconAction(Symbols::delete, "Remove input", {
@@ -582,7 +586,10 @@ fn InputRow(
 
 fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
     let draw_session = session.clone();
-    let last_click = std::rc::Rc::new(std::cell::RefCell::new(None::<(DVec2, web_time::Instant)>));
+    let last_click: Rc<RefCell<Option<(DVec2, Instant)>>> =
+        remember_with_key("machine_graph_last_click", || {
+            RefCell::new(None::<(DVec2, Instant)>)
+        });
 
     Column(Modifier::new().fill_max_width()).child((
         Text("Shift+drag state or Any → wire · double-click empty → add state · click edge to select")
