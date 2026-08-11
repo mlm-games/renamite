@@ -30,7 +30,7 @@ Repose pointer/keyboard
  evaluate(frame) -> Scene (display list)
         │
         ▼
- renamite-geometry (kurbo + Graphite facades)
+ renamite-geometry (kurbo facades)
         │
         ▼
  SceneRenderer (lyon tessellation + mesh cache)
