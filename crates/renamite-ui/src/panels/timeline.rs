@@ -175,64 +175,94 @@ fn TimelineInfoBar(
     ))
 }
 
-/// Read-only duration chip that turns into an inline field on click, letting
-/// the user type a new end frame (e.g. "300" for a 5s @60fps comp). Enter
-/// applies an undoable `SetCompositionRange`; Escape cancels.
 fn RangeEditor(
     session: SessionRef,
     range: (renamite_animation::Frame, renamite_animation::Frame),
 ) -> View {
-    let editing = remember_with_key("timeline_range_editing", || RefCell::new(false));
-    let tf_state = remember_with_key("timeline_range_field", || {
+    let committed = remember_with_key("timeline_range_committed", || {
+        RefCell::new((range.0.0, range.1.0))
+    });
+    let start_state = remember_with_key("timeline_range_start", || {
         RefCell::new(TextFieldState::new())
     });
-    let focus = remember_with_key("timeline_range_focus", repose_core::FocusRequester::new);
+    let end_state = remember_with_key("timeline_range_end", || RefCell::new(TextFieldState::new()));
+    let start_focus =
+        remember_with_key("timeline_range_start_focus", || std::cell::Cell::new(false));
+    let end_focus = remember_with_key("timeline_range_end_focus", || std::cell::Cell::new(false));
+    let was_start = remember_with_key("timeline_range_start_was", || std::cell::Cell::new(false));
+    let was_end = remember_with_key("timeline_range_end_was", || std::cell::Cell::new(false));
     let th = theme();
-    let end = range.1.0;
 
-    if *editing.borrow() {
-        // `request_focus()` takes effect on the frame after the field is laid
-        // out, so call it here on every edit-mode build - the field becomes
-        // focused one frame after it appears and stays focused while typing.
-        focus.request_focus();
+    {
+        let mut c = committed.borrow_mut();
+        if (range.0.0, range.1.0) != *c {
+            if !start_focus.get() {
+                start_state.borrow_mut().text = range.0.0.to_string();
+            }
+            if !end_focus.get() {
+                end_state.borrow_mut().text = range.1.0.to_string();
+            }
+            *c = (range.0.0, range.1.0);
+        }
+    }
+    // Uncommitted edits revert when a field loses focus (Properties style).
+    for (was, focus, into) in [
+        (&was_start, &start_focus, &start_state),
+        (&was_end, &end_focus, &end_state),
+    ] {
+        if was.get() && !focus.get() {
+            let c = committed.borrow();
+            let v = if std::ptr::eq(&was_start, was) {
+                c.0
+            } else {
+                c.1
+            };
+            into.borrow_mut().text = v.to_string();
+        }
+        was.set(focus.get());
+    }
+
+    let field = |state: Rc<RefCell<TextFieldState>>, focus: Rc<std::cell::Cell<bool>>| {
+        let session = session.clone();
+        let committed = committed.clone();
+        let start_state = start_state.clone();
+        let end_state = end_state.clone();
         BasicTextField(
-            tf_state.clone(),
-            Modifier::new()
-                .width(72.0)
-                .height(28.0)
-                .focus_requester(focus.as_ref().clone())
-                .on_key_event({
-                    let editing = editing.clone();
-                    move |ke: KeyEvent| {
-                        if matches!(ke.key, Key::Escape) {
-                            *editing.borrow_mut() = false;
-                            return true;
-                        }
-                        false
+            state,
+            Modifier::new().width(48.0).height(28.0).on_key_event({
+                let committed = committed.clone();
+                let start_state = start_state.clone();
+                let end_state = end_state.clone();
+                move |ke: KeyEvent| {
+                    if matches!(ke.key, Key::Escape) {
+                        let c = committed.borrow();
+                        start_state.borrow_mut().text = c.0.to_string();
+                        end_state.borrow_mut().text = c.1.to_string();
+                        return true;
                     }
-                }),
+                    false
+                }
+            }),
             "",
             TextFieldConfig {
                 line_limits: TextFieldLineLimits::SingleLine,
-                on_submit: Some(Rc::new({
-                    let session = session.clone();
-                    let editing = editing.clone();
-                    let tf_state = tf_state.clone();
-                    move |_| {
-                        let parsed = tf_state
-                            .borrow()
-                            .text
-                            .trim()
-                            .parse::<i64>()
-                            .ok()
-                            .filter(|&f| f > range.0.0);
-                        if let Some(frame) = parsed {
-                            session.borrow_mut().set_composition_range(
-                                None,
-                                Some(renamite_animation::Frame(frame)),
-                            );
-                        }
-                        *editing.borrow_mut() = false;
+                focus_tracker: Some(focus),
+                on_submit: Some(Rc::new(move |_| {
+                    let start = start_state
+                        .borrow()
+                        .text
+                        .trim()
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|&s| s >= 0);
+                    let end = end_state.borrow().text.trim().parse::<i64>().ok();
+                    if let (Some(s), Some(e)) = (start, end)
+                        && e > s
+                    {
+                        session.borrow_mut().set_composition_range(
+                            Some(renamite_animation::Frame(s)),
+                            Some(renamite_animation::Frame(e)),
+                        );
                     }
                 })),
                 text_style: repose_core::TextStyle {
@@ -242,28 +272,15 @@ fn RangeEditor(
                 ..Default::default()
             },
         )
-    } else {
-        StatusChip(
-            format!("Range {}–{}", range.0.0, range.1.0),
-            th.surface_container_high,
-            th.on_surface_variant,
-        )
-        .modifier(Modifier::new().on_pointer_down({
-            // Seed the field with the current end frame only when entering
-            // edit mode. Re-seeding on every rebuild would clobber the text
-            // the user is typing (the panel repaints mid-drag).
-            let editing = editing.clone();
-            let tf_state = tf_state.clone();
-            move |_| {
-                {
-                    let mut st = tf_state.borrow_mut();
-                    st.text = end.to_string();
-                    st.select_all();
-                }
-                *editing.borrow_mut() = true;
-            }
-        }))
-    }
+    };
+
+    Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+        field(start_state.clone(), start_focus),
+        Text("–")
+            .size(th.typography.body_small)
+            .color(th.on_surface_variant),
+        field(end_state.clone(), end_focus),
+    ))
 }
 
 fn prop_label(
