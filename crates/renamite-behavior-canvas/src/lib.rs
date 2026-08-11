@@ -181,6 +181,10 @@ enum SelState {
         acc: f64,
         node: NodeId,
         base_deg: f64,
+        /// Position at drag start.
+        base_position: DVec2,
+        /// World to parent coordinate transform captured at drag start.
+        world_to_parent: Affine,
         txn: bool,
     },
     DragScale {
@@ -188,6 +192,8 @@ enum SelState {
         start_dist: f64,
         node: NodeId,
         base: DVec2,
+        base_position: DVec2,
+        world_to_parent: Affine,
         txn: bool,
     },
     DragPivot {
@@ -270,8 +276,9 @@ impl SelectTool {
             && let Some((min, max)) = selection_bounds(ctx.doc, ctx.scene, &ctx.selection.nodes)
         {
             let tolerance = ctx.view.world_tolerance(HANDLE_PX);
+            let transform = node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64);
 
-            if let Some(transform) = node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64)
+            if let Some(transform) = transform
                 && (pos - transform.pivot_world).length() <= tolerance
             {
                 let parent_det = determinant(transform.parent_world);
@@ -295,14 +302,16 @@ impl SelectTool {
             let pivot = (min + max) * 0.5;
 
             if (pos - rotate).length() <= tolerance {
-                let base_deg = rotation_deg(ctx, *node);
+                let world_to_parent = transform.map(|t| t.parent_world.inverse());
 
                 *self.st() = SelState::DragRotate {
                     pivot,
                     start: angle_of(pos - pivot),
                     acc: 0.0,
                     node: *node,
-                    base_deg,
+                    base_deg: rotation_deg(ctx, *node),
+                    base_position: position_of(ctx, *node),
+                    world_to_parent: world_to_parent.unwrap_or(Affine::IDENTITY),
                     txn: false,
                 };
 
@@ -310,13 +319,15 @@ impl SelectTool {
             }
 
             if (pos - scale).length() <= tolerance {
-                let base = scale_of(ctx, *node);
+                let world_to_parent = transform.map(|t| t.parent_world.inverse());
 
                 *self.st() = SelState::DragScale {
                     pivot: min,
                     start_dist: (pos - min).length().max(1e-6),
                     node: *node,
-                    base,
+                    base: scale_of(ctx, *node),
+                    base_position: position_of(ctx, *node),
+                    world_to_parent: world_to_parent.unwrap_or(Affine::IDENTITY),
                     txn: false,
                 };
 
@@ -421,6 +432,8 @@ impl SelectTool {
                 acc,
                 node,
                 base_deg,
+                base_position,
+                world_to_parent,
                 txn,
             } => {
                 let raw = angle_of(pos - *pivot) - *start;
@@ -429,20 +442,35 @@ impl SelectTool {
                 if ctx.modifiers.shift {
                     deg = (deg / 15.0).round() * 15.0;
                 }
+                let delta_rad = (deg - *base_deg).to_radians();
+                let parent_pt = *world_to_parent * Point::new(pivot.x, pivot.y);
+                let u = DVec2::new(parent_pt.x, parent_pt.y) - *base_position;
+                let new_position = *base_position + u - affine_vector(Affine::rotate(delta_rad), u);
+
                 let (node, base) = (*node, *txn);
                 let mut out: OutputVec = smallvec![];
                 if !base {
                     out.push(ToolOutput::BeginTransaction("Rotate".into()));
                     *txn = true;
                 }
-                out.push(ToolOutput::Commands(smallvec![resolve_property_edit(
-                    ctx.doc,
-                    node,
-                    &PropPath::new("transform.rotation"),
-                    Value::Angle(Angle(deg)),
-                    ctx.playhead,
-                    ctx.record,
-                )]));
+                out.push(ToolOutput::Commands(smallvec![
+                    resolve_property_edit(
+                        ctx.doc,
+                        node,
+                        &PropPath::new("transform.rotation"),
+                        Value::Angle(Angle(deg)),
+                        ctx.playhead,
+                        ctx.record,
+                    ),
+                    resolve_property_edit(
+                        ctx.doc,
+                        node,
+                        &PropPath::new("transform.position"),
+                        Value::DVec2(new_position),
+                        ctx.playhead,
+                        ctx.record,
+                    ),
+                ]));
                 out
             }
             SelState::DragScale {
@@ -450,24 +478,40 @@ impl SelectTool {
                 start_dist,
                 node,
                 base,
+                base_position,
+                world_to_parent,
                 txn,
             } => {
                 let factor = ((pos - *pivot).length() / *start_dist).max(0.01);
                 let new = *base * factor; // uniform (v1)
+                let parent_pt = *world_to_parent * Point::new(pivot.x, pivot.y);
+                let new_position = *base_position
+                    + (DVec2::new(parent_pt.x, parent_pt.y) - *base_position) * (1.0 - factor);
+
                 let (node, started) = (*node, *txn);
                 let mut out: OutputVec = smallvec![];
                 if !started {
                     out.push(ToolOutput::BeginTransaction("Scale".into()));
                     *txn = true;
                 }
-                out.push(ToolOutput::Commands(smallvec![resolve_property_edit(
-                    ctx.doc,
-                    node,
-                    &PropPath::new("transform.scale"),
-                    Value::DVec2(new),
-                    ctx.playhead,
-                    ctx.record,
-                )]));
+                out.push(ToolOutput::Commands(smallvec![
+                    resolve_property_edit(
+                        ctx.doc,
+                        node,
+                        &PropPath::new("transform.scale"),
+                        Value::DVec2(new),
+                        ctx.playhead,
+                        ctx.record,
+                    ),
+                    resolve_property_edit(
+                        ctx.doc,
+                        node,
+                        &PropPath::new("transform.position"),
+                        Value::DVec2(new_position),
+                        ctx.playhead,
+                        ctx.record,
+                    ),
+                ]));
                 out
             }
             SelState::DragPivot {
@@ -642,6 +686,17 @@ fn scale_of(ctx: &ToolContext, node: NodeId) -> DVec2 {
     ) {
         Ok(Value::DVec2(v)) => v,
         _ => DVec2::splat(100.0),
+    }
+}
+
+fn position_of(ctx: &ToolContext, node: NodeId) -> DVec2 {
+    match ctx.doc.value_at(
+        node,
+        &PropPath::new("transform.position"),
+        ctx.playhead.0 as f64,
+    ) {
+        Ok(Value::DVec2(v)) => v,
+        _ => DVec2::ZERO,
     }
 }
 
@@ -1765,6 +1820,11 @@ mod tests {
     use renamite_animation::Frame;
     use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ViewTransform};
     use renamite_history::{History, ProjectMut};
+    use std::sync::LazyLock;
+
+    /// The editor's current-paint swatch has no test hook; a shared black fill
+    /// keeps `ToolContext` borrows simple (static ref, no temporaries).
+    static TEST_PAINT: LazyLock<StylePaint> = LazyLock::new(|| StylePaint::solid(Color::BLACK));
     use renamite_model::{Color, Document, GradientStops, Scene, evaluate};
 
     struct World {
@@ -1825,25 +1885,29 @@ mod tests {
         }
     }
 
+    fn ctx_of<'a>(w: &'a World, scene: &'a Scene, m: Modifiers) -> ToolContext<'a> {
+        ToolContext {
+            doc: &w.doc,
+            scene,
+            comp: w.doc.main,
+            selection: &w.selection,
+            playhead: Frame(0),
+            record: false,
+            view: ViewTransform::identity(),
+            snap: SnapConfig {
+                grid: None,
+                anchor: false,
+                guide: false,
+            },
+            modifiers: m,
+            current_paint: &TEST_PAINT,
+        }
+    }
+
     fn drive(w: &mut World, tool: &mut SelectTool, h: &mut History, ev: CanvasEvent, m: Modifiers) {
         let scene = w.scene();
         let outs = {
-            let ctx = ToolContext {
-                doc: &w.doc,
-                scene: &scene,
-                comp: w.doc.main,
-                selection: &w.selection,
-                playhead: Frame(0),
-                record: false,
-                view: ViewTransform::identity(),
-                snap: SnapConfig {
-                    grid: None,
-                    anchor: false,
-                    guide: false,
-                },
-                modifiers: m,
-                current_paint: &StylePaint::solid(Color::BLACK),
-            };
+            let ctx = ctx_of(w, &scene, m);
             tool.handle(&ctx, ev)
         };
         for o in outs {
@@ -2610,6 +2674,161 @@ mod tests {
         for (a, b) in before.as_coeffs().iter().zip(after.as_coeffs()) {
             assert!((*a - b).abs() < 1e-9, "before={before:?}, after={after:?}",);
         }
+    }
+
+    #[test]
+    fn rotate_keeps_selection_pivot_fixed() {
+        let mut world = World::new();
+        world.selection.nodes = vec![world.shape];
+
+        let scene = world.scene();
+        let ctx = ctx_of(&world, &scene, Modifiers::none());
+        let (min, max) = selection_bounds(&world.doc, &scene, &world.selection.nodes).unwrap();
+        let (rotate_handle, _) = handles(&ctx, min, max);
+        let pivot = (min + max) * 0.5;
+
+        let before = node_transform_context(&world.doc, world.shape, 0.0)
+            .unwrap()
+            .world;
+        let local = before.inverse() * Point::new(pivot.x, pivot.y);
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerDown {
+                pos: rotate_handle,
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        // Move the mouse +90° around the pivot (rotate handle starts at -90°).
+        let target = pivot + DVec2::new(50.0, 0.0);
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerMove { pos: target },
+            Modifiers::none(),
+        );
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerUp {
+                pos: target,
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        let rotation = world
+            .doc
+            .value_at(world.shape, &PropPath::new("transform.rotation"), 0.0)
+            .unwrap();
+        assert_eq!(rotation, Value::Angle(Angle(90.0)));
+
+        let after = node_transform_context(&world.doc, world.shape, 0.0)
+            .unwrap()
+            .world;
+        let img = after * local;
+        assert!(
+            (img.x - pivot.x).abs() < 1e-6 && (img.y - pivot.y).abs() < 1e-6,
+            "pivot drifted: expected {pivot:?}, got ({}, {})",
+            img.x,
+            img.y,
+        );
+
+        history.undo(&mut world.pm()).unwrap();
+        let rotation_back = world
+            .doc
+            .value_at(world.shape, &PropPath::new("transform.rotation"), 0.0)
+            .unwrap();
+        assert_eq!(rotation_back, Value::Angle(Angle(0.0)));
+    }
+
+    #[test]
+    fn scale_keeps_opposite_corner_pinned() {
+        let mut world = World::new();
+        world.selection.nodes = vec![world.shape];
+
+        let scene = world.scene();
+        let ctx = ctx_of(&world, &scene, Modifiers::none());
+        let (min, max) = selection_bounds(&world.doc, &scene, &world.selection.nodes).unwrap();
+        let (_, scale_handle) = handles(&ctx, min, max);
+
+        // Local point sitting under the fixed corner before the drag.
+        let before = node_transform_context(&world.doc, world.shape, 0.0)
+            .unwrap()
+            .world;
+        let local = before.inverse() * Point::new(min.x, min.y);
+
+        let mut tool = SelectTool::default();
+        let mut history = History::new();
+
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerDown {
+                pos: scale_handle,
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        // Drag the bottom-right corner to double the distance from `min`.
+        let target = min + (max - min) * 2.0;
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerMove { pos: target },
+            Modifiers::none(),
+        );
+        drive(
+            &mut world,
+            &mut tool,
+            &mut history,
+            CanvasEvent::PointerUp {
+                pos: target,
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        let scale = world
+            .doc
+            .value_at(world.shape, &PropPath::new("transform.scale"), 0.0)
+            .unwrap();
+        assert_eq!(scale, Value::DVec2(DVec2::splat(200.0)));
+
+        // The opposite corner stays pinned in world space.
+        let after = node_transform_context(&world.doc, world.shape, 0.0)
+            .unwrap()
+            .world;
+        let img = after * local;
+        assert!(
+            (img.x - min.x).abs() < 1e-6 && (img.y - min.y).abs() < 1e-6,
+            "corner drifted: expected {min:?}, got ({}, {})",
+            img.x,
+            img.y,
+        );
+
+        let scene = world.scene();
+        let (min_after, _) = selection_bounds(&world.doc, &scene, &world.selection.nodes).unwrap();
+        assert!((min_after - min).length() < 1e-6);
+
+        history.undo(&mut world.pm()).unwrap();
+        let scale_back = world
+            .doc
+            .value_at(world.shape, &PropPath::new("transform.scale"), 0.0)
+            .unwrap();
+        assert_eq!(scale_back, Value::DVec2(DVec2::splat(100.0)));
     }
 
     #[test]
