@@ -107,6 +107,9 @@ pub struct Session {
     pub welcome: bool,
     /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
     pub clipboard: Option<Vec<renamite_history::NodeTree>>,
+    /// World-space bounds of the clipboard contents at copy time, used to
+    /// recenter pasted content at a canvas right-click point.
+    pub clipboard_bounds: Option<(DVec2, DVec2)>,
     /// Machine edited by the Interactivity panel.
     pub active_machine: Option<MachineId>,
     /// Graph selection within the active machine (view state).
@@ -319,6 +322,7 @@ impl Session {
             exporting_png: false,
             welcome: true,
             clipboard: None,
+            clipboard_bounds: None,
             active_machine,
             machine_selection: MachineSelection::None,
             machine_preview_inputs: Vec::new(),
@@ -494,7 +498,11 @@ impl Session {
                 return;
             }
             MenuAction::Paste => {
-                self.paste_clipboard();
+                let world = self.context_menu.as_ref().and_then(|m| match m.source {
+                    ContextMenuSource::Canvas { world } => Some(world),
+                    ContextMenuSource::Layers { .. } => None,
+                });
+                self.paste_clipboard_at(world);
                 self.close_context_menu();
                 return;
             }
@@ -623,6 +631,10 @@ impl Session {
         if roots.is_empty() {
             return;
         }
+        self.clipboard_bounds = {
+            let scene = self.engine.scene();
+            selection_bounds(&self.file.document, scene, &roots)
+        };
         self.clipboard = Some(roots.iter().map(|&id| self.tree_of(id)).collect());
         if cut {
             let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = roots
@@ -734,14 +746,21 @@ impl Session {
         created
     }
 
-    fn paste_clipboard(&mut self) {
+    fn paste_clipboard_at(&mut self, world: Option<DVec2>) {
         let Some(trees) = self.clipboard.clone() else {
             return;
         };
         if trees.is_empty() {
             return;
         }
-        let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Paste");
+        let offset = match (world, self.clipboard_bounds) {
+            (Some(world), Some((min, max))) => {
+                let center = (min + max) * 0.5;
+                world - center
+            }
+            _ => DVec2::new(20.0, 20.0),
+        };
+        let created = self.insert_trees(trees, offset, "Paste");
         if !created.is_empty() {
             self.selection.nodes = created;
             self.ensure_selection_visible();
