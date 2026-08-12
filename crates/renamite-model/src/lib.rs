@@ -1196,6 +1196,7 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
             ov,
             scope,
             &[],
+            &[],
         );
     }
     scene
@@ -1214,13 +1215,14 @@ fn eval_group(
     ov: &Overrides,
     scope_rect: kurbo::Rect,
     inherited_clips: &[u32],
+    seed_paths: &[ShapeEntry],
 ) {
     if depth > MAX_DEPTH {
         return;
     }
 
     // Pass 1: accumulate shape paths + modifiers, in document order.
-    let mut paths: Vec<ShapeEntry> = Vec::new();
+    let mut paths: Vec<ShapeEntry> = seed_paths.to_vec();
     for &id in children {
         let Some(n) = doc.nodes.get(id) else { continue };
         if !n.visible {
@@ -1313,6 +1315,7 @@ fn eval_group(
                     ov,
                     scope_rect,
                     clips,
+                    &[],
                 );
             }
             NodeKind::Layer(lp) => {
@@ -1333,6 +1336,7 @@ fn eval_group(
                     ov,
                     scope_rect,
                     clips,
+                    &[],
                 );
             }
             NodeKind::Image(asset_id) => {
@@ -1381,10 +1385,28 @@ fn eval_group(
                         ov,
                         pre_scope,
                         clips,
+                        &[],
                     );
                 }
             }
             NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, clips, scene),
+            NodeKind::Shape(_) | NodeKind::Text(_) if !n.children.is_empty() => {
+                let seeds: Vec<ShapeEntry> =
+                    paths.iter().filter(|e| e.node == id).cloned().collect();
+                eval_group(
+                    doc,
+                    &n.children,
+                    frame,
+                    tf,
+                    node_op,
+                    scene,
+                    depth + 1,
+                    ov,
+                    scope_rect,
+                    clips,
+                    &seeds,
+                );
+            }
             _ => {}
         }
     }

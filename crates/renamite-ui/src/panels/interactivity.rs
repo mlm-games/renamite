@@ -11,7 +11,7 @@ use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
     hit_transition, input_is_referenced, remove_input, remove_state, remove_transition,
-    rename_input, rename_state, set_entry_state, set_transition_target, transition_mut,
+    set_entry_state, set_transition_target, transition_mut,
 };
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
@@ -34,10 +34,11 @@ use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
 use crate::components::{CollapsibleSection, CompactIconAction, PanelHeader};
 use crate::session::{MachineGraphGesture, SessionRef};
-use crate::symbols::Symbols;
+use crate::symbols::{AppIcon, Symbols};
 
 pub fn InteractivityPanel(session: SessionRef) -> View {
     let active = session.borrow().active_machine;
+    let overlay = remember_with_key("interact_overlay", OverlayHandle::new);
 
     let mut children: Vec<View> = vec![PanelHeader(
         Symbols::account_tree,
@@ -74,13 +75,14 @@ pub fn InteractivityPanel(session: SessionRef) -> View {
             children.push(ScrollArea(
                 Modifier::new().fill_max_size(),
                 remember_scroll_state("interact_scroll"),
-                MachineBody(session.clone(), machine),
+                MachineBody((*overlay).clone(), session.clone(), machine),
             ));
         }
         None => children.push(EmptyMachineState(session)),
     }
 
-    Column(Modifier::new().fill_max_size()).child(children)
+    let panel = Column(Modifier::new().fill_max_size()).child(children);
+    overlay.host(Modifier::new().fill_max_size(), panel)
 }
 
 fn PreviewStatusBar(session: SessionRef) -> View {
@@ -260,7 +262,7 @@ fn MachineSelector(session: SessionRef) -> View {
     .child(chips)
 }
 
-fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
+fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
     let name = session.borrow().file.machines[machine_id].name.clone();
 
     Column(Modifier::new().fill_max_width().gap(8.0)).child((
@@ -275,16 +277,23 @@ fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(crate::components::AppTextField(
+        .child(crate::components::deferred_name_field(
             format!("machine_name_{machine_id:?}"),
             name,
             "Machine name",
-            true,
             36.0,
             {
                 let session = session.clone();
                 move |text: String| {
-                    session.borrow_mut().rename_active_machine(text);
+                    let trimmed = text.trim().to_owned();
+                    if trimmed.is_empty() {
+                        return Err("Name can't be empty".into());
+                    }
+                    session.borrow_mut().edit_active_machine("Rename machine", move |machine| {
+                        machine.name = trimmed;
+                        Ok(())
+                    });
+                    Ok(())
                 }
             },
         )),
@@ -325,13 +334,13 @@ fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
             "sm_inspector",
             "Selection",
             vec![],
-            SelectionInspector(session.clone(), machine_id),
+            SelectionInspector(overlay.clone(), session.clone(), machine_id),
         ),
         CollapsibleSection(
             "sm_listeners",
             "Listeners",
             vec![],
-            ListenersSection(session, machine_id),
+            ListenersSection(overlay, session, machine_id),
         ),
     ))
 }
@@ -533,20 +542,36 @@ fn InputRow(
     }
 
     controls.push(
-        Box(Modifier::new().flex_grow(1.0)).child(crate::components::AppTextField(
+        Box(Modifier::new().flex_grow(1.0)).child(crate::components::deferred_name_field(
             format!("machine_input_name_{index}"),
             name,
             "Name",
-            true,
             32.0,
             {
                 let session = session.clone();
                 move |text: String| {
-                    let mut s = session.borrow_mut();
-                    s.edit_active_machine("Rename input", move |machine| {
-                        rename_input(machine, index, text)?;
+                    let trimmed = text.trim().to_owned();
+                    if trimmed.is_empty() {
+                        return Err("Name can't be empty".into());
+                    }
+                    {
+                        let s = session.borrow();
+                        let Some(m) = s.file.machines.get(machine_id) else {
+                            return Err("No active machine".into());
+                        };
+                        let duplicate = m.inputs
+                            .iter()
+                            .enumerate()
+                            .any(|(i, input)| i != index && input.name == trimmed);
+                        if duplicate {
+                            return Err("Duplicate name".into());
+                        }
+                    }
+                    session.borrow_mut().edit_active_machine("Rename input", move |machine| {
+                        machine.inputs[index].name = trimmed;
                         Ok(())
                     });
+                    Ok(())
                 }
             },
         )),
@@ -1020,18 +1045,22 @@ fn kind_label(kind: &StateKind) -> String {
     }
 }
 
-fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
+fn SelectionInspector(
+    overlay: OverlayHandle,
+    session: SessionRef,
+    machine_id: MachineId,
+) -> View {
     let selection = session.borrow().machine_selection.clone();
     match selection {
         MachineSelection::State { layer, state } => {
-            StateInspector(session, machine_id, layer, state)
+            StateInspector(overlay, session, machine_id, layer, state)
         }
         MachineSelection::Transition {
             layer,
             source,
             transition,
-        } => TransitionInspector(session, machine_id, layer, source, transition),
-        MachineSelection::Layer { layer } => LayerInspector(session, machine_id, layer),
+        } => TransitionInspector(overlay, session, machine_id, layer, source, transition),
+        MachineSelection::Layer { layer } => LayerInspector(overlay, session, machine_id, layer),
         _ => Text("Select a state, edge, or Any node")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
@@ -1039,7 +1068,12 @@ fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
     }
 }
 
-fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> View {
+fn LayerInspector(
+    overlay: OverlayHandle,
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+) -> View {
     let th = theme();
     let (name, any_count, state_count) = {
         let s = session.borrow();
@@ -1086,6 +1120,7 @@ fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> V
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant),
             Box(Modifier::new()).child(transition_target_dropdown(
+                overlay,
                 session,
                 machine_id,
                 layer,
@@ -1098,7 +1133,13 @@ fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> V
     ))
 }
 
-fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, state: usize) -> View {
+fn StateInspector(
+    overlay: OverlayHandle,
+    session: SessionRef,
+    machine_id: MachineId,
+    layer: usize,
+    state: usize,
+) -> View {
     let th = theme();
     let (name, kind, states, is_entry, inputs) = {
         let s = session.borrow();
@@ -1138,20 +1179,36 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(crate::components::AppTextField(
+        .child(crate::components::deferred_name_field(
             format!("machine_state_name_{layer}_{state}"),
             name.clone(),
             "State name",
-            true,
             36.0,
             {
                 let session = session.clone();
                 move |text: String| {
-                    let mut s = session.borrow_mut();
-                    s.edit_active_machine("Rename state", move |machine| {
-                        rename_state(machine, layer, state, text)?;
+                    let trimmed = text.trim().to_owned();
+                    if trimmed.is_empty() {
+                        return Err("Name can't be empty".into());
+                    }
+                    {
+                        let s = session.borrow();
+                        let Some(m) = s.file.machines.get(machine_id) else {
+                            return Err("No active machine".into());
+                        };
+                        let duplicate = m.layers
+                            .get(layer)
+                            .map(|l| l.states.iter().enumerate().any(|(i, st)| i != state && st.name == trimmed))
+                            .unwrap_or(false);
+                        if duplicate {
+                            return Err("Duplicate name".into());
+                        }
+                    }
+                    session.borrow_mut().edit_active_machine("Rename state", move |machine| {
+                        machine.layers[layer].states[state].name = trimmed;
                         Ok(())
                     });
+                    Ok(())
                 }
             },
         )),
@@ -1217,7 +1274,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
         } => {
             rows.push(labeled_row(
                 "Clip",
-                clip_dropdown(session.clone(), machine_id, layer, state, *clip),
+                clip_dropdown(overlay.clone(), session.clone(), machine_id, layer, state, *clip),
             ));
             let speed = *speed;
             rows.push(labeled_row(
@@ -1264,7 +1321,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
         StateKind::Blend1D { input, children } => {
             rows.push(labeled_row(
                 "Input",
-                blend_input_dropdown(session.clone(), machine_id, layer, state, *input),
+                blend_input_dropdown(overlay.clone(), session.clone(), machine_id, layer, state, *input),
             ));
             rows.push(
                 Text("Blend children")
@@ -1279,6 +1336,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             );
             for (ci, child) in children.iter().enumerate() {
                 rows.push(blend_child_row(
+                    overlay.clone(),
                     session.clone(),
                     machine_id,
                     layer,
@@ -1332,16 +1390,29 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             .gap(6.0)
             .align_items(AlignItems::CENTER))
         .child((
-            chip("Mark entry", is_entry, {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    s.edit_active_machine("Set entry", move |machine| {
-                        set_entry_state(machine, layer, state)?;
-                        Ok(())
-                    });
-                }
-            }),
+            if is_entry {
+                // Already the entry state: static label, not an action.
+                Row(Modifier::new()
+                    .gap(4.0)
+                    .align_items(AlignItems::CENTER))
+                .child((
+                    AppIcon(Symbols::play_arrow, 16.0),
+                    Text("Entry")
+                        .size(th.typography.body_medium)
+                        .color(th.primary),
+                ))
+            } else {
+                chip("Set as entry", false, {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.edit_active_machine("Set entry", move |machine| {
+                            set_entry_state(machine, layer, state)?;
+                            Ok(())
+                        });
+                    }
+                })
+            },
             CompactIconAction(Symbols::delete, "Delete state", {
                 let session = session.clone();
                 move || {
@@ -1402,6 +1473,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
             Box(Modifier::new().flex_grow(0.0)).child(transition_target_dropdown(
+                overlay,
                 session,
                 machine_id,
                 layer,
@@ -1428,6 +1500,7 @@ fn set_clip_loop(session: SessionRef, layer: usize, state: usize, mode: LoopMode
 }
 
 fn blend_child_row(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -1460,6 +1533,7 @@ fn blend_child_row(
             }),
         ),
         Box(Modifier::new().flex_grow(1.0)).child(clip_dropdown_for_blend(
+            overlay,
             session.clone(),
             machine_id,
             layer,
@@ -1487,6 +1561,7 @@ fn blend_child_row(
 }
 
 fn clip_dropdown_for_blend(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -1522,6 +1597,7 @@ fn clip_dropdown_for_blend(
         })
         .collect();
     dropdown(
+        overlay,
         format!("bclip_{machine_id:?}_{layer}_{state}_{child_index}"),
         format!("{current_name} ▾"),
         items,
@@ -1529,6 +1605,7 @@ fn clip_dropdown_for_blend(
 }
 
 fn TransitionInspector(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -1580,6 +1657,7 @@ fn TransitionInspector(
         labeled_row(
             "Target",
             retarget_dropdown(
+                overlay.clone(),
                 session.clone(),
                 machine_id,
                 layer,
@@ -1682,6 +1760,7 @@ fn TransitionInspector(
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
             Box(Modifier::new()).child(condition_dropdown(
+                overlay,
                 session.clone(),
                 machine_id,
                 layer,
@@ -1831,7 +1910,11 @@ fn next_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
+fn ListenersSection(
+    overlay: OverlayHandle,
+    session: SessionRef,
+    machine_id: MachineId,
+) -> View {
     let th = theme();
     let (listeners, inputs, selected_node) = {
         let s = session.borrow();
@@ -1897,7 +1980,7 @@ fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
 
     // Add-listener row: node comes from the editor selection.
     if let Some(node) = selected_node {
-        rows.push(AddListenerRow(session.clone(), machine_id, node, inputs));
+        rows.push(AddListenerRow(overlay, session.clone(), machine_id, node, inputs));
     } else {
         rows.push(
             Text("Select a shape to add a listener")
@@ -1916,6 +1999,7 @@ fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
 }
 
 fn AddListenerRow(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     node: NodeId,
@@ -2073,9 +2157,9 @@ fn AddListenerRow(
         Text(node_name)
             .size(th.typography.label_small)
             .color(th.on_surface_variant),
-        dropdown("lst_event", format!("{event_label} ▾"), event_items),
-        dropdown("lst_input", format!("{input_label} ▾"), input_items),
-        dropdown("lst_action", format!("{action_label} ▾"), action_items),
+        dropdown(overlay.clone(), "lst_event", format!("{event_label} ▾"), event_items),
+        dropdown(overlay.clone(), "lst_input", format!("{input_label} ▾"), input_items),
+        dropdown(overlay, "lst_action", format!("{action_label} ▾"), action_items),
         Button(
             Modifier::new(),
             {
@@ -2204,6 +2288,7 @@ fn clip_names(session: &SessionRef) -> Vec<(ClipId, String)> {
 }
 
 fn clip_dropdown(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2243,6 +2328,7 @@ fn clip_dropdown(
         })
         .collect();
     dropdown(
+        overlay,
         format!("clip_{machine_id:?}_{layer}_{state}"),
         format!("{current_name} ▾"),
         items,
@@ -2250,6 +2336,7 @@ fn clip_dropdown(
 }
 
 fn blend_input_dropdown(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2287,6 +2374,7 @@ fn blend_input_dropdown(
         })
         .collect();
     dropdown(
+        overlay,
         format!("blend_{machine_id:?}_{layer}_{state}"),
         format!("{current_name} ▾"),
         items,
@@ -2363,6 +2451,7 @@ fn transition_row(
 
 /// `add_mode`: true = add new transition to target; false unused (use retarget_dropdown).
 fn transition_target_dropdown(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2408,6 +2497,7 @@ fn transition_target_dropdown(
         })
         .collect();
     dropdown(
+        overlay,
         format!("target_add_{machine_id:?}_{layer}_{source:?}"),
         format!("{} ▾", Symbols::add.name),
         items,
@@ -2415,6 +2505,7 @@ fn transition_target_dropdown(
 }
 
 fn retarget_dropdown(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2448,6 +2539,7 @@ fn retarget_dropdown(
         })
         .collect();
     dropdown(
+        overlay,
         format!("retarget_{machine_id:?}_{layer}_{transition}"),
         format!("{current_name} ▾"),
         items,
@@ -2455,6 +2547,7 @@ fn retarget_dropdown(
 }
 
 fn condition_dropdown(
+    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2485,6 +2578,7 @@ fn condition_dropdown(
         })
         .collect();
     dropdown(
+        overlay,
         format!("cond_{machine_id:?}_{layer}_{transition:?}"),
         format!("{} ▾", Symbols::add.name),
         items,
@@ -2643,11 +2737,9 @@ fn preview_scrub_number(session: SessionRef, input: usize, value: f64, step: f64
         )
 }
 
-fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>) -> View {
+fn dropdown(overlay: OverlayHandle, key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>) -> View {
     let key = key.into();
     let state: Rc<MenuState> = remember_with_key(format!("{key}_state"), MenuState::new);
-    let overlay: Rc<OverlayHandle> =
-        remember_with_key(format!("{key}_overlay"), OverlayHandle::new);
     let th = theme();
 
     let trigger = Text(label)
@@ -2671,7 +2763,7 @@ fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>
 
     DropdownMenu(
         state,
-        (*overlay).clone(),
+        overlay.clone(),
         Modifier::new(),
         trigger,
         items,

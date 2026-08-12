@@ -87,7 +87,10 @@ pub fn LayersPanel(session: SessionRef) -> View {
                             .unwrap_or(false),
                         drop_as_child: drag
                             .as_ref()
-                            .map(|d| d.as_child && row.kind == LayerKind::Group)
+                            .map(|d| {
+                                d.as_child
+                                    && (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
+                            })
                             .unwrap_or(false),
                         rename_draft: renaming
                             .as_ref()
@@ -245,8 +248,9 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 let (lx, ly) = local_pos(&pe);
                 d.hover_row = index;
                 d.before = ly < ROW_HEIGHT * 0.5;
-                // Nest when over a group and pointer is in the right half of the row content.
-                d.as_child = row.kind == LayerKind::Group && lx > 64.0;
+                // Nest when over a container (group/shape) and pointer is in the right half of the row content.
+                d.as_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
+                    && lx > 64.0;
                 pe.consume();
                 s.repaint();
             }
@@ -287,8 +291,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             }
         }))
     .child((
-        // Expand chevron (groups only)
-        if kind == LayerKind::Group && child_count > 0 {
+        // Expand chevron (container rows with children)
+        if (kind == LayerKind::Group || kind == LayerKind::Shape) && child_count > 0 {
             CompactIconAction(
                 if st.is_expanded {
                     Symbols::expand_more

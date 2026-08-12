@@ -76,9 +76,17 @@ fn walk(
             sibling_index,
             parent,
         });
-        if kind == LayerKind::Group && expanded.contains(&id) && !n.children.is_empty() {
+        if is_expandable(kind, !n.children.is_empty()) && expanded.contains(&id) {
             walk(doc, Parent::Node(id), &n.children, depth + 1, expanded, out);
         }
+    }
+}
+
+fn is_expandable(kind: LayerKind, has_children: bool) -> bool {
+    match kind {
+        LayerKind::Group => true,
+        LayerKind::Shape => has_children,
+        _ => false,
     }
 }
 
@@ -127,6 +135,10 @@ pub fn drop_command(
     // Prevent parenting a node under its own descendant - host should also
     // reject via is_ancestor check when as_child.
     if as_child && target.kind == LayerKind::Group {
+        return Some(cmd_move(dragged, Parent::Node(target.id), usize::MAX));
+    }
+    // Shape containers can also hold nested style/modifier children.
+    if as_child && target.kind == LayerKind::Shape {
         return Some(cmd_move(dragged, Parent::Node(target.id), usize::MAX));
     }
     // Sibling insert: refuse if target's parent is inside dragged (would cycle).
