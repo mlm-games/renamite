@@ -89,7 +89,8 @@ pub fn LayersPanel(session: SessionRef) -> View {
                             .as_ref()
                             .map(|d| {
                                 d.as_child
-                                    && (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
+                                    && (row.kind == LayerKind::Group
+                                        || row.kind == LayerKind::Shape)
                             })
                             .unwrap_or(false),
                         rename_draft: renaming
@@ -136,16 +137,6 @@ struct LayerRowState {
     is_drop_target: bool,
     drop_as_child: bool,
     rename_draft: Option<String>,
-}
-
-/// Pointer position relative to the widget that captured the event. Repose
-/// reports `position` in window coords and `origin` as the capture origin;
-/// the difference is the local position used by drop-zone math.
-fn local_pos(pe: &PointerEvent) -> (f32, f32) {
-    (
-        pe.position.x - pe.origin.x,
-        pe.position.y - pe.origin.y,
-    )
 }
 
 fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
@@ -232,43 +223,14 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                             row.id
                         ))]);
                     }
+                    s.layer_drag = Some(LayerDragState {
+                        id: row.id,
+                        hover_row: index,
+                        before: true,
+                        as_child: false,
+                    });
                     s.revision = s.revision.wrapping_add(1);
                     request_frame();
-                }
-            }
-        })
-        .on_pointer_move({
-            let session = session.clone();
-            let row = row.clone();
-            move |pe: PointerEvent| {
-                let mut s = session.borrow_mut();
-                let Some(d) = s.layer_drag.as_mut() else {
-                    return;
-                };
-                let (lx, ly) = local_pos(&pe);
-                d.hover_row = index;
-                d.before = ly < ROW_HEIGHT * 0.5;
-                // Nest when over a container (group/shape) and pointer is in the right half of the row content.
-                d.as_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
-                    && lx > 64.0;
-                pe.consume();
-                s.repaint();
-            }
-        })
-        .on_pointer_up({
-            let session = session.clone();
-            move |pe: PointerEvent| {
-                pe.consume();
-                session.borrow_mut().finish_layer_drag();
-            }
-        })
-        .on_pointer_cancel({
-            let session = session.clone();
-            move |pe: PointerEvent| {
-                pe.consume();
-                let mut s = session.borrow_mut();
-                if s.layer_drag.take().is_some() {
-                    s.repaint();
                 }
             }
         })
@@ -287,6 +249,52 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 {
                     s.renaming = Some((id, name.clone()));
                     request_frame();
+                }
+            }
+        })
+        .on_pointer_move({
+            let session = session.clone();
+            move |pe: PointerEvent| {
+                let mut s = session.borrow_mut();
+                if s.layer_drag.is_none() {
+                    return;
+                }
+                let step = ROW_HEIGHT + ROW_GAP;
+                let content_y = index as f32 * step + pe.position.y;
+                let slot = (content_y / step).floor().max(0.0) as usize;
+                let rows =
+                    flatten_layers(&s.file.document, s.file.document.main, &s.expanded_layers);
+                let Some(row) = rows.get(slot) else {
+                    pe.consume();
+                    s.repaint();
+                    return;
+                };
+                let y_in_row = content_y - slot as f32 * step;
+                let before = y_in_row < ROW_HEIGHT * 0.5;
+                let as_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
+                    && pe.position.x > 64.0;
+                let d = s.layer_drag.as_mut().unwrap();
+                d.hover_row = slot;
+                d.before = before;
+                d.as_child = as_child;
+                pe.consume();
+                s.repaint();
+            }
+        })
+        .on_pointer_up({
+            let session = session.clone();
+            move |pe: PointerEvent| {
+                pe.consume();
+                session.borrow_mut().finish_layer_drag();
+            }
+        })
+        .on_pointer_cancel({
+            let session = session.clone();
+            move |pe: PointerEvent| {
+                pe.consume();
+                let mut s = session.borrow_mut();
+                if s.layer_drag.take().is_some() {
+                    s.repaint();
                 }
             }
         }))
@@ -379,36 +387,6 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 }
             },
         ),
-        // Drag-reorder handle. Pointer-down starts the drag (separate from
-        // select / shift-select / double-click rename / expand).
-        Box(Modifier::new()
-            .width(28.0)
-            .height(ROW_HEIGHT)
-            .align_items(AlignItems::CENTER)
-            .on_pointer_down({
-                let session = session.clone();
-                move |pe: PointerEvent| {
-                    if !matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
-                        return;
-                    }
-                    pe.consume();
-                    let mut s = session.borrow_mut();
-                    if s.renaming.is_some() {
-                        s.commit_rename();
-                    }
-                    if !s.selection.nodes.contains(&id) {
-                        s.selection.nodes = vec![id];
-                    }
-                    s.layer_drag = Some(LayerDragState {
-                        id,
-                        hover_row: index,
-                        before: true,
-                        as_child: false,
-                    });
-                    s.repaint();
-                }
-            }))
-        .child(AppIcon(Symbols::drag_indicator, 20.0)),
     ))
 }
 

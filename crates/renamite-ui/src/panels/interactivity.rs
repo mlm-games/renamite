@@ -11,7 +11,7 @@ use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
     hit_transition, input_is_referenced, remove_input, remove_state, remove_transition,
-    set_entry_state, set_transition_target, transition_mut,
+    rename_input, rename_state, set_entry_state, set_transition_target, transition_mut,
 };
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
@@ -277,7 +277,7 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(crate::components::deferred_name_field(
+        .child(crate::components::name_field(
             format!("machine_name_{machine_id:?}"),
             name,
             "Machine name",
@@ -285,15 +285,7 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
             {
                 let session = session.clone();
                 move |text: String| {
-                    let trimmed = text.trim().to_owned();
-                    if trimmed.is_empty() {
-                        return Err("Name can't be empty".into());
-                    }
-                    session.borrow_mut().edit_active_machine("Rename machine", move |machine| {
-                        machine.name = trimmed;
-                        Ok(())
-                    });
-                    Ok(())
+                    session.borrow_mut().rename_active_machine(text);
                 }
             },
         )),
@@ -542,7 +534,7 @@ fn InputRow(
     }
 
     controls.push(
-        Box(Modifier::new().flex_grow(1.0)).child(crate::components::deferred_name_field(
+        Box(Modifier::new().flex_grow(1.0)).child(crate::components::name_field(
             format!("machine_input_name_{index}"),
             name,
             "Name",
@@ -550,28 +542,11 @@ fn InputRow(
             {
                 let session = session.clone();
                 move |text: String| {
-                    let trimmed = text.trim().to_owned();
-                    if trimmed.is_empty() {
-                        return Err("Name can't be empty".into());
-                    }
-                    {
-                        let s = session.borrow();
-                        let Some(m) = s.file.machines.get(machine_id) else {
-                            return Err("No active machine".into());
-                        };
-                        let duplicate = m.inputs
-                            .iter()
-                            .enumerate()
-                            .any(|(i, input)| i != index && input.name == trimmed);
-                        if duplicate {
-                            return Err("Duplicate name".into());
-                        }
-                    }
-                    session.borrow_mut().edit_active_machine("Rename input", move |machine| {
-                        machine.inputs[index].name = trimmed;
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Rename input", move |machine| {
+                        rename_input(machine, index, text)?;
                         Ok(())
                     });
-                    Ok(())
                 }
             },
         )),
@@ -1179,7 +1154,7 @@ fn StateInspector(
             })
             .gap(6.0)
             .align_items(AlignItems::CENTER))
-        .child(crate::components::deferred_name_field(
+        .child(crate::components::name_field(
             format!("machine_state_name_{layer}_{state}"),
             name.clone(),
             "State name",
@@ -1187,28 +1162,11 @@ fn StateInspector(
             {
                 let session = session.clone();
                 move |text: String| {
-                    let trimmed = text.trim().to_owned();
-                    if trimmed.is_empty() {
-                        return Err("Name can't be empty".into());
-                    }
-                    {
-                        let s = session.borrow();
-                        let Some(m) = s.file.machines.get(machine_id) else {
-                            return Err("No active machine".into());
-                        };
-                        let duplicate = m.layers
-                            .get(layer)
-                            .map(|l| l.states.iter().enumerate().any(|(i, st)| i != state && st.name == trimmed))
-                            .unwrap_or(false);
-                        if duplicate {
-                            return Err("Duplicate name".into());
-                        }
-                    }
-                    session.borrow_mut().edit_active_machine("Rename state", move |machine| {
-                        machine.layers[layer].states[state].name = trimmed;
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Rename state", move |machine| {
+                        rename_state(machine, layer, state, text)?;
                         Ok(())
                     });
-                    Ok(())
                 }
             },
         )),

@@ -1,3 +1,4 @@
+use repose_core::input::{Key, KeyEvent};
 use repose_core::{
     AlignItems, Modifier, PaddingValues, TextFieldLineLimits, View, remember_state_with_key,
     remember_with_key, request_frame, theme,
@@ -9,7 +10,7 @@ use repose_material::material3::{
 };
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::symbols::AppIcon;
@@ -293,91 +294,46 @@ pub fn AppTextField(
     )
 }
 
-pub fn deferred_name_field(
+/// Single-line name field that keeps a local draft and only commits on submit
+/// (Enter). Mirrors the layer-rename field: typing updates the draft, Enter
+/// commits it, Escape discards it. Used for machine / state / input names so
+/// that validation (empty/duplicate) fires on commit, not on every keystroke.
+pub fn name_field(
     key: impl Into<String>,
     value: String,
     hint: impl Into<String>,
     min_height: f32,
-    commit: impl Fn(String) -> Result<(), String> + 'static,
+    commit: impl Fn(String) + 'static,
 ) -> View {
     let key = key.into();
     let hint = hint.into();
-    let draft: Rc<RefCell<String>> =
-        remember_with_key(format!("{key}_draft"), || RefCell::new(String::new()));
-    let focused: Rc<Cell<bool>> = remember_with_key(format!("{key}_focused"), || Cell::new(false));
-    let was_focused: Rc<Cell<bool>> =
-        remember_with_key(format!("{key}_was_focused"), || Cell::new(false));
-    let error: Rc<RefCell<Option<String>>> =
-        remember_with_key(format!("{key}_error"), || RefCell::new(None));
-    let tf_state = remember_with_key(key.clone(), || RefCell::new(TextFieldState::new()));
+    let draft: Rc<RefCell<String>> = remember_with_key(
+        format!("{key}_draft"),
+        || RefCell::new(String::new()),
+    );
+    let focused: Rc<std::cell::Cell<bool>> = remember_with_key(
+        format!("{key}_focused"),
+        || std::cell::Cell::new(false),
+    );
 
-    let is_focused = focused.get();
-
-    {
-        let mut d = draft.borrow_mut();
-        if !is_focused && *d != value {
-            *d = value.clone();
-            *error.borrow_mut() = None;
-        }
-        if was_focused.get() && !is_focused {
-            let text = d.trim().to_string();
-            match commit(text) {
-                Ok(()) => {
-                    *error.borrow_mut() = None;
-                    *d = value.clone();
-                }
-                Err(message) => *error.borrow_mut() = Some(message),
-            }
-        }
-        was_focused.set(is_focused);
+    // Sync the draft from the model value whenever the field is not focused.
+    if !focused.get() && *draft.borrow() != value {
+        *draft.borrow_mut() = value.clone();
     }
 
-    let th = theme();
-    let target = if is_focused {
-        draft.borrow().clone()
-    } else {
-        value.clone()
-    };
+    let tf_state = remember_with_key(key.clone(), || RefCell::new(TextFieldState::new()));
     {
         let mut st = tf_state.borrow_mut();
-        if st.text != target {
-            st.text = target;
+        if st.text != *draft.borrow() {
+            st.text = draft.borrow().clone();
             let len = st.text.len();
             st.selection = len..len;
         }
     }
 
+    let th = theme();
     let focus = focused.clone();
-    let config = TextFieldConfig {
-        line_limits: TextFieldLineLimits::SingleLine,
-        on_change: Some(Rc::new({
-            let draft = draft.clone();
-            move |text: String| *draft.borrow_mut() = text
-        })),
-        on_submit: Some(Rc::new({
-            let draft = draft.clone();
-            let error = error.clone();
-            let commit = Rc::new(commit);
-            move |text: String| {
-                let trimmed = text.trim().to_string();
-                match commit(trimmed.clone()) {
-                    Ok(()) => {
-                        *error.borrow_mut() = None;
-                        *draft.borrow_mut() = trimmed;
-                    }
-                    Err(message) => *error.borrow_mut() = Some(message),
-                }
-            }
-        })),
-        focus_tracker: Some(focus),
-        text_style: repose_core::TextStyle {
-            font_size: th.typography.body_medium,
-            color: Some(th.on_surface),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let text_field = BasicTextField(
+    BasicTextField(
         tf_state,
         Modifier::new()
             .fill_max_width()
@@ -389,24 +345,32 @@ pub fn deferred_name_field(
                 bottom: 6.0,
             })
             .background(th.surface_container_highest)
-            .clip_rounded(8.0),
+            .clip_rounded(8.0)
+            .on_key_event(move |ek: KeyEvent| {
+                if matches!(ek.key, Key::Escape) {
+                    focused.set(false);
+                    return true;
+                }
+                false
+            }),
         hint,
-        config,
-    );
-
-    match error.borrow().clone() {
-        Some(message) => Column(Modifier::new().fill_max_width()).child((
-            text_field,
-            Text(message)
-                .size(th.typography.label_small)
-                .color(th.error)
-                .modifier(Modifier::new().padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 2.0,
-                    bottom: 0.0,
-                })),
-        )),
-        None => text_field,
-    }
+        TextFieldConfig {
+            line_limits: TextFieldLineLimits::SingleLine,
+            focus_tracker: Some(focus),
+            on_change: Some(Rc::new({
+                let draft = draft.clone();
+                move |text: String| *draft.borrow_mut() = text
+            })),
+            on_submit: Some(Rc::new(move |_| {
+                let trimmed = draft.borrow().trim().to_owned();
+                commit(trimmed);
+            })),
+            text_style: repose_core::TextStyle {
+                font_size: th.typography.body_medium,
+                color: Some(th.on_surface),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
 }

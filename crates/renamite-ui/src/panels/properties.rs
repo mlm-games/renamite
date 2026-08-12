@@ -428,10 +428,6 @@ fn scrub_f64_w(
         return Box(Modifier::new().width(min_width)).child(
             View::new(0, ViewKind::Box).modifier(
                 Modifier::new()
-                    .height(28.0)
-                    .background(th.surface_container_highest)
-                    .border(1.0, th.primary, 6.0)
-                    .clip_rounded(6.0)
                     .focus_requester(focus_requester.as_ref().clone())
                     .text_input(TextInputConfig {
                         hint: String::new(),
@@ -475,16 +471,6 @@ fn scrub_f64_w(
         .modifier(
             Modifier::new()
                 .min_width(min_width)
-                .height(28.0)
-                .background(th.surface_container_highest)
-                .border(1.0, th.outline_variant, 6.0)
-                .clip_rounded(6.0)
-                .padding_values(PaddingValues {
-                    left: 6.0,
-                    right: 6.0,
-                    top: 0.0,
-                    bottom: 0.0,
-                })
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
