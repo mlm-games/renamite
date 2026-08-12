@@ -183,9 +183,15 @@ fn RangeEditor(
         RefCell::new((range.0.0, range.1.0))
     });
     let start_state = remember_with_key("timeline_range_start", || {
-        RefCell::new(TextFieldState::new())
+        let mut st = TextFieldState::new();
+        st.text = range.0.0.to_string();
+        RefCell::new(st)
     });
-    let end_state = remember_with_key("timeline_range_end", || RefCell::new(TextFieldState::new()));
+    let end_state = remember_with_key("timeline_range_end", || {
+        let mut st = TextFieldState::new();
+        st.text = range.1.0.to_string();
+        RefCell::new(st)
+    });
     let start_focus =
         remember_with_key("timeline_range_start_focus", || std::cell::Cell::new(false));
     let end_focus = remember_with_key("timeline_range_end_focus", || std::cell::Cell::new(false));
