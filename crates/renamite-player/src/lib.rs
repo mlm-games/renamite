@@ -16,7 +16,7 @@ use glam::DVec2;
 use renamite_animation::{FrameRate, LoopMode, PlayState, Playback};
 use renamite_io_ren::RenFile;
 use renamite_machine::{MachineId, MachineInstance, PointerEventKind};
-use renamite_model::{CompId, NodeId, Overrides, Scene, evaluate_with, pick};
+use renamite_model::{CompId, NodeId, Overrides, PropPath, Scene, Value, evaluate_with, pick};
 
 pub use renamite_model::{nodes_bounds, pick_box};
 
@@ -26,6 +26,10 @@ pub enum PlayerError {
     Ren(#[from] renamite_io_ren::RenError),
     #[error("composition not found in project")]
     MissingComp,
+    #[error("binary .renb support requires the `binary` feature")]
+    BinaryDisabled,
+    #[error("input is not valid UTF-8 .ren text")]
+    InvalidUtf8,
 }
 
 /// What drives the evaluated frame and the override patch.
@@ -51,6 +55,7 @@ pub struct Engine {
     paused: bool,
 
     ov: Overrides,           // scratch, reused every tick
+    host_ov: Overrides,      // durable host-driven patch; wins over machine/timeline
     scene: Scene,            // last evaluated frame; also the pick surface
     hover: Option<NodeId>,   // Enter/Exit synthesis
     pressed: Option<NodeId>, // Click synthesis
@@ -87,6 +92,7 @@ impl Engine {
             mode,
             paused: false,
             ov: Overrides::default(),
+            host_ov: Overrides::default(),
             scene: Scene::default(),
             hover: None,
             pressed: None,
@@ -125,14 +131,34 @@ impl Engine {
             PlayMode::Scrub { frame } => *frame,
         };
 
+        self.apply_host_overrides();
         self.scene = evaluate_with(&project.document, self.comp, frame, &self.ov);
         &self.events
+    }
+
+    fn apply_host_overrides(&mut self) {
+        for ((id, prop), value) in self.host_ov.values.iter() {
+            self.ov.set(*id, prop.clone(), value.clone());
+        }
     }
 
     /// Re-evaluate at the current head without advancing time. Call after any
     /// editor mutation of the document (History apply/undo/redo).
     pub fn reevaluate(&mut self, project: &RenFile) {
+        self.apply_host_overrides();
         self.scene = evaluate_with(&project.document, self.comp, self.head(), &self.ov);
+    }
+
+    /// Patch a property for this frame and onward (e.g. game tint / bow stretch).
+    /// Host overrides survive `tick` and win over machine overrides; call
+    /// [`Player::set_host_override`] to have the scene update immediately.
+    pub fn set_host_override(&mut self, id: NodeId, prop: PropPath, v: Value) {
+        self.host_ov.set(id, prop, v);
+    }
+
+    /// Drop every host override patch.
+    pub fn clear_host_overrides(&mut self) {
+        self.host_ov.clear();
     }
 
     /// Deterministic capture: N frames at fixed dt (golden tests, export).
@@ -341,6 +367,23 @@ impl Player {
         Self::new(renamite_io_ren::open_binary(bytes)?)
     }
 
+    /// Load from raw bytes, auto-detecting `.ren` (text) vs `.renb` (binary)
+    /// by magic header. `.renb` requires the `binary` feature.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PlayerError> {
+        if renamite_io_ren::is_binary(bytes) {
+            #[cfg(feature = "binary")]
+            {
+                return Self::from_ren_bytes(bytes);
+            }
+            #[cfg(not(feature = "binary"))]
+            {
+                return Err(PlayerError::BinaryDisabled);
+            }
+        }
+        let text = std::str::from_utf8(bytes).map_err(|_| PlayerError::InvalidUtf8)?;
+        Self::from_ren_str(text)
+    }
+
     pub fn tick(&mut self, dt_secs: f64) -> &[String] {
         self.engine.tick(&self.project, dt_secs)
     }
@@ -364,6 +407,11 @@ impl Player {
     }
     pub fn active_machine_states(&self) -> Option<Vec<usize>> {
         self.engine.active_machine_states()
+    }
+
+    /// Pixel size of the active composition's artboard.
+    pub fn artboard_size(&self) -> (u32, u32) {
+        self.project.document.compositions[self.engine.composition()].size
     }
 
     /// Re-evaluate at the current head without advancing time. Call after any
@@ -390,6 +438,20 @@ impl Player {
     /// Switch the active composition (artboard). Resets playback to its range.
     pub fn set_composition(&mut self, comp: CompId) -> bool {
         self.engine.set_composition(&self.project, comp)
+    }
+
+    /// Patch a property for this frame and onward (e.g. game tint / bow stretch).
+    /// Host overrides survive `tick`, win over machine overrides, and take
+    /// effect immediately (the scene is re-evaluated here).
+    pub fn set_host_override(&mut self, id: NodeId, prop: PropPath, v: Value) {
+        self.engine.set_host_override(id, prop, v);
+        self.engine.reevaluate(&self.project);
+    }
+
+    /// Drop every host override patch and re-evaluate.
+    pub fn clear_host_overrides(&mut self) {
+        self.engine.clear_host_overrides();
+        self.engine.reevaluate(&self.project);
     }
 
     pub fn set_bool(&mut self, name: &str, v: bool) -> bool {
@@ -587,6 +649,39 @@ mod tests {
             (item.opacity - 0.5).abs() < 0.02,
             "background timeline still animating (opacity={})",
             item.opacity
+        );
+    }
+
+    #[test]
+    fn host_override_wins_over_machine_and_survives_tick() {
+        let (proj, shape, _) = moving_box();
+        let mut p = Player::new(proj).unwrap();
+        assert!(p.set_bool("go", true));
+        p.tick(0.5); // transition fires, machine starts
+        p.tick(0.5); // machine time > clip len → clamped x=50
+        assert!((center_x(p.scene()) - 50.0).abs() < 1.0);
+
+        // Host pins position; must win over the machine's override next tick.
+        p.set_host_override(
+            shape,
+            PropPath::new("transform.position"),
+            Value::DVec2(DVec2::new(120.0, 0.0)),
+        );
+        assert!(
+            (center_x(p.scene()) - 120.0).abs() < 1e-6,
+            "set_host_override re-evaluates immediately"
+        );
+        p.tick(0.25);
+        assert!(
+            (center_x(p.scene()) - 120.0).abs() < 1e-6,
+            "host override survives tick"
+        );
+
+        p.clear_host_overrides();
+        p.tick(0.25);
+        assert!(
+            (center_x(p.scene()) - 50.0).abs() < 1.0,
+            "machine override returns after clear"
         );
     }
 

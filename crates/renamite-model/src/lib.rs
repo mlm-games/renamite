@@ -2994,6 +2994,15 @@ impl PropReader for KeyFramesOp {
 }
 
 impl Document {
+    /// All live node ids whose name equals `name`. Lets hosts (games) find
+    /// nodes by name without tracking `NodeId`s across document loads.
+    pub fn find_nodes_by_name<'a>(&'a self, name: &'a str) -> impl Iterator<Item = NodeId> + 'a {
+        self.nodes
+            .iter()
+            .filter(move |(_, n)| n.name == name)
+            .map(|(id, _)| id)
+    }
+
     fn pm<'a>(&'a mut self, id: NodeId, prop: &PropPath) -> Result<PropMut<'a>, ModelError> {
         self.nodes
             .get_mut(id)

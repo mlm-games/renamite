@@ -12,7 +12,6 @@ use std::collections::HashSet;
 pub const EXT: &str = "ren";
 pub const EXT_BINARY: &str = "renb";
 pub const CURRENT_VERSION: u32 = 1;
-#[cfg(feature = "binary")]
 const RENB_MAGIC: &[u8; 4] = b"RENB";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -194,6 +193,13 @@ pub fn save_binary(file: &RenFile) -> Result<Vec<u8>, RenError> {
     out.extend_from_slice(&CURRENT_VERSION.to_le_bytes());
     out.extend(postcard::to_stdvec(file)?);
     Ok(out)
+}
+
+/// True when `bytes` starts with the `.renb` header (magic + version).
+/// Shared so loaders (CLI, `Player::from_bytes`, host asset readers) agree on
+/// one source of truth instead of re-sniffing the magic themselves.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && &bytes[..4] == RENB_MAGIC
 }
 
 #[cfg(feature = "binary")]

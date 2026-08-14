@@ -254,10 +254,10 @@ fn dispatch(command: Commands) -> Result<()> {
 }
 
 fn cmd_bake(input: PathBuf, frames: usize, dt: f64, output: PathBuf) -> Result<()> {
-    let text = std::fs::read_to_string(&input)
-        .with_context(|| format!("failed to read {}", input.display()))?;
-    let mut player = Player::from_ren_str(&text)
+    let file = load_file(&input)
         .with_context(|| format!("failed to load {}", input.display()))?;
+    let mut player = Player::new(file)
+        .with_context(|| format!("failed to open player for {}", input.display()))?;
     let scenes = player.bake(frames, dt);
     let json = serde_json::to_string_pretty(&scenes)?;
     std::fs::write(&output, json)?;
@@ -283,9 +283,8 @@ fn cmd_render(
     }
 
     let bg = parse_background(&background)?;
-    let text = std::fs::read_to_string(&input)
-        .with_context(|| format!("failed to read {}", input.display()))?;
-    let mut player = Player::from_ren_str(&text)?;
+    let mut player = Player::new(load_file(&input)?)
+        .with_context(|| format!("failed to open player for {}", input.display()))?;
     let comp_size = player.project.document.compositions[player.project.document.main].size;
     let view = export_view(comp_size, width, height);
     let bg_clear = bg.map(|[r, g, b, a]| {
@@ -303,7 +302,7 @@ fn cmd_render(
 
     match (frame, frames) {
         (Some(f), None) => {
-            player.engine.scrub(&player.project, f as f64);
+            player.scrub(f as f64);
             let png = rasterize_png(&mut bridge, &mut gpu, player.scene(), &view, bg_clear)?;
             let out = out.ok_or_else(|| anyhow!("--out is required with --frame"))?;
             std::fs::write(&out, png)?;
@@ -666,8 +665,7 @@ fn name_from_path(p: &Path) -> String {
 }
 
 fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
-    let text = std::fs::read_to_string(&input)?;
-    let mut player = Player::from_ren_str(&text)?;
+    let mut player = Player::new(load_file(&input)?)?;
     let dt = 1.0 / 60.0;
     let ticks = (duration / dt) as usize;
 
@@ -782,11 +780,17 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
 }
 
 fn load_file(path: &Path) -> Result<RenFile> {
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    match ext {
-        "renb" => Ok(renamite_io_ren::open_binary(&std::fs::read(path)?)?),
-        _ => Ok(renamite_io_ren::open(&std::fs::read_to_string(path)?)?),
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+
+    // Magic wins over extension so extension-less / mislabeled .renb still open.
+    if renamite_io_ren::is_binary(&bytes) {
+        return Ok(renamite_io_ren::open_binary(&bytes)?);
     }
+
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("{} is neither valid UTF-8 .ren nor .renb", path.display()))?;
+    Ok(renamite_io_ren::open(text)?)
 }
 
 #[cfg(test)]
@@ -868,6 +872,16 @@ mod tests {
         cmd_pack(ren_path, renb_path.clone()).unwrap();
         let repacked = load_file(&renb_path).unwrap();
         assert_eq!(repacked.document.nodes.len(), 2);
+    }
+
+    #[test]
+    fn play_and_render_accept_renb() {
+        let dir = tempfile::tempdir().unwrap();
+        let ren = dir.path().join("scene.ren");
+        let renb = dir.path().join("scene.renb");
+        cmd_new(ren.clone(), "ellipse".into()).unwrap();
+        cmd_pack(ren, renb.clone()).unwrap();
+        assert!(Player::new(load_file(&renb).unwrap()).is_ok());
     }
 
     #[test]
