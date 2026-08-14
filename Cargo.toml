@@ -88,20 +88,7 @@ renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.1.0" }
 renamite-validate = { path = "crates/renamite-validate", version = "0.1.0" }
 renamite-examples = { path = "crates/renamite-examples", version = "0.1.0" }
 renamite-player = { path = "crates/renamite-player", version = "0.1.0" }
-
-[workspace.dependencies.graphite-vector-types]
-package = "vector-types"
-git = "https://github.com/GraphiteEditor/Graphite"
-rev = "<PINNED_COMMIT>"
-default-features = false
-features = ["serde"]
-
-[workspace.dependencies.graphite-core-types]
-package = "core-types"
-git = "https://github.com/GraphiteEditor/Graphite"
-rev = "<SAME_PIN>"
-default-features = false
-features = ["serde"]
+renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.1.0" }
 
 # [patch.crates-io]
 # repose-core = { path = "../repose/crates/repose-core" }

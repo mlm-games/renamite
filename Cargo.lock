@@ -3522,6 +3522,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "renamite-player-ui"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "renamite-behavior-common",
+ "renamite-player",
+ "renamite-render-bridge",
+ "repose-canvas",
+ "repose-core",
+ "web-time",
+]
+
+[[package]]
 name = "renamite-render-bridge"
 version = "0.1.0"
 dependencies = [

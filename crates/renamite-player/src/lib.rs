@@ -350,8 +350,46 @@ impl Player {
     pub fn scene(&self) -> &Scene {
         self.engine.scene()
     }
+    pub fn events(&self) -> &[String] {
+        self.engine.events()
+    }
     pub fn head(&self) -> f64 {
         self.engine.head()
+    }
+    pub fn rate(&self) -> FrameRate {
+        self.engine.rate()
+    }
+    pub fn composition(&self) -> CompId {
+        self.engine.composition()
+    }
+    pub fn active_machine_states(&self) -> Option<Vec<usize>> {
+        self.engine.active_machine_states()
+    }
+
+    /// Re-evaluate at the current head without advancing time. Call after any
+    /// mutation of `self.project` (e.g. live edits from the embed host).
+    pub fn reevaluate(&mut self) {
+        self.engine.reevaluate(&self.project);
+    }
+
+    pub fn pause(&mut self) {
+        self.engine.pause();
+    }
+    pub fn resume(&mut self) {
+        self.engine.resume();
+    }
+    pub fn is_paused(&self) -> bool {
+        self.engine.is_paused()
+    }
+
+    /// Lock to a frame. Machine state is discarded.
+    pub fn scrub(&mut self, frame: f64) {
+        self.engine.scrub(&self.project, frame);
+    }
+
+    /// Switch the active composition (artboard). Resets playback to its range.
+    pub fn set_composition(&mut self, comp: CompId) -> bool {
+        self.engine.set_composition(&self.project, comp)
     }
 
     pub fn set_bool(&mut self, name: &str, v: bool) -> bool {
@@ -364,17 +402,23 @@ impl Player {
         self.engine.fire(&self.project, name)
     }
 
+    /// Pointer events apply machine listener side-effects immediately: each
+    /// routes the pick, then re-evaluates with a zero-dt tick (editor parity).
     pub fn pointer_move(&mut self, pt: DVec2) {
         self.engine.pointer_move(&self.project, pt);
+        let _ = self.engine.tick(&self.project, 0.0);
     }
     pub fn pointer_down(&mut self, pt: DVec2) {
         self.engine.pointer_down(&self.project, pt);
+        let _ = self.engine.tick(&self.project, 0.0);
     }
     pub fn pointer_up(&mut self, pt: DVec2) {
         self.engine.pointer_up(&self.project, pt);
+        let _ = self.engine.tick(&self.project, 0.0);
     }
     pub fn pointer_leave(&mut self) {
         self.engine.pointer_leave(&self.project);
+        let _ = self.engine.tick(&self.project, 0.0);
     }
 
     pub fn play_machine(&mut self, id: MachineId) -> bool {

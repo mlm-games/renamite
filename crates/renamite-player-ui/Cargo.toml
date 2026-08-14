@@ -1,0 +1,20 @@
+[package]
+name = "renamite-player-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Repose embed widget driving a renamite Player (spine-style runtime shell)."
+
+[dependencies]
+renamite-player.workspace = true
+renamite-render-bridge.workspace = true
+renamite-behavior-common.workspace = true
+repose-canvas.workspace = true
+repose-core.workspace = true
+glam.workspace = true
+web-time = "1.1"
+
+[features]
+default = []
+# Load .renb (postcard) runtime binaries and expose PlayerHost::from_ren_bytes.
+binary = ["renamite-player/binary"]

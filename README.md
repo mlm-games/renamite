@@ -7,7 +7,24 @@ layer and property values (with undo), renaming and reordering layers, scrubbing
 basic animation, and exporting frames as PNG/SVG and animation as Lottie. The timeline
 is still early (opacity rows only), and there are other rough edges that (might) have to
 be handled in repose for completion. kurbo is the path math type. The document/animation
-models are independent and can be embedded in other apps (ex: games, via a bevy plugin)
+models are independent and can be embedded in other apps (ex: games).
+
+## Runtime embed
+
+Format: `.ren` (RON) / `.renb` (binary)
+Scene:  engine-neutral display list (paths/paints)
+Hosts:
+  - Repose: `renamite-player-ui` (Canvas embed)
+  - Other:  Lottie export (lossy, no machines) or frame bake
+
+Playback API is host-neutral (`renamite-player` + `renamite-model::Scene`);
+only tessellation into an engine backend is host-specific. Embed on Repose today:
+
+```rust
+let host = Rc::new(RefCell::new(PlayerHost::from_ren_str(project)?));
+// host.play(); host.set_bool("aiming", true); host.fire("shoot");
+RenamitePlayer(host, &render_context);
+```
 
 ## Architecture
 
@@ -64,4 +81,4 @@ Available templates: `blank`,
 
 ## License
 
-GPL-3.0-or-later.
+MPL-2.0.
