@@ -47,6 +47,23 @@ pub enum Key {
     Delete,
     Backspace,
     Enter,
+
+    /// Insert a node at the midpoint of the segment adjacent to the selection.
+    Insert,
+    /// Cycle the selected anchor (Shift reverses direction).
+    Tab,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
+
+    /// Semantic node-edit chords (mapped from Shift+letter by the host):
+    /// tangent modes and segment conversion.
+    NodeCorner,
+    NodeSmooth,
+    NodeSymmetric,
+    SegmentLine,
+    SegmentCurve,
 }
 
 /// World-space overlay for the host to draw (screen conversion is the host's job).
@@ -1513,6 +1530,31 @@ impl PathEditTool {
             CanvasEvent::KeyDown(Key::Delete) | CanvasEvent::KeyDown(Key::Backspace) => {
                 self.delete_anchor(ctx)
             }
+            CanvasEvent::KeyDown(Key::Insert) => self.insert_at_selected_midpoint(ctx),
+            CanvasEvent::KeyDown(Key::Tab) => self.cycle_selected_anchor(ctx, ctx.modifiers.shift),
+            CanvasEvent::KeyDown(Key::ArrowLeft) => {
+                self.nudge_selected_anchor(ctx, DVec2::new(-1.0, 0.0))
+            }
+            CanvasEvent::KeyDown(Key::ArrowRight) => {
+                self.nudge_selected_anchor(ctx, DVec2::new(1.0, 0.0))
+            }
+            CanvasEvent::KeyDown(Key::ArrowUp) => {
+                self.nudge_selected_anchor(ctx, DVec2::new(0.0, -1.0))
+            }
+            CanvasEvent::KeyDown(Key::ArrowDown) => {
+                self.nudge_selected_anchor(ctx, DVec2::new(0.0, 1.0))
+            }
+            CanvasEvent::KeyDown(Key::NodeCorner) => {
+                self.set_selected_mode(ctx, TangentMode::Corner)
+            }
+            CanvasEvent::KeyDown(Key::NodeSmooth) => {
+                self.set_selected_mode(ctx, TangentMode::Smooth)
+            }
+            CanvasEvent::KeyDown(Key::NodeSymmetric) => {
+                self.set_selected_mode(ctx, TangentMode::Symmetric)
+            }
+            CanvasEvent::KeyDown(Key::SegmentLine) => self.selected_segment_to_line(ctx),
+            CanvasEvent::KeyDown(Key::SegmentCurve) => self.selected_segment_to_curve(ctx),
             CanvasEvent::DoubleClick { pos } => self.insert_anchor(ctx, pos),
             _ => smallvec![],
         }
@@ -1789,16 +1831,41 @@ impl PathEditTool {
         let mut new_path = path.clone();
         let _ = new_path.insert_anchor_at(seg, t);
 
+        self.selected_anchor = Some(seg + 1);
+        self.commit_path_value(ctx, id, new_path, "Insert anchor")
+    }
+
+    fn segment_adjacent_to(path: &VectorPath, index: usize) -> Option<usize> {
+        if path.anchors.len() < 2 {
+            return None;
+        }
+        if path.closed {
+            return Some(index % path.anchors.len());
+        }
+        if index + 1 < path.anchors.len() {
+            Some(index)
+        } else {
+            Some(index - 1)
+        }
+    }
+
+    fn commit_path_value(
+        &mut self,
+        ctx: &ToolContext,
+        id: NodeId,
+        new_path: VectorPath,
+        label: &str,
+    ) -> OutputVec {
         let (edit_frame, seed) = self.edit_target(ctx, id);
 
-        let mut cmds: OutputVec = smallvec![];
+        let mut out: OutputVec = smallvec![ToolOutput::BeginTransaction(label.into())];
         if let Some(seed) = seed {
-            cmds.push(ToolOutput::Commands(smallvec![seed]));
+            out.push(ToolOutput::Commands(smallvec![seed]));
         }
 
         let value = Value::Path(new_path);
         let prop = PropPath::new("shape.path");
-        cmds.push(ToolOutput::Commands(smallvec![match edit_frame {
+        out.push(ToolOutput::Commands(smallvec![match edit_frame {
             Some(frame) => EditorCommand::AddKeyframe {
                 id,
                 prop,
@@ -1808,11 +1875,196 @@ impl PathEditTool {
             None => EditorCommand::SetStatic { id, prop, value },
         }]));
 
-        self.selected_anchor = Some(seg + 1);
-        let mut out = smallvec![ToolOutput::BeginTransaction("Insert anchor".into())];
-        out.extend(cmds);
         out.push(ToolOutput::CommitTransaction);
         out
+    }
+
+    fn insert_at_selected_midpoint(&mut self, ctx: &ToolContext) -> OutputVec {
+        let Some(index) = self.selected_anchor else {
+            return smallvec![];
+        };
+        let Some(id) = Self::editable_path_node(ctx) else {
+            return smallvec![];
+        };
+        let Some(path) = Self::current_path(ctx) else {
+            return smallvec![];
+        };
+        let Some(seg) = Self::segment_adjacent_to(&path, index) else {
+            return smallvec![];
+        };
+
+        let mut new_path = path.clone();
+        if new_path.insert_anchor_at(seg, 0.5).is_err() {
+            return smallvec![];
+        }
+
+        self.selected_anchor = Some(seg + 1);
+        self.commit_path_value(ctx, id, new_path, "Insert node")
+    }
+
+    /// Tab / Shift+Tab: walk the anchor list, wrapping around.
+    fn cycle_selected_anchor(&mut self, ctx: &ToolContext, back: bool) -> OutputVec {
+        let Some(path) = Self::current_path(ctx) else {
+            return smallvec![];
+        };
+        let n = path.anchors.len();
+        if n == 0 {
+            return smallvec![];
+        }
+        self.selected_anchor = Some(match self.selected_anchor {
+            None => {
+                if back {
+                    n - 1
+                } else {
+                    0
+                }
+            }
+            Some(i) => {
+                if back {
+                    (i + n - 1) % n
+                } else {
+                    (i + 1) % n
+                }
+            }
+        });
+        smallvec![ToolOutput::Invalidate]
+    }
+
+    /// Arrows: move the selected anchor. Alt = 1 screen px, Shift = 20px,
+    /// default = 2px (world units).
+    fn nudge_selected_anchor(&mut self, ctx: &ToolContext, dir: DVec2) -> OutputVec {
+        let Some(index) = self.selected_anchor else {
+            return smallvec![];
+        };
+        let Some(id) = Self::editable_path_node(ctx) else {
+            return smallvec![];
+        };
+        let Some(pos) = Self::current_path(ctx).and_then(|p| p.anchors.get(index).map(|a| a.pos))
+        else {
+            return smallvec![];
+        };
+
+        let amount = if ctx.modifiers.alt {
+            1.0 / ctx.view.scale
+        } else if ctx.modifiers.shift {
+            20.0
+        } else {
+            2.0
+        };
+
+        let (edit_frame, seed) = self.edit_target(ctx, id);
+        let mut out: OutputVec = smallvec![ToolOutput::BeginTransaction("Nudge node".into())];
+        if let Some(seed) = seed {
+            out.push(ToolOutput::Commands(smallvec![seed]));
+        }
+        out.push(ToolOutput::Commands(smallvec![
+            EditorCommand::EditAnchors {
+                id,
+                frame: edit_frame,
+                edits: vec![AnchorEdit::SetPos {
+                    index,
+                    pos: pos + dir * amount,
+                }],
+            }
+        ]));
+        out.push(ToolOutput::CommitTransaction);
+        out
+    }
+
+    /// Shift+C / Shift+S / Shift+Y (Shift+A aliases Smooth): set the selected
+    /// anchor's tangent mode.
+    fn set_selected_mode(&mut self, ctx: &ToolContext, mode: TangentMode) -> OutputVec {
+        let Some(index) = self.selected_anchor else {
+            return smallvec![];
+        };
+        let Some(id) = Self::editable_path_node(ctx) else {
+            return smallvec![];
+        };
+
+        let (edit_frame, seed) = self.edit_target(ctx, id);
+        let mut out: OutputVec =
+            smallvec![ToolOutput::BeginTransaction("Change tangent mode".into())];
+        if let Some(seed) = seed {
+            out.push(ToolOutput::Commands(smallvec![seed]));
+        }
+        out.push(ToolOutput::Commands(smallvec![
+            EditorCommand::EditAnchors {
+                id,
+                frame: edit_frame,
+                edits: vec![AnchorEdit::SetMode { index, mode }],
+            }
+        ]));
+        out.push(ToolOutput::CommitTransaction);
+        out
+    }
+
+    fn convert_selected_segment(
+        &mut self,
+        ctx: &ToolContext,
+        label: &str,
+        build: impl FnOnce(&VectorPath, usize, usize) -> Vec<AnchorEdit>,
+    ) -> OutputVec {
+        let Some(index) = self.selected_anchor else {
+            return smallvec![];
+        };
+        let Some(id) = Self::editable_path_node(ctx) else {
+            return smallvec![];
+        };
+        let Some(path) = Self::current_path(ctx) else {
+            return smallvec![];
+        };
+        let Some(seg) = Self::segment_adjacent_to(&path, index) else {
+            return smallvec![];
+        };
+        let next = (seg + 1) % path.anchors.len();
+
+        let (edit_frame, seed) = self.edit_target(ctx, id);
+        let mut out: OutputVec = smallvec![ToolOutput::BeginTransaction(label.into())];
+        if let Some(seed) = seed {
+            out.push(ToolOutput::Commands(smallvec![seed]));
+        }
+        out.push(ToolOutput::Commands(smallvec![
+            EditorCommand::EditAnchors {
+                id,
+                frame: edit_frame,
+                edits: build(&path, seg, next),
+            }
+        ]));
+        out.push(ToolOutput::CommitTransaction);
+        out
+    }
+
+    /// Shift+L: straighten the segment adjacent to the selection.
+    fn selected_segment_to_line(&mut self, ctx: &ToolContext) -> OutputVec {
+        self.convert_selected_segment(ctx, "Segment to line", |_path, a, b| {
+            vec![
+                AnchorEdit::SetTanOut {
+                    index: a,
+                    tan: DVec2::ZERO,
+                },
+                AnchorEdit::SetTanIn {
+                    index: b,
+                    tan: DVec2::ZERO,
+                },
+            ]
+        })
+    }
+
+    /// Shift+U: give the adjacent segment default tangents (thirds rule).
+    fn selected_segment_to_curve(&mut self, ctx: &ToolContext) -> OutputVec {
+        self.convert_selected_segment(ctx, "Segment to curve", |path, a, b| {
+            let d = path.anchors[b].pos - path.anchors[a].pos;
+            vec![
+                AnchorEdit::SetTanOut {
+                    index: a,
+                    tan: d / 3.0,
+                },
+                AnchorEdit::SetTanIn {
+                    index: b,
+                    tan: -d / 3.0,
+                },
+            ]
+        })
     }
 }
 
@@ -3595,6 +3847,239 @@ mod tests {
         let p = path_value(&pw.w, pw.path);
         assert_eq!(p.anchors.len(), n + 1);
         assert_eq!(tool.selected_anchor, Some(1)); // inserted anchor is active
+    }
+
+    #[test]
+    fn insert_key_adds_midpoint_node_and_selects_it() {
+        let mut pw = PathWorld::new();
+        pw.w.selection.nodes = vec![pw.path];
+        let mut tool = PathEditTool::default();
+        let mut h = History::new();
+        // Select anchor 0 by pressing on it.
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::Insert),
+            Modifiers::none(),
+        );
+
+        let p = path_value(&pw.w, pw.path);
+        assert_eq!(p.anchors.len(), 5);
+        assert_eq!(tool.selected_anchor, Some(1));
+        assert_eq!(p.anchors[1].pos, DVec2::new(150.0, 100.0));
+
+        h.undo(&mut pw.w.pm()).unwrap();
+        assert_eq!(path_value(&pw.w, pw.path).anchors.len(), 4);
+    }
+
+    #[test]
+    fn tab_cycles_anchor_selection() {
+        let mut pw = PathWorld::new();
+        pw.w.selection.nodes = vec![pw.path];
+        let mut tool = PathEditTool::default();
+        let mut h = History::new();
+
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::Tab),
+            Modifiers::none(),
+        );
+        assert_eq!(tool.selected_anchor, Some(0));
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::Tab),
+            Modifiers::none(),
+        );
+        assert_eq!(tool.selected_anchor, Some(1));
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::Tab),
+            Modifiers {
+                shift: true,
+                ..Modifiers::none()
+            },
+        );
+        assert_eq!(tool.selected_anchor, Some(0));
+    }
+
+    #[test]
+    fn arrow_keys_nudge_selected_anchor_and_undo() {
+        let mut pw = PathWorld::new();
+        pw.w.selection.nodes = vec![pw.path];
+        let mut tool = PathEditTool::default();
+        let mut h = History::new();
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::ArrowRight),
+            Modifiers::none(),
+        );
+        assert_eq!(
+            path_value(&pw.w, pw.path).anchors[0].pos,
+            DVec2::new(102.0, 100.0)
+        );
+
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::ArrowUp),
+            Modifiers {
+                shift: true,
+                ..Modifiers::none()
+            },
+        );
+        assert_eq!(
+            path_value(&pw.w, pw.path).anchors[0].pos,
+            DVec2::new(102.0, 80.0)
+        );
+
+        // Repeated nudges of the same anchor coalesce into one undo step
+        // (history merges same-label transactions with coalescing commands),
+        // exactly like a live drag.
+        h.undo(&mut pw.w.pm()).unwrap();
+        assert_eq!(
+            path_value(&pw.w, pw.path).anchors[0].pos,
+            DVec2::new(100.0, 100.0)
+        );
+        assert!(!h.can_undo());
+    }
+
+    #[test]
+    fn node_mode_keys_set_tangent_mode_and_undo() {
+        let mut pw = PathWorld::new();
+        pw.w.selection.nodes = vec![pw.path];
+        let mut tool = PathEditTool::default();
+        let mut h = History::new();
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(200.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(200.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::NodeSymmetric),
+            Modifiers::none(),
+        );
+        assert_eq!(
+            path_value(&pw.w, pw.path).anchors[1].mode,
+            TangentMode::Symmetric
+        );
+
+        h.undo(&mut pw.w.pm()).unwrap();
+        assert_eq!(
+            path_value(&pw.w, pw.path).anchors[1].mode,
+            TangentMode::Corner
+        );
+    }
+
+    #[test]
+    fn segment_line_curve_convert_adjacent_segment() {
+        let mut pw = PathWorld::new();
+        pw.w.selection.nodes = vec![pw.path];
+        let mut tool = PathEditTool::default();
+        let mut h = History::new();
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerDown {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::PointerUp {
+                pos: DVec2::new(100.0, 100.0),
+                button: PointerButton::Primary,
+            },
+            Modifiers::none(),
+        );
+
+        // Curve: thirds-rule tangents across segment 0 -> 1.
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::SegmentCurve),
+            Modifiers::none(),
+        );
+        let p = path_value(&pw.w, pw.path);
+        assert_eq!(p.anchors[0].tan_out, DVec2::new(100.0 / 3.0, 0.0));
+        assert_eq!(p.anchors[1].tan_in, DVec2::new(-100.0 / 3.0, 0.0));
+
+        // Line: both tangents across the segment collapse to zero.
+        pw.drive(
+            &mut tool,
+            &mut h,
+            CanvasEvent::KeyDown(Key::SegmentLine),
+            Modifiers::none(),
+        );
+        let p = path_value(&pw.w, pw.path);
+        assert_eq!(p.anchors[0].tan_out, DVec2::ZERO);
+        assert_eq!(p.anchors[1].tan_in, DVec2::ZERO);
+
+        h.undo(&mut pw.w.pm()).unwrap();
+        let p = path_value(&pw.w, pw.path);
+        assert_eq!(p.anchors[0].tan_out, DVec2::new(100.0 / 3.0, 0.0));
+        h.undo(&mut pw.w.pm()).unwrap();
+        let p = path_value(&pw.w, pw.path);
+        assert_eq!(p.anchors[0].tan_out, DVec2::ZERO);
     }
 
     #[test]

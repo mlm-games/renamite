@@ -254,8 +254,7 @@ fn dispatch(command: Commands) -> Result<()> {
 }
 
 fn cmd_bake(input: PathBuf, frames: usize, dt: f64, output: PathBuf) -> Result<()> {
-    let file = load_file(&input)
-        .with_context(|| format!("failed to load {}", input.display()))?;
+    let file = load_file(&input).with_context(|| format!("failed to load {}", input.display()))?;
     let mut player = Player::new(file)
         .with_context(|| format!("failed to open player for {}", input.display()))?;
     let scenes = player.bake(frames, dt);
@@ -780,8 +779,8 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
 }
 
 fn load_file(path: &Path) -> Result<RenFile> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
 
     // Magic wins over extension so extension-less / mislabeled .renb still open.
     if renamite_io_ren::is_binary(&bytes) {

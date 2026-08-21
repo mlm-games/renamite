@@ -662,11 +662,13 @@ pub fn remove_transition(
         .ok_or(MachineEditError::OutOfRange)?;
     let transitions = match source {
         TransitionSource::Any => &mut layer.any_transitions,
-        TransitionSource::State(state) => &mut layer
-            .states
-            .get_mut(state)
-            .ok_or(MachineEditError::OutOfRange)?
-            .transitions,
+        TransitionSource::State(state) => {
+            &mut layer
+                .states
+                .get_mut(state)
+                .ok_or(MachineEditError::OutOfRange)?
+                .transitions
+        }
     };
     if transition >= transitions.len() {
         return Err(MachineEditError::OutOfRange);

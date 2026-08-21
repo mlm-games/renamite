@@ -1,12 +1,10 @@
 use glam::DVec2;
-use renamite_behavior_canvas::{CanvasEvent, Key, PointerButton, ShapePreviewKind, ToolOverlay};
+use renamite_behavior_canvas::{CanvasEvent, PointerButton, ShapePreviewKind, ToolOverlay};
 use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform};
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::{
-    Key as ReposeKey, KeyEvent, KeyEventType, PointerEvent, PointerEventKind,
-};
+use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
     AlignItems, Color, CursorIcon, FocusRequester, JustifyContent, Modifier, View, remember,
     remember_with_key, request_frame, theme,
@@ -62,114 +60,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_key_event({
                     let session = session.clone();
-                    move |ke: KeyEvent| {
-                        let mut s = session.borrow_mut();
-                        if ke.event_type != KeyEventType::Down {
-                            // still track Space up/down
-                            if matches!(ke.key, ReposeKey::Space) {
-                                s.viewport.space_held = false;
-                                return true;
-                            }
-                            return false;
-                        }
-
-                        let cmd = ke.modifiers.command; // ctrl on Win/Linux, meta on macOS
-
-                        // --- App shortcuts (consume so tools don't also see them) ---
-                        match ke.key {
-                            ReposeKey::Character('z' | 'Z') if cmd && ke.modifiers.shift => {
-                                crate::session::redo_cmd(&mut s);
-                                s.bump();
-                                return true;
-                            }
-                            ReposeKey::Character('z' | 'Z') if cmd => {
-                                crate::session::undo_cmd(&mut s);
-                                s.bump();
-                                return true;
-                            }
-                            ReposeKey::Character('y' | 'Y') if cmd => {
-                                crate::session::redo_cmd(&mut s);
-                                s.bump();
-                                return true;
-                            }
-                            ReposeKey::Character('c' | 'C') if cmd => {
-                                s.copy_selection();
-                                return true;
-                            }
-                            ReposeKey::Character('x' | 'X') if cmd => {
-                                s.cut_selection();
-                                return true;
-                            }
-                            ReposeKey::Character('v' | 'V') if cmd => {
-                                s.paste_clipboard();
-                                return true;
-                            }
-                            ReposeKey::Character('d' | 'D') if cmd => {
-                                s.duplicate_selection();
-                                return true;
-                            }
-                            ReposeKey::Delete | ReposeKey::Backspace
-                                if s.mode == crate::session::EditorMode::Interact =>
-                            {
-                                s.delete_machine_selection();
-                                return true;
-                            }
-                            ReposeKey::Space => {
-                                s.viewport.space_held = true;
-                                return true;
-                            }
-                            ReposeKey::Character('f' | 'F') if !cmd => {
-                                s.viewport.fit_pending = true;
-                                request_frame();
-                                return true;
-                            }
-                            // tool letters only when NOT command
-                            ReposeKey::Character('v' | 'V')
-                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.active_tool = renamite_history::ToolId::Select;
-                                s.repaint();
-                                return true;
-                            }
-                            ReposeKey::Character('p' | 'P')
-                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.active_tool = renamite_history::ToolId::Pen;
-                                s.repaint();
-                                return true;
-                            }
-                            ReposeKey::Character('t' | 'T')
-                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.active_tool = renamite_history::ToolId::Text;
-                                s.repaint();
-                                return true;
-                            }
-                            ReposeKey::Character('r' | 'R')
-                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.active_tool = renamite_history::ToolId::Rect;
-                                s.repaint();
-                                return true;
-                            }
-                            ReposeKey::Character('e' | 'E')
-                                if !cmd && s.mode != crate::session::EditorMode::Interact =>
-                            {
-                                s.active_tool = renamite_history::ToolId::Ellipse;
-                                s.repaint();
-                                return true;
-                            }
-                            _ => {}
-                        }
-
-                        let Some(k) = map_key(ke.key) else {
-                            return false;
-                        };
-                        if s.mode != crate::session::EditorMode::Interact {
-                            dispatch_canvas(&mut s, CanvasEvent::KeyDown(k), Modifiers::none());
-                        }
-                        true
-                    }
+                    move |ke: KeyEvent| crate::shortcuts::handle_viewport_key(&session, ke)
                 })
                 .on_pointer_down({
                     let session = session.clone();
@@ -491,7 +382,7 @@ fn ViewportHint(session: SessionRef) -> View {
     let text = if is_interact {
         "Click shapes to fire listeners · Alt+click to select · Preview inputs in the panel"
     } else {
-        "Middle or Space drag to pan · Wheel to zoom · F to fit · V/P/R/E tools"
+        "Middle or Space drag to pan · Wheel or +/- zoom · F fits · S/V select · B/P pen · N nodes · R/E shapes · T text"
     };
     Box(Modifier::new()
         .absolute()
@@ -830,17 +721,6 @@ fn map_button(pe: &PointerEvent) -> PointerButton {
         },
         _ => PointerButton::Primary,
     }
-}
-
-/// Map the subset of Repose keys the canvas tools understand.
-fn map_key(code: repose_core::input::Key) -> Option<Key> {
-    Some(match code {
-        repose_core::input::Key::Escape => Key::Escape,
-        repose_core::input::Key::Enter => Key::Enter,
-        repose_core::input::Key::Delete => Key::Delete,
-        repose_core::input::Key::Backspace => Key::Backspace,
-        _ => return None,
-    })
 }
 
 fn to_screen_rect(min: DVec2, max: DVec2, view: &ViewTransform) -> Rect {

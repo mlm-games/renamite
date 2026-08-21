@@ -757,6 +757,105 @@ impl Session {
         self.paste_clipboard();
     }
 
+    /// Reverse the direction of every selected path (paths directly selected,
+    /// or path children of selected groups/layers). One undo step.
+    pub fn reverse_selected_paths(&mut self) {
+        use renamite_model::{NodeKind, ShapeKind};
+
+        let mut paths: Vec<renamite_model::NodeId> = Vec::new();
+        for selected in self.selection.nodes.iter().copied() {
+            let Some(node) = self.file.document.nodes.get(selected) else {
+                continue;
+            };
+            match &node.kind {
+                NodeKind::Shape(ShapeKind::Path(_)) => {
+                    if !paths.contains(&selected) {
+                        paths.push(selected);
+                    }
+                }
+                NodeKind::Group | NodeKind::Layer(_) => {
+                    for child in node.children.iter().copied() {
+                        if matches!(
+                            self.file.document.nodes.get(child).map(|n| &n.kind),
+                            Some(NodeKind::Shape(ShapeKind::Path(_)))
+                        ) && !paths.contains(&child)
+                        {
+                            paths.push(child);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if paths.is_empty() {
+            self.status = Some("Select a path to reverse".into());
+            self.repaint();
+            return;
+        }
+
+        let commands: SmallVec<[EditorCommand; 4]> = paths
+            .into_iter()
+            .map(|id| EditorCommand::ReversePath { id })
+            .collect();
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Reverse path".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    /// Object to Path: bake selected primitive shapes (Rect/Ellipse/Star/
+    /// Polygon) into static vector paths at the current frame. Destructive at
+    /// this frame - animated shape parameters become geometry - while the
+    /// node's transform, styles, children, and id are preserved. One undo step.
+    pub fn convert_selection_to_path(&mut self) {
+        use renamite_model::{NodeKind, Overrides, ShapeKind};
+
+        let frame = self.playback.head;
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+
+        for id in self.selection.nodes.iter().copied() {
+            let Some(shape) = self
+                .file
+                .document
+                .nodes
+                .get(id)
+                .and_then(|node| match &node.kind {
+                    NodeKind::Shape(
+                        shape @ (ShapeKind::Rect { .. }
+                        | ShapeKind::Ellipse { .. }
+                        | ShapeKind::Star { .. }
+                        | ShapeKind::Polygon { .. }),
+                    ) => Some(shape.clone()),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+
+            let bezier = renamite_model::shape_path(&shape, id, frame, &Overrides::default());
+            let path = renamite_geometry::VectorPath::from_bez_path(&bezier);
+            commands.push(EditorCommand::SetNodeKind {
+                id,
+                kind: NodeKind::Shape(ShapeKind::Path(renamite_animation::Animated::new(path))),
+            });
+        }
+
+        if commands.is_empty() {
+            self.status = Some("Select a primitive shape to convert".into());
+            self.repaint();
+            return;
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Object to path".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
     pub fn add_ellipse_layer(&mut self) {
         use renamite_history::NodeTree;
         use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
@@ -3001,5 +3100,82 @@ mod tests {
             panic!("fill");
         };
         assert!((st.paint().base_color().r - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reverse_selected_paths_reverses_and_is_undoable() {
+        use renamite_geometry::{Anchor, VectorPath};
+        use renamite_model::{Node, NodeKind, Parent, ShapeKind};
+
+        let mut s = Session::new(seeded_demo_file());
+        let path = s.file.document.create_node(Node::new(
+            "p",
+            NodeKind::Shape(ShapeKind::Path(renamite_animation::Animated::new(
+                VectorPath {
+                    anchors: vec![
+                        Anchor::corner(DVec2::new(0.0, 0.0)),
+                        Anchor::corner(DVec2::new(10.0, 0.0)),
+                    ],
+                    closed: false,
+                },
+            ))),
+        ));
+        s.file
+            .document
+            .attach(path, Parent::Comp(s.file.document.main), 0)
+            .unwrap();
+        s.selection.nodes = vec![path];
+
+        s.reverse_selected_paths();
+        let NodeKind::Shape(ShapeKind::Path(a)) = &s.file.document.nodes[path].kind else {
+            panic!("expected path");
+        };
+        assert_eq!(a.base.anchors[0].pos, DVec2::new(10.0, 0.0));
+        assert!(s.history.can_undo());
+
+        undo_cmd(&mut s);
+        let NodeKind::Shape(ShapeKind::Path(a)) = &s.file.document.nodes[path].kind else {
+            panic!("expected path");
+        };
+        assert_eq!(a.base.anchors[0].pos, DVec2::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn reverse_selected_paths_without_path_selection_is_a_noop() {
+        let mut s = Session::new(seeded_demo_file());
+        let comp = s.file.document.main;
+        // The seeded demo's shape is an Ellipse, not a Path.
+        s.selection.nodes = vec![s.file.document.compositions[comp].children[0]];
+        let before = s.history.can_undo();
+
+        s.reverse_selected_paths();
+        assert!(!s.history.can_undo() || before);
+        assert!(s.status.is_some(), "user gets feedback instead of silence");
+    }
+
+    #[test]
+    fn object_to_path_converts_ellipse_and_undo_restores() {
+        use renamite_model::{NodeKind, ShapeKind};
+
+        let mut s = Session::new(seeded_demo_file());
+        let comp = s.file.document.main;
+        let shape = s.file.document.compositions[comp].children[0];
+        s.selection.nodes = vec![shape];
+
+        s.convert_selection_to_path();
+        let NodeKind::Shape(ShapeKind::Path(p)) = &s.file.document.nodes[shape].kind else {
+            panic!("expected converted path");
+        };
+        assert!(
+            p.base.anchors.len() >= 4,
+            "ellipse evaluates to a closed bez"
+        );
+        assert!(s.history.can_undo());
+
+        undo_cmd(&mut s);
+        assert!(matches!(
+            &s.file.document.nodes[shape].kind,
+            NodeKind::Shape(ShapeKind::Ellipse { .. })
+        ));
     }
 }

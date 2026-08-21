@@ -1020,11 +1020,7 @@ fn kind_label(kind: &StateKind) -> String {
     }
 }
 
-fn SelectionInspector(
-    overlay: OverlayHandle,
-    session: SessionRef,
-    machine_id: MachineId,
-) -> View {
+fn SelectionInspector(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
     let selection = session.borrow().machine_selection.clone();
     match selection {
         MachineSelection::State { layer, state } => {
@@ -1232,7 +1228,14 @@ fn StateInspector(
         } => {
             rows.push(labeled_row(
                 "Clip",
-                clip_dropdown(overlay.clone(), session.clone(), machine_id, layer, state, *clip),
+                clip_dropdown(
+                    overlay.clone(),
+                    session.clone(),
+                    machine_id,
+                    layer,
+                    state,
+                    *clip,
+                ),
             ));
             let speed = *speed;
             rows.push(labeled_row(
@@ -1279,7 +1282,14 @@ fn StateInspector(
         StateKind::Blend1D { input, children } => {
             rows.push(labeled_row(
                 "Input",
-                blend_input_dropdown(overlay.clone(), session.clone(), machine_id, layer, state, *input),
+                blend_input_dropdown(
+                    overlay.clone(),
+                    session.clone(),
+                    machine_id,
+                    layer,
+                    state,
+                    *input,
+                ),
             ));
             rows.push(
                 Text("Blend children")
@@ -1350,10 +1360,7 @@ fn StateInspector(
         .child((
             if is_entry {
                 // Already the entry state: static label, not an action.
-                Row(Modifier::new()
-                    .gap(4.0)
-                    .align_items(AlignItems::CENTER))
-                .child((
+                Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
                     AppIcon(Symbols::play_arrow, 16.0),
                     Text("Entry")
                         .size(th.typography.body_medium)
@@ -1868,11 +1875,7 @@ fn next_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn ListenersSection(
-    overlay: OverlayHandle,
-    session: SessionRef,
-    machine_id: MachineId,
-) -> View {
+fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
     let th = theme();
     let (listeners, inputs, selected_node) = {
         let s = session.borrow();
@@ -1938,7 +1941,13 @@ fn ListenersSection(
 
     // Add-listener row: node comes from the editor selection.
     if let Some(node) = selected_node {
-        rows.push(AddListenerRow(overlay, session.clone(), machine_id, node, inputs));
+        rows.push(AddListenerRow(
+            overlay,
+            session.clone(),
+            machine_id,
+            node,
+            inputs,
+        ));
     } else {
         rows.push(
             Text("Select a shape to add a listener")
@@ -2115,9 +2124,24 @@ fn AddListenerRow(
         Text(node_name)
             .size(th.typography.label_small)
             .color(th.on_surface_variant),
-        dropdown(overlay.clone(), "lst_event", format!("{event_label} ▾"), event_items),
-        dropdown(overlay.clone(), "lst_input", format!("{input_label} ▾"), input_items),
-        dropdown(overlay, "lst_action", format!("{action_label} ▾"), action_items),
+        dropdown(
+            overlay.clone(),
+            "lst_event",
+            format!("{event_label} ▾"),
+            event_items,
+        ),
+        dropdown(
+            overlay.clone(),
+            "lst_input",
+            format!("{input_label} ▾"),
+            input_items,
+        ),
+        dropdown(
+            overlay,
+            "lst_action",
+            format!("{action_label} ▾"),
+            action_items,
+        ),
         Button(
             Modifier::new(),
             {
@@ -2695,7 +2719,12 @@ fn preview_scrub_number(session: SessionRef, input: usize, value: f64, step: f64
         )
 }
 
-fn dropdown(overlay: OverlayHandle, key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>) -> View {
+fn dropdown(
+    overlay: OverlayHandle,
+    key: impl Into<String>,
+    label: String,
+    items: Vec<DropdownMenuEntry>,
+) -> View {
     let key = key.into();
     let state: Rc<MenuState> = remember_with_key(format!("{key}_state"), MenuState::new);
     let th = theme();

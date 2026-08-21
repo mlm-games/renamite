@@ -3596,6 +3596,7 @@ dependencies = [
  "renamite-behavior-common",
  "renamite-behavior-timeline",
  "renamite-examples",
+ "renamite-geometry",
  "renamite-history",
  "renamite-io-lottie",
  "renamite-io-ren",

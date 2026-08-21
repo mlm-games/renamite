@@ -15,6 +15,7 @@ repose-platform.workspace = true
 renamite-behavior-common.workspace = true
 renamite-behavior-canvas.workspace = true
 renamite-behavior-timeline.workspace = true
+renamite-geometry.workspace = true
 renamite-model.workspace = true
 renamite-history.workspace = true
 renamite-animation.workspace = true

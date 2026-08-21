@@ -184,6 +184,12 @@ pub enum EditorCommand {
         id: NodeId,
         smooth: bool,
     },
+    /// Swap a node's whole kind (e.g. primitive Shape -> evaluated Path).
+    /// Exact inverse: restore the previous kind.
+    SetNodeKind {
+        id: NodeId,
+        kind: NodeKind,
+    },
 
     // properties
     SetStatic {
@@ -554,6 +560,7 @@ fn apply_command(
         | RestoreMask { .. }
         | SetMaskInverted { .. }
         | SetZigZagSmooth { .. }
+        | SetNodeKind { .. }
         | SetStatic { .. }
         | AddKeyframe { .. }
         | RemoveKeyframe { .. }
@@ -1202,6 +1209,11 @@ fn apply_document_command(
 
             Ok((None, vec![SetStrokeDash { id: *id, dash: old }]))
         }
+        SetNodeKind { id, kind } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let old = std::mem::replace(&mut node.kind, kind.clone());
+            Ok((None, vec![SetNodeKind { id: *id, kind: old }]))
+        }
         ConvertToMask { id } => {
             let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let kind = std::mem::replace(&mut node.kind, NodeKind::Group);
@@ -1786,6 +1798,35 @@ mod tests {
         assert_eq!(w.doc.locate(id), Some((Parent::Comp(w.doc.main), 0)));
         h.redo(&mut w.pm()).unwrap();
         assert!(w.doc.locate(id).is_none());
+    }
+
+    #[test]
+    fn set_node_kind_swaps_and_round_trips() {
+        let mut w = World::new();
+        let id = w.node();
+        let mut h = History::new();
+
+        let path_kind =
+            NodeKind::Shape(renamite_model::ShapeKind::Path(Animated::new(VectorPath {
+                anchors: vec![],
+                closed: false,
+            })));
+        h.apply(
+            &mut w.pm(),
+            EditorCommand::SetNodeKind {
+                id,
+                kind: path_kind,
+            },
+        )
+        .unwrap();
+        h.commit();
+        assert!(matches!(w.doc.nodes[id].kind, NodeKind::Shape(_)));
+
+        h.undo(&mut w.pm()).unwrap();
+        assert!(matches!(w.doc.nodes[id].kind, NodeKind::Group));
+
+        h.redo(&mut w.pm()).unwrap();
+        assert!(matches!(w.doc.nodes[id].kind, NodeKind::Shape(_)));
     }
 
     #[test]

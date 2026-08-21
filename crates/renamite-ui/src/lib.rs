@@ -12,6 +12,7 @@ pub mod file;
 pub mod panels;
 pub mod session;
 pub mod shell;
+pub mod shortcuts;
 pub mod symbols;
 
 use renamite_animation::PlayState;
@@ -81,13 +82,7 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| s.file.meta.name.clone());
-        (
-            name,
-            s.dirty,
-            s.mode,
-            s.playing,
-            s.machine_preview_enabled,
-        )
+        (name, s.dirty, s.mode, s.playing, s.machine_preview_enabled)
     };
     let title = if dirty { format!("{name} *") } else { name };
 

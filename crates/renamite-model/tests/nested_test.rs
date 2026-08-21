@@ -21,5 +21,9 @@ fn nested_fill_under_shape_renders() {
     doc.attach(fill, Parent::Node(shape), 0).unwrap();
     doc.attach(shape, Parent::Comp(doc.main), 0).unwrap();
     let scene = evaluate(&doc, doc.main, 0.0);
-    assert_eq!(scene.items.len(), 1, "nested fill under shape should render");
+    assert_eq!(
+        scene.items.len(),
+        1,
+        "nested fill under shape should render"
+    );
 }

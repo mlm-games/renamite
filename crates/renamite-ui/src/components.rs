@@ -307,14 +307,10 @@ pub fn name_field(
 ) -> View {
     let key = key.into();
     let hint = hint.into();
-    let draft: Rc<RefCell<String>> = remember_with_key(
-        format!("{key}_draft"),
-        || RefCell::new(String::new()),
-    );
-    let focused: Rc<std::cell::Cell<bool>> = remember_with_key(
-        format!("{key}_focused"),
-        || std::cell::Cell::new(false),
-    );
+    let draft: Rc<RefCell<String>> =
+        remember_with_key(format!("{key}_draft"), || RefCell::new(String::new()));
+    let focused: Rc<std::cell::Cell<bool>> =
+        remember_with_key(format!("{key}_focused"), || std::cell::Cell::new(false));
 
     // Sync the draft from the model value whenever the field is not focused.
     if !focused.get() && *draft.borrow() != value {
