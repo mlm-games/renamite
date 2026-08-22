@@ -46,6 +46,32 @@ pub enum EditorMode {
 
 pub type SessionRef = Rc<RefCell<Session>>;
 
+/// One copied object: its tree plus where it lived, so Paste in Place can
+/// restore nested objects into their original parent scope.
+#[derive(Clone)]
+pub struct ClipboardItem {
+    pub tree: renamite_history::NodeTree,
+    pub source_parent: renamite_model::Parent,
+    pub source_index: usize,
+}
+
+/// Everything a copy/cut leaves behind: node trees for pasting geometry and
+/// the first selected object's resolved style nodes for Paste Style.
+#[derive(Clone)]
+pub struct ClipboardPayload {
+    pub items: Vec<ClipboardItem>,
+    pub style_nodes: Vec<renamite_model::NodeKind>,
+}
+
+/// Binary boolean operations over the current selection.
+#[derive(Clone, Copy, Debug)]
+pub enum SelectionBoolean {
+    Union,
+    Difference,
+    Intersection,
+    Xor,
+}
+
 /// Shared editor session (single-threaded UI).
 pub struct Session {
     pub file: RenFile,
@@ -105,8 +131,8 @@ pub struct Session {
     /// dismissing to a blank canvas clears it so an emptied composition doesn't
     /// trap the user back on the launcher.
     pub welcome: bool,
-    /// Serialized selection for copy/paste/duplicate (Vec<NodeTree>).
-    pub clipboard: Option<Vec<renamite_history::NodeTree>>,
+    /// Serialized selection for copy/paste/duplicate (geometry + origin).
+    pub clipboard: Option<ClipboardPayload>,
     /// Machine edited by the Interactivity panel.
     pub active_machine: Option<MachineId>,
     /// Graph selection within the active machine (view state).
@@ -406,6 +432,10 @@ impl Session {
                 ToolOutput::Invalidate => {
                     needs_repaint = true;
                 }
+                ToolOutput::SetCurrentPaint(paint) => {
+                    self.current_paint = paint;
+                    needs_repaint = true;
+                }
                 ToolOutput::RequestSelection(ch) => {
                     match ch {
                         renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
@@ -665,8 +695,25 @@ impl Session {
         if roots.is_empty() {
             return;
         }
-        // Snapshot BEFORE removing anything.
-        self.clipboard = Some(roots.iter().map(|&id| self.tree_of(id)).collect());
+        // Snapshot BEFORE removing anything, remembering each object's origin
+        // so Paste in Place can restore nested objects to their old scope.
+        let mut items = Vec::with_capacity(roots.len());
+        for &id in &roots {
+            let Some((parent, index)) = self.file.document.locate(id) else {
+                continue;
+            };
+            let tree = self.tree_of(id);
+            items.push(ClipboardItem {
+                tree,
+                source_parent: parent,
+                source_index: index,
+            });
+        }
+        let style_nodes = roots
+            .first()
+            .map(|&id| self.immediate_style_kinds(id))
+            .unwrap_or_default();
+        self.clipboard = Some(ClipboardPayload { items, style_nodes });
         if cut {
             let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = roots
                 .iter()
@@ -684,21 +731,86 @@ impl Session {
         }
     }
 
+    /// First selected root's immediate applicable Fill/Stroke style kinds
+    /// (nearest scope first), used as the Paste Style source.
+    fn immediate_style_kinds(&self, id: renamite_model::NodeId) -> Vec<renamite_model::NodeKind> {
+        use renamite_model::{NodeKind, StyleKind};
+
+        let doc = &self.file.document;
+        let mut fill: Option<NodeKind> = None;
+        let mut stroke: Option<NodeKind> = None;
+
+        let mut scope = doc.locate(id).map(|(p, _)| p);
+        while let Some(current) = scope {
+            let Ok(children) = (|| match current {
+                renamite_model::Parent::Comp(c) => doc
+                    .compositions
+                    .get(c)
+                    .map(|comp| comp.children.clone())
+                    .ok_or(()),
+                renamite_model::Parent::Node(p) => {
+                    doc.nodes.get(p).map(|n| n.children.clone()).ok_or(())
+                }
+            })() else {
+                break;
+            };
+            for &child in children.iter().rev() {
+                let Some(node) = doc.nodes.get(child) else {
+                    continue;
+                };
+                match &node.kind {
+                    NodeKind::Style(st @ StyleKind::Fill { .. }) if fill.is_none() => {
+                        fill = Some(NodeKind::Style(st.clone()));
+                    }
+                    NodeKind::Style(st @ StyleKind::Stroke { .. }) if stroke.is_none() => {
+                        stroke = Some(NodeKind::Style(st.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            if fill.is_some() && stroke.is_some() {
+                break;
+            }
+            scope = match current {
+                renamite_model::Parent::Comp(_) => None,
+                renamite_model::Parent::Node(p) => doc.locate(p).map(|(parent, _)| parent),
+            };
+        }
+
+        [fill, stroke].into_iter().flatten().collect()
+    }
+
+    /// True when `parent` still exists in the document (Paste in Place target).
+    fn parent_is_attached(&self, parent: renamite_model::Parent) -> bool {
+        let doc = &self.file.document;
+        match parent {
+            renamite_model::Parent::Comp(c) => doc.compositions.contains_key(c),
+            renamite_model::Parent::Node(p) => {
+                doc.nodes.contains_key(p)
+                    && (doc.nodes.get(p).and_then(|n| n.parent).is_some()
+                        || doc
+                            .compositions
+                            .get(doc.main)
+                            .is_some_and(|c| c.children.contains(&p)))
+            }
+        }
+    }
+
     fn insert_trees(
         &mut self,
-        trees: Vec<renamite_history::NodeTree>,
+        items: Vec<ClipboardItem>,
         offset: DVec2,
         label: &str,
     ) -> Vec<renamite_model::NodeId> {
         self.finalize_open_edit();
         let mut created = Vec::new();
         self.history.begin(label.to_owned());
-        for mut t in trees {
-            nudge_tree(&mut t, offset);
+        for mut item in items {
+            nudge_tree(&mut item.tree, offset);
             if let Some(id) = self.history_apply(renamite_history::EditorCommand::InsertNode {
                 parent: renamite_model::Parent::Comp(self.file.document.main),
                 index: 0,
-                tree: t,
+                tree: item.tree,
             }) {
                 created.push(id);
             }
@@ -709,17 +821,17 @@ impl Session {
     }
 
     pub fn paste_clipboard(&mut self) {
-        let Some(trees) = self.clipboard.clone() else {
+        let Some(items) = self.clipboard.clone().map(|payload| payload.items) else {
             self.status = Some("Clipboard empty".into());
             self.repaint();
             return;
         };
-        if trees.is_empty() {
+        if items.is_empty() {
             self.status = Some("Clipboard empty".into());
             self.repaint();
             return;
         }
-        let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Paste");
+        let created = self.insert_trees(items, DVec2::new(20.0, 20.0), "Paste");
         if !created.is_empty() {
             self.selection.nodes = created;
             self.ensure_selection_visible();
@@ -727,16 +839,145 @@ impl Session {
         }
     }
 
+    /// Paste without any offset, restoring copied objects into their original
+    /// parent scopes when those scopes still exist.
+    pub fn paste_clipboard_in_place(&mut self) {
+        let Some(payload) = self.clipboard.clone() else {
+            self.status = Some("Clipboard empty".into());
+            self.repaint();
+            return;
+        };
+        if payload.items.is_empty() {
+            self.status = Some("Clipboard empty".into());
+            self.repaint();
+            return;
+        }
+
+        self.finalize_open_edit();
+        self.history.begin("Paste in place");
+
+        let mut created = Vec::new();
+
+        for item in payload.items {
+            let parent = if self.parent_is_attached(item.source_parent) {
+                item.source_parent
+            } else {
+                renamite_model::Parent::Comp(self.file.document.main)
+            };
+
+            if let Some(id) = self.history_apply(EditorCommand::InsertNode {
+                parent,
+                index: item.source_index,
+                tree: item.tree,
+            }) {
+                created.push(id);
+            }
+        }
+
+        self.history.commit();
+        self.dirty = true;
+        self.selection.nodes = created;
+        self.ensure_selection_visible();
+        self.bump();
+    }
+
+    /// Apply the clipboard's stored Fill/Stroke styles onto every selected
+    /// object. Geometry, transform, opacity, masks and modifiers are left
+    /// untouched; animated paints are cloned exactly.
+    pub fn paste_style(&mut self) {
+        use renamite_model::Node;
+
+        let Some(payload) = self.clipboard.clone() else {
+            self.status = Some("Clipboard empty".into());
+            self.repaint();
+            return;
+        };
+        let src_fill = payload.style_nodes.iter().find_map(|k| match k {
+            renamite_model::NodeKind::Style(st @ renamite_model::StyleKind::Fill { .. }) => {
+                Some(st.clone())
+            }
+            _ => None,
+        });
+        let src_stroke = payload.style_nodes.iter().find_map(|k| match k {
+            renamite_model::NodeKind::Style(st @ renamite_model::StyleKind::Stroke { .. }) => {
+                Some(st.clone())
+            }
+            _ => None,
+        });
+        if src_fill.is_none() && src_stroke.is_none() {
+            self.status = Some("No style on the clipboard".into());
+            self.repaint();
+            return;
+        }
+
+        let targets = self.selection.nodes.clone();
+        if targets.is_empty() {
+            self.status = Some("Select objects to paste the style onto".into());
+            self.repaint();
+            return;
+        }
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        {
+            let doc = &self.file.document;
+            for target in targets {
+                if !doc.nodes.contains_key(target) {
+                    continue;
+                }
+                for (source, want_stroke) in [(&src_fill, false), (&src_stroke, true)] {
+                    let Some(source_kind) = source else { continue };
+                    if let Some(style_id) = nearest_style_node(doc, target, want_stroke) {
+                        commands.push(EditorCommand::SetNodeKind {
+                            id: style_id,
+                            kind: renamite_model::NodeKind::Style(source_kind.clone()),
+                        });
+                    } else {
+                        // Missing Fill/Stroke: insert a new style node into the
+                        // target's styling scope (appended after its shapes).
+                        let parent = doc
+                            .locate(target)
+                            .map(|(p, _)| p)
+                            .unwrap_or(renamite_model::Parent::Comp(doc.main));
+                        commands.push(EditorCommand::InsertNode {
+                            parent,
+                            index: usize::MAX,
+                            tree: renamite_history::NodeTree::leaf(Node::new(
+                                if want_stroke { "Stroke" } else { "Fill" },
+                                renamite_model::NodeKind::Style(source_kind.clone()),
+                            )),
+                        });
+                    }
+                }
+            }
+        }
+
+        if commands.is_empty() {
+            self.status = Some("Nothing to paste".into());
+            self.repaint();
+            return;
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Paste style".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
     pub fn duplicate_selection(&mut self) {
         let roots = self.selected_roots();
         if roots.is_empty() {
             return;
         }
-        let created = self.insert_trees(
-            roots.iter().map(|&id| self.tree_of(id)).collect(),
-            DVec2::new(20.0, 20.0),
-            "Duplicate",
-        );
+        let items: Vec<ClipboardItem> = roots
+            .iter()
+            .map(|&id| ClipboardItem {
+                tree: self.tree_of(id),
+                source_parent: renamite_model::Parent::Comp(self.file.document.main),
+                source_index: 0,
+            })
+            .collect();
+        let created = self.insert_trees(items, DVec2::new(20.0, 20.0), "Duplicate");
         if !created.is_empty() {
             self.selection.nodes = created;
             self.ensure_selection_visible();
@@ -851,6 +1092,741 @@ impl Session {
 
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Object to path".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    /// Selected shape roots in z-order (bottom-first), expanding into groups.
+    /// The bottom object is the boolean subject / combine style donor.
+    fn selected_shape_roots_in_z_order(&self) -> Vec<renamite_model::NodeId> {
+        use renamite_model::{NodeKind, ShapeKind};
+
+        let doc = &self.file.document;
+        let mut out = Vec::new();
+        fn visit(
+            doc: &renamite_model::Document,
+            children: &[renamite_model::NodeId],
+            sel: &[renamite_model::NodeId],
+            out: &mut Vec<renamite_model::NodeId>,
+        ) {
+            // children[0] = top of stack; walk in reverse for bottom-first.
+            for &id in children.iter().rev() {
+                if !sel.contains(&id) {
+                    if let Some(n) = doc.nodes.get(id) {
+                        match &n.kind {
+                            NodeKind::Group | NodeKind::Layer(_) => {
+                                visit(doc, &n.children, sel, out);
+                            }
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                let Some(n) = doc.nodes.get(id) else { continue };
+                match &n.kind {
+                    NodeKind::Shape(
+                        ShapeKind::Path(_)
+                        | ShapeKind::Rect { .. }
+                        | ShapeKind::Ellipse { .. }
+                        | ShapeKind::Star { .. }
+                        | ShapeKind::Polygon { .. }
+                        | ShapeKind::CompoundPath(_),
+                    ) => out.push(id),
+                    NodeKind::Group | NodeKind::Layer(_) => {
+                        visit(doc, &n.children, sel, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let comp = doc.main;
+        let Some(c) = doc.compositions.get(comp) else {
+            return out;
+        };
+        visit(doc, &c.children, &self.selection.nodes, &mut out);
+        out
+    }
+
+    /// A selected shape's evaluated contour(s) at the current frame, mapped
+    /// into `subject`'s local coordinate system (multi-contour safe).
+    fn contours_in_subject_space(
+        &self,
+        id: renamite_model::NodeId,
+        subject: renamite_model::NodeId,
+    ) -> Result<Vec<renamite_geometry::VectorPath>, String> {
+        use renamite_model::{NodeKind, Overrides, ShapeKind};
+
+        let frame = self.playback.head;
+        let doc = &self.file.document;
+        let Some(node) = doc.nodes.get(id) else {
+            return Err("Selected node no longer exists".into());
+        };
+        let local: kurbo::BezPath = match &node.kind {
+            NodeKind::Shape(ShapeKind::CompoundPath(compound)) => compound.to_bez_path(frame),
+            NodeKind::Shape(shape) => {
+                renamite_model::shape_path(shape, id, frame, &Overrides::default())
+            }
+            _ => return Err("Selection contains non-shape nodes".into()),
+        };
+
+        // World -> subject-local mapping.
+        let Some(from) = renamite_model::node_transform_context(doc, id, frame) else {
+            return Err("Cannot resolve transforms for the selection".into());
+        };
+        let Some(to) = renamite_model::node_transform_context(doc, subject, frame) else {
+            return Err("Cannot resolve transforms for the selection".into());
+        };
+        let to_subject_space = to.world.inverse() * from.world;
+
+        let mapped = to_subject_space * local;
+        Ok(renamite_geometry::split_bez_subpaths(&mapped))
+    }
+    /// Union / Difference / Intersection / XOR over the selection. The bottom
+    /// object is the subject and donates its style; folding uses the
+    /// BezPath-level boolean so holes and disjoint pieces survive every step.
+    pub fn boolean_selection(&mut self, operation: SelectionBoolean) {
+        let label = format!("{operation:?}");
+        let ids = self.selected_shape_roots_in_z_order();
+
+        if ids.len() < 2 {
+            self.status = Some("Select at least two closed shapes".into());
+            self.repaint();
+            return;
+        }
+
+        let subject = ids[0];
+        let mut accumulated: Vec<renamite_geometry::VectorPath> =
+            match self.contours_in_subject_space(subject, subject) {
+                Ok(paths) => paths,
+                Err(message) => {
+                    self.status = Some(message);
+                    self.repaint();
+                    return;
+                }
+            };
+        if accumulated.is_empty() {
+            self.status = Some("The subject has no geometry".into());
+            self.repaint();
+            return;
+        }
+
+        for cutter in ids.iter().copied().skip(1) {
+            let rhs = match self.contours_in_subject_space(cutter, subject) {
+                Ok(paths) => paths,
+                Err(message) => {
+                    self.status = Some(message);
+                    self.repaint();
+                    return;
+                }
+            };
+            let rhs_bez = renamite_geometry::contours_to_bez(&rhs);
+
+            let op = match operation {
+                SelectionBoolean::Union => renamite_geometry::BooleanOp::Union,
+                SelectionBoolean::Difference => renamite_geometry::BooleanOp::Difference,
+                SelectionBoolean::Intersection => renamite_geometry::BooleanOp::Intersection,
+                SelectionBoolean::Xor => renamite_geometry::BooleanOp::Xor,
+            };
+
+            let result = renamite_geometry::boolean_bez(
+                &renamite_geometry::contours_to_bez(&accumulated),
+                &rhs_bez,
+                op,
+            );
+
+            match result {
+                Ok(contours) => accumulated = contours,
+                Err(error) => {
+                    self.status = Some(error.to_string());
+                    self.repaint();
+                    return;
+                }
+            }
+        }
+
+        let replacement = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
+            renamite_model::CompoundPath {
+                contours: accumulated
+                    .into_iter()
+                    .map(renamite_animation::Animated::new)
+                    .collect(),
+            },
+        ));
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        commands.push(EditorCommand::SetNodeKind {
+            id: subject,
+            kind: replacement,
+        });
+
+        for id in ids.iter().copied().skip(1) {
+            commands.push(EditorCommand::RemoveNode { id });
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction(label),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![subject])),
+        ]);
+    }
+
+    /// Inkscape-style division of closed shapes:
+    /// inside = subject ∩ union(cutters); outside = subject − union(cutters).
+    /// The subject is replaced with the first piece; remaining pieces are
+    /// inserted beside it and cutters are deleted.
+    pub fn divide_selection(&mut self) {
+        use renamite_history::NodeTree;
+        use renamite_model::{Node, NodeKind, Parent, ShapeKind};
+
+        let ids = self.selected_shape_roots_in_z_order();
+        if ids.len() < 2 {
+            self.status = Some("Select at least two closed shapes to divide".into());
+            self.repaint();
+            return;
+        }
+        let subject = ids[0];
+
+        // Open-line cutting needs planar face splitting; refuse clearly.
+        {
+            let doc = &self.file.document;
+            let frame = self.playback.head;
+            for &id in &ids {
+                let closed = match doc.nodes.get(id).map(|n| &n.kind) {
+                    Some(NodeKind::Shape(ShapeKind::Path(p))) => p.value_at(frame).closed,
+                    Some(NodeKind::Shape(ShapeKind::CompoundPath(c))) => {
+                        c.contours.iter().all(|p| p.value_at(frame).closed)
+                    }
+                    // Primitives always evaluate to closed outlines.
+                    Some(NodeKind::Shape(_)) => true,
+                    _ => false,
+                };
+                if !closed {
+                    self.status =
+                        Some("Division requires closed shapes (open cutting not supported)".into());
+                    self.repaint();
+                    return;
+                }
+            }
+        }
+
+        let mut pieces: Vec<Vec<renamite_geometry::VectorPath>> = Vec::new();
+        let mut remaining: Vec<renamite_geometry::VectorPath> =
+            match self.contours_in_subject_space(subject, subject) {
+                Ok(paths) => paths,
+                Err(message) => {
+                    self.status = Some(message);
+                    self.repaint();
+                    return;
+                }
+            };
+
+        for cutter in ids.iter().copied().skip(1) {
+            let rhs = match self.contours_in_subject_space(cutter, subject) {
+                Ok(paths) => paths,
+                Err(message) => {
+                    self.status = Some(message);
+                    self.repaint();
+                    return;
+                }
+            };
+            let rhs_bez = renamite_geometry::contours_to_bez(&rhs);
+
+            let current = std::mem::take(&mut remaining);
+            if current.is_empty() {
+                break;
+            }
+            let cur_bez = renamite_geometry::contours_to_bez(&current);
+
+            match (
+                renamite_geometry::boolean_bez(
+                    &cur_bez,
+                    &rhs_bez,
+                    renamite_geometry::BooleanOp::Intersection,
+                ),
+                renamite_geometry::boolean_bez(
+                    &cur_bez,
+                    &rhs_bez,
+                    renamite_geometry::BooleanOp::Difference,
+                ),
+            ) {
+                (Ok(inside), Ok(outside)) => {
+                    if !inside.is_empty() {
+                        pieces.push(inside);
+                    }
+                    remaining = outside;
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    self.status = Some(e.to_string());
+                    self.repaint();
+                    return;
+                }
+            }
+        }
+        if !remaining.is_empty() {
+            pieces.push(remaining);
+        }
+        if pieces.is_empty() {
+            self.status = Some("Division produced no geometry".into());
+            self.repaint();
+            return;
+        }
+
+        let flat: Vec<renamite_geometry::VectorPath> = pieces.into_iter().flatten().collect();
+
+        // Subject keeps transform/style; becomes the first piece.
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        commands.push(EditorCommand::SetNodeKind {
+            id: subject,
+            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
+                renamite_animation::Animated::new(flat[0].clone()),
+            )),
+        });
+
+        let (parent, index) = match self.file.document.locate(subject) {
+            Some((Parent::Node(p), i)) => (Parent::Node(p), i),
+            Some((Parent::Comp(c), i)) => (Parent::Comp(c), i),
+            None => {
+                self.status = Some("Subject is not attached".into());
+                self.repaint();
+                return;
+            }
+        };
+        let template_name = self
+            .file
+            .document
+            .nodes
+            .get(subject)
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| "Piece".into());
+
+        for (k, piece) in flat.iter().enumerate().skip(1) {
+            let mut node = self
+                .file
+                .document
+                .nodes
+                .get(subject)
+                .cloned()
+                .unwrap_or_else(|| Node::new(template_name.as_str(), NodeKind::Group));
+            node.name = format!("{template_name} {}", k + 1);
+            node.parent = None;
+            node.children.clear();
+            node.kind = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
+                renamite_animation::Animated::new(piece.clone()),
+            ));
+            commands.push(EditorCommand::InsertNode {
+                parent,
+                index: index + k,
+                tree: NodeTree::leaf(node),
+            });
+        }
+
+        for id in ids.iter().copied().skip(1) {
+            commands.push(EditorCommand::RemoveNode { id });
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Division".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![subject])),
+        ]);
+    }
+
+    /// Ctrl+K: merge every selected shape's contours into one CompoundPath on
+    /// the bottom object (which donates its style and transform).
+    pub fn combine_selection(&mut self) {
+        let ids = self.selected_shape_roots_in_z_order();
+        if ids.len() < 2 {
+            self.status = Some("Select at least two objects to combine".into());
+            self.repaint();
+            return;
+        }
+        let bottom = ids[0];
+
+        let mut contours: Vec<renamite_geometry::VectorPath> = Vec::new();
+        for id in &ids {
+            match self.contours_in_subject_space(*id, bottom) {
+                Ok(paths) => contours.extend(paths),
+                Err(message) => {
+                    self.status = Some(message);
+                    self.repaint();
+                    return;
+                }
+            }
+        }
+        if contours.is_empty() {
+            self.status = Some("Nothing to combine".into());
+            self.repaint();
+            return;
+        }
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        commands.push(EditorCommand::SetNodeKind {
+            id: bottom,
+            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
+                renamite_model::CompoundPath {
+                    contours: contours
+                        .into_iter()
+                        .map(renamite_animation::Animated::new)
+                        .collect(),
+                },
+            )),
+        });
+        for id in ids.iter().copied().skip(1) {
+            commands.push(EditorCommand::RemoveNode { id });
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Combine".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![bottom])),
+        ]);
+    }
+
+    /// Ctrl+Shift+K: explode a CompoundPath into sibling Path nodes. The first
+    /// contour replaces the original kind; clones keep transform, opacity and
+    /// flags, and the same sibling style nodes keep styling every piece.
+    pub fn break_apart_selection(&mut self) {
+        use renamite_history::NodeTree;
+        use renamite_model::{Node, Parent};
+
+        if self.selection.nodes.len() != 1 {
+            self.status = Some("Select one combined path to break apart".into());
+            self.repaint();
+            return;
+        }
+        let id = self.selection.nodes[0];
+        let Some(contours) = (match self.file.document.nodes.get(id).map(|n| &n.kind) {
+            Some(renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
+                compound,
+            ))) => Some(
+                compound
+                    .contours
+                    .iter()
+                    .map(|c| c.value_at(self.playback.head))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        }) else {
+            self.status = Some("Break apart requires a compound path".into());
+            self.repaint();
+            return;
+        };
+        if contours.len() < 2 {
+            self.status = Some("The compound path has a single contour".into());
+            self.repaint();
+            return;
+        }
+
+        let (parent, index) = match self.file.document.locate(id) {
+            Some((Parent::Node(p), i)) => (Parent::Node(p), i),
+            Some((Parent::Comp(c), i)) => (Parent::Comp(c), i),
+            None => {
+                self.status = Some("Node is not attached".into());
+                self.repaint();
+                return;
+            }
+        };
+        let name = self
+            .file
+            .document
+            .nodes
+            .get(id)
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| "Path".into());
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        commands.push(EditorCommand::SetNodeKind {
+            id,
+            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
+                renamite_animation::Animated::new(contours[0].clone()),
+            )),
+        });
+        for (k, contour) in contours.iter().enumerate().skip(1) {
+            let mut node = self
+                .file
+                .document
+                .nodes
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| Node::new(name.as_str(), renamite_model::NodeKind::Group));
+            node.name = format!("{name} {}", k + 1);
+            node.parent = None;
+            node.children.clear();
+            node.kind = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
+                renamite_animation::Animated::new(contour.clone()),
+            ));
+            commands.push(EditorCommand::InsertNode {
+                parent,
+                index: index + k,
+                tree: NodeTree::leaf(node),
+            });
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Break apart".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![id])),
+        ]);
+    }
+
+    /// Ctrl+L: reduce anchor counts of selected paths within a scale-aware
+    /// tolerance (`0.75` screen px). Bakes the current frame via SetNodeKind.
+    pub fn simplify_selection(&mut self) {
+        use renamite_model::{NodeKind, ShapeKind};
+
+        let tolerance = 0.75 / self.viewport.view.scale.max(1e-6);
+        let targets = self.selection.nodes.clone();
+        if targets.is_empty() {
+            self.status = Some("Select a path to simplify".into());
+            self.repaint();
+            return;
+        }
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        {
+            let doc = &self.file.document;
+            let frame = self.playback.head;
+            for id in targets {
+                let Some(node) = doc.nodes.get(id) else {
+                    continue;
+                };
+                let simplified = match &node.kind {
+                    NodeKind::Shape(ShapeKind::Path(path)) => {
+                        renamite_geometry::simplify_path(&path.value_at(frame), tolerance)
+                    }
+                    NodeKind::Shape(ShapeKind::CompoundPath(compound)) => {
+                        let contours: Vec<_> = compound
+                            .contours
+                            .iter()
+                            .map(|c| {
+                                renamite_geometry::simplify_path(&c.value_at(frame), tolerance)
+                            })
+                            .collect();
+                        if contours.is_empty() {
+                            continue;
+                        }
+                        commands.push(EditorCommand::SetNodeKind {
+                            id,
+                            kind: NodeKind::Shape(ShapeKind::CompoundPath(
+                                renamite_model::CompoundPath {
+                                    contours: contours
+                                        .into_iter()
+                                        .map(renamite_animation::Animated::new)
+                                        .collect(),
+                                },
+                            )),
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if simplified.anchors.is_empty() {
+                    continue;
+                }
+                commands.push(EditorCommand::SetNodeKind {
+                    id,
+                    kind: NodeKind::Shape(ShapeKind::Path(renamite_animation::Animated::new(
+                        simplified,
+                    ))),
+                });
+            }
+        }
+
+        if commands.is_empty() {
+            self.status = Some("Select vector paths to simplify".into());
+            self.repaint();
+            return;
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Simplify".into()),
+            ToolOutput::Commands(commands),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    /// Ctrl+Alt+C: expand selected shapes' strokes into filled outlines stored
+    /// as a CompoundPath; the stroke style becomes a Fill carrying the same
+    /// paint (or an isolated local fill when the stroke node is shared).
+    pub fn stroke_selection_to_path(&mut self) {
+        use renamite_model::{FillRule, NodeKind, ShapeKind, StyleKind};
+
+        let frame = self.playback.head;
+        let targets = self.selection.nodes.clone();
+        if targets.is_empty() {
+            self.status = Some("Select stroked shapes to convert".into());
+            self.repaint();
+            return;
+        }
+
+        struct Conversion {
+            shape: renamite_model::NodeId,
+            compound: renamite_model::CompoundPath,
+            stroke_id: Option<renamite_model::NodeId>,
+            stroke_shared: bool,
+            stroke_parent: renamite_model::Parent,
+            paint: renamite_model::StylePaint,
+        }
+
+        let mut conversions: Vec<Conversion> = Vec::new();
+        {
+            let doc = &self.file.document;
+            for id in targets {
+                let Some(node) = doc.nodes.get(id) else {
+                    continue;
+                };
+                let geometry: Vec<renamite_geometry::VectorPath> = match &node.kind {
+                    NodeKind::Shape(ShapeKind::Path(p)) => vec![p.value_at(frame)],
+                    NodeKind::Shape(ShapeKind::CompoundPath(c)) => {
+                        c.contours.iter().map(|p| p.value_at(frame)).collect()
+                    }
+                    _ => continue,
+                };
+
+                let Some(stroke_id) = nearest_style_node(doc, id, true) else {
+                    continue;
+                };
+                let Some(stroke) = (match doc.nodes.get(stroke_id).map(|n| &n.kind) {
+                    Some(NodeKind::Style(StyleKind::Stroke { .. })) => {
+                        doc.nodes.get(stroke_id).map(|n| match &n.kind {
+                            NodeKind::Style(st) => st.clone(),
+                            _ => unreachable!(),
+                        })
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let StyleKind::Stroke {
+                    paint,
+                    width,
+                    cap,
+                    join,
+                    dash,
+                } = stroke
+                else {
+                    unreachable!()
+                };
+
+                let width_value = width.value_at(frame);
+                let dash_sample: Option<(Vec<f64>, f64)> = dash.as_ref().map(|d| {
+                    (
+                        d.dashes.iter().map(|x| x.value_at(frame)).collect(),
+                        d.offset.value_at(frame),
+                    )
+                });
+
+                let mut outlines: Vec<renamite_geometry::VectorPath> = Vec::new();
+                for path in &geometry {
+                    let expanded = renamite_geometry::stroke_to_paths(
+                        path,
+                        width_value,
+                        kurbo_cap(cap),
+                        kurbo_join(join),
+                        4.0,
+                        dash_sample
+                            .as_ref()
+                            .map(|(pattern, offset)| (pattern.as_slice(), *offset)),
+                        0.1,
+                    );
+                    if let Ok(mut pieces) = expanded {
+                        outlines.append(&mut pieces);
+                    }
+                }
+                if outlines.is_empty() {
+                    continue;
+                }
+
+                // Shared = more than one shape draws through this stroke scope.
+                let (stroke_parent, scope_children): (renamite_model::Parent, Vec<_>) =
+                    match doc.locate(stroke_id) {
+                        Some((renamite_model::Parent::Node(p), _)) => (
+                            renamite_model::Parent::Node(p),
+                            doc.nodes
+                                .get(p)
+                                .map(|n| n.children.clone())
+                                .unwrap_or_default(),
+                        ),
+                        Some((renamite_model::Parent::Comp(c), _)) => (
+                            renamite_model::Parent::Comp(c),
+                            doc.compositions
+                                .get(c)
+                                .map(|comp| comp.children.clone())
+                                .unwrap_or_default(),
+                        ),
+                        None => (renamite_model::Parent::Comp(doc.main), Vec::new()),
+                    };
+                let shape_count = scope_children
+                    .iter()
+                    .filter(|&&cid| {
+                        matches!(
+                            doc.nodes.get(cid).map(|n| &n.kind),
+                            Some(NodeKind::Shape(_))
+                        )
+                    })
+                    .count();
+
+                conversions.push(Conversion {
+                    shape: id,
+                    compound: renamite_model::CompoundPath {
+                        contours: outlines
+                            .into_iter()
+                            .map(renamite_animation::Animated::new)
+                            .collect(),
+                    },
+                    stroke_id: Some(stroke_id),
+                    stroke_shared: shape_count > 1,
+                    stroke_parent,
+                    paint,
+                });
+            }
+        }
+
+        if conversions.is_empty() {
+            self.status = Some("No stroked shapes found".into());
+            self.repaint();
+            return;
+        }
+
+        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        for conv in &conversions {
+            commands.push(EditorCommand::SetNodeKind {
+                id: conv.shape,
+                kind: NodeKind::Shape(ShapeKind::CompoundPath(conv.compound.clone())),
+            });
+            if conv.stroke_shared {
+                // Never mutate a shared stroke node: add a dedicated local
+                // fill beside the converted shape instead.
+                commands.push(EditorCommand::InsertNode {
+                    parent: conv.stroke_parent,
+                    index: usize::MAX,
+                    tree: renamite_history::NodeTree::leaf(renamite_model::Node::new(
+                        "Fill",
+                        NodeKind::Style(StyleKind::Fill {
+                            paint: conv.paint.clone(),
+                            rule: FillRule::NonZero,
+                        }),
+                    )),
+                });
+            } else if let Some(style_id) = conv.stroke_id {
+                // Same paint, restyled as fill; the old stroke is gone.
+                commands.push(EditorCommand::SetNodeKind {
+                    id: style_id,
+                    kind: NodeKind::Style(StyleKind::Fill {
+                        paint: conv.paint.clone(),
+                        rule: FillRule::NonZero,
+                    }),
+                });
+            }
+        }
+
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Stroke to path".into()),
             ToolOutput::Commands(commands),
             ToolOutput::CommitTransaction,
         ]);
@@ -2149,6 +3125,30 @@ pub struct ViewportState {
     /// Most recent pointer position in canvas-local screen px.
     /// HACK: Tracked so wheel zoom can anchor on the cursor (`on_scroll` callbacks don't carry a pos yet).
     pub last_pointer: DVec2,
+
+    /// Draw the world-space grid.
+    pub show_grid: bool,
+    /// Snap pointer-driven geometry to grid/anchors/guides.
+    pub snapping_enabled: bool,
+    /// Draw user guides.
+    pub show_guides: bool,
+    /// World-space grid cell size.
+    pub grid_spacing: DVec2,
+    /// User-placed guide lines.
+    pub guides: Vec<Guide>,
+}
+
+/// A horizontal or vertical guide line at `position` (world units).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guide {
+    pub axis: GuideAxis,
+    pub position: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuideAxis {
+    Horizontal,
+    Vertical,
 }
 
 impl Default for ViewportState {
@@ -2160,6 +3160,11 @@ impl Default for ViewportState {
             pan_last: None,
             space_held: false,
             last_pointer: DVec2::ZERO,
+            show_grid: false,
+            snapping_enabled: true,
+            show_guides: true,
+            grid_spacing: DVec2::splat(10.0),
+            guides: Vec::new(),
         }
     }
 }
@@ -2488,6 +3493,11 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             current_paint,
             ..
         } = s;
+        let snap_grid = if viewport.show_grid && viewport.snapping_enabled {
+            Some(viewport.grid_spacing.x.max(1e-6))
+        } else {
+            None
+        };
         let ctx = ToolContext {
             doc: &file.document,
             scene: engine.scene(),
@@ -2497,9 +3507,9 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             record: *record,
             view: viewport.view,
             snap: SnapConfig {
-                grid: None,
-                anchor: false,
-                guide: false,
+                grid: snap_grid,
+                anchor: viewport.snapping_enabled,
+                guide: viewport.show_guides && viewport.snapping_enabled,
             },
             modifiers: m,
             current_paint,
@@ -2515,6 +3525,61 @@ pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
 
 fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {
     tree.node.transform.position.base += d;
+}
+
+/// Model stroke enums → kurbo stroke configuration.
+fn kurbo_cap(cap: renamite_model::StrokeCap) -> kurbo::Cap {
+    match cap {
+        renamite_model::StrokeCap::Butt => kurbo::Cap::Butt,
+        renamite_model::StrokeCap::Round => kurbo::Cap::Round,
+        renamite_model::StrokeCap::Square => kurbo::Cap::Square,
+    }
+}
+
+fn kurbo_join(join: renamite_model::StrokeJoin) -> kurbo::Join {
+    match join {
+        renamite_model::StrokeJoin::Miter => kurbo::Join::Miter,
+        renamite_model::StrokeJoin::Round => kurbo::Join::Round,
+        renamite_model::StrokeJoin::Bevel => kurbo::Join::Bevel,
+    }
+}
+
+/// Nearest applicable style node of a kind for `shape`: the last matching
+/// style sibling in the closest ancestor scope (mirrors `fill_style_for`).
+fn nearest_style_node(
+    doc: &renamite_model::Document,
+    shape: renamite_model::NodeId,
+    want_stroke: bool,
+) -> Option<renamite_model::NodeId> {
+    use renamite_model::{NodeKind, Parent, StyleKind};
+
+    let mut scope = doc.locate(shape).map(|(p, _)| p)?;
+    loop {
+        let children: Vec<renamite_model::NodeId> = match scope {
+            Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+            Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
+        };
+        let found = children.iter().rev().copied().find(|id| {
+            doc.nodes.get(*id).is_some_and(|n| {
+                matches!(
+                    &n.kind,
+                    NodeKind::Style(s)
+                    if if want_stroke {
+                        matches!(s, StyleKind::Stroke { .. })
+                    } else {
+                        matches!(s, StyleKind::Fill { .. })
+                    }
+                )
+            })
+        });
+        if let Some(found) = found {
+            return Some(found);
+        }
+        match scope {
+            Parent::Comp(_) => return None,
+            Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
+        }
+    }
 }
 
 fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {

@@ -476,12 +476,161 @@ fn detect_mode(tin: DVec2, tout: DVec2) -> TangentMode {
     }
 }
 
-/// Façade for Graphite/linesweeper boolean ops (feature-gated until a Graphite
-/// commit is pinned; the public signature is stable either way).
-#[cfg(feature = "graphite-bool")]
-pub fn boolean_op(_a: &VectorPath, _b: &VectorPath, _op: BooleanOp) -> Vec<VectorPath> {
-    // TODO: route through linesweeper sweep-line output -> from_bez_path.
-    Vec::new()
+/// Errors from boolean operations and stroke expansion.
+#[derive(Debug, thiserror::Error)]
+pub enum PathOpError {
+    #[error("path operation requires closed contours")]
+    OpenPath,
+    #[error("path operation produced no geometry")]
+    Empty,
+    #[error("boolean operation failed: {0}")]
+    Boolean(#[from] linesweeper::Error),
+}
+
+fn map_boolean_op(op: BooleanOp) -> linesweeper::BinaryOp {
+    match op {
+        BooleanOp::Union => linesweeper::BinaryOp::Union,
+        BooleanOp::Intersection => linesweeper::BinaryOp::Intersection,
+        BooleanOp::Difference => linesweeper::BinaryOp::Difference,
+        BooleanOp::Xor => linesweeper::BinaryOp::Xor,
+    }
+}
+
+/// Concatenate closed `contours` into one multi-subpath `BezPath`, suitable
+/// as an input to [`boolean_bez`].
+pub fn contours_to_bez(contours: &[VectorPath]) -> BezPath {
+    let mut out = BezPath::new();
+    for contour in contours {
+        out.extend(contour.to_bez_path().elements().iter().copied());
+    }
+    out
+}
+
+/// Linesweeper-backed boolean op on raw Bézier outlines.
+///
+/// Unlike [`boolean_op`], both sides may already be compound (multi-subpath)
+/// outlines, so folding N selected shapes never discards intermediate holes or
+/// disjoint pieces.
+pub fn boolean_bez(
+    a: &BezPath,
+    b: &BezPath,
+    op: BooleanOp,
+) -> Result<Vec<VectorPath>, PathOpError> {
+    let contours =
+        linesweeper::binary_op(a, b, linesweeper::FillRule::NonZero, map_boolean_op(op))?;
+
+    let result: Vec<_> = contours
+        .contours()
+        .filter_map(|contour| {
+            let path = VectorPath::from_bez_path(&contour.path);
+            (path.closed && path.anchors.len() >= 3).then_some(path)
+        })
+        .collect();
+
+    if result.is_empty() {
+        Err(PathOpError::Empty)
+    } else {
+        Ok(result)
+    }
+}
+
+/// Boolean op between two single-contour paths. Multi-contour inputs should
+/// use [`boolean_bez`] via [`contours_to_bez`] so holes survive the fold.
+pub fn boolean_op(
+    a: &VectorPath,
+    b: &VectorPath,
+    op: BooleanOp,
+) -> Result<Vec<VectorPath>, PathOpError> {
+    if !a.closed || !b.closed {
+        return Err(PathOpError::OpenPath);
+    }
+    boolean_bez(&a.to_bez_path(), &b.to_bez_path(), op)
+}
+
+/// Split a multi-subpath `BezPath` into one [`VectorPath`] per subpath
+/// (`MoveTo` .. next `MoveTo`). Subpaths with fewer than two anchors are
+/// dropped; open subpaths stay open.
+pub fn split_bez_subpaths(path: &BezPath) -> Vec<VectorPath> {
+    let mut output = Vec::new();
+    let mut current = BezPath::new();
+
+    for element in path.elements().iter().copied() {
+        if matches!(element, PathEl::MoveTo(_)) && !current.is_empty() {
+            let sub = VectorPath::from_bez_path(&current);
+            if sub.anchors.len() >= 2 {
+                output.push(sub);
+            }
+            current = BezPath::new();
+        }
+        current.push(element);
+    }
+
+    if !current.is_empty() {
+        let sub = VectorPath::from_bez_path(&current);
+        if sub.anchors.len() >= 2 {
+            output.push(sub);
+        }
+    }
+
+    output
+}
+
+/// Expand a stroke into filled outlines (one contour per disjoint piece).
+///
+/// Dashes (if any) are expanded first; the resulting dash subpaths are then
+/// stroked with the given cap/join configuration.
+pub fn stroke_to_paths(
+    path: &VectorPath,
+    width: f64,
+    cap: kurbo::Cap,
+    join: kurbo::Join,
+    miter_limit: f64,
+    dash: Option<(&[f64], f64)>,
+    tolerance: f64,
+) -> Result<Vec<VectorPath>, PathOpError> {
+    if !width.is_finite() || width <= 0.0 {
+        return Err(PathOpError::Empty);
+    }
+
+    let original = path.to_bez_path();
+
+    let source = match dash {
+        Some((pattern, offset)) => dash_bez_path(&original, pattern, offset).unwrap_or(original),
+        None => original,
+    };
+
+    let stroke = kurbo::Stroke::new(width)
+        .with_start_cap(cap)
+        .with_end_cap(cap)
+        .with_join(join)
+        .with_miter_limit(miter_limit);
+
+    let outline = kurbo::stroke(
+        source.elements().iter().copied(),
+        &stroke,
+        &kurbo::StrokeOpts::default(),
+        tolerance.max(1e-4),
+    );
+
+    let result = split_bez_subpaths(&outline);
+
+    if result.is_empty() {
+        Err(PathOpError::Empty)
+    } else {
+        Ok(result)
+    }
+}
+
+/// Fit a simpler path through the same geometry within `tolerance` document
+/// units (kurbo curve fitting).
+pub fn simplify_path(path: &VectorPath, tolerance: f64) -> VectorPath {
+    let simplified = kurbo::simplify::simplify_bezpath(
+        path.to_bez_path(),
+        tolerance.max(1e-4),
+        &kurbo::simplify::SimplifyOptions::default(),
+    );
+
+    VectorPath::from_bez_path(&simplified)
 }
 
 /// Offset a path by `amount` in document units.
@@ -1015,6 +1164,248 @@ mod dash_tests {
         assert!(dash_bez_path(&line(10.0), &[-1.0, 2.0], 0.0).is_none());
         assert!(dash_bez_path(&line(10.0), &[f64::NAN, 2.0], 0.0).is_none());
         assert!(dash_bez_path(&line(10.0), &[1.0, 2.0], f64::NAN).is_none());
+    }
+}
+
+#[cfg(test)]
+mod boolean_tests {
+    use super::*;
+
+    fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> VectorPath {
+        let mut p = BezPath::new();
+        p.move_to((x0, y0));
+        p.line_to((x1, y0));
+        p.line_to((x1, y1));
+        p.line_to((x0, y1));
+        p.close_path();
+        VectorPath::from_bez_path(&p)
+    }
+
+    #[test]
+    fn boolean_difference_preserves_hole() {
+        let outer = rect_path(0.0, 0.0, 100.0, 100.0);
+        let inner = rect_path(25.0, 25.0, 75.0, 75.0);
+
+        let result = boolean_op(&outer, &inner, BooleanOp::Difference).unwrap();
+
+        assert_eq!(result.len(), 2); // outside boundary + hole
+        assert!(result.iter().all(|p| p.closed));
+    }
+
+    #[test]
+    fn boolean_union_can_return_disjoint_contours() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(20.0, 0.0, 30.0, 10.0);
+
+        let result = boolean_op(&a, &b, BooleanOp::Union).unwrap();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn boolean_intersection_of_overlapping_squares_is_one_contour() {
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(10.0, 10.0, 30.0, 30.0);
+
+        let result = boolean_op(&a, &b, BooleanOp::Intersection).unwrap();
+
+        assert_eq!(result.len(), 1);
+        let bb = contours_to_bez(&result).bounding_box();
+        assert!((bb.x0 - 10.0).abs() < 1e-6 && (bb.x1 - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_op_rejects_open_paths() {
+        let mut open = rect_path(0.0, 0.0, 10.0, 10.0);
+        open.closed = false;
+        let closed = rect_path(0.0, 0.0, 5.0, 5.0);
+
+        assert!(matches!(
+            boolean_op(&open, &closed, BooleanOp::Union),
+            Err(PathOpError::OpenPath)
+        ));
+    }
+
+    #[test]
+    fn boolean_bez_folds_compound_accumulator_without_losing_holes() {
+        // Square with a hole (difference), unioned with an overlapping square.
+        let outer = rect_path(0.0, 0.0, 100.0, 100.0);
+        let inner = rect_path(25.0, 25.0, 75.0, 75.0);
+        let holed = boolean_op(&outer, &inner, BooleanOp::Difference).unwrap();
+
+        let cutter = rect_path(60.0, 0.0, 160.0, 40.0);
+
+        // Fold via the BezPath-level wrapper: the hole must survive.
+        let folded = boolean_bez(
+            &contours_to_bez(&holed),
+            &cutter.to_bez_path(),
+            BooleanOp::Union,
+        )
+        .unwrap();
+
+        let all = contours_to_bez(&folded);
+        let center = Point::new(50.0, 50.0);
+        assert_eq!(all.winding(center), 0, "hole must remain after the fold");
+    }
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    use super::*;
+    use kurbo::ParamCurveArclen;
+
+    #[test]
+    fn stroked_line_produces_closed_outline_near_expected_width() {
+        let line = VectorPath {
+            anchors: vec![
+                Anchor::corner(DVec2::new(0.0, 0.0)),
+                Anchor::corner(DVec2::new(100.0, 0.0)),
+            ],
+            closed: false,
+        };
+
+        let outlines = stroke_to_paths(
+            &line,
+            4.0,
+            kurbo::Cap::Butt,
+            kurbo::Join::Miter,
+            4.0,
+            None,
+            0.1,
+        )
+        .unwrap();
+
+        assert_eq!(outlines.len(), 1);
+        assert!(outlines[0].closed);
+        let bez = outlines[0].to_bez_path();
+        let bb = bez.bounding_box();
+        assert!((bb.height() - 4.0).abs() < 0.2, "height = {}", bb.height());
+        assert!((bb.width() - 100.0).abs() < 0.2, "width = {}", bb.width());
+    }
+
+    #[test]
+    fn dashed_stroke_expands_each_dash() {
+        let line = VectorPath {
+            anchors: vec![
+                Anchor::corner(DVec2::new(0.0, 0.0)),
+                Anchor::corner(DVec2::new(100.0, 0.0)),
+            ],
+            closed: false,
+        };
+
+        let outlines = stroke_to_paths(
+            &line,
+            2.0,
+            kurbo::Cap::Butt,
+            kurbo::Join::Bevel,
+            4.0,
+            Some(([10.0, 10.0].as_slice(), 0.0)),
+            0.1,
+        )
+        .unwrap();
+
+        // 100 units of [10 on / 10 off] => 5 dashes => 5 outline pieces.
+        assert_eq!(outlines.len(), 5);
+        let total: f64 = outlines
+            .iter()
+            .map(|p| {
+                p.to_bez_path()
+                    .segments()
+                    .map(|s| s.arclen(1e-3))
+                    .sum::<f64>()
+            })
+            .sum();
+        assert!(total > 0.0);
+    }
+
+    #[test]
+    fn closed_square_stroke_is_one_ring() {
+        let square = VectorPath {
+            anchors: vec![
+                Anchor::corner(DVec2::new(0.0, 0.0)),
+                Anchor::corner(DVec2::new(10.0, 0.0)),
+                Anchor::corner(DVec2::new(10.0, 10.0)),
+                Anchor::corner(DVec2::new(0.0, 10.0)),
+            ],
+            closed: true,
+        };
+
+        let outlines = stroke_to_paths(
+            &square,
+            2.0,
+            kurbo::Cap::Butt,
+            kurbo::Join::Miter,
+            4.0,
+            None,
+            0.1,
+        )
+        .unwrap();
+
+        // A closed shape's stroke is an annulus: outer ring + hole.
+        assert_eq!(outlines.len(), 2);
+        assert!(outlines.iter().all(|p| p.closed));
+        let all = contours_to_bez(&outlines);
+        assert_eq!(all.winding(Point::new(5.0, 5.0)), 0, "center stays hollow");
+    }
+
+    #[test]
+    fn invalid_width_is_an_error() {
+        let line = VectorPath::default();
+        assert!(
+            stroke_to_paths(
+                &line,
+                0.0,
+                kurbo::Cap::Butt,
+                kurbo::Join::Miter,
+                4.0,
+                None,
+                0.1
+            )
+            .is_err()
+        );
+        assert!(
+            stroke_to_paths(
+                &line,
+                f64::NAN,
+                kurbo::Cap::Butt,
+                kurbo::Join::Miter,
+                4.0,
+                None,
+                0.1
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod simplify_tests {
+    use super::*;
+
+    #[test]
+    fn simplify_keeps_collinear_polyline_small_and_openness() {
+        // A dense zig-zag-free polyline: simplify should not blow it up.
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        for i in 1..=20 {
+            p.line_to((i as f64 * 5.0, (i % 2) as f64));
+        }
+
+        let dense = VectorPath::from_bez_path(&p);
+        let simple = simplify_path(&dense, 1.0);
+
+        assert!(!simple.closed);
+        assert!(!simple.anchors.is_empty());
+    }
+
+    #[test]
+    fn tolerance_floor_never_panics_on_degenerate_input() {
+        let single = VectorPath {
+            anchors: vec![Anchor::corner(DVec2::ZERO)],
+            closed: false,
+        };
+        let out = simplify_path(&single, f64::NAN);
+        assert!(out.anchors.len() <= 1, "degenerate input must not grow");
     }
 }
 

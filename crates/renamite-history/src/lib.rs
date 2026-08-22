@@ -1642,6 +1642,8 @@ pub enum ToolOutput {
     SetPlayhead(f64),
     /// Pure overlay/view change.
     Invalidate,
+    /// Replace the editor's current-paint swatch (dropper tool).
+    SetCurrentPaint(StylePaint),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1670,6 +1672,9 @@ pub enum ToolId {
     Text,
     Gradient,
     Fill,
+
+    /// Appended last: sample a paint from the canvas and apply it.
+    Dropper,
 }
 
 #[cfg(test)]

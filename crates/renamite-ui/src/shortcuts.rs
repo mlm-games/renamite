@@ -2,11 +2,6 @@
 //!
 //! Every viewport key event flows through [`handle_viewport_key`]; the canvas
 //! tools only ever see semantic [`CanvasKey`]s.
-//!
-//! HACK: Chords whose engine features will be added in future, or
-//! don't exist yet (booleans, stroke-to-path, simplify, combine/break-apart,
-//! paste style, paste in place, dropper, grid/snap/guide toggles) are
-//! left unbound.
 
 use renamite_behavior_canvas::{CanvasEvent, Key as CanvasKey};
 use renamite_behavior_common::Modifiers;
@@ -15,7 +10,9 @@ use renamite_history::ToolId;
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::request_frame;
 
-use crate::session::{EditorMode, SessionRef, dispatch_canvas, redo_cmd, undo_cmd};
+use crate::session::{
+    EditorMode, SelectionBoolean, SessionRef, dispatch_canvas, redo_cmd, undo_cmd,
+};
 
 /// Handle one viewport key event. Returns true when the event was consumed.
 pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
@@ -58,12 +55,70 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             s.bump();
             return true;
         }
-        (true, true, false, Key::Character('z' | 'y')) => {
+        (true, true, false, Key::Character('z')) | (true, false, false, Key::Character('y')) => {
             redo_cmd(&mut s);
             s.bump();
             return true;
         }
 
+        _ => {}
+    }
+
+    // Punctuation shortcuts use the produced logical character. Ignore Shift as a
+    // semantic modifier because '+', '*', '^', '#', '%' and '|' require Shift on
+    // many layouts. Placed before the clipboard arms so Ctrl+Alt+V and
+    // Ctrl+Shift+V win over the broad Ctrl+V paste binding.
+    if command {
+        match key {
+            Key::Character('+' | '=') => {
+                s.boolean_selection(SelectionBoolean::Union);
+                return true;
+            }
+            Key::Character('-' | '_') => {
+                s.boolean_selection(SelectionBoolean::Difference);
+                return true;
+            }
+            Key::Character('*') => {
+                s.boolean_selection(SelectionBoolean::Intersection);
+                return true;
+            }
+            Key::Character('^') => {
+                s.boolean_selection(SelectionBoolean::Xor);
+                return true;
+            }
+            Key::Character('/') => {
+                s.divide_selection();
+                return true;
+            }
+            Key::Character('k') if shift => {
+                s.break_apart_selection();
+                return true;
+            }
+            Key::Character('k') => {
+                s.combine_selection();
+                return true;
+            }
+            Key::Character('l') => {
+                s.simplify_selection();
+                return true;
+            }
+            Key::Character('c') if alt => {
+                s.stroke_selection_to_path();
+                return true;
+            }
+            Key::Character('v') if shift => {
+                s.paste_style();
+                return true;
+            }
+            Key::Character('v') if alt => {
+                s.paste_clipboard_in_place();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    match (command, shift, alt, &key) {
         // Clipboard / duplicate
         (true, false, false, Key::Character('c')) => {
             s.copy_selection();
@@ -158,15 +213,35 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    if s.active_tool == ToolId::PathEdit && !command && !alt {
-        if shift {
+    if s.active_tool == ToolId::PathEdit && !command {
+        // Tangent-mode / segment-conversion / node-op chords. Plain letters
+        // are left to the tool-selection map below, so only Shift (+ not Alt,
+        // which stays free for 1px arrow nudging) reaches them here.
+        if shift && !alt {
             let key = match key {
+                Key::Character('b') => CanvasKey::NodeBreak,
+                Key::Character('j') => CanvasKey::NodeJoin,
+                Key::Character('a') => CanvasKey::NodeAutoSmooth,
                 Key::Character('c') => CanvasKey::NodeCorner,
-                Key::Character('s' | 'a') => CanvasKey::NodeSmooth,
+                Key::Character('s') => CanvasKey::NodeSmooth,
                 Key::Character('y') => CanvasKey::NodeSymmetric,
                 Key::Character('l') => CanvasKey::SegmentLine,
                 Key::Character('u') => CanvasKey::SegmentCurve,
-                _ => return false,
+                _ => {
+                    if dispatch_path_edit_arrows(&mut s, &key, mods) {
+                        return true;
+                    }
+                    // Unmapped Shift+letter: fall through to the rest of the
+                    // dispatcher (e.g. Shift+R reverse paths).
+                    match key {
+                        Key::Character('r') => {
+                            s.reverse_selected_paths();
+                            return true;
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
             };
             dispatch_canvas(&mut s, CanvasEvent::KeyDown(key), mods);
             return true;
@@ -194,6 +269,30 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             }
             Key::ArrowDown => {
                 dispatch_canvas(&mut s, CanvasEvent::KeyDown(CanvasKey::ArrowDown), mods);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    if !command && !alt {
+        // View toggles use the produced logical character: Shift is ignored as
+        // a semantic modifier because '#', '%' and '|' require Shift on many
+        // layouts.
+        match key {
+            Key::Character('#') => {
+                s.viewport.show_grid = !s.viewport.show_grid;
+                s.repaint();
+                return true;
+            }
+            Key::Character('%') => {
+                s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+                s.repaint();
+                return true;
+            }
+            Key::Character('|') => {
+                s.viewport.show_guides = !s.viewport.show_guides;
+                s.repaint();
                 return true;
             }
             _ => {}
@@ -240,6 +339,7 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             Key::Character('t') => Some(ToolId::Text),
             Key::Character('g') => Some(ToolId::Gradient),
             Key::Character('u') => Some(ToolId::Fill),
+            Key::Character('d') | Key::F(7) => Some(ToolId::Dropper),
             _ => None,
         };
         if let Some(tool) = tool {
@@ -250,6 +350,20 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     }
 
     false
+}
+
+/// Arrow forwarding inside PathEdit: arrows are delivered regardless of Alt
+/// (Alt = 1 screen px step inside the tool). Returns true when consumed.
+fn dispatch_path_edit_arrows(s: &mut crate::session::Session, key: &Key, mods: Modifiers) -> bool {
+    let canvas_key = match key {
+        Key::ArrowLeft => CanvasKey::ArrowLeft,
+        Key::ArrowRight => CanvasKey::ArrowRight,
+        Key::ArrowUp => CanvasKey::ArrowUp,
+        Key::ArrowDown => CanvasKey::ArrowDown,
+        _ => return false,
+    };
+    dispatch_canvas(s, CanvasEvent::KeyDown(canvas_key), mods);
+    true
 }
 
 fn set_zoom(s: &mut crate::session::Session, target: f64) {

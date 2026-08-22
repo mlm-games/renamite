@@ -159,6 +159,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
     match kind {
         NodeKind::Shape(s) => match s {
             ShapeKind::Path(_) => {}
+            ShapeKind::CompoundPath(_) => {}
             ShapeKind::Rect { .. } => {
                 d.push(pd("Shape", "Size", "shape.size", PropKind::DVec2));
                 d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
@@ -389,7 +390,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
         NodeKind::Mask(mask) => {
             d.push(pd("Mask", "Inverted", "mask.inverted", PropKind::Bool));
             match &mask.shape {
-                ShapeKind::Path(_) => {}
+                ShapeKind::Path(_) | ShapeKind::CompoundPath(_) => {}
                 ShapeKind::Rect { .. } => {
                     d.push(pd("Mask", "Size", "shape.size", PropKind::DVec2));
                     d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));

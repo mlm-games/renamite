@@ -461,22 +461,23 @@ impl Exporter<'_> {
                 })]
             }
             NodeKind::Shape(shape) => {
-                let item = shape_json(&node.name, shape);
+                let items = match shape {
+                    ShapeKind::CompoundPath(compound) => {
+                        self.compound_shape_items(&node.name, compound)
+                    }
+                    _ => vec![shape_json(&node.name, shape)],
+                };
                 if transform_owner == Some(id)
                     || transform_is_identity(&node.transform, &node.opacity)
                 {
-                    vec![item]
+                    items
                 } else {
+                    let mut it = items;
+                    it.push(group_transform_json(&node.transform, &node.opacity));
                     vec![json!({
                         "ty": "gr",
                         "nm": node.name,
-                        "it": [
-                            item,
-                            group_transform_json(
-                                &node.transform,
-                                &node.opacity
-                            )
-                        ]
+                        "it": it
                     })]
                 }
             }
@@ -555,6 +556,32 @@ impl Exporter<'_> {
             }
         }
     }
+
+    /// One Lottie `sh` item per compound-path contour. Animated contours bake
+    /// to their base value (frame 0) and surface a lossy-export warning, since
+    /// a single `sh` track cannot carry differing per-contour topologies.
+    fn compound_shape_items(
+        &mut self,
+        name: &str,
+        compound: &renamite_model::CompoundPath,
+    ) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (index, contour) in compound.contours.iter().enumerate() {
+            if !contour.keyframes.is_empty() {
+                self.warnings.push(LottieWarning::new(
+                    format!("compound contour {index}"),
+                    "animated contour bakes to its base value on Lottie export",
+                ));
+            }
+            out.push(json!({
+                "ty": "sh",
+                "nm": name,
+                "d": 1,
+                "ks": { "a": 0, "k": bezpath_to_lottie_path(&contour.base.to_bez_path()) }
+            }));
+        }
+        out
+    }
 }
 
 fn transform_is_identity(transform: &AnimatedTransform, opacity: &Animated<f64>) -> bool {
@@ -592,8 +619,18 @@ fn group_transform_json(transform: &AnimatedTransform, opacity: &Animated<f64>) 
     value
 }
 
+/// Single-item Lottie shape for primitive kinds. Compound paths never reach
+/// this function: they are expanded into one `sh` item per contour by
+/// [`Exporter::compound_shape_items`] (a Lottie `sh` holds exactly one
+/// contour).
 fn shape_json(name: &str, shape: &ShapeKind) -> Value {
     match shape {
+        ShapeKind::CompoundPath(_) => json!({
+            "ty": "sh",
+            "nm": name,
+            "d": 1,
+            "ks": { "a": 0, "k": [] }
+        }),
         ShapeKind::Rect { pos, size, rounded } => json!({
             "ty": "rc",
             "nm": name,

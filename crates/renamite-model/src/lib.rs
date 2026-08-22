@@ -108,6 +108,15 @@ impl Default for LayerProps {
     }
 }
 
+/// Multi-contour geometry: boolean results and stroke expansions produce
+/// outer contours plus holes, which one `VectorPath` cannot represent.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CompoundPath {
+    /// Every entry is one contour. Linesweeper's orientation guarantees that
+    /// holes work under both NonZero and EvenOdd filling.
+    pub contours: Vec<Animated<VectorPath>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ShapeKind {
     Path(Animated<VectorPath>),
@@ -134,6 +143,27 @@ pub enum ShapeKind {
         outer_r: Animated<f64>,
         roundness: Animated<f64>,
     },
+
+    // Appended last to keep postcard enum indices of existing variants stable.
+    CompoundPath(CompoundPath),
+}
+
+impl CompoundPath {
+    /// All contours flattened into one multi-subpath `BezPath` at `frame`.
+    pub fn to_bez_path(&self, frame: f64) -> BezPath {
+        let mut result = BezPath::new();
+        for contour in &self.contours {
+            result.extend(
+                contour
+                    .value_at(frame)
+                    .to_bez_path()
+                    .elements()
+                    .iter()
+                    .copied(),
+            );
+        }
+        result
+    }
 }
 
 /// One color anchor along a gradient axis. `offset` is in 0..=1.
@@ -1144,6 +1174,7 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             None,
             ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
         ),
+        ShapeKind::CompoundPath(compound) => compound.to_bez_path(frame),
     }
 }
 

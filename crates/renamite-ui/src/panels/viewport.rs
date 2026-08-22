@@ -227,6 +227,13 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 let comp = &s.file.document.compositions[comp_id];
                 paint_artboard(scope, comp, &s.viewport.view);
 
+                if s.viewport.show_grid {
+                    paint_grid(scope, comp, &s.viewport);
+                }
+                if s.viewport.show_guides {
+                    paint_guides(scope, &s.viewport.view, &s.viewport.guides);
+                }
+
                 let scene = s.engine.scene().clone();
                 let view = s.viewport.view;
                 let prepared = s.renderer.prepare(&scene, &view);
@@ -242,9 +249,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         record: s.record,
                         view,
                         snap: SnapConfig {
-                            grid: None,
-                            anchor: false,
-                            guide: false,
+                            grid: (s.viewport.show_grid && s.viewport.snapping_enabled)
+                                .then_some(s.viewport.grid_spacing.x.max(1e-6)),
+                            anchor: s.viewport.snapping_enabled,
+                            guide: s.viewport.show_guides && s.viewport.snapping_enabled,
                         },
                         modifiers: Modifiers::none(),
                         current_paint: &s.current_paint,
@@ -289,6 +297,7 @@ fn ViewportStageHud(session: SessionRef) -> View {
             renamite_history::ToolId::Text => "Text",
             renamite_history::ToolId::Gradient => "Gradient",
             renamite_history::ToolId::Fill => "Fill",
+            renamite_history::ToolId::Dropper => "Dropper",
         };
         (
             comp.size.0,
@@ -670,6 +679,94 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
     );
 }
 
+/// Adaptive world-space grid with major/minor lines. Spacing doubles while a
+/// minor line would be closer than ~8 screen px, so zooming out never emits
+/// thousands of lines.
+fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::session::ViewportState) {
+    let th = theme();
+    let view = &viewport.view;
+    let base = viewport.grid_spacing.x.max(0.01);
+    let mut step = base;
+    while step * view.scale < 8.0 {
+        step *= 2.0;
+    }
+    let major_every = (step / base).round().max(1.0) as usize;
+
+    let origin = view.world_to_screen(DVec2::ZERO);
+    let width = comp.size.0 as f64 * view.scale;
+    let height = comp.size.1 as f64 * view.scale;
+
+    let minor = th.outline_variant.with_alpha(70);
+    let major = th.outline_variant.with_alpha(140);
+
+    let cols = (comp.size.0 as f64 / step).floor() as usize;
+    let rows = (comp.size.1 as f64 / step).floor() as usize;
+
+    for c in 1..cols {
+        let p = view.world_to_screen(DVec2::new(c as f64 * step, 0.0));
+        let color = if c % major_every == 0 { major } else { minor };
+        scope.draw_rect(
+            Rect {
+                x: p.x as f32,
+                y: origin.y as f32,
+                w: 1.0,
+                h: height as f32,
+            },
+            color,
+            0.0,
+        );
+    }
+    for r in 1..rows {
+        let p = view.world_to_screen(DVec2::new(0.0, r as f64 * step));
+        let color = if r % major_every == 0 { major } else { minor };
+        scope.draw_rect(
+            Rect {
+                x: origin.x as f32,
+                y: p.y as f32,
+                w: width as f32,
+                h: 1.0,
+            },
+            color,
+            0.0,
+        );
+    }
+}
+
+/// Full-height/full-width guide lines in world space.
+fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::session::Guide]) {
+    let color = theme().tertiary.with_alpha(180);
+    for guide in guides {
+        match guide.axis {
+            crate::session::GuideAxis::Horizontal => {
+                let p = view.world_to_screen(DVec2::new(0.0, guide.position));
+                scope.draw_rect(
+                    Rect {
+                        x: 0.0,
+                        y: p.y as f32 - 0.5,
+                        w: scope.size.width,
+                        h: 1.0,
+                    },
+                    color,
+                    0.0,
+                );
+            }
+            crate::session::GuideAxis::Vertical => {
+                let p = view.world_to_screen(DVec2::new(guide.position, 0.0));
+                scope.draw_rect(
+                    Rect {
+                        x: p.x as f32 - 0.5,
+                        y: 0.0,
+                        w: 1.0,
+                        h: scope.size.height,
+                    },
+                    color,
+                    0.0,
+                );
+            }
+        }
+    }
+}
+
 fn ViewportControls(session: SessionRef) -> View {
     let zoom = session.borrow().viewport.view.scale * 100.0;
 
@@ -791,30 +888,35 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
         }
         ToolOverlay::PathHandles {
             path,
+            extra,
             active_anchor,
         } => {
-            for (i, a) in path.anchors.iter().enumerate() {
-                let sp = view.world_to_screen(a.pos);
-                let rect = Rect {
-                    x: sp.x as f32 - 4.0,
-                    y: sp.y as f32 - 4.0,
-                    w: 8.0,
-                    h: 8.0,
-                };
-                if *active_anchor == Some(i) {
-                    scope.draw_rect(rect, primary, 1.0);
-                } else {
-                    scope.draw_rect(rect, th.surface, 0.0);
-                    scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
-                }
+            let contours = std::iter::once(path).chain(extra.iter());
+            for (ci, contour) in contours.enumerate() {
+                for (i, a) in contour.anchors.iter().enumerate() {
+                    let sp = view.world_to_screen(a.pos);
+                    let rect = Rect {
+                        x: sp.x as f32 - 4.0,
+                        y: sp.y as f32 - 4.0,
+                        w: 8.0,
+                        h: 8.0,
+                    };
+                    let active = ci == 0 && *active_anchor == Some(i);
+                    if active {
+                        scope.draw_rect(rect, primary, 1.0);
+                    } else {
+                        scope.draw_rect(rect, th.surface, 0.0);
+                        scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
+                    }
 
-                if a.tan_in.length_squared() > 1e-12 {
-                    let tip = view.world_to_screen(a.pos + a.tan_in);
-                    draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
-                }
-                if a.tan_out.length_squared() > 1e-12 {
-                    let tip = view.world_to_screen(a.pos + a.tan_out);
-                    draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
+                    if a.tan_in.length_squared() > 1e-12 {
+                        let tip = view.world_to_screen(a.pos + a.tan_in);
+                        draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
+                    }
+                    if a.tan_out.length_squared() > 1e-12 {
+                        let tip = view.world_to_screen(a.pos + a.tan_out);
+                        draw_handle_dot(scope, tip, th.tertiary.with_alpha(220));
+                    }
                 }
             }
         }

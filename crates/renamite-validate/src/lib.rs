@@ -434,6 +434,11 @@ impl<'a> Validator<'a> {
                 self.check_animated(&format!("{base}/outer_r"), outer_r, finite_f64);
                 self.check_animated(&format!("{base}/roundness"), roundness, finite_f64);
             }
+            ShapeKind::CompoundPath(compound) => {
+                for (i, contour) in compound.contours.iter().enumerate() {
+                    self.check_animated(&format!("{base}/contour/{i}"), contour, finite_path);
+                }
+            }
         }
     }
 
@@ -1093,6 +1098,7 @@ fn finite_path(path: &VectorPath) -> bool {
 fn shape_kind_is_empty(shape: &ShapeKind) -> bool {
     match shape {
         ShapeKind::Path(path) => path.base.anchors.is_empty(),
+        ShapeKind::CompoundPath(compound) => compound.contours.is_empty(),
         ShapeKind::Rect { size, .. } | ShapeKind::Ellipse { size, .. } => {
             size.base.x == 0.0 && size.base.y == 0.0
         }

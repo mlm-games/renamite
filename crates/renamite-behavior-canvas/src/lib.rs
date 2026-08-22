@@ -8,7 +8,7 @@
 //! drag = one undo step; Esc cancels the open drag.
 
 use glam::DVec2;
-use kurbo::{Affine, Point};
+use kurbo::{Affine, ParamCurveNearest, Point, Shape as KurboShape};
 
 use renamite_animation::{Angle, Animated, Frame};
 use renamite_behavior_common::{ToolContext, fill::cmd_fill_shape, path::path_edit_target};
@@ -17,12 +17,12 @@ use renamite_history::{
     EditorCommand, NodeTree, OutputVec, SelectionChange, ToolId, ToolOutput, resolve_property_edit,
 };
 use renamite_model::{
-    FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath, ShapeKind,
-    StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine, node_is_ancestor,
-    node_transform_context, pick, pick_box, selected_ancestor_for_pick, selection_bounds,
-    world_delta_to_parent,
+    Document, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath,
+    ShapeKind, StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine,
+    node_is_ancestor, node_transform_context, pick, pick_box, selected_ancestor_for_pick,
+    selection_bounds, world_delta_to_parent,
 };
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Debug)]
@@ -64,6 +64,15 @@ pub enum Key {
     NodeSymmetric,
     SegmentLine,
     SegmentCurve,
+
+    /// Shift+A: synthesize Catmull-Rom-style tangents on selected anchors.
+    NodeAutoSmooth,
+    /// Shift+B: split the contour at the selected anchor (closed -> open;
+    /// open interior anchor -> two contours in a compound path).
+    NodeBreak,
+    /// Shift+J: join two selected endpoints (closes a contour when they are
+    /// its opposite ends, otherwise concatenates end-to-start).
+    NodeJoin,
 }
 
 /// World-space overlay for the host to draw (screen conversion is the host's job).
@@ -96,7 +105,10 @@ pub enum ToolOverlay {
         hover: Option<DVec2>,
     },
     PathHandles {
+        /// Primary contour (`active_anchor` indexes into this one).
         path: VectorPath,
+        /// Additional contours of a compound path (display only).
+        extra: Vec<VectorPath>,
         active_anchor: Option<usize>,
     },
     /// Gradient axis being dragged (world space: start=end handle endpoints).
@@ -126,6 +138,7 @@ pub struct ToolSet {
     pub path_edit: PathEditTool,
     pub gradient: GradientTool,
     pub fill: FillTool,
+    pub dropper: DropperTool,
 }
 
 impl Default for ToolSet {
@@ -140,6 +153,7 @@ impl Default for ToolSet {
             path_edit: PathEditTool::default(),
             gradient: GradientTool::default(),
             fill: FillTool,
+            dropper: DropperTool,
         }
     }
 }
@@ -156,6 +170,7 @@ impl ToolSet {
             ToolId::PathEdit => self.path_edit.handle(ctx, ev),
             ToolId::Gradient => self.gradient.handle(ctx, ev),
             ToolId::Fill => self.fill.handle(ctx, ev),
+            ToolId::Dropper => self.dropper.handle(ctx, ev),
         }
     }
 
@@ -170,6 +185,7 @@ impl ToolSet {
             ToolId::PathEdit => self.path_edit.overlay(ctx),
             ToolId::Gradient => self.gradient.overlay(ctx),
             ToolId::Fill => self.fill.overlay(ctx),
+            ToolId::Dropper => self.dropper.overlay(ctx),
         }
     }
 }
@@ -1015,11 +1031,161 @@ impl FillTool {
     }
 }
 
+/// Eyedropper: sample the resolved paint under the pointer, update the
+/// current-paint swatch, and (optionally) push it onto the selection's styles.
+///
+/// - Default click applies the sampled paint to selected Fill styles.
+/// - Shift+click applies to Stroke styles.
+/// - Alt samples the color but preserves the target's existing alpha.
+#[derive(Default)]
+pub struct DropperTool;
+
+impl DropperTool {
+    pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
+        ToolOverlay::None
+    }
+
+    pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
+        let CanvasEvent::PointerDown {
+            pos,
+            button: PointerButton::Primary,
+        } = ev
+        else {
+            return smallvec![];
+        };
+
+        // Topmost item whose geometry covers (or nearly covers) the point.
+        let Some(item) = ctx
+            .scene
+            .items
+            .iter()
+            .rev()
+            .find(|it| it.opacity > 0.0 && paint_covers(it, pos))
+            .map(|it| it.clone())
+        else {
+            return smallvec![];
+        };
+
+        let mut sampled = item.paint.color_at(pos);
+        if ctx.modifiers.alt {
+            // Preserve the current swatch alpha; only take the sampled RGB.
+            sampled.a = ctx.current_paint.base_color().a;
+        }
+        let paint = StylePaint::solid(sampled);
+
+        let targets = style_targets(ctx.doc, &ctx.selection.nodes, ctx.modifiers.shift);
+        if targets.is_empty() {
+            return smallvec![ToolOutput::SetCurrentPaint(paint)];
+        }
+        let paint_cmds: SmallVec<[EditorCommand; 4]> = targets
+            .into_iter()
+            .map(|id| EditorCommand::SetPaint {
+                id,
+                paint: paint.clone(),
+            })
+            .collect();
+        smallvec![
+            ToolOutput::SetCurrentPaint(paint),
+            ToolOutput::BeginTransaction("Apply paint".into()),
+            ToolOutput::Commands(paint_cmds),
+            ToolOutput::CommitTransaction,
+        ]
+    }
+}
+
+/// True when `pos` is inside (or within stroke width of) an evaluated item.
+fn paint_covers(item: &renamite_model::SceneItem, pos: DVec2) -> bool {
+    let q = Point::new(pos.x, pos.y);
+    let padding = match &item.kind {
+        renamite_model::PaintKind::Stroke(s) => (s.width * 0.5).max(1.0),
+        renamite_model::PaintKind::Fill(_) => 0.0,
+    };
+    if !item
+        .path
+        .bounding_box()
+        .inflate(padding, padding)
+        .contains(q)
+    {
+        return false;
+    }
+    match &item.kind {
+        renamite_model::PaintKind::Fill(rule) => match rule {
+            FillRule::NonZero => item.path.winding(q) != 0,
+            FillRule::EvenOdd => item.path.winding(q) % 2 != 0,
+        },
+        renamite_model::PaintKind::Stroke(_) => {
+            let mut best = f64::MAX;
+            for seg in item.path.segments() {
+                best = best.min(seg.nearest(q, 1e-6).distance_sq);
+            }
+            best.sqrt() <= padding
+        }
+    }
+}
+
+/// Immediate applicable Fill (or Stroke with `want_stroke`) style nodes for a
+/// selection, mirroring `fill_style_for` scope resolution. Shared style nodes
+/// are deduplicated so one node is never written twice.
+fn style_targets(doc: &Document, selection: &[NodeId], want_stroke: bool) -> Vec<NodeId> {
+    fn nearest_style(doc: &Document, shape: NodeId, want_stroke: bool) -> Option<NodeId> {
+        let mut scope = doc.locate(shape).map(|(p, _)| p)?;
+        loop {
+            let children: Vec<NodeId> = match scope {
+                Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+                Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
+            };
+            let wanted: fn(&NodeKind) -> bool = if want_stroke {
+                |k| matches!(k, NodeKind::Style(StyleKind::Stroke { .. }))
+            } else {
+                |k| matches!(k, NodeKind::Style(StyleKind::Fill { .. }))
+            };
+            if let Some(found) = children
+                .iter()
+                .rev()
+                .copied()
+                .find(|id| doc.nodes.get(*id).is_some_and(|n| wanted(&n.kind)))
+            {
+                return Some(found);
+            }
+            match scope {
+                Parent::Comp(_) => return None,
+                Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
+            }
+        }
+    }
+
+    let mut out: Vec<NodeId> = Vec::new();
+    for id in selection
+        .iter()
+        .copied()
+        .filter(|id| doc.nodes.contains_key(*id))
+    {
+        // Prefer the selected node itself when it IS a style node.
+        let is_wanted_style = doc.nodes.get(id).is_some_and(|n| {
+            if want_stroke {
+                matches!(n.kind, NodeKind::Style(StyleKind::Stroke { .. }))
+            } else {
+                matches!(n.kind, NodeKind::Style(StyleKind::Fill { .. }))
+            }
+        });
+        let target = if is_wanted_style {
+            Some(id)
+        } else {
+            nearest_style(doc, id, want_stroke)
+        };
+        if let Some(t) = target
+            && !out.contains(&t)
+        {
+            out.push(t);
+        }
+    }
+    out
+}
+
 /// Click-to-place text. Creates a Text node + sibling Fill in a group, with
 /// the click point as the text baseline via the node's own transform.
 #[derive(Default)]
 pub struct TextTool;
-
 impl TextTool {
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
         ToolOverlay::None
@@ -1456,9 +1622,71 @@ enum PathEditState {
     },
 }
 
+/// A selected anchor reference for multi-anchor operations (join). `contour`
+/// indexes into a shape's contour list (`Path` = one contour; `CompoundPath` =
+/// several).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorRef {
+    pub node: NodeId,
+    pub contour: usize,
+    pub anchor: usize,
+}
+
+/// Catmull-Rom-style tangent synthesis (Inkscape auto-smooth): tangents run
+/// along `(next - prev)` scaled to a third of each adjacent edge. Endpoints of
+/// open contours get a single-sided third-length tangent.
+fn auto_smooth(path: &mut VectorPath, index: usize) {
+    let len = path.anchors.len();
+    if len < 2 || index >= len {
+        return;
+    }
+
+    let prev = if index > 0 {
+        Some(path.anchors[index - 1].pos)
+    } else if path.closed {
+        Some(path.anchors[len - 1].pos)
+    } else {
+        None
+    };
+
+    let next = if index + 1 < len {
+        Some(path.anchors[index + 1].pos)
+    } else if path.closed {
+        Some(path.anchors[0].pos)
+    } else {
+        None
+    };
+
+    let anchor = &mut path.anchors[index];
+
+    match (prev, next) {
+        (Some(prev), Some(next)) => {
+            let direction = (next - prev).normalize_or_zero();
+            anchor.tan_in = -direction * (anchor.pos - prev).length() / 3.0;
+            anchor.tan_out = direction * (next - anchor.pos).length() / 3.0;
+            anchor.mode = TangentMode::Smooth;
+        }
+        (Some(prev), None) => {
+            anchor.tan_in = (prev - anchor.pos) / 3.0;
+            anchor.tan_out = DVec2::ZERO;
+            anchor.mode = TangentMode::Corner;
+        }
+        (None, Some(next)) => {
+            anchor.tan_in = DVec2::ZERO;
+            anchor.tan_out = (next - anchor.pos) / 3.0;
+            anchor.mode = TangentMode::Corner;
+        }
+        _ => {}
+    }
+}
+
 pub struct PathEditTool {
     state: PathEditState,
     pub selected_anchor: Option<usize>,
+    /// Anchor under the selection, compound-aware (set on every anchor hit).
+    pub selected_ref: Option<AnchorRef>,
+    /// Endpoint refs gathered with Shift+click, consumed by Join (Shift+J).
+    pub selected_endpoints: Vec<AnchorRef>,
 }
 
 impl Default for PathEditTool {
@@ -1466,6 +1694,8 @@ impl Default for PathEditTool {
         Self {
             state: PathEditState::Idle,
             selected_anchor: None,
+            selected_ref: None,
+            selected_endpoints: Vec::new(),
         }
     }
 }
@@ -1480,12 +1710,15 @@ impl PathEditTool {
         let node = ctx.doc.nodes.get(sel)?;
 
         match &node.kind {
-            NodeKind::Shape(ShapeKind::Path(_)) => Some(sel),
+            NodeKind::Shape(ShapeKind::Path(_) | ShapeKind::CompoundPath(_)) => Some(sel),
             NodeKind::Group | NodeKind::Layer(_) => {
                 let mut path_children = node.children.iter().copied().filter(|id| {
                     matches!(
                         ctx.doc.nodes.get(*id).map(|n| &n.kind),
-                        Some(NodeKind::Shape(ShapeKind::Path(_)))
+                        Some(
+                            NodeKind::Shape(ShapeKind::Path(_))
+                                | NodeKind::Shape(ShapeKind::CompoundPath(_))
+                        )
                     )
                 });
                 let first = path_children.next()?;
@@ -1500,21 +1733,39 @@ impl PathEditTool {
     }
 
     fn current_path(ctx: &ToolContext) -> Option<VectorPath> {
+        let (_, contours) = Self::current_contours(ctx)?;
+        contours.into_iter().next()
+    }
+
+    /// `(node id, contours)` for the edited shape. `ShapeKind::Path` is a
+    /// one-contour list; `CompoundPath` exposes every contour at the frame.
+    fn current_contours(ctx: &ToolContext) -> Option<(NodeId, Vec<VectorPath>)> {
         let id = Self::editable_path_node(ctx)?;
         let node = ctx.doc.nodes.get(id)?;
-        match &node.kind {
-            NodeKind::Shape(ShapeKind::Path(a)) => Some(a.value_at(ctx.playhead.0 as f64)),
-            _ => None,
-        }
+        let contours = match &node.kind {
+            NodeKind::Shape(ShapeKind::Path(a)) => vec![a.value_at(ctx.playhead.0 as f64)],
+            NodeKind::Shape(ShapeKind::CompoundPath(c)) => c
+                .contours
+                .iter()
+                .map(|p| p.value_at(ctx.playhead.0 as f64))
+                .collect(),
+            _ => return None,
+        };
+        Some((id, contours))
     }
 
     pub fn overlay(&self, ctx: &ToolContext) -> ToolOverlay {
-        match Self::current_path(ctx) {
-            Some(path) => ToolOverlay::PathHandles {
-                path,
-                active_anchor: self.selected_anchor,
-            },
-            None => ToolOverlay::None,
+        match Self::current_contours(ctx) {
+            Some((_, contours)) if !contours.is_empty() => {
+                let mut iter = contours.into_iter();
+                let primary = iter.next().unwrap_or_default();
+                ToolOverlay::PathHandles {
+                    path: primary,
+                    extra: iter.collect(),
+                    active_anchor: self.selected_anchor,
+                }
+            }
+            _ => ToolOverlay::None,
         }
     }
 
@@ -1555,6 +1806,9 @@ impl PathEditTool {
             }
             CanvasEvent::KeyDown(Key::SegmentLine) => self.selected_segment_to_line(ctx),
             CanvasEvent::KeyDown(Key::SegmentCurve) => self.selected_segment_to_curve(ctx),
+            CanvasEvent::KeyDown(Key::NodeAutoSmooth) => self.auto_smooth_selected(ctx),
+            CanvasEvent::KeyDown(Key::NodeBreak) => self.break_at_selected_node(ctx),
+            CanvasEvent::KeyDown(Key::NodeJoin) => self.join_selected_endpoints(ctx),
             CanvasEvent::DoubleClick { pos } => self.insert_anchor(ctx, pos),
             _ => smallvec![],
         }
@@ -1579,16 +1833,54 @@ impl PathEditTool {
         let Some(id) = Self::editable_path_node(ctx) else {
             return smallvec![];
         };
-        let Some(path) = Self::current_path(ctx) else {
+        let Some((_, contours)) = Self::current_contours(ctx) else {
             return smallvec![];
         };
 
         let tol_anchor = ctx.view.world_tolerance(ANCHOR_HIT_PX);
         let tol_tangent = ctx.view.world_tolerance(TANGENT_HIT_PX);
+        let plain_single = {
+            matches!(
+                ctx.doc.nodes.get(id).map(|n| &n.kind),
+                Some(NodeKind::Shape(ShapeKind::Path(_)))
+            )
+        };
 
-        // Anchor hit.
-        for (i, a) in path.anchors.iter().enumerate() {
-            if (pos - a.pos).length() <= tol_anchor {
+        // Anchor hit (compound-aware).
+        for (ci, path) in contours.iter().enumerate() {
+            for (i, a) in path.anchors.iter().enumerate() {
+                if (pos - a.pos).length() > tol_anchor {
+                    continue;
+                }
+
+                let is_endpoint = !path.closed && (i == 0 || i + 1 == path.anchors.len());
+                if ctx.modifiers.shift && is_endpoint {
+                    // Shift+click gathers endpoint references for Join.
+                    let r = AnchorRef {
+                        node: id,
+                        contour: ci,
+                        anchor: i,
+                    };
+                    if !self.selected_endpoints.contains(&r) {
+                        self.selected_endpoints.push(r);
+                        if self.selected_endpoints.len() > 2 {
+                            self.selected_endpoints.remove(0);
+                        }
+                    }
+                    self.selected_ref = Some(r);
+                    if ci == 0 {
+                        self.selected_anchor = Some(i);
+                    }
+                    return smallvec![ToolOutput::Invalidate];
+                }
+
+                self.selected_ref = Some(AnchorRef {
+                    node: id,
+                    contour: ci,
+                    anchor: i,
+                });
+                self.selected_anchor = (ci == 0).then_some(i);
+
                 if ctx.modifiers.alt {
                     let new_mode = a.mode.cycled();
                     let (edit_frame, seed) = self.edit_target(ctx, id);
@@ -1613,7 +1905,12 @@ impl PathEditTool {
                     return out;
                 }
 
-                self.selected_anchor = Some(i);
+                // Legacy drag machinery edits `shape.path` directly: only the
+                // single contour of a plain Path node qualifies.
+                if !(plain_single && ci == 0) {
+                    return smallvec![ToolOutput::Invalidate];
+                }
+
                 let (edit_frame, seed) = self.edit_target(ctx, id);
                 return self.begin_drag(
                     PathEditState::DragAnchor {
@@ -1628,40 +1925,56 @@ impl PathEditTool {
         }
 
         // Tangent handle hit.
-        for (i, a) in path.anchors.iter().enumerate() {
-            let in_tip = a.pos + a.tan_in;
-            let out_tip = a.pos + a.tan_out;
-
-            if a.tan_in.length_squared() > 1e-12 && (pos - in_tip).length() <= tol_tangent {
-                self.selected_anchor = Some(i);
-                let (edit_frame, seed) = self.edit_target(ctx, id);
-                return self.begin_drag(
-                    PathEditState::DragTanIn {
-                        node: id,
-                        index: i,
-                        edit_frame,
-                        txn: seed.is_some(),
-                    },
-                    seed,
-                );
+        for (ci, path) in contours.iter().enumerate() {
+            if ci != 0 || !plain_single {
+                break; // tangent drags stay on plain single-contour paths
             }
+            for (i, a) in path.anchors.iter().enumerate() {
+                let in_tip = a.pos + a.tan_in;
+                let out_tip = a.pos + a.tan_out;
 
-            if a.tan_out.length_squared() > 1e-12 && (pos - out_tip).length() <= tol_tangent {
-                self.selected_anchor = Some(i);
-                let (edit_frame, seed) = self.edit_target(ctx, id);
-                return self.begin_drag(
-                    PathEditState::DragTanOut {
+                if a.tan_in.length_squared() > 1e-12 && (pos - in_tip).length() <= tol_tangent {
+                    self.selected_anchor = Some(i);
+                    self.selected_ref = Some(AnchorRef {
                         node: id,
-                        index: i,
-                        edit_frame,
-                        txn: seed.is_some(),
-                    },
-                    seed,
-                );
+                        contour: ci,
+                        anchor: i,
+                    });
+                    let (edit_frame, seed) = self.edit_target(ctx, id);
+                    return self.begin_drag(
+                        PathEditState::DragTanIn {
+                            node: id,
+                            index: i,
+                            edit_frame,
+                            txn: seed.is_some(),
+                        },
+                        seed,
+                    );
+                }
+
+                if a.tan_out.length_squared() > 1e-12 && (pos - out_tip).length() <= tol_tangent {
+                    self.selected_anchor = Some(i);
+                    self.selected_ref = Some(AnchorRef {
+                        node: id,
+                        contour: ci,
+                        anchor: i,
+                    });
+                    let (edit_frame, seed) = self.edit_target(ctx, id);
+                    return self.begin_drag(
+                        PathEditState::DragTanOut {
+                            node: id,
+                            index: i,
+                            edit_frame,
+                            txn: seed.is_some(),
+                        },
+                        seed,
+                    );
+                }
             }
         }
 
         self.selected_anchor = None;
+        self.selected_ref = None;
         smallvec![]
     }
 
@@ -2065,6 +2378,240 @@ impl PathEditTool {
                 },
             ]
         })
+    }
+
+    fn write_contours(
+        &mut self,
+        _ctx: &ToolContext,
+        id: NodeId,
+        contours: Vec<VectorPath>,
+        label: &str,
+    ) -> OutputVec {
+        let kind = if contours.len() == 1 {
+            ShapeKind::Path(Animated::new(
+                contours.into_iter().next().unwrap_or_default(),
+            ))
+        } else {
+            ShapeKind::CompoundPath(renamite_model::CompoundPath {
+                contours: contours.into_iter().map(Animated::new).collect(),
+            })
+        };
+        smallvec![
+            ToolOutput::BeginTransaction(label.into()),
+            ToolOutput::Commands(smallvec![EditorCommand::SetNodeKind {
+                id,
+                kind: NodeKind::Shape(kind),
+            }]),
+            ToolOutput::CommitTransaction,
+        ]
+    }
+
+    /// Shift+A: synthesize auto-smooth tangents on the selected anchor.
+    fn auto_smooth_selected(&mut self, ctx: &ToolContext) -> OutputVec {
+        let Some(reference) = self.selected_ref else {
+            return smallvec![];
+        };
+        let Some((id, mut contours)) = Self::current_contours(ctx) else {
+            return smallvec![];
+        };
+        let Some(path) = contours.get_mut(reference.contour) else {
+            return smallvec![];
+        };
+        auto_smooth(path, reference.anchor);
+
+        let is_plain = matches!(
+            ctx.doc.nodes.get(id).map(|n| &n.kind),
+            Some(NodeKind::Shape(ShapeKind::Path(_)))
+        );
+        if is_plain && reference.contour == 0 {
+            self.selected_anchor = Some(reference.anchor);
+            let value = contours.into_iter().next().unwrap_or_default();
+            return self.commit_path_value(ctx, id, value, "Auto smooth");
+        }
+        self.write_contours(ctx, id, contours, "Auto smooth")
+    }
+
+    /// Shift+B: break the contour open at the selected anchor.
+    ///
+    /// Closed contour: duplicate the anchor (one copy first with `tan_in`
+    /// cleared, one last with `tan_out` cleared) and open it. Open interior
+    /// anchor: split into two contours stored in a compound path.
+    fn break_at_selected_node(&mut self, ctx: &ToolContext) -> OutputVec {
+        let Some(reference) = self.selected_ref else {
+            return smallvec![];
+        };
+        let Some((id, mut contours)) = Self::current_contours(ctx) else {
+            return smallvec![];
+        };
+        let Some(source) = contours.get(reference.contour).cloned() else {
+            return smallvec![];
+        };
+
+        let broken: Vec<VectorPath> = if source.closed {
+            let n = source.anchors.len();
+            if n < 2 {
+                return smallvec![];
+            }
+            // Rotate so the selected anchor is first, then append its
+            // duplicate; clear start `tan_in` / end `tan_out`.
+            let rotated: Vec<Anchor> = (0..n)
+                .map(|k| source.anchors[(reference.anchor + k) % n])
+                .collect();
+            let mut start = rotated[0];
+            start.tan_in = DVec2::ZERO;
+            let mut end = start;
+            end.tan_out = DVec2::ZERO;
+            let mut anchors = Vec::with_capacity(n + 1);
+            anchors.push(start);
+            anchors.extend(rotated.into_iter().skip(1));
+            anchors.push(end);
+            vec![VectorPath {
+                anchors,
+                closed: false,
+            }]
+        } else {
+            let i = reference.anchor;
+            if !(i > 0 && i + 1 < source.anchors.len()) {
+                return smallvec![]; // endpoint: already broken
+            }
+            let mut first = VectorPath {
+                anchors: source.anchors[..=i].to_vec(),
+                closed: false,
+            };
+            if let Some(last) = first.anchors.last_mut() {
+                last.tan_out = DVec2::ZERO;
+            }
+            let mut second = VectorPath {
+                anchors: source.anchors[i..].to_vec(),
+                closed: false,
+            };
+            second.anchors[0].tan_in = DVec2::ZERO;
+            vec![first, second]
+        };
+
+        let label = if source.closed {
+            "Break at node"
+        } else {
+            "Split node"
+        };
+        let was_plain = matches!(
+            ctx.doc.nodes.get(id).map(|n| &n.kind),
+            Some(NodeKind::Shape(ShapeKind::Path(_)))
+        );
+        contours.splice(reference.contour..=reference.contour, broken);
+        if was_plain && contours.len() == 1 {
+            self.selected_anchor = Some(0);
+            self.selected_ref = Some(AnchorRef {
+                node: id,
+                contour: 0,
+                anchor: 0,
+            });
+            let value = contours.into_iter().next().unwrap_or_default();
+            return self.commit_path_value(ctx, id, value, label);
+        }
+        self.selected_anchor = None;
+        self.selected_ref = Some(AnchorRef {
+            node: id,
+            contour: reference.contour,
+            anchor: 0,
+        });
+        self.write_contours(ctx, id, contours, label)
+    }
+
+    /// Shift+J: join two gathered endpoint references.
+    ///
+    /// Opposite ends of one open contour close it; endpoints of different
+    /// contours concatenate end-to-start (reversing either side as needed),
+    /// merging coincident positions at the junction.
+    fn join_selected_endpoints(&mut self, ctx: &ToolContext) -> OutputVec {
+        if self.selected_endpoints.len() < 2 {
+            return smallvec![];
+        }
+        let (a, b) = (self.selected_endpoints[0], self.selected_endpoints[1]);
+        if a.node != b.node {
+            return smallvec![]; // v1: joins stay within one shape node
+        }
+        let Some((id, mut contours)) = Self::current_contours(ctx) else {
+            return smallvec![];
+        };
+
+        let endpoint_of = |contours: &[VectorPath], r: AnchorRef| -> Option<bool> {
+            let p = contours.get(r.contour)?;
+            if p.closed || p.anchors.len() < 2 {
+                return None; // reject closed paths and degenerate contours
+            }
+            Some(r.anchor == 0 || r.anchor + 1 == p.anchors.len())
+        };
+        if endpoint_of(&contours, a) != Some(true) || endpoint_of(&contours, b) != Some(true) {
+            return smallvec![];
+        }
+
+        let label = "Join nodes";
+        if a.contour == b.contour {
+            let Some(p) = contours.get_mut(a.contour) else {
+                return smallvec![];
+            };
+            let last = p.anchors.len() - 1;
+            if !((a.anchor == 0 && b.anchor == last) || (a.anchor == last && b.anchor == 0)) {
+                return smallvec![]; // same-contour joins need opposite ends
+            }
+            // Merge coincident endpoint positions into one anchor.
+            let last_anchor = *p.anchors.last().unwrap();
+            if (last_anchor.pos - p.anchors[0].pos).length_squared() <= 1e-12 {
+                p.anchors[0].tan_in = last_anchor.tan_in;
+                p.anchors.pop();
+            }
+            p.closed = true;
+
+            let was_plain = matches!(
+                ctx.doc.nodes.get(id).map(|n| &n.kind),
+                Some(NodeKind::Shape(ShapeKind::Path(_)))
+            );
+            if was_plain && a.contour == 0 {
+                self.selected_anchor = Some(0);
+                let value = contours.into_iter().next().unwrap_or_default();
+                return self.commit_path_value(ctx, id, value, label);
+            }
+            return self.write_contours(ctx, id, contours, label);
+        }
+
+        // Different contours: orient both so A's end meets B's start.
+        if a.contour >= contours.len() || b.contour >= contours.len() {
+            return smallvec![];
+        }
+        let mut left = contours[a.contour].clone();
+        if a.anchor == 0 {
+            left.reverse(); // want A to be the END of `left`
+        }
+        let mut right = contours[b.contour].clone();
+        if b.anchor + 1 == right.anchors.len() {
+            right.reverse(); // want B to be the START of `right`
+        }
+
+        // Merge coincident junction positions.
+        if (left.anchors.last().unwrap().pos - right.anchors[0].pos).length_squared() <= 1e-12 {
+            let first = *right.anchors.first().unwrap();
+            if let Some(junction) = left.anchors.last_mut() {
+                junction.tan_out = first.tan_out;
+            }
+            left.anchors.extend(right.anchors.into_iter().skip(1));
+        } else {
+            left.anchors.extend(right.anchors);
+        }
+
+        // Splice replaces one contour with one merged contour (length is
+        // unchanged), so `b`'s index stays valid for removal.
+        contours.splice(a.contour..=a.contour, std::iter::once(left));
+        contours.remove(b.contour);
+        let merged_index = a.contour.min(contours.len().saturating_sub(1));
+        self.selected_endpoints.clear();
+        self.selected_anchor = None;
+        self.selected_ref = Some(AnchorRef {
+            node: id,
+            contour: merged_index,
+            anchor: 0,
+        });
+        self.write_contours(ctx, id, contours, label)
     }
 }
 

@@ -361,10 +361,17 @@ pub fn ToolRail(session: SessionRef) -> View {
             selected,
         ),
         tool(
-            session,
+            session.clone(),
             ToolId::Gradient,
             Symbols::gradient,
             "Gradient",
+            selected,
+        ),
+        tool(
+            session,
+            ToolId::Dropper,
+            Symbols::colorize,
+            "Dropper",
             selected,
         ),
     ])

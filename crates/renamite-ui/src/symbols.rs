@@ -32,6 +32,7 @@ repose_material::material_symbols! {
     text_fields:         '\u{e262}',
     gradient:            '\u{e3e9}',
     format_color_fill:   '\u{e23a}',
+    colorize:            '\u{e3b8}',
     palette:             '\u{e40a}',
     content_cut:         '\u{e0d1}',
 

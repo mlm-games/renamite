@@ -11,8 +11,3 @@ glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 linesweeper.workspace = true
-
-[features]
-# Gate the Graphite/linesweeper boolean-backend façade. Enable once a real
-# Graphite commit is pinned; plain feature so the git dep stays opt-in.
-graphite-bool = []
