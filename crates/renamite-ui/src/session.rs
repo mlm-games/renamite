@@ -731,8 +731,6 @@ impl Session {
         }
     }
 
-    /// First selected root's immediate applicable Fill/Stroke style kinds
-    /// (nearest scope first), used as the Paste Style source.
     fn immediate_style_kinds(&self, id: renamite_model::NodeId) -> Vec<renamite_model::NodeKind> {
         use renamite_model::{NodeKind, StyleKind};
 
@@ -740,7 +738,35 @@ impl Session {
         let mut fill: Option<NodeKind> = None;
         let mut stroke: Option<NodeKind> = None;
 
+        fn walk(
+            doc: &renamite_model::Document,
+            id: renamite_model::NodeId,
+            fill: &mut Option<NodeKind>,
+            stroke: &mut Option<NodeKind>,
+        ) {
+            let Some(node) = doc.nodes.get(id) else {
+                return;
+            };
+            match &node.kind {
+                NodeKind::Style(st @ StyleKind::Fill { .. }) => {
+                    *fill = Some(NodeKind::Style(st.clone()));
+                }
+                NodeKind::Style(st @ StyleKind::Stroke { .. }) => {
+                    *stroke = Some(NodeKind::Style(st.clone()));
+                }
+                _ => {}
+            }
+            for &child in &node.children {
+                walk(doc, child, fill, stroke);
+            }
+        }
+        walk(doc, id, &mut fill, &mut stroke);
+
         let mut scope = doc.locate(id).map(|(p, _)| p);
+        // Only keep walking outward for the kinds the object lacks.
+        if fill.is_some() && stroke.is_some() {
+            scope = None;
+        }
         while let Some(current) = scope {
             let Ok(children) = (|| match current {
                 renamite_model::Parent::Comp(c) => doc
@@ -786,12 +812,14 @@ impl Session {
         match parent {
             renamite_model::Parent::Comp(c) => doc.compositions.contains_key(c),
             renamite_model::Parent::Node(p) => {
+                // Attached = has a node parent OR roots ANY composition
+                // (not just main).
                 doc.nodes.contains_key(p)
                     && (doc.nodes.get(p).and_then(|n| n.parent).is_some()
                         || doc
                             .compositions
-                            .get(doc.main)
-                            .is_some_and(|c| c.children.contains(&p)))
+                            .values()
+                            .any(|comp| comp.children.contains(&p)))
             }
         }
     }
@@ -856,9 +884,16 @@ impl Session {
         self.finalize_open_edit();
         self.history.begin("Paste in place");
 
+        let mut items = payload.items;
+        use slotmap::Key as _;
+        items.sort_by_key(|item| match item.source_parent {
+            renamite_model::Parent::Comp(c) => (0u8, c.data().as_ffi(), item.source_index),
+            renamite_model::Parent::Node(n) => (1u8, n.data().as_ffi(), item.source_index),
+        });
+
         let mut created = Vec::new();
 
-        for item in payload.items {
+        for item in items {
             let parent = if self.parent_is_attached(item.source_parent) {
                 item.source_parent
             } else {
@@ -917,51 +952,178 @@ impl Session {
             return;
         }
 
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        struct PastePlan {
+            target: renamite_model::NodeId,
+            direct: Vec<EditorCommand>,
+            /// Style kinds to install inside a fresh isolation group.
+            local: Vec<renamite_model::StyleKind>,
+        }
+
+        let mut plans: Vec<PastePlan> = Vec::new();
         {
             let doc = &self.file.document;
             for target in targets {
                 if !doc.nodes.contains_key(target) {
                     continue;
                 }
+                let mut plan = PastePlan {
+                    target,
+                    direct: Vec::new(),
+                    local: Vec::new(),
+                };
+                let Some((scope, _)) = doc.locate(target) else {
+                    continue;
+                };
+                let scope_paints_others = match scope {
+                    renamite_model::Parent::Comp(c) => doc
+                        .compositions
+                        .get(c)
+                        .map(|comp| {
+                            comp.children
+                                .iter()
+                                .filter(|&&cid| {
+                                    matches!(
+                                        doc.nodes.get(cid).map(|n| &n.kind),
+                                        Some(
+                                            renamite_model::NodeKind::Shape(_)
+                                                | renamite_model::NodeKind::Text(_)
+                                        )
+                                    )
+                                })
+                                .count()
+                                > 1
+                                || comp.children.iter().any(|&cid| {
+                                    cid != target
+                                        && matches!(
+                                            doc.nodes.get(cid).map(|n| &n.kind),
+                                            Some(
+                                                renamite_model::NodeKind::Group
+                                                    | renamite_model::NodeKind::Layer(_)
+                                            )
+                                        )
+                                })
+                        })
+                        .unwrap_or(false),
+                    renamite_model::Parent::Node(p) => doc
+                        .nodes
+                        .get(p)
+                        .map(|n| {
+                            n.children
+                                .iter()
+                                .filter(|&&cid| {
+                                    matches!(
+                                        doc.nodes.get(cid).map(|x| &x.kind),
+                                        Some(
+                                            renamite_model::NodeKind::Shape(_)
+                                                | renamite_model::NodeKind::Text(_)
+                                        )
+                                    )
+                                })
+                                .count()
+                                > 1
+                        })
+                        .unwrap_or(false),
+                };
+
                 for (source, want_stroke) in [(&src_fill, false), (&src_stroke, true)] {
                     let Some(source_kind) = source else { continue };
-                    if let Some(style_id) = nearest_style_node(doc, target, want_stroke) {
-                        commands.push(EditorCommand::SetNodeKind {
+                    let shared_or_absent =
+                        nearest_style_node(doc, target, want_stroke).is_none_or(|style_id| {
+                            style_scope_info(doc, style_id)
+                                .map(|(_, shared)| shared)
+                                .unwrap_or(true)
+                        }) || scope_paints_others;
+                    if shared_or_absent {
+                        plan.local.push(source_kind.clone());
+                    } else if let Some(style_id) = nearest_style_node(doc, target, want_stroke) {
+                        plan.direct.push(EditorCommand::SetNodeKind {
                             id: style_id,
                             kind: renamite_model::NodeKind::Style(source_kind.clone()),
                         });
-                    } else {
-                        // Missing Fill/Stroke: insert a new style node into the
-                        // target's styling scope (appended after its shapes).
-                        let parent = doc
-                            .locate(target)
-                            .map(|(p, _)| p)
-                            .unwrap_or(renamite_model::Parent::Comp(doc.main));
-                        commands.push(EditorCommand::InsertNode {
-                            parent,
-                            index: usize::MAX,
-                            tree: renamite_history::NodeTree::leaf(Node::new(
-                                if want_stroke { "Stroke" } else { "Fill" },
-                                renamite_model::NodeKind::Style(source_kind.clone()),
-                            )),
-                        });
                     }
                 }
+                plans.push(plan);
             }
         }
 
-        if commands.is_empty() {
+        let needs_work = plans
+            .iter()
+            .any(|p| !p.direct.is_empty() || !p.local.is_empty());
+        if !needs_work {
             self.status = Some("Nothing to paste".into());
             self.repaint();
             return;
         }
 
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction("Paste style".into()),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-        ]);
+        self.finalize_open_edit();
+        self.history.begin("Paste style");
+        let mut failed = false;
+
+        for plan in plans {
+            for cmd in plan.direct {
+                if self.history_apply_full(cmd).is_none() {
+                    failed = true;
+                    break;
+                }
+            }
+            if failed || plan.local.is_empty() {
+                continue;
+            }
+
+            let Some((parent, index)) = self.file.document.locate(plan.target) else {
+                failed = true;
+                break;
+            };
+            let Some(group) = self.history_apply(EditorCommand::InsertNode {
+                parent,
+                index,
+                tree: renamite_history::NodeTree::leaf(Node::new(
+                    "Styled",
+                    renamite_model::NodeKind::Group,
+                )),
+            }) else {
+                failed = true;
+                break;
+            };
+            if self
+                .history_apply_full(EditorCommand::MoveNode {
+                    id: plan.target,
+                    new_parent: renamite_model::Parent::Node(group),
+                    index: 0,
+                })
+                .is_none()
+            {
+                failed = true;
+                break;
+            }
+            for kind in plan.local {
+                let name = match kind {
+                    renamite_model::StyleKind::Fill { .. } => "Fill",
+                    renamite_model::StyleKind::Stroke { .. } => "Stroke",
+                };
+                if self
+                    .history_apply_full(EditorCommand::InsertNode {
+                        parent: renamite_model::Parent::Node(group),
+                        index: usize::MAX,
+                        tree: renamite_history::NodeTree::leaf(Node::new(
+                            name,
+                            renamite_model::NodeKind::Style(kind),
+                        )),
+                    })
+                    .is_none()
+                {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+
+        self.history.commit();
+        self.dirty = true;
+        if failed {
+            self.status = Some("Paste style failed on part of the selection".into());
+        }
+        self.bump();
     }
 
     pub fn duplicate_selection(&mut self) {
@@ -1108,23 +1270,18 @@ impl Session {
             doc: &renamite_model::Document,
             children: &[renamite_model::NodeId],
             sel: &[renamite_model::NodeId],
+            inherited_selected: bool,
             out: &mut Vec<renamite_model::NodeId>,
         ) {
             // children[0] = top of stack; walk in reverse for bottom-first.
             for &id in children.iter().rev() {
-                if !sel.contains(&id) {
-                    if let Some(n) = doc.nodes.get(id) {
-                        match &n.kind {
-                            NodeKind::Group | NodeKind::Layer(_) => {
-                                visit(doc, &n.children, sel, out);
-                            }
-                            _ => {}
-                        }
-                    }
+                let Some(node) = doc.nodes.get(id) else {
                     continue;
-                }
-                let Some(n) = doc.nodes.get(id) else { continue };
-                match &n.kind {
+                };
+                // A selected group donates ALL of its descendant shapes.
+                let selected = inherited_selected || sel.contains(&id);
+
+                match &node.kind {
                     NodeKind::Shape(
                         ShapeKind::Path(_)
                         | ShapeKind::Rect { .. }
@@ -1132,9 +1289,13 @@ impl Session {
                         | ShapeKind::Star { .. }
                         | ShapeKind::Polygon { .. }
                         | ShapeKind::CompoundPath(_),
-                    ) => out.push(id),
+                    ) => {
+                        if selected {
+                            out.push(id);
+                        }
+                    }
                     NodeKind::Group | NodeKind::Layer(_) => {
-                        visit(doc, &n.children, sel, out);
+                        visit(doc, &node.children, sel, selected, out);
                     }
                     _ => {}
                 }
@@ -1144,7 +1305,12 @@ impl Session {
         let Some(c) = doc.compositions.get(comp) else {
             return out;
         };
-        visit(doc, &c.children, &self.selection.nodes, &mut out);
+        visit(doc, &c.children, &self.selection.nodes, false, &mut out);
+
+        // Selecting both a group and one of its descendants must not yield a
+        // shape twice.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|id| seen.insert(*id));
         out
     }
 
@@ -1243,6 +1409,22 @@ impl Session {
                     return;
                 }
             }
+        }
+
+        if accumulated.is_empty() {
+            let commands: SmallVec<[EditorCommand; 4]> = ids
+                .iter()
+                .copied()
+                .map(|id| EditorCommand::RemoveNode { id })
+                .collect();
+
+            self.apply_outputs(smallvec![
+                ToolOutput::BeginTransaction(label),
+                ToolOutput::Commands(commands),
+                ToolOutput::CommitTransaction,
+                ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(Vec::new())),
+            ]);
+            return;
         }
 
         let replacement = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
@@ -1356,6 +1538,10 @@ impl Session {
                         pieces.push(inside);
                     }
                     remaining = outside;
+
+                    if remaining.is_empty() {
+                        break;
+                    }
                 }
                 (Err(e), _) | (_, Err(e)) => {
                     self.status = Some(e.to_string());
@@ -1367,21 +1553,20 @@ impl Session {
         if !remaining.is_empty() {
             pieces.push(remaining);
         }
-        if pieces.is_empty() {
+        let output_kinds: Vec<renamite_model::ShapeKind> = pieces
+            .into_iter()
+            .filter_map(shape_kind_from_contours)
+            .collect();
+        if output_kinds.is_empty() {
             self.status = Some("Division produced no geometry".into());
             self.repaint();
             return;
         }
 
-        let flat: Vec<renamite_geometry::VectorPath> = pieces.into_iter().flatten().collect();
-
-        // Subject keeps transform/style; becomes the first piece.
         let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
         commands.push(EditorCommand::SetNodeKind {
             id: subject,
-            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
-                renamite_animation::Animated::new(flat[0].clone()),
-            )),
+            kind: renamite_model::NodeKind::Shape(output_kinds[0].clone()),
         });
 
         let (parent, index) = match self.file.document.locate(subject) {
@@ -1401,7 +1586,7 @@ impl Session {
             .map(|n| n.name.clone())
             .unwrap_or_else(|| "Piece".into());
 
-        for (k, piece) in flat.iter().enumerate().skip(1) {
+        for (k, kind) in output_kinds.iter().enumerate().skip(1) {
             let mut node = self
                 .file
                 .document
@@ -1412,9 +1597,7 @@ impl Session {
             node.name = format!("{template_name} {}", k + 1);
             node.parent = None;
             node.children.clear();
-            node.kind = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
-                renamite_animation::Animated::new(piece.clone()),
-            ));
+            node.kind = renamite_model::NodeKind::Shape(kind.clone());
             commands.push(EditorCommand::InsertNode {
                 parent,
                 index: index + k,
@@ -1651,10 +1834,9 @@ impl Session {
     }
 
     /// Ctrl+Alt+C: expand selected shapes' strokes into filled outlines stored
-    /// as a CompoundPath; the stroke style becomes a Fill carrying the same
-    /// paint (or an isolated local fill when the stroke node is shared).
+    /// as a CompoundPath; the stroke's paint becomes a Fill.
     pub fn stroke_selection_to_path(&mut self) {
-        use renamite_model::{FillRule, NodeKind, ShapeKind, StyleKind};
+        use renamite_model::{FillRule, NodeKind, Overrides, ShapeKind, StyleKind};
 
         let frame = self.playback.head;
         let targets = self.selection.nodes.clone();
@@ -1669,7 +1851,6 @@ impl Session {
             compound: renamite_model::CompoundPath,
             stroke_id: Option<renamite_model::NodeId>,
             stroke_shared: bool,
-            stroke_parent: renamite_model::Parent,
             paint: renamite_model::StylePaint,
         }
 
@@ -1680,25 +1861,27 @@ impl Session {
                 let Some(node) = doc.nodes.get(id) else {
                     continue;
                 };
-                let geometry: Vec<renamite_geometry::VectorPath> = match &node.kind {
-                    NodeKind::Shape(ShapeKind::Path(p)) => vec![p.value_at(frame)],
-                    NodeKind::Shape(ShapeKind::CompoundPath(c)) => {
-                        c.contours.iter().map(|p| p.value_at(frame)).collect()
-                    }
+                let geometry: Vec<kurbo::BezPath> = match &node.kind {
+                    NodeKind::Shape(ShapeKind::CompoundPath(c)) => c
+                        .contours
+                        .iter()
+                        .map(|p| p.value_at(frame).to_bez_path())
+                        .collect(),
+                    NodeKind::Shape(shape) => vec![renamite_model::shape_path(
+                        shape,
+                        id,
+                        frame,
+                        &Overrides::default(),
+                    )],
                     _ => continue,
                 };
 
                 let Some(stroke_id) = nearest_style_node(doc, id, true) else {
                     continue;
                 };
-                let Some(stroke) = (match doc.nodes.get(stroke_id).map(|n| &n.kind) {
-                    Some(NodeKind::Style(StyleKind::Stroke { .. })) => {
-                        doc.nodes.get(stroke_id).map(|n| match &n.kind {
-                            NodeKind::Style(st) => st.clone(),
-                            _ => unreachable!(),
-                        })
-                    }
-                    _ => None,
+                let Some(stroke) = doc.nodes.get(stroke_id).map(|n| match &n.kind {
+                    NodeKind::Style(st) => st.clone(),
+                    _ => unreachable!("nearest_style_node returns style nodes"),
                 }) else {
                     continue;
                 };
@@ -1710,7 +1893,7 @@ impl Session {
                     dash,
                 } = stroke
                 else {
-                    unreachable!()
+                    continue;
                 };
 
                 let width_value = width.value_at(frame);
@@ -1722,54 +1905,30 @@ impl Session {
                 });
 
                 let mut outlines: Vec<renamite_geometry::VectorPath> = Vec::new();
-                for path in &geometry {
-                    let expanded = renamite_geometry::stroke_to_paths(
-                        path,
-                        width_value,
-                        kurbo_cap(cap),
-                        kurbo_join(join),
-                        4.0,
-                        dash_sample
-                            .as_ref()
-                            .map(|(pattern, offset)| (pattern.as_slice(), *offset)),
-                        0.1,
-                    );
-                    if let Ok(mut pieces) = expanded {
-                        outlines.append(&mut pieces);
+                for bez in &geometry {
+                    for path in renamite_geometry::split_bez_subpaths(bez) {
+                        if let Ok(mut pieces) = renamite_geometry::stroke_to_paths(
+                            &path,
+                            width_value,
+                            kurbo_cap(cap),
+                            kurbo_join(join),
+                            4.0,
+                            dash_sample
+                                .as_ref()
+                                .map(|(pattern, offset)| (pattern.as_slice(), *offset)),
+                            0.1,
+                        ) {
+                            outlines.append(&mut pieces);
+                        }
                     }
                 }
                 if outlines.is_empty() {
                     continue;
                 }
 
-                // Shared = more than one shape draws through this stroke scope.
-                let (stroke_parent, scope_children): (renamite_model::Parent, Vec<_>) =
-                    match doc.locate(stroke_id) {
-                        Some((renamite_model::Parent::Node(p), _)) => (
-                            renamite_model::Parent::Node(p),
-                            doc.nodes
-                                .get(p)
-                                .map(|n| n.children.clone())
-                                .unwrap_or_default(),
-                        ),
-                        Some((renamite_model::Parent::Comp(c), _)) => (
-                            renamite_model::Parent::Comp(c),
-                            doc.compositions
-                                .get(c)
-                                .map(|comp| comp.children.clone())
-                                .unwrap_or_default(),
-                        ),
-                        None => (renamite_model::Parent::Comp(doc.main), Vec::new()),
-                    };
-                let shape_count = scope_children
-                    .iter()
-                    .filter(|&&cid| {
-                        matches!(
-                            doc.nodes.get(cid).map(|n| &n.kind),
-                            Some(NodeKind::Shape(_))
-                        )
-                    })
-                    .count();
+                let Some((_, shared)) = style_scope_info(doc, stroke_id) else {
+                    continue;
+                };
 
                 conversions.push(Conversion {
                     shape: id,
@@ -1780,8 +1939,7 @@ impl Session {
                             .collect(),
                     },
                     stroke_id: Some(stroke_id),
-                    stroke_shared: shape_count > 1,
-                    stroke_parent,
+                    stroke_shared: shared,
                     paint,
                 });
             }
@@ -1793,43 +1951,90 @@ impl Session {
             return;
         }
 
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        // Sequential application inside ONE transaction so the isolation
+        // group's arena id can be captured between commands.
+        self.finalize_open_edit();
+        self.history.begin("Stroke to path");
+        let mut failed = false;
+
         for conv in &conversions {
-            commands.push(EditorCommand::SetNodeKind {
+            if self
+                .history_apply_full(EditorCommand::SetNodeKind {
+                    id: conv.shape,
+                    kind: NodeKind::Shape(ShapeKind::CompoundPath(conv.compound.clone())),
+                })
+                .is_none()
+            {
+                failed = true;
+                break;
+            }
+
+            if !conv.stroke_shared {
+                // Unshared: restyle the old stroke as a fill with the same
+                // paint (the old stroke is gone).
+                if let Some(style_id) = conv.stroke_id
+                    && self
+                        .history_apply_full(EditorCommand::SetNodeKind {
+                            id: style_id,
+                            kind: NodeKind::Style(StyleKind::Fill {
+                                paint: conv.paint.clone(),
+                                rule: FillRule::NonZero,
+                            }),
+                        })
+                        .is_none()
+                {
+                    failed = true;
+                }
+                continue;
+            }
+
+            // Shared stroke: isolate the converted shape in its own group at
+            // its old z-slot (identity transform preserves world placement),
+            // then give that group a local fill. The shared stroke node stays
+            // outside and cannot paint across the group boundary.
+            let Some((shape_parent, shape_index)) = self.file.document.locate(conv.shape) else {
+                failed = true;
+                break;
+            };
+            let Some(group) = self.history_apply(EditorCommand::InsertNode {
+                parent: shape_parent,
+                index: shape_index,
+                tree: renamite_history::NodeTree::leaf(renamite_model::Node::new(
+                    "Stroked Path",
+                    NodeKind::Group,
+                )),
+            }) else {
+                failed = true;
+                break;
+            };
+            let moved = self.history_apply_full(EditorCommand::MoveNode {
                 id: conv.shape,
-                kind: NodeKind::Shape(ShapeKind::CompoundPath(conv.compound.clone())),
+                new_parent: renamite_model::Parent::Node(group),
+                index: 0,
             });
-            if conv.stroke_shared {
-                // Never mutate a shared stroke node: add a dedicated local
-                // fill beside the converted shape instead.
-                commands.push(EditorCommand::InsertNode {
-                    parent: conv.stroke_parent,
-                    index: usize::MAX,
-                    tree: renamite_history::NodeTree::leaf(renamite_model::Node::new(
-                        "Fill",
-                        NodeKind::Style(StyleKind::Fill {
-                            paint: conv.paint.clone(),
-                            rule: FillRule::NonZero,
-                        }),
-                    )),
-                });
-            } else if let Some(style_id) = conv.stroke_id {
-                // Same paint, restyled as fill; the old stroke is gone.
-                commands.push(EditorCommand::SetNodeKind {
-                    id: style_id,
-                    kind: NodeKind::Style(StyleKind::Fill {
+            let filled = self.history_apply_full(EditorCommand::InsertNode {
+                parent: renamite_model::Parent::Node(group),
+                index: usize::MAX,
+                tree: renamite_history::NodeTree::leaf(renamite_model::Node::new(
+                    "Fill",
+                    NodeKind::Style(StyleKind::Fill {
                         paint: conv.paint.clone(),
                         rule: FillRule::NonZero,
                     }),
-                });
+                )),
+            });
+            if moved.is_none() || filled.is_none() {
+                failed = true;
+                break;
             }
         }
 
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction("Stroke to path".into()),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-        ]);
+        self.history.commit();
+        self.dirty = true;
+        if failed {
+            self.status = Some("Stroke to path failed on part of the selection".into());
+        }
+        self.bump();
     }
 
     pub fn add_ellipse_layer(&mut self) {
@@ -3527,12 +3732,54 @@ fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {
     tree.node.transform.position.base += d;
 }
 
+fn style_scope_info(
+    doc: &renamite_model::Document,
+    style_id: renamite_model::NodeId,
+) -> Option<(renamite_model::Parent, bool)> {
+    use renamite_model::{NodeKind, Parent};
+
+    let (parent, _) = doc.locate(style_id)?;
+    let children: Vec<renamite_model::NodeId> = match parent {
+        Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+        Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
+    };
+    let painted = children
+        .iter()
+        .filter(|&&id| {
+            matches!(
+                doc.nodes.get(id).map(|n| &n.kind),
+                Some(NodeKind::Shape(_)) | Some(NodeKind::Text(_))
+            )
+        })
+        .count();
+    Some((parent, painted > 1))
+}
+
 /// Model stroke enums → kurbo stroke configuration.
 fn kurbo_cap(cap: renamite_model::StrokeCap) -> kurbo::Cap {
     match cap {
         renamite_model::StrokeCap::Butt => kurbo::Cap::Butt,
         renamite_model::StrokeCap::Round => kurbo::Cap::Round,
         renamite_model::StrokeCap::Square => kurbo::Cap::Square,
+    }
+}
+
+fn shape_kind_from_contours(
+    contours: Vec<renamite_geometry::VectorPath>,
+) -> Option<renamite_model::ShapeKind> {
+    match contours.len() {
+        0 => None,
+        1 => Some(renamite_model::ShapeKind::Path(
+            renamite_animation::Animated::new(contours.into_iter().next().unwrap()),
+        )),
+        _ => Some(renamite_model::ShapeKind::CompoundPath(
+            renamite_model::CompoundPath {
+                contours: contours
+                    .into_iter()
+                    .map(renamite_animation::Animated::new)
+                    .collect(),
+            },
+        )),
     }
 }
 
@@ -4242,5 +4489,527 @@ mod tests {
             &s.file.document.nodes[shape].kind,
             NodeKind::Shape(ShapeKind::Ellipse { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod path_op_integration_tests {
+    use super::*;
+    use glam::DVec2;
+    use kurbo::Point;
+    use kurbo::Shape as _;
+    use renamite_animation::Animated;
+    use renamite_io_ren::RenFile;
+    use renamite_model::{
+        Color, Document, FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint,
+    };
+
+    fn session_with(nodes: impl FnOnce(&mut Document)) -> Session {
+        let mut doc = Document::empty();
+        nodes(&mut doc);
+        Session::new(RenFile::new(doc, "test"))
+    }
+
+    fn rect(doc: &mut Document, name: &str, min: DVec2, max: DVec2) -> renamite_model::NodeId {
+        doc.create_node(Node::new(
+            name,
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new((min + max) * 0.5),
+                size: Animated::new(max - min),
+                rounded: Animated::new(0.0),
+            }),
+        ))
+    }
+
+    fn solid_fill(doc: &mut Document, color: Color) -> renamite_model::NodeId {
+        doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(color),
+                rule: FillRule::NonZero,
+            }),
+        ))
+    }
+
+    fn attach_main(s: &mut Session, ids: &[renamite_model::NodeId]) {
+        let comp = s.file.document.main;
+        for (i, &id) in ids.iter().enumerate() {
+            s.file.document.attach(id, Parent::Comp(comp), i).unwrap();
+        }
+    }
+
+    fn kind_of(s: &Session, id: renamite_model::NodeId) -> Option<NodeKind> {
+        s.file.document.nodes.get(id).map(|n| n.kind.clone())
+    }
+
+    fn attached(s: &Session, id: renamite_model::NodeId) -> bool {
+        s.file.document.locate(id).is_some()
+    }
+
+    fn two_rects() -> (Session, renamite_model::NodeId, renamite_model::NodeId) {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let s = session_with(|doc| {
+            // children[0] = top of stack; attach `a` LAST so it is the bottom
+            // (subject).
+            let b = rect(doc, "b", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0));
+            doc.attach(b, Parent::Comp(doc.main), 0).unwrap();
+            let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(20.0, 20.0));
+            doc.attach(a, Parent::Comp(doc.main), 1).unwrap();
+            let f = solid_fill(doc, Color::BLACK);
+            doc.attach(f, Parent::Comp(doc.main), 2).unwrap();
+            ids.borrow_mut().extend([a, b]);
+        });
+        let inner = ids.into_inner();
+        let (a, b) = (inner[0], inner[1]);
+        let mut s = s;
+        s.selection.nodes = vec![a, b];
+        (s, a, b)
+    }
+
+    #[test]
+    fn intersection_of_disjoint_shapes_removes_all_selection() {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let mut s = session_with(|doc| {
+            let b = rect(doc, "b", DVec2::new(40.0, 0.0), DVec2::new(50.0, 10.0));
+            doc.attach(b, Parent::Comp(doc.main), 0).unwrap();
+            let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            doc.attach(a, Parent::Comp(doc.main), 1).unwrap();
+            ids.borrow_mut().extend([a, b]);
+        });
+        let inner = ids.into_inner();
+        let (a, b) = (inner[0], inner[1]);
+        s.selection.nodes = vec![a, b];
+
+        s.boolean_selection(SelectionBoolean::Intersection);
+
+        assert!(!attached(&s, a), "subject erased");
+        assert!(!attached(&s, b), "cutter erased");
+        assert!(s.selection.nodes.is_empty());
+        assert!(s.history.can_undo(), "empty result is still undoable");
+    }
+
+    #[test]
+    fn difference_fully_covered_produces_empty_and_removes_nodes() {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let mut s = session_with(|doc| {
+            let big = rect(doc, "big", DVec2::new(0.0, 0.0), DVec2::new(30.0, 30.0));
+            doc.attach(big, Parent::Comp(doc.main), 0).unwrap();
+            let small = rect(doc, "small", DVec2::new(5.0, 5.0), DVec2::new(15.0, 15.0));
+            doc.attach(small, Parent::Comp(doc.main), 1).unwrap();
+            ids.borrow_mut().extend([small, big]);
+        });
+        let inner = ids.into_inner();
+        let (small, big) = (inner[0], inner[1]);
+        s.selection.nodes = vec![small, big];
+
+        s.boolean_selection(SelectionBoolean::Difference);
+
+        assert!(!attached(&s, small));
+        assert!(!attached(&s, big));
+    }
+
+    #[test]
+    fn union_merges_two_overlapping_shapes_into_compound() {
+        let (mut s, a, b) = two_rects();
+        s.boolean_selection(SelectionBoolean::Union);
+
+        assert!(attached(&s, a), "subject survives");
+        assert!(!attached(&s, b), "cutter removed");
+        match kind_of(&s, a) {
+            Some(NodeKind::Shape(ShapeKind::CompoundPath(c))) => {
+                assert!(!c.contours.is_empty());
+            }
+            other => panic!("expected compound path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boolean_undo_restores_all_nodes() {
+        let (mut s, a, b) = two_rects();
+        s.boolean_selection(SelectionBoolean::Union);
+        assert!(attached(&s, a) && !attached(&s, b));
+
+        undo_cmd(&mut s);
+
+        assert!(attached(&s, a), "undo restores subject");
+        assert!(attached(&s, b), "undo restores cutter");
+        assert!(
+            matches!(
+                kind_of(&s, a),
+                Some(NodeKind::Shape(ShapeKind::Rect { .. }))
+            ),
+            "undo restores original kinds"
+        );
+    }
+
+    #[test]
+    fn division_preserves_donut_hole_as_one_compound_shape() {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let mut s = session_with(|doc| {
+            let hole = rect(doc, "hole", DVec2::new(25.0, 25.0), DVec2::new(75.0, 75.0));
+            doc.attach(hole, Parent::Comp(doc.main), 0).unwrap();
+            let outer = rect(doc, "outer", DVec2::new(0.0, 0.0), DVec2::new(100.0, 100.0));
+            doc.attach(outer, Parent::Comp(doc.main), 1).unwrap();
+            ids.borrow_mut().extend([outer, hole]);
+        });
+        let inner = ids.into_inner();
+        let (outer, hole) = (inner[0], inner[1]);
+        s.selection.nodes = vec![outer, hole];
+
+        s.divide_selection();
+
+        // Subject becomes one piece (the intersection piece here); the other
+        // piece — the donut — must survive as ONE sibling CompoundPath.
+        assert!(attached(&s, outer), "subject replaced by a piece");
+        assert!(!attached(&s, hole), "cutter consumed");
+
+        let donut: Vec<_> = s
+            .file
+            .document
+            .nodes
+            .iter()
+            .filter(|(id, n)| {
+                s.file.document.locate(*id).is_some()
+                    && matches!(
+                        &n.kind,
+                        NodeKind::Shape(ShapeKind::CompoundPath(c)) if c.contours.len() == 2
+                    )
+            })
+            .collect();
+        assert_eq!(donut.len(), 1, "donut stays ONE compound shape");
+
+        let NodeKind::Shape(ShapeKind::CompoundPath(compound)) = &donut[0].1.kind else {
+            unreachable!()
+        };
+        // The hole must actually be hollow when filled NonZero.
+        let mut bez = kurbo::BezPath::new();
+        for c in &compound.contours {
+            bez.extend(c.value_at(0.0).to_bez_path().elements().iter().copied());
+        }
+        assert_eq!(bez.winding(Point::new(50.0, 50.0)), 0, "center hollow");
+        assert!(s.history.can_undo());
+
+        undo_cmd(&mut s);
+        assert!(matches!(
+            kind_of(&s, outer),
+            Some(NodeKind::Shape(ShapeKind::Rect { .. }))
+        ));
+        assert!(attached(&s, hole), "division undoes cleanly");
+    }
+
+    #[test]
+    fn division_non_intersecting_cutter_does_not_error_or_drop_geometry() {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let mut s = session_with(|doc| {
+            let far = rect(doc, "far", DVec2::new(50.0, 50.0), DVec2::new(60.0, 60.0));
+            doc.attach(far, Parent::Comp(doc.main), 0).unwrap();
+            let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            doc.attach(a, Parent::Comp(doc.main), 1).unwrap();
+            ids.borrow_mut().extend([a, far]);
+        });
+        let inner = ids.into_inner();
+        let (a, far) = (inner[0], inner[1]);
+        s.selection.nodes = vec![a, far];
+
+        s.divide_selection();
+
+        assert!(
+            matches!(kind_of(&s, a), Some(NodeKind::Shape(ShapeKind::Path(_)))),
+            "subject becomes the outside piece"
+        );
+        assert!(!attached(&s, far));
+        assert!(s.status.is_none(), "no error status: {:?}", s.status);
+    }
+
+    #[test]
+    fn boolean_expands_selected_groups_to_descendant_shapes() {
+        let mut s = session_with(|doc| {
+            // Two groups, each holding one shape + fill.
+            for (name, min, max) in [
+                ("ga", DVec2::new(0.0, 0.0), DVec2::new(20.0, 20.0)),
+                ("gb", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0)),
+            ] {
+                let shape = rect(doc, name, min, max);
+                let fill = solid_fill(doc, Color::BLACK);
+                let group = doc.create_node(Node::new(name, NodeKind::Group));
+                doc.attach(group, Parent::Comp(doc.main), 0).unwrap();
+                doc.attach(shape, Parent::Node(group), 0).unwrap();
+                doc.attach(fill, Parent::Node(group), 1).unwrap();
+            }
+        });
+        let comp = s.file.document.main;
+        let groups = s.file.document.compositions[comp].children.clone();
+        assert_eq!(groups.len(), 2);
+        s.selection.nodes = groups.clone();
+
+        // Groups selected, not shapes: expansion must find both shapes.
+        s.boolean_selection(SelectionBoolean::Union);
+
+        assert!(
+            !s.status
+                .as_deref()
+                .is_some_and(|m| m.contains("Select at least")),
+            "group expansion failed: {:?}",
+            s.status
+        );
+        // RemoveNode is detach-only: count ATTACHED shapes, not arena entries.
+        let shapes: Vec<_> = s
+            .file
+            .document
+            .nodes
+            .iter()
+            .filter(|(id, n)| {
+                matches!(n.kind, NodeKind::Shape(_)) && s.file.document.locate(*id).is_some()
+            })
+            .collect();
+        assert_eq!(shapes.len(), 1, "one merged shape remains");
+        assert!(shapes[0].1.parent.is_some(), "merged shape sits in a group");
+    }
+
+    #[test]
+    fn combine_expands_selected_groups_to_descendant_shapes() {
+        let mut s = session_with(|doc| {
+            for (name, min, max) in [
+                ("ga", DVec2::new(0.0, 0.0), DVec2::new(20.0, 20.0)),
+                ("gb", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0)),
+            ] {
+                let shape = rect(doc, name, min, max);
+                let fill = solid_fill(doc, Color::BLACK);
+                let group = doc.create_node(Node::new(name, NodeKind::Group));
+                doc.attach(group, Parent::Comp(doc.main), 0).unwrap();
+                doc.attach(shape, Parent::Node(group), 0).unwrap();
+                doc.attach(fill, Parent::Node(group), 1).unwrap();
+            }
+        });
+        let comp = s.file.document.main;
+        let groups = s.file.document.compositions[comp].children.clone();
+        s.selection.nodes = groups;
+
+        s.combine_selection();
+
+        assert!(
+            !s.status
+                .as_deref()
+                .is_some_and(|m| m.contains("at least two")),
+            "combine failed on groups: {:?}",
+            s.status
+        );
+        let compounds = s
+            .file
+            .document
+            .nodes
+            .iter()
+            .filter(|(id, n)| {
+                s.file.document.locate(*id).is_some()
+                    && matches!(&n.kind, NodeKind::Shape(ShapeKind::CompoundPath(c)) if !c.contours.is_empty())
+            })
+            .count();
+        assert_eq!(compounds, 1, "all contours combined into one node");
+    }
+
+    #[test]
+    fn stroke_to_path_converts_rectangle_and_restrokes_never_return() {
+        let mut s = session_with(|doc| {
+            let shape = rect(doc, "r", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            doc.attach(shape, Parent::Comp(doc.main), 0).unwrap();
+            let stroke = doc.create_node(Node::new(
+                "Stroke",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::solid(Color::BLACK),
+                    width: Animated::new(2.0),
+                    cap: renamite_model::StrokeCap::Butt,
+                    join: renamite_model::StrokeJoin::Miter,
+                    dash: None,
+                }),
+            ));
+            doc.attach(stroke, Parent::Comp(doc.main), 1).unwrap();
+        });
+        let comp = s.file.document.main;
+        let kids = s.file.document.compositions[comp].children.clone();
+        s.selection.nodes = vec![kids[0]];
+
+        s.stroke_selection_to_path();
+
+        let Some(NodeKind::Shape(ShapeKind::CompoundPath(c))) = kind_of(&s, kids[0]) else {
+            panic!("rect stroke expanded to compound");
+        };
+        assert_eq!(c.contours.len(), 2, "annulus: outer + hole");
+        assert!(
+            matches!(
+                kind_of(&s, kids[1]),
+                Some(NodeKind::Style(StyleKind::Fill { .. }))
+            ),
+            "unshared stroke restyled as fill with same paint"
+        );
+        assert!(s.history.can_undo());
+        undo_cmd(&mut s);
+        assert!(matches!(
+            kind_of(&s, kids[0]),
+            Some(NodeKind::Shape(ShapeKind::Rect { .. }))
+        ));
+        assert!(matches!(
+            kind_of(&s, kids[1]),
+            Some(NodeKind::Style(StyleKind::Stroke { .. }))
+        ));
+    }
+
+    #[test]
+    fn stroke_to_path_shared_style_isolates_result_without_restyling_sibling() {
+        let mut s = session_with(|doc| {
+            let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            let b = rect(doc, "b", DVec2::new(20.0, 0.0), DVec2::new(30.0, 10.0));
+            doc.attach(a, Parent::Comp(doc.main), 0).unwrap();
+            doc.attach(b, Parent::Comp(doc.main), 1).unwrap();
+            let stroke = doc.create_node(Node::new(
+                "Stroke",
+                NodeKind::Style(StyleKind::Stroke {
+                    paint: StylePaint::solid(Color::BLACK),
+                    width: Animated::new(2.0),
+                    cap: renamite_model::StrokeCap::Butt,
+                    join: renamite_model::StrokeJoin::Miter,
+                    dash: None,
+                }),
+            ));
+            doc.attach(stroke, Parent::Comp(doc.main), 2).unwrap();
+        });
+        let comp = s.file.document.main;
+        let kids = s.file.document.compositions[comp].children.clone();
+        s.selection.nodes = vec![kids[0]]; // only `a`
+
+        s.stroke_selection_to_path();
+
+        // The SHARED stroke node must be untouched.
+        assert!(
+            matches!(
+                kind_of(&s, kids[2]),
+                Some(NodeKind::Style(StyleKind::Stroke { .. }))
+            ),
+            "shared stroke never mutated"
+        );
+        // `b` untouched, still a plain rect.
+        assert!(matches!(
+            kind_of(&s, kids[1]),
+            Some(NodeKind::Shape(ShapeKind::Rect { .. }))
+        ));
+        // `a` was converted AND isolated in a fresh group carrying a local fill.
+        let Some((Parent::Node(group), _)) = s.file.document.locate(kids[0]) else {
+            panic!("converted shape moved into an isolation group");
+        };
+        let group_kids = s.file.document.nodes[group].children.clone();
+        assert!(
+            group_kids.iter().any(|&c| matches!(
+                kind_of(&s, c),
+                Some(NodeKind::Style(StyleKind::Fill { .. }))
+            )),
+            "isolation group carries a local fill"
+        );
+
+        undo_cmd(&mut s);
+        assert!(
+            matches!(
+                kind_of(&s, kids[0]),
+                Some(NodeKind::Shape(ShapeKind::Rect { .. }))
+            ),
+            "whole isolation unwinds"
+        );
+    }
+
+    #[test]
+    fn paste_style_leaves_unselected_sibling_untouched() {
+        // Two rects SHARE one fill; a third styled donor provides red.
+        let mut s = session_with(|doc| {
+            let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            let b = rect(doc, "b", DVec2::new(20.0, 0.0), DVec2::new(30.0, 10.0));
+            let shared = solid_fill(doc, Color::BLACK);
+            doc.attach(a, Parent::Comp(doc.main), 0).unwrap();
+            doc.attach(b, Parent::Comp(doc.main), 1).unwrap();
+            doc.attach(shared, Parent::Comp(doc.main), 2).unwrap();
+
+            // Donor group with its own red fill.
+            let d = rect(doc, "donor", DVec2::new(40.0, 0.0), DVec2::new(50.0, 10.0));
+            let red = solid_fill(doc, Color::rgba(1.0, 0.0, 0.0, 1.0));
+            let g = doc.create_node(Node::new("donor_g", NodeKind::Group));
+            doc.attach(g, Parent::Comp(doc.main), 3).unwrap();
+            doc.attach(d, Parent::Node(g), 0).unwrap();
+            doc.attach(red, Parent::Node(g), 1).unwrap();
+        });
+        let comp = s.file.document.main;
+        let kids = s.file.document.compositions[comp].children.clone();
+        let (a, b, shared_fill, donor_group) = (kids[0], kids[1], kids[2], kids[3]);
+
+        // Copy the donor's style.
+        s.selection.nodes = vec![donor_group];
+        s.copy_selection();
+
+        // Paste onto ONE of the pair sharing the black fill.
+        s.selection.nodes = vec![a];
+        s.paste_style();
+
+        let old_black = |id| match kind_of(&s, id) {
+            Some(NodeKind::Style(st)) => st.paint().base_color(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(old_black(shared_fill).r, 0.0, "shared fill node untouched");
+        // `b` still painted by the untouched black fill (same scope).
+        assert!(matches!(kind_of(&s, b), Some(NodeKind::Shape(_))));
+        // `a` now lives in an isolation group with a red local fill.
+        let Some((Parent::Node(group), _)) = s.file.document.locate(a) else {
+            panic!("target isolated into local scope");
+        };
+        let group_kids = s.file.document.nodes[group].children.clone();
+        let got_red = group_kids.iter().any(|&c| {
+            matches!(kind_of(&s, c), Some(NodeKind::Style(ref st)) if st.paint().base_color().r > 0.9)
+        });
+        assert!(got_red, "local red fill installed: {:?}", group_kids);
+    }
+
+    #[test]
+    fn paste_in_place_keeps_non_main_composition_roots_in_place() {
+        use renamite_animation::Frame;
+        use renamite_model::Composition;
+        let mut s = session_with(|doc| {
+            let second = doc.compositions.insert(Composition {
+                name: "Second".into(),
+                size: (256, 256),
+                rate: renamite_animation::FrameRate { num: 60, den: 1 },
+                range: (Frame(0), Frame(60)),
+                children: Vec::new(),
+            });
+            let shape = rect(doc, "root", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+            doc.attach(shape, Parent::Comp(second), 0).unwrap();
+        });
+
+        // Select the root of the SECOND composition and copy it.
+        let second_children: Vec<_> = s
+            .file
+            .document
+            .compositions
+            .iter()
+            .find(|(_, c)| c.name == "Second")
+            .map(|(id, c)| (id, c.children.clone()))
+            .map(|(id, kids)| (id, kids))
+            .into_iter()
+            .flat_map(|(id, kids)| kids.into_iter().map(move |k| (id, k)))
+            .collect();
+        let (second_comp, root) = second_children[0];
+        s.selection.nodes = vec![root];
+        s.copy_selection();
+
+        // Delete the original so paste must recreate it.
+        s.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("cut".into()),
+            ToolOutput::Commands(smallvec![EditorCommand::RemoveNode { id: root }]),
+            ToolOutput::CommitTransaction,
+        ]);
+        assert!(!attached(&s, root));
+
+        s.paste_clipboard_in_place();
+
+        let pasted = s.selection.nodes[0];
+        assert_eq!(
+            s.file.document.locate(pasted),
+            Some((renamite_model::Parent::Comp(second_comp), 0)),
+            "pasted back into ITS OWN composition root slot"
+        );
     }
 }

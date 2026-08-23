@@ -3615,6 +3615,7 @@ dependencies = [
  "repose-platform",
  "repose-ui",
  "serde_json",
+ "slotmap",
  "smallvec",
  "web-sys",
  "web-time",

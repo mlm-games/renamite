@@ -519,19 +519,13 @@ pub fn boolean_bez(
     let contours =
         linesweeper::binary_op(a, b, linesweeper::FillRule::NonZero, map_boolean_op(op))?;
 
-    let result: Vec<_> = contours
+    Ok(contours
         .contours()
         .filter_map(|contour| {
             let path = VectorPath::from_bez_path(&contour.path);
             (path.closed && path.anchors.len() >= 3).then_some(path)
         })
-        .collect();
-
-    if result.is_empty() {
-        Err(PathOpError::Empty)
-    } else {
-        Ok(result)
-    }
+        .collect())
 }
 
 /// Boolean op between two single-contour paths. Multi-contour inputs should
@@ -1224,6 +1218,26 @@ mod boolean_tests {
             boolean_op(&open, &closed, BooleanOp::Union),
             Err(PathOpError::OpenPath)
         ));
+    }
+
+    #[test]
+    fn boolean_intersection_of_disjoint_shapes_is_validly_empty() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(20.0, 0.0, 30.0, 10.0);
+
+        // Empty is a RESULT, not an error.
+        let result = boolean_op(&a, &b, BooleanOp::Intersection).unwrap();
+        assert!(result.is_empty());
+
+        // Difference under a covering cutter also legitimately erases.
+        let covered = boolean_op(&a, &b, BooleanOp::Difference).is_ok();
+        assert!(covered);
+        let erased = rect_path(-5.0, -5.0, 15.0, 15.0);
+        assert!(
+            boolean_op(&a, &erased, BooleanOp::Difference)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
