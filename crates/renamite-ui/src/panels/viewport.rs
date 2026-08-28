@@ -25,6 +25,58 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember(FocusRequester::new);
 
+    let _gesture_handler = remember_with_key("viewport_gesture_handler", || {
+        let session = session.clone();
+        repose_core::shortcuts::InstallShortcutHandler(std::rc::Rc::new(move |action| {
+            use repose_core::shortcuts::{Action, Gesture};
+            match action {
+                Action::Gesture(Gesture::Pan { delta }) => {
+                    let is_drag = {
+                        let s = session.borrow();
+                        s.tool.is_dragging(s.active_tool) || s.viewport.pan_last.is_some()
+                    };
+                    if is_drag {
+                        return false;
+                    }
+                    {
+                        let mut s = session.borrow_mut();
+                        s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
+                    }
+                    request_frame();
+                    true
+                }
+                Action::Gesture(Gesture::Pinch {
+                    delta_scale,
+                    center,
+                }) => {
+                    let is_drag = {
+                        let s = session.borrow();
+                        s.tool.is_dragging(s.active_tool)
+                    };
+                    if is_drag {
+                        return false;
+                    }
+                    let center_in_viewport = {
+                        let s = session.borrow();
+                        if let Some(rect) = s.viewport.screen_rect {
+                            DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
+                        } else {
+                            DVec2::new(center.x as f64, center.y as f64)
+                        }
+                    };
+                    {
+                        let mut s = session.borrow_mut();
+                        s.viewport.zoom_at(center_in_viewport, delta_scale as f64);
+                    }
+                    request_frame();
+                    true
+                }
+                _ => false,
+            }
+        }))
+    });
+    let _ = &_gesture_handler;
+
     let show_template_picker = { session.borrow().welcome };
 
     let main_view = if show_template_picker {
@@ -45,6 +97,13 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_scroll({
                     let session = session.clone();
                     move |delta: repose_core::Vec2| {
+                        let is_tool_drag = {
+                            let s = session.borrow();
+                            s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool)
+                        };
+                        if is_tool_drag {
+                            return repose_core::Vec2::ZERO;
+                        }
                         let mut s = session.borrow_mut();
                         if delta.y.abs() < delta.x.abs() {
                             // Horizontal wheel: pan the canvas along X.
@@ -112,6 +171,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         focus.request_focus();
+                        s.viewport.pointer_down = true;
                         let world = s.viewport.view.screen_to_world(pos);
                         if s.mode == crate::session::EditorMode::Interact
                             || s.machine_preview_enabled
@@ -148,6 +208,24 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
 
+                        let window_pos = pe.position_in_window();
+                        let origin = repose_core::Vec2 {
+                            x: window_pos.x - pos.x as f32,
+                            y: window_pos.y - pos.y as f32,
+                        };
+                        let size = repose_core::Vec2 {
+                            x: s.viewport.surface_size.x as f32,
+                            y: s.viewport.surface_size.y as f32,
+                        };
+                        if size.x > 0.0 && size.y > 0.0 {
+                            s.viewport.screen_rect = Some(repose_core::geometry::Rect {
+                                x: origin.x,
+                                y: origin.y,
+                                w: size.x,
+                                h: size.y,
+                            });
+                        }
+
                         if s.viewport.update_pan(pos) {
                             pe.consume();
                             request_frame();
@@ -174,6 +252,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     let session = session.clone();
                     move |pe: PointerEvent| {
                         let mut s = session.borrow_mut();
+                        s.viewport.pointer_down = false;
 
                         if s.viewport.pan_last.is_some() {
                             pe.consume();
@@ -206,6 +285,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |pe| {
                         pe.consume();
                         let mut s = session.borrow_mut();
+                        s.viewport.pointer_down = false;
                         if s.viewport.pan_last.is_some() {
                             s.viewport.end_pan();
                             request_frame();
@@ -272,8 +352,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     ))
 }
 
-/// Content-sized floating surface used by the stage HUD (must not be a
-/// `fill_max_size` surface — an absolute overlay would collapse to 0×0).
 fn HudSurface(content: View) -> View {
     Box(Modifier::new()
         .background(theme().surface_container_high)
@@ -382,8 +460,6 @@ fn ViewportStageHud(session: SessionRef) -> View {
 }
 
 fn ViewportHint(session: SessionRef) -> View {
-    // The compact canvas floats the tool palette over the same corner, so the
-    // hint would be hidden under it on phones.
     if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
         return ZStack(Modifier::new());
     }
@@ -517,7 +593,6 @@ fn welcome_available_width(measured: f32) -> f64 {
     let win = repose_core::get_window_container_width() as f64;
     match crate::shell::platform_shell_class() {
         crate::shell::ShellClass::Expanded => win * 0.55,
-        // Medium: tool rail (72) + 320px side panel + paddings/gaps (~24).
         crate::shell::ShellClass::Medium => (win - 416.0).max(0.0),
         crate::shell::ShellClass::Compact => win,
     }
@@ -608,7 +683,6 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
     let width = comp.size.0 as f64 * view.scale;
     let height = comp.size.1 as f64 * view.scale;
 
-    // Shadow/backplate.
     scope.draw_rect(
         Rect {
             x: origin.x as f32 - 4.0,
@@ -620,7 +694,6 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
         3.0,
     );
 
-    // Checkerboard.
     let tile_world = 32.0;
     let cols = (comp.size.0 as f64 / tile_world).ceil() as usize;
     let rows = (comp.size.1 as f64 / tile_world).ceil() as usize;
@@ -648,7 +721,6 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
         }
     }
 
-    // One-pixel artboard border.
     let border = th.outline_variant;
     let x = origin.x as f32;
     let y = origin.y as f32;
@@ -679,9 +751,6 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
     );
 }
 
-/// Adaptive world-space grid with major/minor lines. Spacing doubles while a
-/// minor line would be closer than ~8 screen px, so zooming out never emits
-/// thousands of lines.
 fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::session::ViewportState) {
     let th = theme();
     let view = &viewport.view;
@@ -732,7 +801,6 @@ fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::sessi
     }
 }
 
-/// Full-height/full-width guide lines in world space.
 fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::session::Guide]) {
     let color = theme().tertiary.with_alpha(180);
     for guide in guides {
@@ -831,7 +899,6 @@ fn to_screen_rect(min: DVec2, max: DVec2, view: &ViewTransform) -> Rect {
     }
 }
 
-/// Tool overlay primitives (selection bounds, rubber band, shape preview).
 fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransform) {
     let th = theme();
     let primary = th.primary;
@@ -926,7 +993,6 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             if (a - b).length() < 1.0 {
                 return;
             }
-            // Screen-space quad (VectorOverlay = final device pixels).
             let dir = b - a;
             let len = dir.length();
             let n = DVec2::new(-dir.y / len, dir.x / len);
@@ -953,8 +1019,6 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                 indices: std::sync::Arc::from([0u32, 1, 2, 0, 2, 3]),
             };
             scope.draw_vector_overlay(std::sync::Arc::from([mesh]));
-            // Endpoint handles: start = primary, end = tertiary (radial)
-            // or primary (linear).
             draw_handle_dot(scope, a, th.primary.with_alpha(240));
             let end_color = if *radial { th.tertiary } else { th.primary };
             draw_handle_dot(scope, b, end_color.with_alpha(240));
@@ -1052,7 +1116,6 @@ fn star_preview_pts(
     out
 }
 
-/// Thin screen-space polyline via VectorOverlay quads (final device pixels).
 fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
     if pts.len() < 2 {
         return;

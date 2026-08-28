@@ -188,6 +188,25 @@ impl ToolSet {
             ToolId::Dropper => self.dropper.overlay(ctx),
         }
     }
+
+    pub fn is_dragging(&self, id: ToolId) -> bool {
+        match id {
+            ToolId::Select | ToolId::Transform => self.select.is_dragging(),
+            ToolId::Rect | ToolId::Ellipse | ToolId::Star => {
+                let t = match id {
+                    ToolId::Rect => &self.rect,
+                    ToolId::Ellipse => &self.ellipse,
+                    ToolId::Star => &self.star,
+                    _ => unreachable!(),
+                };
+                t.is_dragging()
+            }
+            ToolId::Pen => self.pen.is_dragging(),
+            ToolId::PathEdit => self.path_edit.is_dragging(),
+            ToolId::Gradient => self.gradient.is_dragging(),
+            _ => false,
+        }
+    }
 }
 
 const DRAG_THRESHOLD_PX: f64 = 3.0;
@@ -281,6 +300,18 @@ impl SelectTool {
             scale,
             pivot,
         }
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        matches!(
+            self.state,
+            Some(SelState::Pending { .. })
+                | Some(SelState::DragMove { .. })
+                | Some(SelState::RubberBand { .. })
+                | Some(SelState::DragRotate { .. })
+                | Some(SelState::DragScale { .. })
+                | Some(SelState::DragPivot { .. })
+        )
     }
 
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
@@ -798,6 +829,13 @@ pub struct GradientTool {
 }
 
 impl GradientTool {
+    pub fn is_dragging(&self) -> bool {
+        matches!(
+            self.state,
+            GradState::Drag { dragging: true, .. }
+        )
+    }
+
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
         let GradState::Drag {
             l2w,
@@ -1278,6 +1316,10 @@ impl ShapeTool {
         }
     }
 
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
         match ev {
             CanvasEvent::PointerDown {
@@ -1429,6 +1471,10 @@ impl Default for PenTool {
 }
 
 impl PenTool {
+    pub fn is_dragging(&self) -> bool {
+        matches!(self.state, PenState::DraggingTangent { .. })
+    }
+
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
         match &self.state {
             PenState::Idle => ToolOverlay::None,
@@ -1752,6 +1798,10 @@ impl PathEditTool {
             _ => return None,
         };
         Some((id, contours))
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        !matches!(self.state, PathEditState::Idle)
     }
 
     pub fn overlay(&self, ctx: &ToolContext) -> ToolOverlay {

@@ -58,6 +58,7 @@ base64 = "0.22"
 tracing = "0.1"
 bytemuck = { version = "1.25", features = ["derive"] }
 rustc-hash = "2.1"
+log = "0.4"
 bitflags = { version = "2", features = ["serde"] }
 
 rlobkit-dialogs = "0.5"

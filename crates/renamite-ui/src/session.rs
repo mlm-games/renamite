@@ -18,6 +18,7 @@ use renamite_model::{PropPath, Value, node_transform_context, selection_bounds};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::input::{PointerEvent, PointerEventKind};
+use repose_core::geometry::Rect;
 use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
 use repose_material::material3::DialogState;
 use smallvec::{SmallVec, smallvec};
@@ -34,9 +35,6 @@ pub enum PanelPage {
     Interact = 5,
 }
 
-/// Explicit editor mode (Jitter/Linearity-style Design vs Animate, plus the
-/// Rive-style Interact state-machine mental model). Drives the top-bar switch
-/// and the record/playhead semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorMode {
     Design,
@@ -46,8 +44,6 @@ pub enum EditorMode {
 
 pub type SessionRef = Rc<RefCell<Session>>;
 
-/// One copied object: its tree plus where it lived, so Paste in Place can
-/// restore nested objects into their original parent scope.
 #[derive(Clone)]
 pub struct ClipboardItem {
     pub tree: renamite_history::NodeTree,
@@ -55,15 +51,12 @@ pub struct ClipboardItem {
     pub source_index: usize,
 }
 
-/// Everything a copy/cut leaves behind: node trees for pasting geometry and
-/// the first selected object's resolved style nodes for Paste Style.
 #[derive(Clone)]
 pub struct ClipboardPayload {
     pub items: Vec<ClipboardItem>,
     pub style_nodes: Vec<renamite_model::NodeKind>,
 }
 
-/// Binary boolean operations over the current selection.
 #[derive(Clone, Copy, Debug)]
 pub enum SelectionBoolean {
     Union,
@@ -72,13 +65,9 @@ pub enum SelectionBoolean {
     Xor,
 }
 
-/// Shared editor session (single-threaded UI).
 pub struct Session {
     pub file: RenFile,
-    /// Where the current document was last saved to (None = never / "Untitled").
     pub current_path: Option<std::path::PathBuf>,
-    /// True when edits since the last save exist. Undo/redo to a saved state
-    /// does NOT clear this automatically (no saved snapshot tracking yet).
     pub dirty: bool,
     pub history: History,
     pub engine: Engine,
@@ -93,75 +82,42 @@ pub struct Session {
     pub keys: TimelineKeyframeBehavior,
     pub scrub: TimelineScrubBehavior,
     pub renderer: SceneRenderer,
-    /// Live Repose render context used to upload image assets for the viewport.
     pub render_context: repose_core::RenderContext,
     pub last_tick: Instant,
     pub revision: u64,
-    /// Layers panel: groups whose children are shown (view state, not undoable).
     pub expanded_layers: std::collections::HashSet<renamite_model::NodeId>,
-    /// Active drag-reorder in the layers panel (view state).
     pub layer_drag: Option<LayerDragState>,
-    /// Rename-in-progress: node id + draft text (view state).
     pub renaming: Option<(renamite_model::NodeId, String)>,
-    /// Properties → write keys at playhead even when the prop isn't animated.
     pub record: bool,
-    /// Active pointer-drag on a Properties number field (view state).
     pub inspector_drag: Option<InspectorDrag>,
-    /// Transient status message (last file action result / error).
     pub status: Option<String>,
-    /// Results of async platform dialogs, drained on the UI thread each frame.
-    /// Populated from worker threads, so it is `Send + Sync`.
     pub file_ops: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
-    /// Deferred destructive action awaiting the unsaved-changes dialog.
     pub pending_intent: Option<PendingIntent>,
-    /// Unsaved-changes confirmation dialog (in-app, so it works on every target).
     pub confirm_dialog: Rc<DialogState>,
-    /// Current paint used by the Fill tool (and, later, newly created shapes).
     pub current_paint: renamite_model::StylePaint,
-    /// Recent colors for the picker's swatch strip (most-recent first).
     pub swatches: renamite_behavior_common::color::SwatchHistory,
-    /// The currently open color picker popover, if any.
     pub open_picker: Option<OpenPicker>,
-    /// The currently open context menu popover, if any.
     pub context_menu: Option<ContextMenuState>,
-    /// True while the async PNG export render is in flight (blocks duplicates).
     pub exporting_png: bool,
-    /// True while the empty-document launcher should be shown. Only a fresh
-    /// blank project keeps it; opening/importing, picking a template, or
-    /// dismissing to a blank canvas clears it so an emptied composition doesn't
-    /// trap the user back on the launcher.
     pub welcome: bool,
-    /// Serialized selection for copy/paste/duplicate (geometry + origin).
     pub clipboard: Option<ClipboardPayload>,
-    /// Machine edited by the Interactivity panel.
     pub active_machine: Option<MachineId>,
-    /// Graph selection within the active machine (view state).
     pub machine_selection: MachineSelection,
-    /// Preview values mirrored in the player engine.
     pub machine_preview_inputs: Vec<InputValue>,
-    /// Live preview drives the engine in machine mode.
     pub machine_preview_enabled: bool,
-    /// Active scrubbable-drag in the Interactivity panel (view state).
     pub machine_drag: Option<MachineDrag>,
-    /// Active rubber-band gesture on the state-machine graph (view state).
     pub machine_graph_gesture: Option<MachineGraphGesture>,
-    /// Draft of the listener being authored (view state).
     pub listener_draft: ListenerDraft,
-    /// Timeline zoom: pixels per frame in the ruler/canvas (view state).
     pub timeline_zoom: f64,
 }
 
-/// Live scrub gesture in the Interactivity panel (view state).
 #[derive(Clone, Copy, Debug)]
 pub enum MachineDrag {
-    /// Preview Number input (does not touch history).
     PreviewNumber {
         input: usize,
         origin: f64,
         press_x: f32,
     },
-    /// Scrubbing a machine field (duration, speed, threshold, …).
-    /// `txn` is true after the first move opened a history transaction.
     MachineField {
         origin: f64,
         press_x: f32,
@@ -169,11 +125,8 @@ pub enum MachineDrag {
     },
 }
 
-/// Live gesture on the state-machine graph (view state).
 #[derive(Clone, Debug)]
 pub enum MachineGraphGesture {
-    /// Rubber-band a new transition from `from_state` (None = from Any) on
-    /// `layer`.
     WireTransition {
         layer: usize,
         from_state: Option<usize>,
@@ -181,8 +134,6 @@ pub enum MachineGraphGesture {
     },
 }
 
-/// Draft fields for the "add listener" row in the Interactivity panel (view
-/// state, not undoable until the listener is actually added).
 #[derive(Clone, Debug, Default)]
 pub struct ListenerDraft {
     pub event: Option<renamite_machine::PointerEventKind>,
@@ -192,7 +143,6 @@ pub struct ListenerDraft {
     pub number_value: f64,
 }
 
-/// A destructive action deferred behind the unsaved-changes guard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingIntent {
     New,
@@ -201,44 +151,30 @@ pub enum PendingIntent {
     ImportSvg,
 }
 
-/// A file-lifecycle result produced off-thread by an async platform dialog
-/// (`renamite_platform::dialogs`), applied to the session during the next
-/// frame by [`Session::drain_file_ops`].
 pub enum PendingFileOp {
-    /// Install a freshly read project (Open or Import Lottie). `path` is
-    /// `Some` for a real filesystem open (desktop), `None` for name+bytes
-    /// (WASM/Android) or imported documents (always unsaved).
     OpenDone {
         file: Box<RenFile>,
         path: Option<std::path::PathBuf>,
         message: &'static str,
     },
-    /// An async save completed. `path` is `Some` on desktop.
     SaveOutcome {
         ok: bool,
         path: Option<std::path::PathBuf>,
     },
-    /// An exported frame reached its destination (WASM/Android, no path).
     Exported,
-    /// An async PNG export finished; show the message in the status area.
     ExportFinished { message: String },
-    /// Rendered PNG bytes ready to hand to the OS save picker (WASM/Android).
     ExportPngReady {
         bytes: Vec<u8>,
         suggested_name: String,
     },
-    /// Raw font bytes (`.ttf`/`.otf`) read by the Import Font picker.
     ImportFontDone { name: String, bytes: Vec<u8> },
-    /// A decoded image asset read by the Import Image picker.
     ImportImageDone { asset: renamite_model::ImageAsset },
-    /// An async file op failed; surface the message.
     Failed { message: String },
 }
 
 #[derive(Clone, Debug)]
 pub struct InspectorDrag {
     pub path: PropPath,
-    /// DVec2: 0 = x, 1 = y; F64/Angle: 0; Color: 0..3 = r/g/b/a.
     pub channel: usize,
     pub origin_value: Value,
     pub press_x: f32,
@@ -253,41 +189,30 @@ pub struct LayerDragState {
     pub as_child: bool,
 }
 
-/// A live color-picker transaction: which target it writes back to, plus the
-/// picker's own view/editing state.
 #[derive(Clone)]
 pub struct OpenPicker {
     pub target: PickerTarget,
     pub state: Rc<RefCell<crate::color_picker::PickerState>>,
 
-    /// Layout/dp-space anchor (via `overlay_anchor`) for the popover.
     pub anchor: DVec2,
 
-    /// Only picker-owned transactions may be committed/cancelled by the picker.
     pub transaction_open: bool,
 
-    /// Cancellation baseline for non-document current-paint edits.
     pub cancel_current_paint: Option<renamite_model::StylePaint>,
 }
 
-/// What a live-editing picker session writes back to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerTarget {
-    /// The global current-paint swatch (top bar / Fill tool).
     CurrentPaint,
-    /// A specific fill/stroke style node's solid color.
     StyleColor { style_id: renamite_model::NodeId },
-    /// One stop in a gradient (fill or stroke).
     GradientStop {
         style_id: renamite_model::NodeId,
         index: usize,
     },
 }
 
-/// An open context-menu popover: its anchor, entries, and source.
 #[derive(Clone, Debug)]
 pub struct ContextMenuState {
-    /// Layout/dp-space anchor for the popover (via `overlay_anchor`).
     pub screen_pos: DVec2,
     pub entries: Vec<renamite_behavior_common::context_menu::MenuEntry>,
     pub source: ContextMenuSource,
@@ -304,8 +229,6 @@ impl Session {
         Self::with_render_context(file, repose_core::RenderContext::new())
     }
 
-    /// Full constructor; the caller supplies the live `RenderContext` used to
-    /// upload image assets for editor viewport rendering.
     pub fn with_render_context(file: RenFile, render_context: repose_core::RenderContext) -> Self {
         let engine = Engine::new(&file).expect("project");
         let range = file.document.compositions[file.document.main].range;
@@ -390,7 +313,6 @@ impl Session {
                         }
                         in_transaction = false;
                     } else if self.history.transaction_open() {
-                        // A transaction opened in a previous batch (defensive).
                         self.history.commit();
                         self.dirty = true;
                     }
@@ -407,7 +329,6 @@ impl Session {
                 ToolOutput::Commands(cmds) => {
                     for c in cmds {
                         if let Some(id) = self.history_apply(c) {
-                            // Select what shape tools create.
                             self.selection.nodes = vec![id];
                         }
                     }
@@ -454,13 +375,10 @@ impl Session {
             }
         }
 
-        // Defensive: any document mutation that never went through a
-        // Begin/Commit pair still marks the project dirty.
         if mutated_outside_transaction {
             self.dirty = true;
         }
 
-        // Drop dangling timeline keyframe selection after undo/doc edits.
         if document_changed {
             let rows = timeline_rows(self);
             let range = self.file.document.compositions[self.file.document.main].range;
@@ -475,8 +393,6 @@ impl Session {
             self.keys.retain_valid(&ctx);
         }
 
-        // Batch invalidation: at most one re-evaluation + one repaint per
-        // `apply_outputs` call (a Begin/Commands/Commit edit used to bump twice).
         if needs_evaluation {
             self.engine.reevaluate(&self.file);
         }
@@ -502,8 +418,6 @@ impl Session {
         request_frame();
     }
 
-    /// Run a menu action. Host-side actions (Rename, clipboard ops, Duplicate)
-    /// are handled here; everything else routes to the pure dispatcher.
     pub fn run_menu_action(&mut self, action: renamite_behavior_common::context_menu::MenuAction) {
         use renamite_behavior_common::context_menu::{
             MenuAction, MenuContext, dispatch_menu_action,
@@ -576,8 +490,6 @@ impl Session {
         self.apply_outputs(outs.into());
     }
 
-    /// Center the selected node's pivot over its rendered geometry without
-    /// moving the content (compensated anchor/position edit).
     fn center_pivot(&mut self) {
         let [node] = self.selection.nodes.as_slice() else {
             return;
@@ -666,13 +578,11 @@ impl Session {
     }
 
     fn finalize_open_edit(&mut self) {
-        // Color picker owns its own transaction flag.
         if let Some(open) = self.open_picker.clone() {
             if open.transaction_open {
                 let color = open.state.borrow().color();
                 self.commit_picker_color(color);
             }
-            // Keep picker open; only seal the history batch.
         }
 
         if self.history.transaction_open() {
@@ -680,12 +590,9 @@ impl Session {
             self.dirty = true;
         }
 
-        // Drop view-state drag flags so a later pointer-up doesn't double-commit
-        // or keep applying into a closed batch.
         self.inspector_drag = None;
         self.layer_drag = None;
         self.machine_drag = None;
-        // Reset tool gesture machines (select/path/gradient mid-drag, etc.).
         self.tool = renamite_behavior_canvas::ToolSet::default();
     }
 
@@ -695,8 +602,6 @@ impl Session {
         if roots.is_empty() {
             return;
         }
-        // Snapshot BEFORE removing anything, remembering each object's origin
-        // so Paste in Place can restore nested objects to their old scope.
         let mut items = Vec::with_capacity(roots.len());
         for &id in &roots {
             let Some((parent, index)) = self.file.document.locate(id) else {
@@ -726,7 +631,6 @@ impl Session {
                 ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![])),
             ]);
         } else {
-            // Copy is view-state only; still repaint so menus refresh has_clipboard.
             self.repaint();
         }
     }
@@ -763,7 +667,6 @@ impl Session {
         walk(doc, id, &mut fill, &mut stroke);
 
         let mut scope = doc.locate(id).map(|(p, _)| p);
-        // Only keep walking outward for the kinds the object lacks.
         if fill.is_some() && stroke.is_some() {
             scope = None;
         }
@@ -806,14 +709,11 @@ impl Session {
         [fill, stroke].into_iter().flatten().collect()
     }
 
-    /// True when `parent` still exists in the document (Paste in Place target).
     fn parent_is_attached(&self, parent: renamite_model::Parent) -> bool {
         let doc = &self.file.document;
         match parent {
             renamite_model::Parent::Comp(c) => doc.compositions.contains_key(c),
             renamite_model::Parent::Node(p) => {
-                // Attached = has a node parent OR roots ANY composition
-                // (not just main).
                 doc.nodes.contains_key(p)
                     && (doc.nodes.get(p).and_then(|n| n.parent).is_some()
                         || doc
@@ -867,8 +767,6 @@ impl Session {
         }
     }
 
-    /// Paste without any offset, restoring copied objects into their original
-    /// parent scopes when those scopes still exist.
     pub fn paste_clipboard_in_place(&mut self) {
         let Some(payload) = self.clipboard.clone() else {
             self.status = Some("Clipboard empty".into());
@@ -916,9 +814,6 @@ impl Session {
         self.bump();
     }
 
-    /// Apply the clipboard's stored Fill/Stroke styles onto every selected
-    /// object. Geometry, transform, opacity, masks and modifiers are left
-    /// untouched; animated paints are cloned exactly.
     pub fn paste_style(&mut self) {
         use renamite_model::Node;
 
@@ -955,7 +850,6 @@ impl Session {
         struct PastePlan {
             target: renamite_model::NodeId,
             direct: Vec<EditorCommand>,
-            /// Style kinds to install inside a fresh isolation group.
             local: Vec<renamite_model::StyleKind>,
         }
 
@@ -1147,7 +1041,6 @@ impl Session {
         }
     }
 
-    /// Public entry points for keyboard shortcuts / menus.
     pub fn cut_selection(&mut self) {
         self.clipboard_from_selection(true);
     }
@@ -1160,8 +1053,6 @@ impl Session {
         self.paste_clipboard();
     }
 
-    /// Reverse the direction of every selected path (paths directly selected,
-    /// or path children of selected groups/layers). One undo step.
     pub fn reverse_selected_paths(&mut self) {
         use renamite_model::{NodeKind, ShapeKind};
 
@@ -1209,10 +1100,6 @@ impl Session {
         ]);
     }
 
-    /// Object to Path: bake selected primitive shapes (Rect/Ellipse/Star/
-    /// Polygon) into static vector paths at the current frame. Destructive at
-    /// this frame - animated shape parameters become geometry - while the
-    /// node's transform, styles, children, and id are preserved. One undo step.
     pub fn convert_selection_to_path(&mut self) {
         use renamite_model::{NodeKind, Overrides, ShapeKind};
 
@@ -1259,8 +1146,6 @@ impl Session {
         ]);
     }
 
-    /// Selected shape roots in z-order (bottom-first), expanding into groups.
-    /// The bottom object is the boolean subject / combine style donor.
     fn selected_shape_roots_in_z_order(&self) -> Vec<renamite_model::NodeId> {
         use renamite_model::{NodeKind, ShapeKind};
 
@@ -1273,12 +1158,10 @@ impl Session {
             inherited_selected: bool,
             out: &mut Vec<renamite_model::NodeId>,
         ) {
-            // children[0] = top of stack; walk in reverse for bottom-first.
             for &id in children.iter().rev() {
                 let Some(node) = doc.nodes.get(id) else {
                     continue;
                 };
-                // A selected group donates ALL of its descendant shapes.
                 let selected = inherited_selected || sel.contains(&id);
 
                 match &node.kind {
@@ -1307,15 +1190,11 @@ impl Session {
         };
         visit(doc, &c.children, &self.selection.nodes, false, &mut out);
 
-        // Selecting both a group and one of its descendants must not yield a
-        // shape twice.
         let mut seen = std::collections::HashSet::new();
         out.retain(|id| seen.insert(*id));
         out
     }
 
-    /// A selected shape's evaluated contour(s) at the current frame, mapped
-    /// into `subject`'s local coordinate system (multi-contour safe).
     fn contours_in_subject_space(
         &self,
         id: renamite_model::NodeId,
@@ -1336,7 +1215,6 @@ impl Session {
             _ => return Err("Selection contains non-shape nodes".into()),
         };
 
-        // World -> subject-local mapping.
         let Some(from) = renamite_model::node_transform_context(doc, id, frame) else {
             return Err("Cannot resolve transforms for the selection".into());
         };
@@ -1348,9 +1226,6 @@ impl Session {
         let mapped = to_subject_space * local;
         Ok(renamite_geometry::split_bez_subpaths(&mapped))
     }
-    /// Union / Difference / Intersection / XOR over the selection. The bottom
-    /// object is the subject and donates its style; folding uses the
-    /// BezPath-level boolean so holes and disjoint pieces survive every step.
     pub fn boolean_selection(&mut self, operation: SelectionBoolean) {
         let label = format!("{operation:?}");
         let ids = self.selected_shape_roots_in_z_order();
@@ -1454,10 +1329,6 @@ impl Session {
         ]);
     }
 
-    /// Inkscape-style division of closed shapes:
-    /// inside = subject ∩ union(cutters); outside = subject − union(cutters).
-    /// The subject is replaced with the first piece; remaining pieces are
-    /// inserted beside it and cutters are deleted.
     pub fn divide_selection(&mut self) {
         use renamite_history::NodeTree;
         use renamite_model::{Node, NodeKind, Parent, ShapeKind};
@@ -1470,7 +1341,6 @@ impl Session {
         }
         let subject = ids[0];
 
-        // Open-line cutting needs planar face splitting; refuse clearly.
         {
             let doc = &self.file.document;
             let frame = self.playback.head;
@@ -1480,7 +1350,6 @@ impl Session {
                     Some(NodeKind::Shape(ShapeKind::CompoundPath(c))) => {
                         c.contours.iter().all(|p| p.value_at(frame).closed)
                     }
-                    // Primitives always evaluate to closed outlines.
                     Some(NodeKind::Shape(_)) => true,
                     _ => false,
                 };
@@ -1617,8 +1486,6 @@ impl Session {
         ]);
     }
 
-    /// Ctrl+K: merge every selected shape's contours into one CompoundPath on
-    /// the bottom object (which donates its style and transform).
     pub fn combine_selection(&mut self) {
         let ids = self.selected_shape_roots_in_z_order();
         if ids.len() < 2 {
@@ -1669,9 +1536,6 @@ impl Session {
         ]);
     }
 
-    /// Ctrl+Shift+K: explode a CompoundPath into sibling Path nodes. The first
-    /// contour replaces the original kind; clones keep transform, opacity and
-    /// flags, and the same sibling style nodes keep styling every piece.
     pub fn break_apart_selection(&mut self) {
         use renamite_history::NodeTree;
         use renamite_model::{Node, Parent};
@@ -1757,8 +1621,6 @@ impl Session {
         ]);
     }
 
-    /// Ctrl+L: reduce anchor counts of selected paths within a scale-aware
-    /// tolerance (`0.75` screen px). Bakes the current frame via SetNodeKind.
     pub fn simplify_selection(&mut self) {
         use renamite_model::{NodeKind, ShapeKind};
 
@@ -1833,8 +1695,6 @@ impl Session {
         ]);
     }
 
-    /// Ctrl+Alt+C: expand selected shapes' strokes into filled outlines stored
-    /// as a CompoundPath; the stroke's paint becomes a Fill.
     pub fn stroke_selection_to_path(&mut self) {
         use renamite_model::{FillRule, NodeKind, Overrides, ShapeKind, StyleKind};
 
@@ -1951,8 +1811,6 @@ impl Session {
             return;
         }
 
-        // Sequential application inside ONE transaction so the isolation
-        // group's arena id can be captured between commands.
         self.finalize_open_edit();
         self.history.begin("Stroke to path");
         let mut failed = false;
@@ -1970,8 +1828,6 @@ impl Session {
             }
 
             if !conv.stroke_shared {
-                // Unshared: restyle the old stroke as a fill with the same
-                // paint (the old stroke is gone).
                 if let Some(style_id) = conv.stroke_id
                     && self
                         .history_apply_full(EditorCommand::SetNodeKind {
@@ -1988,10 +1844,6 @@ impl Session {
                 continue;
             }
 
-            // Shared stroke: isolate the converted shape in its own group at
-            // its old z-slot (identity transform preserves world placement),
-            // then give that group a local fill. The shared stroke node stays
-            // outside and cannot paint across the group boundary.
             let Some((shape_parent, shape_index)) = self.file.document.locate(conv.shape) else {
                 failed = true;
                 break;
@@ -2074,8 +1926,6 @@ impl Session {
         self.bump();
     }
 
-    /// Expand (true) or collapse (false) every transform group in the Layers
-    /// panel (view state only, no undo).
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let doc = &self.file.document;
         let mut all = std::collections::HashSet::new();
@@ -2110,8 +1960,6 @@ impl Session {
         self.repaint();
     }
 
-    /// Commit the active layers-panel drag. Safe to call even when the pointer
-    /// left the list (no-op), and rejects cycle-producing moves.
     pub fn finish_layer_drag(&mut self) {
         let Some(drag) = self.layer_drag.take() else {
             return;
@@ -2129,7 +1977,6 @@ impl Session {
             self.repaint();
             return;
         }
-        // Block parenting under self / moving into own subtree.
         if renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, target.id) {
             self.repaint();
             return;
@@ -2156,7 +2003,6 @@ impl Session {
             self.repaint();
             return;
         }
-        // Auto-expand when nesting.
         if drag.as_child {
             self.expanded_layers.insert(target.id);
         }
@@ -2173,7 +2019,6 @@ impl Session {
         request_frame();
     }
 
-    /// Request a repaint without re-evaluating the engine (pure view state).
     pub fn repaint(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         request_frame();
@@ -2184,8 +2029,6 @@ impl Session {
         self.repaint();
     }
 
-    /// Switch the explicit editor mode, wiring up the record flag, the active
-    /// page, and the machine-preview / playback lifecycle.
     pub fn set_mode(&mut self, mode: EditorMode) {
         if self.mode == mode {
             return;
@@ -2205,7 +2048,6 @@ impl Session {
                 self.record = true;
                 self.disable_machine_preview();
                 self.active_page = PanelPage::Timeline;
-                // Keep the playhead; the user hits Play explicitly.
             }
             EditorMode::Interact => {
                 self.record = false;
@@ -2217,8 +2059,6 @@ impl Session {
                 }
             }
         }
-        // Clear a dangling wire gesture when leaving Interact so it can't fire
-        // after the mode switch.
         if previous == EditorMode::Interact && mode != EditorMode::Interact {
             self.machine_graph_gesture = None;
         }
@@ -2232,7 +2072,6 @@ impl Session {
         }
     }
 
-    /// Turn off machine preview and return the engine to timeline evaluation.
     pub fn disable_machine_preview(&mut self) {
         if !self.machine_preview_enabled && self.machine_preview_inputs.is_empty() {
             return;
@@ -2245,16 +2084,12 @@ impl Session {
         self.engine.reevaluate(&self.file);
     }
 
-    /// Zoom the timeline by a multiplicative factor, clamped to sane bounds.
     pub fn zoom_timeline(&mut self, factor: f64) {
         let old = self.timeline_zoom.max(0.5);
         self.timeline_zoom = (old * factor).clamp(0.5, 48.0);
         self.repaint();
     }
 
-    /// Edit the main composition's playable frame range. `start`/`end` may be
-    /// `None` to leave that edge untouched. The edit is one undo step, and the
-    /// playback range follows the composition range.
     pub fn set_composition_range(&mut self, start: Option<Frame>, end: Option<Frame>) {
         let comp = self.file.document.main;
         self.apply_outputs(smallvec![
@@ -2269,7 +2104,6 @@ impl Session {
         sync_playback_range(self);
     }
 
-    /// Move the playhead by a fixed number of frames (transport step).
     pub fn step_frames(&mut self, delta: f64) {
         let range = self.file.document.compositions[self.file.document.main].range;
         self.playback.head = (self.playback.head + delta).clamp(range.0.0 as f64, range.1.0 as f64);
@@ -2284,7 +2118,6 @@ impl Session {
         self.bump();
     }
 
-    /// Cycle the playback loop mode (Once → Loop → PingPong).
     pub fn cycle_loop_mode(&mut self) {
         self.playback.loop_mode = match self.playback.loop_mode {
             LoopMode::Once => LoopMode::Loop,
@@ -2342,8 +2175,6 @@ impl Session {
         self.bump();
     }
 
-    /// Auto-expand ancestor groups so a selected (possibly nested) node's
-    /// layers row becomes visible. View state only - not undoable.
     pub fn ensure_selection_visible(&mut self) {
         for &id in &self.selection.nodes {
             let mut walk = id;
@@ -2358,8 +2189,6 @@ impl Session {
         }
     }
 
-    /// Commit the in-progress layer rename. Closes the editor without a
-    /// history entry when the name is unchanged, empty, or whitespace-only.
     pub fn commit_rename(&mut self) {
         let Some((id, draft)) = self.renaming.take() else {
             return;
@@ -2386,7 +2215,6 @@ impl Session {
         ]);
     }
 
-    /// Dismiss the in-progress layer rename without committing.
     pub fn cancel_rename(&mut self) {
         if self.renaming.is_none() {
             return;
@@ -2395,7 +2223,6 @@ impl Session {
         self.repaint();
     }
 
-    /// Apply one command; returns the created node id, if any.
     pub fn history_apply(
         &mut self,
         cmd: renamite_history::EditorCommand,
@@ -2403,8 +2230,6 @@ impl Session {
         self.history_apply_full(cmd)?.created
     }
 
-    /// Apply one command, returning the full `Applied` result (created node
-    /// and/or created asset). Surfaces the failure message in the status bar.
     pub fn history_apply_full(
         &mut self,
         command: renamite_history::EditorCommand,
@@ -2425,16 +2250,11 @@ impl Session {
         }
     }
 
-    /// Upload/refresh the encoded bytes of every attached image asset, and
-    /// evict handles for detached assets. Call after any asset mutation.
     pub fn sync_image_assets(&mut self) {
         self.renderer
             .sync_document_images(&self.file.document, &self.render_context);
     }
 
-    /// Import raw font bytes as a project asset (undoable). Derives the family
-    /// key from the reported font name (or the file stem as a fallback) and
-    /// rejects bytes that don't parse as a font.
     pub fn import_font(&mut self, name: String, bytes: Vec<u8>) {
         use renamite_model::{Asset, FontAsset};
         let family = renamite_text::font_family_name(&bytes).unwrap_or_else(|| {
@@ -2464,8 +2284,6 @@ impl Session {
         self.bump();
     }
 
-    /// Attach a decoded image asset to the project (undoable) and refresh the
-    /// viewport's uploaded image handles.
     pub fn import_image(&mut self, asset: renamite_model::ImageAsset) {
         use renamite_model::Asset;
 
@@ -2487,9 +2305,6 @@ impl Session {
         self.bump();
     }
 
-    /// Serialize a clean copy of the project as `.ren` text bytes. The live
-    /// in-memory project is NOT garbage collected (undo relies on detached
-    /// arena entries staying alive); only the save-time snapshot is pruned.
     pub fn save_snapshot(&self) -> anyhow::Result<Vec<u8>> {
         let mut file = self.file.clone();
         file.normalize();
@@ -2497,7 +2312,6 @@ impl Session {
         Ok(renamite_io_ren::save(&file)?.into_bytes())
     }
 
-    /// Serialize a clean copy of the project as `.renb` binary bytes.
     pub fn pack_snapshot(&self) -> anyhow::Result<Vec<u8>> {
         let mut file = self.file.clone();
         file.normalize();
@@ -2505,9 +2319,6 @@ impl Session {
         Ok(renamite_io_ren::save_binary(&file)?)
     }
 
-    /// Load a fresh project, resetting all session view state and undo history.
-    /// Any real document (open/import/template) clears the welcome launcher;
-    /// callers that want the launcher back set `welcome = true` afterwards.
     pub fn replace_file(&mut self, file: RenFile) {
         self.file = file;
         self.welcome = false;
@@ -2541,7 +2352,6 @@ impl Session {
         request_frame();
     }
 
-    /// Record that the current document was written to `path` (or cleared).
     pub fn mark_saved(&mut self, path: Option<std::path::PathBuf>) {
         self.current_path = path;
         self.dirty = false;
@@ -2549,12 +2359,6 @@ impl Session {
         request_frame();
     }
 
-    /// Apply results queued by async platform dialogs (called once per frame
-    /// from the UI). Parsing/serialization already happened off-thread, so this
-    /// only installs state.
-    ///
-    /// Returns true when a deferred [`PendingIntent`] should now be run (a
-    /// guard "Save" finished successfully on a non-desktop target).
     pub fn drain_file_ops(&mut self) -> bool {
         let ops = std::mem::take(&mut *self.file_ops.lock().unwrap());
         let mut run_intent = false;
@@ -2644,27 +2448,22 @@ impl Session {
         run_intent
     }
 
-    /// Defer `intent` behind the unsaved-changes dialog and show it. Showing a
-    /// dialog is pure UI state - repaint without re-evaluating the engine.
     pub fn request_discard(&mut self, intent: PendingIntent) {
         self.pending_intent = Some(intent);
         self.confirm_dialog.show();
         self.repaint();
     }
 
-    /// Take the deferred intent (clearing it).
     pub fn take_pending_intent(&mut self) -> Option<PendingIntent> {
         self.pending_intent.take()
     }
 
-    /// Drop a deferred intent (e.g. the user canceled the guard's Save).
     pub fn clear_pending_intent(&mut self) {
         if self.pending_intent.take().is_some() {
             self.repaint();
         }
     }
 
-    /// Called by the `animation_driver` tick each frame. Returns true while playing.
     pub fn tick_playback(&mut self) -> bool {
         if !self.playing && !self.machine_preview_enabled {
             return false;
@@ -2699,9 +2498,6 @@ impl Session {
         }
     }
 
-    /// Open a color picker editing `initial`, anchored at the screen-space
-    /// point the user clicked (`anchor`). The history transaction is begun
-    /// lazily on the first change, so an untouched picker leaves no undo entry.
     pub fn open_color_picker(
         &mut self,
         target: PickerTarget,
@@ -2709,7 +2505,6 @@ impl Session {
         anchor: DVec2,
     ) {
         self.close_context_menu();
-        // Cancel only the old picker's own pending work.
         self.cancel_open_picker_state();
 
         let cancel_current_paint =
@@ -2728,16 +2523,12 @@ impl Session {
         self.repaint();
     }
 
-    /// Dismiss the picker without committing: an in-progress gesture's changes
-    /// (applied since the last `commit_picker_color`) are reverted.
     pub fn close_color_picker(&mut self) {
         self.cancel_open_picker_state();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
 
-    /// Live preview path: writes the current picker color to its target inside
-    /// a transaction, so an entire drag coalesces into one undo step.
     pub fn apply_picker_change(&mut self, color: renamite_model::Color) {
         let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
             return;
@@ -2745,7 +2536,6 @@ impl Session {
 
         match target {
             PickerTarget::CurrentPaint => {
-                // Tool state is not part of document history.
                 self.current_paint.set_base_color(color);
             }
 
@@ -2770,7 +2560,6 @@ impl Session {
         request_frame();
     }
 
-    /// Returns false if another editor gesture owns the global transaction.
     fn ensure_picker_transaction(&mut self) -> bool {
         let picker_owns_transaction = self
             .open_picker
@@ -2849,10 +2638,6 @@ impl Session {
         self.history_apply(cmd);
     }
 
-    /// End-of-gesture: coalesce the open transaction into a single undo step
-    /// and record the color in swatch history. Does not close the picker --
-    /// closing is a separate, explicit action so stop-color workflows can stay
-    /// open across picks.
     pub fn commit_picker_color(&mut self, color: renamite_model::Color) {
         let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
             return;
@@ -2860,8 +2645,6 @@ impl Session {
 
         match target {
             PickerTarget::CurrentPaint => {
-                // Update cancellation baseline. Closing after a committed color
-                // must preserve that color.
                 let committed = self.current_paint.clone();
                 if let Some(open) = self.open_picker.as_mut() {
                     open.cancel_current_paint = Some(committed);
@@ -2887,15 +2670,12 @@ impl Session {
         request_frame();
     }
 
-    /// Save the current picker color to the swatch history (no history edit).
     pub fn add_swatch(&mut self, color: renamite_model::Color) {
         self.swatches.push(color);
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
 
-    /// Dismiss the picker. Commits a still-open picker-owned transaction before
-    /// discarding so the latest color is preserved, then clears the picker.
     pub fn finish_color_picker(&mut self) {
         if let Some(open) = self.open_picker.clone()
             && open.transaction_open
@@ -2911,9 +2691,6 @@ impl Session {
 }
 
 impl Session {
-    /// Run one pure machine edit through the helpers and commit it as a single
-    /// undoable `ReplaceMachine`. On error, surfaces the message and returns
-    /// false (no history entry is written).
     pub fn edit_active_machine(
         &mut self,
         label: impl Into<String>,
@@ -2943,8 +2720,6 @@ impl Session {
             ToolOutput::CommitTransaction,
         ]);
 
-        // Existing runtime instances hold state/input arrays derived from the
-        // old definition. Structural edits reset the preview deterministically.
         if self.machine_preview_enabled {
             self.reset_machine_preview();
         }
@@ -2952,7 +2727,6 @@ impl Session {
         true
     }
 
-    /// Switch the active machine (no-op if `id` is not attached).
     pub fn select_machine(&mut self, machine: MachineId) {
         if !self.file.machines.contains_key(machine) || !self.file.machine_order.contains(&machine)
         {
@@ -2968,7 +2742,6 @@ impl Session {
         request_frame();
     }
 
-    /// Create a default machine (one layer, one Idle state) and select it.
     pub fn create_machine(&mut self) {
         let machine = Machine {
             name: format!("State Machine {}", self.file.machine_order.len() + 1,),
@@ -3006,8 +2779,6 @@ impl Session {
         self.bump();
     }
 
-    /// Delete the active machine from the project (undoable). Clears the
-    /// selection if the active machine is removed.
     pub fn remove_active_machine(&mut self) {
         let Some(machine) = self.active_machine else {
             return;
@@ -3030,8 +2801,6 @@ impl Session {
         self.reset_machine_preview();
     }
 
-    /// Rebuild `machine_preview_inputs` from the machine's input defaults and
-    /// restart the engine in machine (preview) or timeline mode.
     pub fn reset_machine_preview(&mut self) {
         let Some(machine_id) = self.active_machine else {
             self.machine_preview_inputs.clear();
@@ -3132,7 +2901,6 @@ impl Session {
         request_frame();
     }
 
-    /// Rename the active machine (undoable via ReplaceMachine).
     pub fn rename_active_machine(&mut self, name: impl Into<String>) {
         let name = name.into();
         let name = name.trim().to_owned();
@@ -3174,7 +2942,6 @@ impl Session {
         }
     }
 
-    /// Mark the active machine as the project's start machine.
     pub fn set_active_as_start_machine(&mut self) {
         let Some(id) = self.active_machine else {
             return;
@@ -3191,7 +2958,6 @@ impl Session {
         ]);
     }
 
-    /// Begin a coalesced machine-field scrub (mirrors Properties inspector_drag).
     pub fn begin_machine_field_scrub(&mut self, origin: f64, press_x: f32) {
         self.machine_drag = Some(MachineDrag::MachineField {
             origin,
@@ -3200,7 +2966,6 @@ impl Session {
         });
     }
 
-    /// Apply one scrub step. Opens a single history transaction on first move.
     pub fn scrub_machine_field(
         &mut self,
         press_x_now: f32,
@@ -3239,8 +3004,6 @@ impl Session {
             machine,
         });
         if self.machine_preview_enabled {
-            // Keep runtime inputs; only re-bind definition if structure changed.
-            // Field scrubs are value-only — reevaluate without full reset.
             self.engine.reevaluate(&self.file);
         }
         self.dirty = true;
@@ -3285,7 +3048,6 @@ impl Session {
         }
     }
 
-    /// Create an empty clip and return its id (for state binding).
     pub fn create_clip(&mut self, name: impl Into<String>) -> Option<renamite_machine::ClipId> {
         use renamite_animation::Frame;
         use renamite_machine::Clip;
@@ -3309,7 +3071,6 @@ impl Session {
         created
     }
 
-    /// Node display name for a scene node, falling back to its id string.
     pub fn node_name(&self, id: renamite_model::NodeId) -> String {
         self.file
             .document
@@ -3327,23 +3088,17 @@ pub struct ViewportState {
     pub fit_pending: bool,
     pub pan_last: Option<DVec2>,
     pub space_held: bool,
-    /// Most recent pointer position in canvas-local screen px.
-    /// HACK: Tracked so wheel zoom can anchor on the cursor (`on_scroll` callbacks don't carry a pos yet).
+    pub pointer_down: bool,
     pub last_pointer: DVec2,
+    pub screen_rect: Option<Rect>,
 
-    /// Draw the world-space grid.
     pub show_grid: bool,
-    /// Snap pointer-driven geometry to grid/anchors/guides.
     pub snapping_enabled: bool,
-    /// Draw user guides.
     pub show_guides: bool,
-    /// World-space grid cell size.
     pub grid_spacing: DVec2,
-    /// User-placed guide lines.
     pub guides: Vec<Guide>,
 }
 
-/// A horizontal or vertical guide line at `position` (world units).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Guide {
     pub axis: GuideAxis,
@@ -3364,7 +3119,9 @@ impl Default for ViewportState {
             fit_pending: true,
             pan_last: None,
             space_held: false,
+            pointer_down: false,
             last_pointer: DVec2::ZERO,
+            screen_rect: None,
             show_grid: false,
             snapping_enabled: true,
             show_guides: true,
@@ -3416,9 +3173,6 @@ impl ViewportState {
         self.zoom_at(self.surface_size * 0.5, factor);
     }
 
-    /// Zoom by `factor` keeping the world point under `screen_pos` (canvas-local
-    /// screen px) anchored at that screen position. Negative factors clamp like
-    /// the +/- buttons; `factor` is multiplicative (1.2 = zoom in).
     pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64) {
         if self.surface_size == DVec2::ZERO {
             return;
@@ -3479,11 +3233,8 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     let zoom = s.timeline_zoom;
     let ctx = timeline_ctx(&s.file.document, &s.file.clips, &rows, range, head, zoom);
 
-    // Drop dangling selection after undo/doc edits.
     s.keys.retain_valid(&ctx);
 
-    // Ruler band (above first row) → scrub playhead.
-    // Track area → keyframe behavior (hit diamond / box-select / drag).
     let scrub = match &ev {
         TimelineEvent::Press { pos, .. }
         | TimelineEvent::Move { pos, .. }
@@ -3546,10 +3297,6 @@ fn append_timeline_rows_for_node(
     }
 }
 
-/// Which animatable property a layer's timeline row edits. Uses the first
-/// Transform-section property from the inspector (position, scale, rotation,
-/// opacity, anchor) so rows aren't all labeled "opacity"; falls back to
-/// opacity when nothing resolves.
 fn timeline_row_prop(doc: &renamite_model::Document, id: renamite_model::NodeId) -> PropPath {
     renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0))
         .into_iter()
@@ -3558,7 +3305,6 @@ fn timeline_row_prop(doc: &renamite_model::Document, id: renamite_model::NodeId)
         .unwrap_or_else(|| PropPath::new("opacity"))
 }
 
-/// Build a `ProjectMut` from a `&mut RenFile` (no overlapping `&mut self`).
 fn pm_from(file: &mut RenFile) -> ProjectMut<'_> {
     ProjectMut {
         document: &mut file.document,
@@ -3570,7 +3316,6 @@ fn pm_from(file: &mut RenFile) -> ProjectMut<'_> {
     }
 }
 
-/// Apply a command (or cancel an open transaction) given disjoint field borrows.
 fn apply_cmd(
     history: &mut History,
     file: &mut RenFile,
@@ -3593,7 +3338,6 @@ pub fn undo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.undo(&mut pm).is_ok() {
         s.dirty = true;
-        // Drop selection entries that no longer exist / aren't attached.
         s.selection.nodes.retain(|&id| {
             s.file
                 .document
@@ -3618,7 +3362,6 @@ pub fn redo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.redo(&mut pm).is_ok() {
         s.dirty = true;
-        // Drop selection entries that no longer exist / aren't attached.
         s.selection.nodes.retain(|&id| {
             s.file
                 .document
@@ -3637,9 +3380,6 @@ pub fn redo_cmd(s: &mut Session) {
     sync_playback_range(s);
 }
 
-/// Keep `playback.range` aligned with the composition range (e.g. after a
-/// duration edit or its undo), clamping the playhead if it fell outside, and
-/// push the result into the engine so `tick` loops against the new bounds.
 fn sync_playback_range(s: &mut Session) {
     let range = s.file.document.compositions[s.file.document.main].range;
     s.playback.range = range;
@@ -3675,7 +3415,6 @@ pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
     }
 }
 
-/// Pointer position in layout space (dp).
 pub fn overlay_anchor(pe: &PointerEvent) -> DVec2 {
     let p = pe.position_in_window();
     DVec2::new(
@@ -3755,7 +3494,6 @@ fn style_scope_info(
     Some((parent, painted > 1))
 }
 
-/// Model stroke enums → kurbo stroke configuration.
 fn kurbo_cap(cap: renamite_model::StrokeCap) -> kurbo::Cap {
     match cap {
         renamite_model::StrokeCap::Butt => kurbo::Cap::Butt,
@@ -3791,8 +3529,6 @@ fn kurbo_join(join: renamite_model::StrokeJoin) -> kurbo::Join {
     }
 }
 
-/// Nearest applicable style node of a kind for `shape`: the last matching
-/// style sibling in the closest ancestor scope (mirrors `fill_style_for`).
 fn nearest_style_node(
     doc: &renamite_model::Document,
     shape: renamite_model::NodeId,
@@ -3835,15 +3571,10 @@ fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {
     DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
-/// Blank document used by the launcher / "New" template flow. Empty artboard
-/// so the template picker is the first thing users see on a fresh project.
 pub fn blank_file() -> RenFile {
     RenFile::new(renamite_model::Document::empty(), "Untitled")
 }
 
-/// Seeded demo document: one ellipse + fill so the artboard isn't blank.
-/// Only used by tests and as a debug/fallback surface - the launcher path
-/// deliberately starts from [`blank_file`] instead.
 pub fn seeded_demo_file() -> RenFile {
     use renamite_animation::Animated;
     use renamite_model::{
@@ -3877,7 +3608,6 @@ pub fn seeded_demo_file() -> RenFile {
     RenFile::new(doc, "Untitled")
 }
 
-/// Register the playback driver once and return the shared session.
 pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
     let rc = render_context.clone();
     let session = remember_with_key("session", || {
@@ -4132,7 +3862,6 @@ mod tests {
     #[test]
     fn set_text_font_round_trips_through_history() {
         let mut session = Session::new(seeded_demo_file());
-        // A text node + sibling fill, grouped like the Text tool creates.
         let text = session.file.document.create_node(renamite_model::Node::new(
             "t",
             renamite_model::NodeKind::Text(renamite_model::TextNode {
@@ -4314,7 +4043,6 @@ mod tests {
         );
         assert_eq!(s.playback.range, (Frame(0), Frame(180)));
 
-        // Playhead beyond the new end gets clamped when the range shrinks.
         s.playback.head = 300.0;
         s.set_composition_range(None, Some(Frame(120)));
         assert_eq!(
@@ -4342,8 +4070,6 @@ mod tests {
         let pb = s.playback;
         s.engine.set_timeline_playback(pb);
 
-        // 186 frames @ 60fps: with the stale 0-180 range this would wrap; the
-        // widened 0-300 range must let the head advance past the old bound.
         s.engine.tick(&s.file, 3.1);
         assert!(
             s.engine.head() > 180.0,
@@ -4356,7 +4082,6 @@ mod tests {
     #[test]
     fn cut_paste_preserves_child_count_and_edits() {
         let mut s = Session::new(seeded_demo_file());
-        // Build Group{Shape, Fill} like the shape tool.
         use renamite_history::{EditorCommand, NodeTree};
         use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind, StylePaint};
         let tree = NodeTree::with_children(
@@ -4398,7 +4123,6 @@ mod tests {
         let pasted = s.selection.nodes[0];
         let kids = s.file.document.nodes.get(pasted).unwrap().children.clone();
         assert_eq!(kids.len(), 2, "no stale children after cut/paste");
-        // Edit the fill on the pasted tree — must stick.
         let fill = kids[1];
         s.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Edit color".into()),
@@ -4456,7 +4180,6 @@ mod tests {
     fn reverse_selected_paths_without_path_selection_is_a_noop() {
         let mut s = Session::new(seeded_demo_file());
         let comp = s.file.document.main;
-        // The seeded demo's shape is an Ellipse, not a Path.
         s.selection.nodes = vec![s.file.document.compositions[comp].children[0]];
         let before = s.history.can_undo();
 
@@ -4549,8 +4272,6 @@ mod path_op_integration_tests {
     fn two_rects() -> (Session, renamite_model::NodeId, renamite_model::NodeId) {
         let ids = std::cell::RefCell::new(Vec::new());
         let s = session_with(|doc| {
-            // children[0] = top of stack; attach `a` LAST so it is the bottom
-            // (subject).
             let b = rect(doc, "b", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0));
             doc.attach(b, Parent::Comp(doc.main), 0).unwrap();
             let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(20.0, 20.0));
@@ -4658,8 +4379,6 @@ mod path_op_integration_tests {
 
         s.divide_selection();
 
-        // Subject becomes one piece (the intersection piece here); the other
-        // piece — the donut — must survive as ONE sibling CompoundPath.
         assert!(attached(&s, outer), "subject replaced by a piece");
         assert!(!attached(&s, hole), "cutter consumed");
 
@@ -4681,7 +4400,6 @@ mod path_op_integration_tests {
         let NodeKind::Shape(ShapeKind::CompoundPath(compound)) = &donut[0].1.kind else {
             unreachable!()
         };
-        // The hole must actually be hollow when filled NonZero.
         let mut bez = kurbo::BezPath::new();
         for c in &compound.contours {
             bez.extend(c.value_at(0.0).to_bez_path().elements().iter().copied());
@@ -4724,7 +4442,6 @@ mod path_op_integration_tests {
     #[test]
     fn boolean_expands_selected_groups_to_descendant_shapes() {
         let mut s = session_with(|doc| {
-            // Two groups, each holding one shape + fill.
             for (name, min, max) in [
                 ("ga", DVec2::new(0.0, 0.0), DVec2::new(20.0, 20.0)),
                 ("gb", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0)),
@@ -4742,7 +4459,6 @@ mod path_op_integration_tests {
         assert_eq!(groups.len(), 2);
         s.selection.nodes = groups.clone();
 
-        // Groups selected, not shapes: expansion must find both shapes.
         s.boolean_selection(SelectionBoolean::Union);
 
         assert!(
@@ -4752,7 +4468,6 @@ mod path_op_integration_tests {
             "group expansion failed: {:?}",
             s.status
         );
-        // RemoveNode is detach-only: count ATTACHED shapes, not arena entries.
         let shapes: Vec<_> = s
             .file
             .document
@@ -4878,7 +4593,6 @@ mod path_op_integration_tests {
 
         s.stroke_selection_to_path();
 
-        // The SHARED stroke node must be untouched.
         assert!(
             matches!(
                 kind_of(&s, kids[2]),
@@ -4886,12 +4600,10 @@ mod path_op_integration_tests {
             ),
             "shared stroke never mutated"
         );
-        // `b` untouched, still a plain rect.
         assert!(matches!(
             kind_of(&s, kids[1]),
             Some(NodeKind::Shape(ShapeKind::Rect { .. }))
         ));
-        // `a` was converted AND isolated in a fresh group carrying a local fill.
         let Some((Parent::Node(group), _)) = s.file.document.locate(kids[0]) else {
             panic!("converted shape moved into an isolation group");
         };
@@ -4916,7 +4628,6 @@ mod path_op_integration_tests {
 
     #[test]
     fn paste_style_leaves_unselected_sibling_untouched() {
-        // Two rects SHARE one fill; a third styled donor provides red.
         let mut s = session_with(|doc| {
             let a = rect(doc, "a", DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
             let b = rect(doc, "b", DVec2::new(20.0, 0.0), DVec2::new(30.0, 10.0));
@@ -4925,7 +4636,6 @@ mod path_op_integration_tests {
             doc.attach(b, Parent::Comp(doc.main), 1).unwrap();
             doc.attach(shared, Parent::Comp(doc.main), 2).unwrap();
 
-            // Donor group with its own red fill.
             let d = rect(doc, "donor", DVec2::new(40.0, 0.0), DVec2::new(50.0, 10.0));
             let red = solid_fill(doc, Color::rgba(1.0, 0.0, 0.0, 1.0));
             let g = doc.create_node(Node::new("donor_g", NodeKind::Group));
@@ -4937,11 +4647,9 @@ mod path_op_integration_tests {
         let kids = s.file.document.compositions[comp].children.clone();
         let (a, b, shared_fill, donor_group) = (kids[0], kids[1], kids[2], kids[3]);
 
-        // Copy the donor's style.
         s.selection.nodes = vec![donor_group];
         s.copy_selection();
 
-        // Paste onto ONE of the pair sharing the black fill.
         s.selection.nodes = vec![a];
         s.paste_style();
 
@@ -4950,9 +4658,7 @@ mod path_op_integration_tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(old_black(shared_fill).r, 0.0, "shared fill node untouched");
-        // `b` still painted by the untouched black fill (same scope).
         assert!(matches!(kind_of(&s, b), Some(NodeKind::Shape(_))));
-        // `a` now lives in an isolation group with a red local fill.
         let Some((Parent::Node(group), _)) = s.file.document.locate(a) else {
             panic!("target isolated into local scope");
         };
@@ -4979,7 +4685,6 @@ mod path_op_integration_tests {
             doc.attach(shape, Parent::Comp(second), 0).unwrap();
         });
 
-        // Select the root of the SECOND composition and copy it.
         let second_children: Vec<_> = s
             .file
             .document
@@ -4995,7 +4700,6 @@ mod path_op_integration_tests {
         s.selection.nodes = vec![root];
         s.copy_selection();
 
-        // Delete the original so paste must recreate it.
         s.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("cut".into()),
             ToolOutput::Commands(smallvec![EditorCommand::RemoveNode { id: root }]),
