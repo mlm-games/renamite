@@ -16,7 +16,7 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::components::{CompactIconAction, PanelHeader};
+use crate::components::{CompactIconAction, CompactIconActionWithKey, PanelHeader};
 use crate::session::{
     ContextMenuSource, ContextMenuState, LayerDragState, SessionRef, overlay_anchor,
 };
@@ -301,7 +301,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     .child((
         // Expand chevron (container rows with children)
         if (kind == LayerKind::Group || kind == LayerKind::Shape) && child_count > 0 {
-            CompactIconAction(
+            CompactIconActionWithKey(
+                format!("layers_{:?}_expand", id),
                 if st.is_expanded {
                     Symbols::expand_more
                 } else {
@@ -350,7 +351,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 .modifier(Modifier::new().flex_grow(1.0))
         },
         // Visibility
-        CompactIconAction(
+        CompactIconActionWithKey(
+            format!("layers_{:?}_visibility", id),
             if visible {
                 Symbols::visibility
             } else {
@@ -369,7 +371,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             },
         ),
         // Lock
-        CompactIconAction(
+        CompactIconActionWithKey(
+            format!("layers_{:?}_lock", id),
             if locked {
                 Symbols::lock
             } else {

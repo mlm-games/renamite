@@ -1,7 +1,7 @@
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Modifier, PaddingValues, TextFieldLineLimits, View, remember_state_with_key,
-    remember_with_key, request_frame, theme,
+    AlignItems, Modifier, PaddingValues, TextFieldLineLimits, View, remember,
+    remember_state_with_key, remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
@@ -138,10 +138,30 @@ pub fn CompactIconAction(
     tooltip: &'static str,
     on_click: impl Fn() + 'static,
 ) -> View {
-    let tooltip_state = remember_with_key(
-        format!("tooltip_{}_{}", symbol.name, tooltip),
-        TooltipState::new,
-    );
+    let tooltip_state = remember(TooltipState::new);
+
+    TooltipBox(
+        tooltip,
+        (*tooltip_state).clone(),
+        IconButton(
+            AppIcon(symbol, 22.0),
+            on_click,
+            IconButtonConfig {
+                container_size: Some(40.0),
+                ..Default::default()
+            },
+        ),
+        TooltipConfig::default(),
+    )
+}
+
+pub fn CompactIconActionWithKey(
+    key: impl Into<String>,
+    symbol: Symbol,
+    tooltip: &'static str,
+    on_click: impl Fn() + 'static,
+) -> View {
+    let tooltip_state = remember_with_key(key, TooltipState::new);
 
     TooltipBox(
         tooltip,
