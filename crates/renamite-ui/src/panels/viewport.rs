@@ -45,10 +45,26 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     request_frame();
                     true
                 }
-                Action::Gesture(Gesture::Pinch {
-                    delta_scale,
-                    center,
-                }) => {
+                Action::Gesture(Gesture::Pinch { delta_scale }) => {
+                    let is_drag = {
+                        let s = session.borrow();
+                        s.tool.is_dragging(s.active_tool)
+                    };
+                    if is_drag {
+                        return false;
+                    }
+                    let center_in_viewport = {
+                        let s = session.borrow();
+                        s.viewport.surface_size * 0.5
+                    };
+                    {
+                        let mut s = session.borrow_mut();
+                        s.viewport.zoom_at(center_in_viewport, delta_scale as f64);
+                    }
+                    request_frame();
+                    true
+                }
+                Action::Gesture(Gesture::PinchWithCenter { delta_scale, center }) => {
                     let is_drag = {
                         let s = session.borrow();
                         s.tool.is_dragging(s.active_tool)
