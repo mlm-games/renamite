@@ -64,7 +64,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     request_frame();
                     true
                 }
-                Action::Gesture(Gesture::PinchWithCenter { delta_scale, center }) => {
+                Action::Gesture(Gesture::PinchWithCenter {
+                    delta_scale,
+                    center,
+                }) => {
                     let is_drag = {
                         let s = session.borrow();
                         s.tool.is_dragging(s.active_tool)
@@ -302,8 +305,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         pe.consume();
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
+                        let tool = s.active_tool;
+                        s.tool.cancel(tool);
                         if s.viewport.pan_last.is_some() {
                             s.viewport.end_pan();
+                            request_frame();
+                        } else {
                             request_frame();
                         }
                     }

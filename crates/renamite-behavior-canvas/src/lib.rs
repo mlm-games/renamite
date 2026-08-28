@@ -207,6 +207,19 @@ impl ToolSet {
             _ => false,
         }
     }
+
+    pub fn cancel(&mut self, id: ToolId) {
+        match id {
+            ToolId::Select | ToolId::Transform => self.select.cancel(),
+            ToolId::Rect => self.rect.cancel(),
+            ToolId::Ellipse => self.ellipse.cancel(),
+            ToolId::Star => self.star.cancel(),
+            ToolId::Pen => self.pen.cancel(),
+            ToolId::PathEdit => self.path_edit.cancel(),
+            ToolId::Gradient => self.gradient.cancel(),
+            _ => {}
+        }
+    }
 }
 
 const DRAG_THRESHOLD_PX: f64 = 3.0;
@@ -305,13 +318,16 @@ impl SelectTool {
     pub fn is_dragging(&self) -> bool {
         matches!(
             self.state,
-            Some(SelState::Pending { .. })
-                | Some(SelState::DragMove { .. })
+            Some(SelState::DragMove { .. })
                 | Some(SelState::RubberBand { .. })
                 | Some(SelState::DragRotate { .. })
                 | Some(SelState::DragScale { .. })
                 | Some(SelState::DragPivot { .. })
         )
+    }
+
+    pub fn cancel(&mut self) {
+        self.state = Some(SelState::Idle);
     }
 
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
@@ -830,10 +846,11 @@ pub struct GradientTool {
 
 impl GradientTool {
     pub fn is_dragging(&self) -> bool {
-        matches!(
-            self.state,
-            GradState::Drag { dragging: true, .. }
-        )
+        matches!(self.state, GradState::Drag { dragging: true, .. })
+    }
+
+    pub fn cancel(&mut self) {
+        self.state = GradState::Idle;
     }
 
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
@@ -1320,6 +1337,10 @@ impl ShapeTool {
         self.drag.is_some()
     }
 
+    pub fn cancel(&mut self) {
+        self.drag = None;
+    }
+
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
         match ev {
             CanvasEvent::PointerDown {
@@ -1473,6 +1494,12 @@ impl Default for PenTool {
 impl PenTool {
     pub fn is_dragging(&self) -> bool {
         matches!(self.state, PenState::DraggingTangent { .. })
+    }
+
+    pub fn cancel(&mut self) {
+        if matches!(self.state, PenState::DraggingTangent { .. }) {
+            self.state = PenState::Idle;
+        }
     }
 
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
@@ -1802,6 +1829,10 @@ impl PathEditTool {
 
     pub fn is_dragging(&self) -> bool {
         !matches!(self.state, PathEditState::Idle)
+    }
+
+    pub fn cancel(&mut self) {
+        self.state = PathEditState::Idle;
     }
 
     pub fn overlay(&self, ctx: &ToolContext) -> ToolOverlay {
