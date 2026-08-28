@@ -208,6 +208,13 @@ impl ToolSet {
         }
     }
 
+    pub fn is_active(&self, id: ToolId) -> bool {
+        match id {
+            ToolId::Select | ToolId::Transform => self.select.is_active(),
+            _ => self.is_dragging(id),
+        }
+    }
+
     pub fn cancel(&mut self, id: ToolId) {
         match id {
             ToolId::Select | ToolId::Transform => self.select.cancel(),
@@ -319,6 +326,18 @@ impl SelectTool {
         matches!(
             self.state,
             Some(SelState::DragMove { .. })
+                | Some(SelState::RubberBand { .. })
+                | Some(SelState::DragRotate { .. })
+                | Some(SelState::DragScale { .. })
+                | Some(SelState::DragPivot { .. })
+        )
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self.state,
+            Some(SelState::Pending { .. })
+                | Some(SelState::DragMove { .. })
                 | Some(SelState::RubberBand { .. })
                 | Some(SelState::DragRotate { .. })
                 | Some(SelState::DragScale { .. })

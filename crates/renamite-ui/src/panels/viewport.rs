@@ -118,7 +118,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |delta: repose_core::Vec2| {
                         let is_tool_drag = {
                             let s = session.borrow();
-                            s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool)
+                            s.viewport.pan_last.is_some() || s.tool.is_active(s.active_tool)
                         };
                         if is_tool_drag {
                             return repose_core::Vec2::ZERO;
