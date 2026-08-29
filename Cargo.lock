@@ -3360,6 +3360,7 @@ dependencies = [
  "renamite-ui",
  "repose-core",
  "repose-platform",
+ "rlobkit-app-events",
  "wasm-bindgen",
  "winit",
 ]
@@ -3905,6 +3906,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "rlobkit-app-events"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "614bae11ac281cbccf354ddb9a781f10a2ce88e56b2e1cfb1b1f0af115819135"
+dependencies = [
+ "jni",
+ "log",
 ]
 
 [[package]]
