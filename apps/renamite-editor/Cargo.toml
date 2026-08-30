@@ -24,7 +24,7 @@ label = "Renamite"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26
-target_sdk_version = 35
+target_sdk_version = 37
 
 [[package.metadata.android.application.activity]]
 name = "rust.rlobkit.RlobKitMainActivity"
