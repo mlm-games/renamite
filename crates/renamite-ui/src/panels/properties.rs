@@ -223,14 +223,44 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         }
     }
 
-    // Single selected text: multiline field editing its content via
-    // SetTextContent. One begin/commit transaction per keystroke; the history
-    // layer folds consecutive same-label "Edit text" transactions on the same
-    // node into a single undo step, so typing stays one undo.
     if ids.len() == 1
         && let Some(section) = text_section(session.clone(), ids[0])
     {
         children.push(section);
+    }
+
+    if ids.len() == 1 {
+        if let Some(text_id) = single_text_in_group(&session.borrow().file.document, ids[0]) {
+            let text_rows: Vec<PropRow> = {
+                let s = session.borrow();
+                props_for_node(&s.file.document, text_id, playhead)
+                    .into_iter()
+                    .filter(|r| r.desc.section == "Text")
+                    .collect()
+            };
+            if !text_rows.is_empty() {
+                children.push(crate::components::CollapsibleSection(
+                    format!("group_text_props_{text_id:?}"),
+                    "Text",
+                    vec![],
+                    Column(Modifier::new().fill_max_width()).child(
+                        text_rows
+                            .iter()
+                            .map(|prop| {
+                                PropRowView(
+                                    session.clone(),
+                                    vec![text_id],
+                                    prop.clone(),
+                                    playhead,
+                                    record,
+                                    diamond_quiet,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                ));
+            }
+        }
     }
 
     // Single selected image: informational metadata (name, dimensions, MIME).
@@ -1523,6 +1553,25 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
             .child(chips),
         )),
     ))
+}
+
+fn single_text_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<NodeId> {
+    let node = doc.nodes.get(id)?;
+    if !matches!(&node.kind, NodeKind::Group) {
+        return None;
+    }
+    let children = node.children.clone();
+    let mut texts = children.into_iter().filter(|&cid| {
+        matches!(
+            doc.nodes.get(cid).map(|n| &n.kind),
+            Some(NodeKind::Text(_))
+        )
+    });
+    let text_id = texts.next()?;
+    if texts.next().is_some() {
+        return None;
+    }
+    Some(text_id)
 }
 
 /// One selectable font-family chip in the text properties section.

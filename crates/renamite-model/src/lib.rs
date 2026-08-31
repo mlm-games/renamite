@@ -1176,16 +1176,25 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             inner_r,
             outer_r,
             roundness,
-            ..
-        } => star_path(
-            ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
-            ov_f64(ov, id, "shape.points", points.value_at(frame))
+            kind,
+        } => {
+            let pts = ov_f64(ov, id, "shape.points", points.value_at(frame))
                 .round()
-                .max(3.0) as usize,
-            Some(ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame))),
-            ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
-            ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
-        ),
+                .max(3.0) as usize;
+            let outer = ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame));
+            let inner = match kind {
+                // Burst ≈ polygon on the star node: outer ring only (Lottie sy=2).
+                StarKind::Burst => None,
+                StarKind::Star => Some(ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame))),
+            };
+            star_path(
+                ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
+                pts,
+                inner,
+                outer,
+                ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
+            )
+        }
         ShapeKind::Polygon {
             pos,
             points,
@@ -1205,6 +1214,7 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
 }
 
 /// Star/polygon outline. `roundness` is corner radius in local units (0 = sharp).
+/// Matches RoundCorners modifier semantics (not Lottie % outer-roundness).
 fn star_path(
     center: glam::DVec2,
     points: usize,
@@ -1213,57 +1223,26 @@ fn star_path(
     roundness: f64,
 ) -> BezPath {
     let n = if inner.is_some() { points * 2 } else { points };
-    let mut verts = Vec::with_capacity(n);
+    let mut anchors = Vec::with_capacity(n);
     for k in 0..n {
         let ang = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / n as f64;
         let r = match inner {
             Some(ir) if k % 2 == 1 => ir,
             _ => outer,
         };
-        verts.push(Point::new(center.x + r * ang.cos(), center.y + r * ang.sin()));
+        anchors.push(renamite_geometry::Anchor::corner(glam::DVec2::new(
+            center.x + r * ang.cos(),
+            center.y + r * ang.sin(),
+        )));
     }
-    if roundness <= 1e-9 || verts.len() < 3 {
-        let mut p = BezPath::new();
-        for (i, v) in verts.iter().enumerate() {
-            if i == 0 {
-                p.move_to(*v);
-            } else {
-                p.line_to(*v);
-            }
-        }
-        p.close_path();
-        return p;
+    let sharp = renamite_geometry::VectorPath {
+        closed: true,
+        anchors,
+    };
+    if roundness <= 1e-9 {
+        return sharp.to_bez_path();
     }
-    round_polygon_corners(&verts, roundness)
-}
-
-/// Fillet every vertex of a closed polygon. Radius is clamped per-corner so
-/// adjacent fillets never overlap (half of the shorter adjacent edge).
-fn round_polygon_corners(verts: &[Point], radius: f64) -> BezPath {
-    let n = verts.len();
-    let mut p = BezPath::new();
-    for i in 0..n {
-        let prev = verts[(i + n - 1) % n];
-        let cur = verts[i];
-        let next = verts[(i + 1) % n];
-        let v0x = prev.x - cur.x;
-        let v0y = prev.y - cur.y;
-        let v1x = next.x - cur.x;
-        let v1y = next.y - cur.y;
-        let len0 = (v0x * v0x + v0y * v0y).sqrt().max(1e-9);
-        let len1 = (v1x * v1x + v1y * v1y).sqrt().max(1e-9);
-        let r = radius.min(len0 * 0.5).min(len1 * 0.5);
-        let p0 = Point::new(cur.x + v0x / len0 * r, cur.y + v0y / len0 * r);
-        let p1 = Point::new(cur.x + v1x / len1 * r, cur.y + v1y / len1 * r);
-        if i == 0 {
-            p.move_to(p0);
-        } else {
-            p.line_to(p0);
-        }
-        p.quad_to(cur, p1);
-    }
-    p.close_path();
-    p
+    sharp.round_corners(roundness).to_bez_path()
 }
 
 pub fn evaluate(doc: &Document, comp: CompId, frame: f64) -> Scene {
@@ -3327,44 +3306,84 @@ mod tests {
             p.elements().last(),
             Some(kurbo::PathEl::ClosePath)
         ));
-        let lines = p
+        // VectorPath emits CurveTo per edge (even for sharp corners: zero tangents).
+        let curves = p
             .elements()
             .iter()
-            .filter(|e| matches!(e, kurbo::PathEl::LineTo(_) | kurbo::PathEl::MoveTo(_)))
+            .filter(|e| matches!(e, kurbo::PathEl::CurveTo(_, _, _)))
             .count();
-        assert_eq!(lines, 10);
+        assert_eq!(curves, 10);
     }
 
     #[test]
     fn polygon_six_points() {
         let p = star_path(DVec2::ZERO, 6, None, 40.0, 0.0);
-        let verts = p
+        let curves = p
             .elements()
             .iter()
-            .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_) | kurbo::PathEl::LineTo(_)))
+            .filter(|e| matches!(e, kurbo::PathEl::CurveTo(_, _, _)))
             .count();
-        assert_eq!(verts, 6);
+        assert_eq!(curves, 6);
     }
 
     #[test]
     fn star_roundness_changes_path() {
         let sharp = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 0.0);
-        let rounded = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 10.0);
-        // Rounded path uses quad segments for fillets, sharp uses only lines.
-        let sharp_has_quad = sharp
-            .elements()
-            .iter()
-            .any(|e| matches!(e, kurbo::PathEl::QuadTo(_, _)));
-        let rounded_has_quad = rounded
-            .elements()
-            .iter()
-            .any(|e| matches!(e, kurbo::PathEl::QuadTo(_, _)));
-        assert!(!sharp_has_quad, "sharp star should be straight lines");
-        assert!(rounded_has_quad, "rounded star should contain quad fillets");
+        let rounded = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 8.0);
         assert_ne!(
             sharp.elements().len(),
             rounded.elements().len(),
-            "roundness should change element count"
+            "roundness must add fillet segments"
+        );
+        // Rounded via VectorPath::round_corners doubles anchor count => more curves.
+        assert!(rounded.elements().len() > sharp.elements().len());
+    }
+
+    #[test]
+    fn star_burst_ignores_inner_radius() {
+        let star = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 0.0);
+        let burst = star_path(DVec2::ZERO, 5, None, 50.0, 0.0);
+        let star_verts = star
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::CurveTo(_, _, _)))
+            .count();
+        let burst_verts = burst
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::CurveTo(_, _, _)))
+            .count();
+        assert_eq!(star_verts, 10);
+        assert_eq!(burst_verts, 5);
+    }
+
+    #[test]
+    fn shape_path_honors_roundness_override() {
+        let mut doc = Document::empty();
+        let star = doc.create_node(Node::new(
+            "star",
+            NodeKind::Shape(ShapeKind::Star {
+                pos: Animated::new(DVec2::ZERO),
+                points: Animated::new(5.0),
+                inner_r: Animated::new(20.0),
+                outer_r: Animated::new(50.0),
+                roundness: Animated::new(0.0),
+                kind: StarKind::Star,
+            }),
+        ));
+        doc.attach(star, Parent::Comp(doc.main), 0).unwrap();
+        let shape_kind = match &doc.nodes.get(star).unwrap().kind {
+            NodeKind::Shape(s) => s.clone(),
+            _ => unreachable!(),
+        };
+        let sharp = shape_path(&shape_kind, star, 0.0, &Overrides::default());
+        let mut ov = Overrides::default();
+        ov.set(star, PropPath::new("shape.roundness"), Value::F64(12.0));
+        let rounded = shape_path(&shape_kind, star, 0.0, &ov);
+        assert_ne!(
+            sharp.elements().len(),
+            rounded.elements().len(),
+            "roundness override must affect path"
         );
     }
 

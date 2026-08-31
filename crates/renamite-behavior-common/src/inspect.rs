@@ -66,6 +66,24 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
     };
     descriptors_for(&node.kind)
         .into_iter()
+        .filter(|desc| {
+            // Hide inner radius when Burst (no-op).
+            if desc.path.as_str() == "shape.inner_r" {
+                match &node.kind {
+                    NodeKind::Shape(ShapeKind::Star { kind, .. }) if *kind == renamite_model::StarKind::Burst => {
+                        return false;
+                    }
+                    NodeKind::Mask(m) => match &m.shape {
+                        ShapeKind::Star { kind, .. } if *kind == renamite_model::StarKind::Burst => {
+                            return false;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            true
+        })
         .filter_map(|desc| {
             // `trim.mode` is a plain enum field, not an `Animated<T>` - the
             // generic value_at path can't resolve it. Synthesize the row from

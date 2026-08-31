@@ -161,4 +161,31 @@ mod tests {
         assert_eq!(added.dashes[0].base, 10.0);
         assert_eq!(added.offset.base, 2.0);
     }
+
+    #[test]
+    fn stroke_style_for_shape_finds_following_sibling() {
+        use renamite_model::{Node, ShapeKind};
+        let mut doc = Document::empty();
+        let shape = doc.create_node(Node::new(
+            "shape",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::splat(10.0)),
+            }),
+        ));
+        let stroke = doc.create_node(Node::new(
+            "stroke",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(2.0),
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+                dash: None,
+            }),
+        ));
+        doc.attach(shape, Parent::Comp(doc.main), 0).unwrap();
+        doc.attach(stroke, Parent::Comp(doc.main), 1).unwrap();
+        assert_eq!(stroke_style_for_shape(&doc, shape), Some(stroke));
+        assert_eq!(renamite_model::stroke_style_for(&doc, shape), Some(stroke));
+    }
 }
