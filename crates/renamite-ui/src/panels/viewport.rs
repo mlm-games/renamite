@@ -307,11 +307,27 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         s.viewport.pointer_down = false;
                         let tool = s.active_tool;
                         s.tool.cancel(tool);
+                        if s.machine_preview_enabled
+                            || s.mode == crate::session::EditorMode::Interact
+                        {
+                            s.engine_pointer_leave();
+                        }
                         if s.viewport.pan_last.is_some() {
                             s.viewport.end_pan();
                             request_frame();
                         } else {
                             request_frame();
+                        }
+                    }
+                })
+                .on_pointer_leave({
+                    let session = session.clone();
+                    move |_pe: PointerEvent| {
+                        let mut s = session.borrow_mut();
+                        if s.machine_preview_enabled
+                            || s.mode == crate::session::EditorMode::Interact
+                        {
+                            s.engine_pointer_leave();
                         }
                     }
                 }),

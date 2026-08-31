@@ -10,8 +10,9 @@ use renamite_animation::LoopMode;
 use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
-    hit_transition, input_is_referenced, remove_input, remove_state, remove_transition,
-    rename_input, rename_state, set_entry_state, set_transition_target, transition_mut,
+    hit_transition, input_is_referenced, remove_input, remove_layer, remove_state,
+    remove_transition, rename_input, rename_layer, rename_state, set_entry_state,
+    set_transition_target, transition_mut,
 };
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
@@ -301,7 +302,10 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
             vec![
                 CompactIconAction(Symbols::add, "Add state", {
                     let session = session.clone();
-                    move || add_state_ui(&session, machine_id, 0)
+                    move || {
+                        let layer = target_layer(&session);
+                        add_state_ui(&session, machine_id, layer)
+                    }
                 }),
                 CompactIconAction(Symbols::layers, "Add layer", {
                     let session = session.clone();
@@ -335,6 +339,15 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
             ListenersSection(overlay, session, machine_id),
         ),
     ))
+}
+
+fn target_layer(session: &SessionRef) -> usize {
+    match session.borrow().machine_selection {
+        MachineSelection::State { layer, .. }
+        | MachineSelection::Transition { layer, .. }
+        | MachineSelection::Layer { layer } => layer,
+        _ => 0,
+    }
 }
 
 fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
@@ -498,6 +511,46 @@ fn InputRow(
                     .clip_rounded(4.0),
             ),
     ];
+
+    match input.kind {
+        InputKind::Bool { default } => {
+            let label: &'static str = if default { "def:on" } else { "def:off" };
+            controls.push(chip(label, default, {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Input default", move |machine| {
+                        if let Some(InputDef {
+                            kind: InputKind::Bool { default },
+                            ..
+                        }) = machine.inputs.get_mut(index)
+                        {
+                            *default = !*default;
+                        }
+                        Ok(())
+                    });
+                }
+            }));
+        }
+        InputKind::Number { default } => {
+            let def = default;
+            controls.push(machine_scrub_number(
+                session.clone(),
+                def,
+                0.01,
+                Rc::new(move |machine, value| {
+                    if let Some(InputDef {
+                        kind: InputKind::Number { default },
+                        ..
+                    }) = machine.inputs.get_mut(index)
+                    {
+                        *default = value;
+                    }
+                }),
+            ));
+        }
+        InputKind::Trigger => {}
+    }
 
     match (input.kind, preview) {
         (InputKind::Bool { .. }, Some(InputValue::Bool(value))) => {
@@ -690,19 +743,30 @@ fn handle_graph_down(
     if is_double {
         if hit_state(&layout, position).is_none() && hit_any(&machine, &layout, position).is_none()
         {
+            let layer = match s.machine_selection {
+                MachineSelection::State { layer, .. }
+                | MachineSelection::Transition { layer, .. }
+                | MachineSelection::Layer { layer } => layer,
+                _ => 0,
+            };
             let name = format!(
                 "State {}",
-                machine.layers.first().map(|l| l.states.len()).unwrap_or(0) + 1
+                machine
+                    .layers
+                    .get(layer)
+                    .map(|l| l.states.len())
+                    .unwrap_or(0)
+                    + 1
             );
             let ok = s.edit_active_machine("Add state", move |m| {
-                add_state(m, 0, name, StateKind::Empty)?;
+                add_state(m, layer, name, StateKind::Empty)?;
                 Ok(())
             });
             if ok {
                 if let Some(m) = s.file.machines.get(machine_id) {
-                    if let Some(l) = m.layers.first() {
+                    if let Some(l) = m.layers.get(layer) {
                         s.machine_selection = MachineSelection::State {
-                            layer: 0,
+                            layer,
                             state: l.states.len().saturating_sub(1),
                         };
                     }
@@ -1054,10 +1118,47 @@ fn LayerInspector(
         (l.name.clone(), l.any_transitions.len(), l.states.len())
     };
     Column(Modifier::new().fill_max_width().gap(4.0)).child((
-        Text(format!("Layer · {name}"))
-            .size(th.typography.label_medium)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding(12.0)),
+        Row(Modifier::new()
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 8.0,
+                bottom: 2.0,
+            })
+            .gap(6.0)
+            .align_items(AlignItems::CENTER))
+        .child((
+            Box(Modifier::new().flex_grow(1.0)).child(crate::components::name_field(
+                format!("machine_layer_name_{layer}"),
+                name,
+                "Layer name",
+                36.0,
+                {
+                    let session = session.clone();
+                    move |text: String| {
+                        let mut s = session.borrow_mut();
+                        s.edit_active_machine("Rename layer", move |machine| {
+                            rename_layer(machine, layer, text)?;
+                            Ok(())
+                        });
+                    }
+                },
+            )),
+            CompactIconAction(Symbols::delete, "Delete layer", {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    let ok = s.edit_active_machine("Delete layer", move |machine| {
+                        remove_layer(machine, layer)?;
+                        Ok(())
+                    });
+                    if ok {
+                        s.machine_selection = MachineSelection::None;
+                    }
+                }
+            }),
+        )),
         Text(format!(
             "{state_count} states · {any_count} any-transitions"
         ))
@@ -1204,19 +1305,26 @@ fn StateInspector(
                     });
                 }
             }),
-            chip(
-                "Blend1D",
-                matches!(kind, StateKind::Blend1D { .. }),
-                set_kind_action(
-                    session.clone(),
-                    layer,
-                    state,
-                    StateKind::Blend1D {
-                        input: number_input_index(&inputs).unwrap_or(0),
-                        children: Vec::new(),
-                    },
-                ),
-            ),
+            chip("Blend1D", matches!(kind, StateKind::Blend1D { .. }), {
+                let session = session.clone();
+                let inputs = inputs.clone();
+                move || {
+                    let Some(input) = number_input_index(&inputs) else {
+                        let mut s = session.borrow_mut();
+                        s.status = Some("Add a Number input before Blend1D".into());
+                        s.repaint();
+                        return;
+                    };
+                    let mut s = session.borrow_mut();
+                    s.edit_active_machine("Change state", move |machine| {
+                        machine.layers[layer].states[state].kind = StateKind::Blend1D {
+                            input,
+                            children: Vec::new(),
+                        };
+                        Ok(())
+                    });
+                }
+            }),
         )),
     ];
 
@@ -2110,6 +2218,12 @@ fn AddListenerRow(
         _ => "action".into(),
     };
 
+    let number_editor: View = if matches!(input_kind, Some(InputKind::Number { .. })) {
+        listener_draft_number_scrub(session.clone(), draft.number_value, 0.01)
+    } else {
+        Box(Modifier::new().width(0.0))
+    };
+
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(PaddingValues {
@@ -2137,15 +2251,17 @@ fn AddListenerRow(
             input_items,
         ),
         dropdown(
-            overlay,
+            overlay.clone(),
             "lst_action",
             format!("{action_label} ▾"),
             action_items,
         ),
+        number_editor,
         Button(
             Modifier::new(),
             {
                 let session = session.clone();
+                let inputs = inputs.clone();
                 move || {
                     let mut s = session.borrow_mut();
                     let draft = s.listener_draft.clone();
@@ -2155,7 +2271,8 @@ fn AddListenerRow(
                     let Some(input) = draft.input else {
                         return;
                     };
-                    let action = match input_kind {
+                    let kind = inputs.get(input).map(|i| i.kind);
+                    let action = match kind {
                         Some(InputKind::Bool { .. }) => {
                             if draft.toggle {
                                 ListenerAction::ToggleBool { input }
@@ -2178,10 +2295,13 @@ fn AddListenerRow(
                         event,
                         action,
                     };
-                    s.edit_active_machine("Add listener", move |machine| {
+                    let ok = s.edit_active_machine("Add listener", move |machine| {
                         add_listener(machine, listener)?;
                         Ok(())
                     });
+                    if ok {
+                        s.listener_draft = crate::session::ListenerDraft::default();
+                    }
                 }
             },
             ButtonConfig::default(),
@@ -2443,6 +2563,10 @@ fn transition_target_dropdown(
     add_mode: bool,
 ) -> View {
     let items = (0..state_count)
+        .filter(|&target| match source {
+            TransitionSource::State(from) => from != target,
+            TransitionSource::Any => true,
+        })
         .map(|target| {
             let target_name = session.borrow().file.machines[machine_id].layers[layer]
                 .states
@@ -2714,6 +2838,45 @@ fn preview_scrub_number(session: SessionRef, input: usize, value: f64, step: f64
                     let session = session.clone();
                     move |_| {
                         session.borrow_mut().end_preview_number_scrub();
+                    }
+                }),
+        )
+}
+
+fn listener_draft_number_scrub(session: SessionRef, value: f64, step: f64) -> View {
+    let th = theme();
+    let drag = Rc::new(RefCell::new(None::<(f64, f32)>));
+    Text(format!("{value:.2}"))
+        .size(th.typography.body_medium)
+        .color(th.primary)
+        .modifier(
+            Modifier::new()
+                .min_width(52.0)
+                .cursor(repose_core::CursorIcon::EwResize)
+                .on_pointer_down({
+                    let drag = drag.clone();
+                    move |pe: PointerEvent| {
+                        *drag.borrow_mut() = Some((value, pe.position.x));
+                    }
+                })
+                .on_pointer_move({
+                    let session = session.clone();
+                    let drag = drag.clone();
+                    move |pe: PointerEvent| {
+                        let Some((origin, press_x)) = *drag.borrow() else {
+                            return;
+                        };
+                        let dx = (pe.position.x - press_x) as f64;
+                        let mult = if pe.modifiers.shift { 0.1 } else { 1.0 };
+                        let new_value = origin + dx * step * mult;
+                        session.borrow_mut().listener_draft.number_value = new_value;
+                        request_frame();
+                    }
+                })
+                .on_pointer_up({
+                    let drag = drag.clone();
+                    move |_| {
+                        *drag.borrow_mut() = None;
                     }
                 }),
         )

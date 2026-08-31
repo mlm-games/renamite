@@ -2823,20 +2823,34 @@ impl Session {
             return;
         };
 
-        self.machine_preview_inputs = machine
+        // Rebuild defaults, then restore previous values where kinds still match.
+        let mut next: Vec<InputValue> = machine
             .inputs
             .iter()
             .map(|input| match input.kind {
                 InputKind::Bool { default } => InputValue::Bool(default),
-
                 InputKind::Number { default } => InputValue::Number(default),
-
                 InputKind::Trigger => InputValue::Trigger { fired: false },
             })
             .collect();
 
+        for (i, dst) in next.iter_mut().enumerate() {
+            if let Some(prev) = self.machine_preview_inputs.get(i) {
+                match (dst, prev) {
+                    (InputValue::Bool(a), InputValue::Bool(b)) => *a = *b,
+                    (InputValue::Number(a), InputValue::Number(b)) => *a = *b,
+                    // triggers: don't keep "fired" across rebuilds
+                    (InputValue::Trigger { .. }, InputValue::Trigger { .. }) => {}
+                    _ => {}
+                }
+            }
+        }
+        self.machine_preview_inputs = next;
+
         if self.machine_preview_enabled {
             self.engine.play_machine(&self.file, machine_id);
+            self.engine
+                .apply_machine_inputs(&self.machine_preview_inputs);
         } else {
             self.engine.play_timeline(&self.file, LoopMode::Loop);
         }
@@ -2846,7 +2860,32 @@ impl Session {
         request_frame();
     }
 
+    fn sync_preview_inputs_from_engine(&mut self) {
+        if let Some(inputs) = self.engine.machine_inputs() {
+            if self.machine_preview_inputs.len() == inputs.len() {
+                self.machine_preview_inputs = inputs.to_vec();
+            }
+        }
+    }
+
+    fn ensure_machine_preview_running(&mut self) {
+        if !self.machine_preview_enabled {
+            self.machine_preview_enabled = true;
+            self.reset_machine_preview();
+            return;
+        }
+        if self.engine.playing_machine_id() != self.active_machine {
+            if let Some(id) = self.active_machine {
+                self.engine.play_machine(&self.file, id);
+                self.engine
+                    .apply_machine_inputs(&self.machine_preview_inputs);
+                self.engine.reevaluate(&self.file);
+            }
+        }
+    }
+
     pub fn set_preview_bool(&mut self, input: usize, value: bool) {
+        self.ensure_machine_preview_running();
         let Some(machine) = self.active_machine else {
             return;
         };
@@ -2863,6 +2902,7 @@ impl Session {
     }
 
     pub fn set_preview_number(&mut self, input: usize, value: f64) {
+        self.ensure_machine_preview_running();
         let Some(machine) = self.active_machine else {
             return;
         };
@@ -2879,6 +2919,7 @@ impl Session {
     }
 
     pub fn fire_preview_trigger(&mut self, input: usize) {
+        self.ensure_machine_preview_running();
         let Some(machine) = self.active_machine else {
             return;
         };
@@ -2895,12 +2936,14 @@ impl Session {
     pub fn engine_pointer_down(&mut self, world: DVec2) {
         self.engine.pointer_down(&self.file, world);
         let _ = self.engine.tick(&self.file, 0.0);
+        self.sync_preview_inputs_from_engine();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
 
     pub fn engine_pointer_move(&mut self, world: DVec2) {
         self.engine.pointer_move(&self.file, world);
+        self.sync_preview_inputs_from_engine();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
@@ -2908,6 +2951,15 @@ impl Session {
     pub fn engine_pointer_up(&mut self, world: DVec2) {
         self.engine.pointer_up(&self.file, world);
         let _ = self.engine.tick(&self.file, 0.0);
+        self.sync_preview_inputs_from_engine();
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
+    }
+
+    pub fn engine_pointer_leave(&mut self) {
+        self.engine.pointer_leave(&self.file);
+        let _ = self.engine.tick(&self.file, 0.0);
+        self.sync_preview_inputs_from_engine();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }

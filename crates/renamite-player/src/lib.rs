@@ -15,7 +15,7 @@
 use glam::DVec2;
 use renamite_animation::{FrameRate, LoopMode, PlayState, Playback};
 use renamite_io_ren::RenFile;
-use renamite_machine::{MachineId, MachineInstance, PointerEventKind};
+use renamite_machine::{InputValue, MachineId, MachineInstance, PointerEventKind};
 use renamite_model::{CompId, NodeId, Overrides, PropPath, Scene, Value, evaluate_with, pick};
 
 pub use renamite_model::{nodes_bounds, pick_box};
@@ -267,6 +267,34 @@ impl Engine {
         };
 
         Some(instance.layer_states().collect())
+    }
+
+    pub fn machine_inputs(&self) -> Option<&[InputValue]> {
+        match &self.mode {
+            PlayMode::Machine { instance, .. } => Some(&instance.inputs),
+            _ => None,
+        }
+    }
+
+    pub fn apply_machine_inputs(&mut self, inputs: &[InputValue]) {
+        let PlayMode::Machine { instance, .. } = &mut self.mode else {
+            return;
+        };
+        for (dst, src) in instance.inputs.iter_mut().zip(inputs.iter()) {
+            match (dst, src) {
+                (InputValue::Bool(a), InputValue::Bool(b)) => *a = *b,
+                (InputValue::Number(a), InputValue::Number(b)) => *a = *b,
+                (InputValue::Trigger { fired: a }, InputValue::Trigger { fired: b }) => *a = *b,
+                _ => {}
+            }
+        }
+    }
+
+    pub fn playing_machine_id(&self) -> Option<MachineId> {
+        match &self.mode {
+            PlayMode::Machine { id, .. } => Some(*id),
+            _ => None,
+        }
     }
 
     pub fn set_bool(&mut self, project: &RenFile, name: &str, v: bool) -> bool {

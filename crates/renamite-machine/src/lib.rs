@@ -440,11 +440,16 @@ fn normalized_time(state: &State, clips: &ClipMap, time: f64) -> f64 {
             .get(*clip)
             .map(|c| c.local(time * speed.max(0.0), *loop_mode).1)
             .unwrap_or(1.0),
-        StateKind::Blend1D { children, .. } => children
-            .first()
-            .and_then(|ch| clips.get(ch.clip))
-            .map(|c| c.local(time, LoopMode::Loop).1)
-            .unwrap_or(1.0),
+        StateKind::Blend1D { children, .. } => {
+            if children.is_empty() {
+                return 1.0;
+            }
+            children
+                .first()
+                .and_then(|ch| clips.get(ch.clip))
+                .map(|c| c.local(time, LoopMode::Loop).1)
+                .unwrap_or(1.0)
+        }
         StateKind::Empty => 1.0,
     }
 }
@@ -512,6 +517,9 @@ fn sample_state(
             emit_events(c, pframe, frame, *loop_mode, events);
         }
         StateKind::Blend1D { input, children } => {
+            if children.is_empty() {
+                return;
+            }
             let x = match inputs.get(*input) {
                 Some(InputValue::Number(n)) => *n,
                 _ => 0.0,

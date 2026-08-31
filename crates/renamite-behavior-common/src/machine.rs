@@ -60,6 +60,9 @@ pub enum MachineEditError {
     #[error("layer must retain at least one state")]
     LastState,
 
+    #[error("machine must retain at least one layer")]
+    LastLayer,
+
     #[error("transition already exists")]
     DuplicateTransition,
 }
@@ -251,6 +254,35 @@ pub fn add_layer(machine: &mut Machine, name: impl Into<String>) -> Result<usize
     });
 
     Ok(machine.layers.len() - 1)
+}
+
+pub fn rename_layer(
+    machine: &mut Machine,
+    layer: usize,
+    name: impl Into<String>,
+) -> Result<()> {
+    let layer = machine
+        .layers
+        .get_mut(layer)
+        .ok_or(MachineEditError::OutOfRange)?;
+    let name = name.into();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(MachineEditError::EmptyName);
+    }
+    layer.name = name.to_owned();
+    Ok(())
+}
+
+pub fn remove_layer(machine: &mut Machine, layer: usize) -> Result<()> {
+    if layer >= machine.layers.len() {
+        return Err(MachineEditError::OutOfRange);
+    }
+    if machine.layers.len() <= 1 {
+        return Err(MachineEditError::LastLayer);
+    }
+    machine.layers.remove(layer);
+    Ok(())
 }
 
 pub fn add_state(
