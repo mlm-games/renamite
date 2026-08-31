@@ -58,12 +58,165 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     };
 
     if ids.is_empty() {
+        let (comp_id, comp_name, size, rate, range) = {
+            let s = session.borrow();
+            let comp_id = s.file.document.main;
+            let comp = &s.file.document.compositions[comp_id];
+            (
+                comp_id,
+                comp.name.clone(),
+                comp.size,
+                comp.rate,
+                comp.range,
+            )
+        };
+        let comp_section = {
+            let th = theme();
+            let duration = (range.1 .0 - range.0 .0).max(0);
+            crate::components::CollapsibleSection(
+                "composition_props",
+                format!("Composition · {comp_name}"),
+                vec![],
+                Column(Modifier::new().fill_max_width()).child((
+                    // Size row (read-only)
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 12.0,
+                            top: 6.0,
+                            bottom: 6.0,
+                        })
+                        .gap(8.0)
+                        .align_items(AlignItems::CENTER))
+                    .child((
+                        Text("Size")
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface)
+                            .modifier(Modifier::new().width(96.0)),
+                        Text(format!("{} × {} px", size.0, size.1))
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface_variant),
+                    )),
+                    // Frame rate (read-only)
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 12.0,
+                            top: 2.0,
+                            bottom: 6.0,
+                        })
+                        .gap(8.0)
+                        .align_items(AlignItems::CENTER))
+                    .child((
+                        Text("Frame rate")
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface)
+                            .modifier(Modifier::new().width(96.0)),
+                        Text(format!("{}/{} fps", rate.num, rate.den))
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface_variant),
+                    )),
+                    // Range: editable In / Out
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 8.0,
+                            top: 4.0,
+                            bottom: 4.0,
+                        })
+                        .gap(8.0)
+                        .align_items(AlignItems::CENTER))
+                    .child((
+                        Text("Range")
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface)
+                            .modifier(Modifier::new().width(96.0)),
+                        Box(Modifier::new().width(84.0)).child(
+                            crate::components::AppTextField(
+                                format!("comp_in_{comp_id:?}"),
+                                range.0 .0.to_string(),
+                                "In",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(v) = text.trim().parse::<i64>() {
+                                            let mut s = session.borrow_mut();
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction("Set composition range".into()),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionRange {
+                                                        comp: comp_id,
+                                                        start: Some(Frame(v)),
+                                                        end: None,
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
+                                    }
+                                },
+                            ),
+                        ),
+                        Text("–")
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface_variant),
+                        Box(Modifier::new().width(84.0)).child(
+                            crate::components::AppTextField(
+                                format!("comp_out_{comp_id:?}"),
+                                range.1 .0.to_string(),
+                                "Out",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(v) = text.trim().parse::<i64>() {
+                                            let mut s = session.borrow_mut();
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction("Set composition range".into()),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionRange {
+                                                        comp: comp_id,
+                                                        start: None,
+                                                        end: Some(Frame(v)),
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
+                                    }
+                                },
+                            ),
+                        ),
+                    )),
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 12.0,
+                            top: 2.0,
+                            bottom: 8.0,
+                        })
+                        .gap(8.0))
+                    .child((
+                        Box(Modifier::new().width(96.0)),
+                        Text(format!("{duration} frames"))
+                            .size(th.typography.label_medium)
+                            .color(th.on_surface_variant),
+                    )),
+                )),
+            )
+        };
         return Column(Modifier::new().fill_max_size()).child((
             PanelHeader(
                 Symbols::settings,
                 "Properties",
                 vec![],
-                // vec![crate::CompactSwatchButton(session)], // Seems unneeded
             ),
             Text("No selection")
                 .size(th.typography.body_medium)
@@ -76,8 +229,9 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     left: 16.0,
                     right: 16.0,
                     top: 0.0,
-                    bottom: 16.0,
+                    bottom: 12.0,
                 })),
+            comp_section,
         ));
     }
 
@@ -2425,6 +2579,7 @@ fn stop_rows(
     record: bool,
     stops: GradientStops,
 ) -> Vec<View> {
+    let total = stops.0.len();
     stops
         .0
         .iter()
@@ -2456,6 +2611,39 @@ fn stop_rows(
                     }
                 }));
             let base = i * 5;
+            let remove = if total > 2 {
+                CompactIconAction(Symbols::remove, "Remove stop", {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        let frame = s.playback.head;
+                        let Ok(Value::Stops(mut stops)) =
+                            s.file.document.value_at(style_id, &PropPath::new("grad.stops"), frame)
+                        else {
+                            return;
+                        };
+                        if i >= stops.0.len() || stops.0.len() <= 2 {
+                            return;
+                        }
+                        stops.0.remove(i);
+                        let cmd = resolve_property_edit(
+                            &s.file.document,
+                            style_id,
+                            &PropPath::new("grad.stops"),
+                            Value::Stops(stops),
+                            Frame(frame.round() as i64),
+                            s.record,
+                        );
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Remove stop".into()),
+                            ToolOutput::Commands(smallvec![cmd]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                })
+            } else {
+                Box(Modifier::new().width(28.0))
+            };
             Row(Modifier::new()
                 .height(36.0)
                 .fill_max_width()
@@ -2529,7 +2717,7 @@ fn stop_rows(
                 scrub_f64_w(
                     session.clone(),
                     vec![style_id],
-                    path,
+                    path.clone(),
                     stop.color.a,
                     0.01,
                     Some(0.0),
@@ -2539,6 +2727,7 @@ fn stop_rows(
                     base + 4,
                     40.0,
                 ),
+                remove,
             ))
         })
         .collect()
