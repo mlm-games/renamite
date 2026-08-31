@@ -92,8 +92,6 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
     if expanded {
         actions.push(UndoButton(agent.clone()));
         actions.push(RedoButton(agent.clone()));
-        // Playback controls live in the timeline by default; the top bar only
-        // surfaces them in Animate mode, where scrubbing is the main job.
         if mode == EditorMode::Animate {
             actions.push(CompactIconAction(
                 if playing {
@@ -105,8 +103,6 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
                 move || toggle_playback(&agent),
             ));
         }
-        // In Interact mode surface the machine preview toggle, not timeline
-        // playback: driving the state machine is the main job.
         if mode == EditorMode::Interact {
             actions.push(CompactIconAction(
                 if preview_enabled {
@@ -129,8 +125,6 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
                 },
             ));
         }
-        // Save icon only when there is something to save (reduces chrome when
-        // the document is clean).
         if dirty {
             actions.push(CompactIconAction(Symbols::save, "Save", {
                 let session = session.clone();
@@ -392,8 +386,6 @@ fn tool(
     })
 }
 
-/// Paint swatch showing the current fill paint. Click opens the color picker
-/// popover targeting the current paint.
 pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
     let th = theme();
     let (color, is_open) = {

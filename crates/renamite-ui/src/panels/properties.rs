@@ -11,7 +11,8 @@ use std::rc::Rc;
 use kurbo::{Point as KurboPoint, Shape as _};
 use renamite_animation::{Angle, Frame};
 use renamite_behavior_common::inspect::{
-    DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_selection,
+    DiamondState, PropKind, PropRow, apply_value_to_each, cmd_toggle_key, props_for_node,
+    props_for_selection,
 };
 use renamite_behavior_common::modifiers::{
     cmd_add_offset_path_after, cmd_add_pucker_bloat_after, cmd_add_repeater_after,
@@ -129,10 +130,97 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         ));
     }
     let mut children: Vec<View> = vec![PanelHeader(Symbols::settings, title, header_actions)];
-    // Single selected node: paint section (solid / linear / radial + axis +
-    // stops) driving the fill style that paints it.
-    if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
-        children.push(v);
+    if ids.len() == 1 {
+        let app_opt = {
+            let s = session.borrow();
+            appearance_for(&s, ids[0])
+        };
+        if let Some(app) = app_opt {
+            let selected_is_fill = app.fill == Some(ids[0]);
+            let selected_is_stroke = app.stroke == Some(ids[0]);
+            let is_shape_like =
+                !selected_is_fill && !selected_is_stroke;
+            if let Some(fill_id) = app.fill {
+                if let Some(v) = paint_section_for_style(
+                    session.clone(),
+                    app.shape_for_axis,
+                    fill_id,
+                    playhead,
+                    record,
+                ) {
+                    children.push(v);
+                }
+                if is_shape_like {
+                    if let Some(v) = style_prop_rows(
+                        session.clone(),
+                        fill_id,
+                        playhead,
+                        record,
+                        diamond_quiet,
+                        "Fill",
+                    ) {
+                        children.push(v);
+                    }
+                }
+            }
+            if let Some(stroke_id) = app.stroke {
+                if let Some(v) = paint_section_for_style(
+                    session.clone(),
+                    app.shape_for_axis,
+                    stroke_id,
+                    playhead,
+                    record,
+                ) {
+                    children.push(v);
+                }
+                if is_shape_like {
+                    if let Some(v) = style_prop_rows(
+                        session.clone(),
+                        stroke_id,
+                        playhead,
+                        record,
+                        diamond_quiet,
+                        "Stroke",
+                    ) {
+                        children.push(v);
+                    }
+                    if let Some(v) = stroke_dash_section(
+                        session.clone(),
+                        stroke_id,
+                        playhead,
+                        record,
+                        diamond_quiet,
+                    ) {
+                        children.push(v);
+                    }
+                } else if selected_is_stroke {
+                    // Style Stroke node selected: dash section on itself (existing behaviour)
+                    if let Some(v) = stroke_dash_section(
+                        session.clone(),
+                        stroke_id,
+                        playhead,
+                        record,
+                        diamond_quiet,
+                    ) {
+                        children.push(v);
+                    }
+                }
+            }
+            // When selection itself is a style node and appearance returned only one side,
+            // the other side's dash is handled above. For shape-like selection where dash
+            // is missing (no stroke), nothing to show.
+        } else if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
+            children.push(v);
+            if let Some(section) =
+                stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
+            {
+                children.push(section);
+            }
+        } else if let Some(section) =
+            stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
+        {
+            children.push(section);
+        }
     }
 
     // Single selected text: multiline field editing its content via
@@ -141,15 +229,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     // node into a single undo step, so typing stays one undo.
     if ids.len() == 1
         && let Some(section) = text_section(session.clone(), ids[0])
-    {
-        children.push(section);
-    }
-
-    // Single selected stroke: dash section (offset, dash/gap values, enable /
-    // disable / add-pair / remove-pair controls).
-    if ids.len() == 1
-        && let Some(section) =
-            stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
     {
         children.push(section);
     }
@@ -1572,6 +1651,344 @@ fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {
 
         _ => None,
     }
+}
+
+struct AppearanceTarget {
+    shape_for_axis: NodeId,
+    fill: Option<NodeId>,
+    stroke: Option<NodeId>,
+}
+
+fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarget> {
+    let doc = &session.file.document;
+    let node = doc.nodes.get(selected)?;
+    match &node.kind {
+        NodeKind::Style(StyleKind::Fill { .. }) => Some(AppearanceTarget {
+            shape_for_axis: selected,
+            fill: Some(selected),
+            stroke: None,
+        }),
+        NodeKind::Style(StyleKind::Stroke { .. }) => Some(AppearanceTarget {
+            shape_for_axis: selected,
+            fill: None,
+            stroke: Some(selected),
+        }),
+        NodeKind::Shape(_) | NodeKind::Text(_) => {
+            let fill = renamite_behavior_common::fill::fill_style_for_shape(doc, selected)
+                .or_else(|| {
+                    session
+                        .engine
+                        .scene()
+                        .items
+                        .iter()
+                        .rev()
+                        .find(|it| {
+                            it.node == selected
+                                && matches!(it.kind, renamite_model::PaintKind::Fill(_))
+                        })
+                        .map(|it| it.style)
+                });
+            let stroke = renamite_behavior_common::stroke::stroke_style_for_shape(doc, selected)
+                .or_else(|| {
+                    session
+                        .engine
+                        .scene()
+                        .items
+                        .iter()
+                        .rev()
+                        .find(|it| {
+                            it.node == selected
+                                && matches!(it.kind, renamite_model::PaintKind::Stroke(_))
+                        })
+                        .map(|it| it.style)
+                });
+            Some(AppearanceTarget {
+                shape_for_axis: selected,
+                fill,
+                stroke,
+            })
+        }
+        NodeKind::Group => {
+            let children = node.children.clone();
+            let mut texts = children.into_iter().filter(|&cid| {
+                matches!(
+                    doc.nodes.get(cid).map(|n| &n.kind),
+                    Some(NodeKind::Text(_))
+                )
+            });
+            let text_id = texts.next()?;
+            if texts.next().is_some() {
+                return None;
+            }
+            appearance_for(session, text_id)
+        }
+        _ => None,
+    }
+}
+
+fn style_prop_rows(
+    session: SessionRef,
+    style_id: NodeId,
+    playhead: Frame,
+    record: bool,
+    diamond_quiet: bool,
+    section: &'static str,
+) -> Option<View> {
+    let rows: Vec<PropRow> = {
+        let s = session.borrow();
+        props_for_node(&s.file.document, style_id, playhead)
+            .into_iter()
+            .filter(|r| r.desc.section == section)
+            .collect()
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    Some(crate::components::CollapsibleSection(
+        format!("style_props_{:?}_{section}", style_id),
+        section,
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(
+            rows.iter()
+                .map(|prop| {
+                    PropRowView(
+                        session.clone(),
+                        vec![style_id],
+                        prop.clone(),
+                        playhead,
+                        record,
+                        diamond_quiet,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+    ))
+}
+
+fn paint_section_for_style(
+    session: SessionRef,
+    shape_for_axis: NodeId,
+    style_id: NodeId,
+    playhead: Frame,
+    record: bool,
+) -> Option<View> {
+    let (paint, section_label, solid_path) = {
+        let session = session.borrow();
+        let node = session.file.document.nodes.get(style_id)?;
+        match &node.kind {
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => {
+                (paint.clone(), "Fill", "fill.color")
+            }
+            NodeKind::Style(StyleKind::Stroke { paint, .. }) => {
+                (paint.clone(), "Stroke", "stroke.color")
+            }
+            _ => return None,
+        }
+    };
+    let th = theme();
+    let gradient = match &paint {
+        StylePaint::Gradient(g) => Some(g.clone()),
+        _ => None,
+    };
+    let active_kind = gradient.as_ref().map(|g| g.kind);
+    let is_solid = gradient.is_none();
+    let toggle = Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)),
+        Text("Paint")
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        paint_segment(
+            session.clone(),
+            shape_for_axis,
+            style_id,
+            "Solid",
+            is_solid,
+            PaintTarget::Solid,
+        ),
+        paint_segment(
+            session.clone(),
+            shape_for_axis,
+            style_id,
+            "Linear",
+            active_kind == Some(GradientKind::Linear),
+            PaintTarget::Gradient(GradientKind::Linear),
+        ),
+        paint_segment(
+            session.clone(),
+            shape_for_axis,
+            style_id,
+            "Radial",
+            active_kind == Some(GradientKind::Radial),
+            PaintTarget::Gradient(GradientKind::Radial),
+        ),
+    ));
+    let mut children = vec![toggle];
+    match &paint {
+        StylePaint::Solid { .. } => {
+            let path = PropPath::new(solid_path);
+            children.push(
+                Row(Modifier::new()
+                    .min_height(36.0)
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(8.0))
+                .child((
+                    Box(Modifier::new().width(32.0)),
+                    Text("Color")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface)
+                        .modifier(Modifier::new().width(96.0)),
+                    Box(Modifier::new().flex_grow(1.0)).child(color_row(
+                        session.clone(),
+                        vec![style_id],
+                        path,
+                        paint.base_color(),
+                        playhead,
+                        record,
+                    )),
+                )),
+            );
+        }
+        StylePaint::Gradient(g) => {
+            children.push(axis_row(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                "Start",
+                "grad.start",
+                g.start.value_at(playhead.0 as f64),
+            ));
+            children.push(axis_row(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                "End",
+                "grad.end",
+                g.end.value_at(playhead.0 as f64),
+            ));
+            children.extend(stop_rows(
+                session.clone(),
+                style_id,
+                playhead,
+                record,
+                g.stops.value_at(playhead.0 as f64),
+            ));
+            children.push(
+                Row(Modifier::new()
+                    .height(32.0)
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(4.0))
+                .child((
+                    CompactIconAction(Symbols::add, "Add stop", {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            let frame = s.playback.head;
+                            let Some(stops) = s
+                                .file
+                                .document
+                                .value_at(style_id, &PropPath::new("grad.stops"), frame)
+                                .ok()
+                            else {
+                                return;
+                            };
+                            let Value::Stops(mut stops) = stops else {
+                                return;
+                            };
+                            let last_color =
+                                stops.0.last().map(|x| x.color).unwrap_or(Color::BLACK);
+                            stops.0.push(GradientStop {
+                                offset: 1.0,
+                                color: last_color,
+                            });
+                            let cmd = resolve_property_edit(
+                                &s.file.document,
+                                style_id,
+                                &PropPath::new("grad.stops"),
+                                Value::Stops(stops),
+                                Frame(frame.round() as i64),
+                                s.record,
+                            );
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Add stop".into()),
+                                ToolOutput::Commands(smallvec![cmd]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    }),
+                    Text("Add stop")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface_variant),
+                )),
+            );
+        }
+    }
+    children.push(
+        Row(Modifier::new()
+            .height(32.0)
+            .fill_max_width()
+            .padding_values(PaddingValues {
+                left: 12.0,
+                right: 8.0,
+                top: 0.0,
+                bottom: 0.0,
+            })
+            .align_items(AlignItems::CENTER)
+            .gap(8.0))
+        .child((
+            Box(Modifier::new().width(32.0)),
+            Text("Swatch")
+                .size(th.typography.body_medium)
+                .color(th.on_surface)
+                .modifier(Modifier::new().width(96.0)),
+            CompactIconAction(Symbols::palette, "Use as current paint", {
+                let session = session.clone();
+                let paint = paint.clone();
+                move || {
+                    let mut session = session.borrow_mut();
+                    session.current_paint = paint.snapshot(session.playback.head);
+                    session.status = Some("Current paint updated".into());
+                    session.revision = session.revision.wrapping_add(1);
+                    request_frame();
+                }
+            }),
+            Text("Use as current paint")
+                .size(th.typography.body_medium)
+                .color(th.on_surface_variant),
+        )),
+    );
+    Some(crate::components::CollapsibleSection(
+        format!("paint_section_{:?}", style_id),
+        section_label,
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(children),
+    ))
 }
 
 fn default_axis(s: &Session, shape: NodeId, frame: f64) -> Option<(glam::DVec2, glam::DVec2)> {

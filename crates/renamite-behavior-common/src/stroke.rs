@@ -2,7 +2,34 @@
 
 use renamite_animation::Animated;
 use renamite_history::EditorCommand;
-use renamite_model::{AnimatedDash, Document, NodeId, NodeKind, StyleKind};
+use renamite_model::{AnimatedDash, Document, NodeId, NodeKind, Parent, StyleKind};
+
+/// Prefer a stroke *after* the shape in sibling order (same as fill).
+pub fn stroke_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> {
+    let (parent, shape_index) = doc.locate(shape_id)?;
+    let siblings: Vec<NodeId> = match parent {
+        Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+        Parent::Node(n) => doc.nodes.get(n)?.children.clone(),
+    };
+    for &id in siblings.iter().skip(shape_index + 1) {
+        if is_stroke(doc, id) {
+            return Some(id);
+        }
+    }
+    for &id in &siblings {
+        if is_stroke(doc, id) {
+            return Some(id);
+        }
+    }
+    renamite_model::stroke_style_for(doc, shape_id)
+}
+
+fn is_stroke(doc: &Document, id: NodeId) -> bool {
+    matches!(
+        doc.nodes.get(id).map(|n| &n.kind),
+        Some(NodeKind::Style(StyleKind::Stroke { .. }))
+    )
+}
 
 pub fn stroke_dash(doc: &Document, id: NodeId) -> Option<&AnimatedDash> {
     match &doc.nodes.get(id)?.kind {

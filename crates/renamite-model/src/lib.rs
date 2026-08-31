@@ -991,6 +991,29 @@ pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
     }
 }
 
+/// Topmost stroke style in the closest ancestor scope that has one.
+pub fn stroke_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
+    let mut scope = doc.locate(shape).map(|(p, _)| p)?;
+    loop {
+        let children: Vec<NodeId> = match scope {
+            Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+            Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
+        };
+        if let Some(stroke) = children.iter().rev().find(|id| {
+            matches!(
+                doc.nodes.get(**id).map(|n| &n.kind),
+                Some(NodeKind::Style(StyleKind::Stroke { .. }))
+            )
+        }) {
+            return Some(*stroke);
+        }
+        match scope {
+            Parent::Comp(_) => return None,
+            Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
+        }
+    }
+}
+
 /// The node's own transform as an affine, ignoring group/accumulated
 /// transforms. Gradient handles are authored in this space and folded into
 /// world space with this same affine during evaluation, so the inverse maps
@@ -1152,6 +1175,7 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             points,
             inner_r,
             outer_r,
+            roundness,
             ..
         } => star_path(
             ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
@@ -1160,12 +1184,13 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
                 .max(3.0) as usize,
             Some(ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame))),
             ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
+            ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
         ),
         ShapeKind::Polygon {
             pos,
             points,
             outer_r,
-            ..
+            roundness,
         } => star_path(
             ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
             ov_f64(ov, id, "shape.points", points.value_at(frame))
@@ -1173,23 +1198,69 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
                 .max(3.0) as usize,
             None,
             ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
+            ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
         ),
         ShapeKind::CompoundPath(compound) => compound.to_bez_path(frame),
     }
 }
 
-/// Straight-edged star/polygon. Roundness: TODO (v0.4, with RoundCorners).
-fn star_path(center: glam::DVec2, points: usize, inner: Option<f64>, outer: f64) -> BezPath {
-    let mut p = BezPath::new();
+/// Star/polygon outline. `roundness` is corner radius in local units (0 = sharp).
+fn star_path(
+    center: glam::DVec2,
+    points: usize,
+    inner: Option<f64>,
+    outer: f64,
+    roundness: f64,
+) -> BezPath {
     let n = if inner.is_some() { points * 2 } else { points };
+    let mut verts = Vec::with_capacity(n);
     for k in 0..n {
         let ang = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / n as f64;
         let r = match inner {
             Some(ir) if k % 2 == 1 => ir,
             _ => outer,
         };
-        let v = Point::new(center.x + r * ang.cos(), center.y + r * ang.sin());
-        if k == 0 { p.move_to(v) } else { p.line_to(v) }
+        verts.push(Point::new(center.x + r * ang.cos(), center.y + r * ang.sin()));
+    }
+    if roundness <= 1e-9 || verts.len() < 3 {
+        let mut p = BezPath::new();
+        for (i, v) in verts.iter().enumerate() {
+            if i == 0 {
+                p.move_to(*v);
+            } else {
+                p.line_to(*v);
+            }
+        }
+        p.close_path();
+        return p;
+    }
+    round_polygon_corners(&verts, roundness)
+}
+
+/// Fillet every vertex of a closed polygon. Radius is clamped per-corner so
+/// adjacent fillets never overlap (half of the shorter adjacent edge).
+fn round_polygon_corners(verts: &[Point], radius: f64) -> BezPath {
+    let n = verts.len();
+    let mut p = BezPath::new();
+    for i in 0..n {
+        let prev = verts[(i + n - 1) % n];
+        let cur = verts[i];
+        let next = verts[(i + 1) % n];
+        let v0x = prev.x - cur.x;
+        let v0y = prev.y - cur.y;
+        let v1x = next.x - cur.x;
+        let v1y = next.y - cur.y;
+        let len0 = (v0x * v0x + v0y * v0y).sqrt().max(1e-9);
+        let len1 = (v1x * v1x + v1y * v1y).sqrt().max(1e-9);
+        let r = radius.min(len0 * 0.5).min(len1 * 0.5);
+        let p0 = Point::new(cur.x + v0x / len0 * r, cur.y + v0y / len0 * r);
+        let p1 = Point::new(cur.x + v1x / len1 * r, cur.y + v1y / len1 * r);
+        if i == 0 {
+            p.move_to(p0);
+        } else {
+            p.line_to(p0);
+        }
+        p.quad_to(cur, p1);
     }
     p.close_path();
     p
@@ -3251,7 +3322,7 @@ mod tests {
 
     #[test]
     fn five_point_star_is_closed_with_10_corners() {
-        let p = star_path(DVec2::ZERO, 5, Some(20.0), 50.0);
+        let p = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 0.0);
         assert!(matches!(
             p.elements().last(),
             Some(kurbo::PathEl::ClosePath)
@@ -3266,13 +3337,71 @@ mod tests {
 
     #[test]
     fn polygon_six_points() {
-        let p = star_path(DVec2::ZERO, 6, None, 40.0);
+        let p = star_path(DVec2::ZERO, 6, None, 40.0, 0.0);
         let verts = p
             .elements()
             .iter()
             .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_) | kurbo::PathEl::LineTo(_)))
             .count();
         assert_eq!(verts, 6);
+    }
+
+    #[test]
+    fn star_roundness_changes_path() {
+        let sharp = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 0.0);
+        let rounded = star_path(DVec2::ZERO, 5, Some(20.0), 50.0, 10.0);
+        // Rounded path uses quad segments for fillets, sharp uses only lines.
+        let sharp_has_quad = sharp
+            .elements()
+            .iter()
+            .any(|e| matches!(e, kurbo::PathEl::QuadTo(_, _)));
+        let rounded_has_quad = rounded
+            .elements()
+            .iter()
+            .any(|e| matches!(e, kurbo::PathEl::QuadTo(_, _)));
+        assert!(!sharp_has_quad, "sharp star should be straight lines");
+        assert!(rounded_has_quad, "rounded star should contain quad fillets");
+        assert_ne!(
+            sharp.elements().len(),
+            rounded.elements().len(),
+            "roundness should change element count"
+        );
+    }
+
+    #[test]
+    fn stroke_solid_override_uses_stroke_color_path() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let shape = doc.create_node(Node::new(
+            "s",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::splat(100.0)),
+            }),
+        ));
+        let stroke = doc.create_node(Node::new(
+            "st",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(4.0),
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+                dash: None,
+            }),
+        ));
+        doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+        doc.attach(stroke, Parent::Comp(comp), 1).unwrap();
+        // Override stroke.color to red.
+        let mut ov = Overrides::default();
+        ov.set(stroke, PropPath::new("stroke.color"), Value::Color(Color::rgba(1.0, 0.0, 0.0, 1.0)));
+        let scene = evaluate_with(&doc, comp, 0.0, &ov);
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].paint, ScenePaint::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0)));
+        // Ensure fill.color override does NOT recolor the stroke.
+        let mut ov2 = Overrides::default();
+        ov2.set(stroke, PropPath::new("fill.color"), Value::Color(Color::rgba(0.0, 1.0, 0.0, 1.0)));
+        let scene2 = evaluate_with(&doc, comp, 0.0, &ov2);
+        assert_eq!(scene2.items[0].paint, ScenePaint::Solid(Color::BLACK));
     }
 
     fn find_fill(doc: &Document) -> NodeId {

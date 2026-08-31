@@ -985,4 +985,129 @@ mod tests {
         assert_eq!(size.value, Value::F64(64.0));
         assert!(matches!(size.desc.kind, PropKind::F64 { .. }));
     }
+
+    #[test]
+    fn transform_lists_skew() {
+        let (doc, ellipse, _) = doc_with_ellipse_and_rect();
+        let rows = props_for_node(&doc, ellipse, Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"transform.skew"));
+        assert!(paths.contains(&"transform.skew_axis"));
+    }
+
+    #[test]
+    fn stroke_lists_cap_join_not_color() {
+        use renamite_animation::Animated;
+        use renamite_model::{Color, StrokeCap, StrokeJoin};
+        let mut doc = Document::empty();
+        let id = doc.create_node(Node::new(
+            "s",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(4.0),
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+                dash: None,
+            }),
+        ));
+        doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, id, Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"stroke.width"));
+        assert!(paths.contains(&"stroke.cap"));
+        assert!(paths.contains(&"stroke.join"));
+        assert!(!paths.contains(&"stroke.color"), "color owned by paint section");
+        let cap = rows.iter().find(|r| r.desc.path.as_str() == "stroke.cap").unwrap();
+        assert!(matches!(cap.desc.kind, PropKind::Enum3 { .. }));
+    }
+
+    #[test]
+    fn polygon_lists_roundness() {
+        use renamite_animation::Animated;
+        let mut doc = Document::empty();
+        let poly = doc.create_node(Node::new(
+            "p",
+            NodeKind::Shape(ShapeKind::Polygon {
+                pos: Animated::new(glam::DVec2::ZERO),
+                points: Animated::new(6.0),
+                outer_r: Animated::new(50.0),
+                roundness: Animated::new(5.0),
+            }),
+        ));
+        doc.attach(poly, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, poly, Frame(0));
+        assert!(rows.iter().any(|r| r.desc.path.as_str() == "shape.roundness"));
+    }
+
+    #[test]
+    fn repeater_lists_transform_position() {
+        use renamite_animation::{Animated, AnimatedTransform};
+        let mut doc = Document::empty();
+        let rep = doc.create_node(Node::new(
+            "r",
+            NodeKind::Modifier(ModifierKind::Repeater {
+                copies: Animated::new(3.0),
+                offset: Animated::new(0.0),
+                transform: AnimatedTransform::identity(),
+                start_opacity: Animated::new(1.0),
+                end_opacity: Animated::new(1.0),
+            }),
+        ));
+        doc.attach(rep, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, rep, Frame(0));
+        let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
+        assert!(paths.contains(&"repeater.transform.position"));
+        assert!(paths.contains(&"repeater.transform.scale"));
+        assert!(paths.contains(&"repeater.transform.rotation"));
+    }
+
+    #[test]
+    fn text_lists_align_enum3() {
+        use renamite_animation::Animated;
+        use renamite_model::{TextAlign, TextNode};
+        let mut doc = Document::empty();
+        let t = doc.create_node(Node::new(
+            "t",
+            NodeKind::Text(TextNode {
+                text: "Hi".into(),
+                size: Animated::new(20.0),
+                align: TextAlign::Center,
+                font: None,
+            }),
+        ));
+        doc.attach(t, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, t, Frame(0));
+        let align = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "text.align")
+            .expect("align row");
+        assert!(matches!(align.desc.kind, PropKind::Enum3 { .. }));
+        assert_eq!(align.value, Value::I64(1));
+    }
+
+    #[test]
+    fn star_lists_kind_enum2() {
+        use renamite_animation::Animated;
+        use renamite_model::StarKind;
+        let mut doc = Document::empty();
+        let star = doc.create_node(Node::new(
+            "s",
+            NodeKind::Shape(ShapeKind::Star {
+                pos: Animated::new(glam::DVec2::ZERO),
+                points: Animated::new(5.0),
+                inner_r: Animated::new(20.0),
+                outer_r: Animated::new(50.0),
+                roundness: Animated::new(0.0),
+                kind: StarKind::Star,
+            }),
+        ));
+        doc.attach(star, Parent::Comp(doc.main), 0).unwrap();
+        let rows = props_for_node(&doc, star, Frame(0));
+        let kind = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "star.kind")
+            .expect("kind row");
+        assert!(matches!(kind.desc.kind, PropKind::Enum2 { .. }));
+        assert_eq!(kind.value, Value::I64(0));
+    }
 }
