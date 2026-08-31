@@ -1128,4 +1128,184 @@ mod tests {
         assert!(matches!(kind.desc.kind, PropKind::Enum2 { .. }));
         assert_eq!(kind.value, Value::I64(0));
     }
+
+    #[test]
+    fn animated_prop_mut_paths_are_described_or_owned_by_section() {
+        use renamite_animation::{Animated, AnimatedTransform};
+        use renamite_model::{
+            Color, FillRule, GradientStops, MaskProps, ShapeKind, StarKind, StrokeCap,
+            StrokeJoin, StyleKind, StylePaint, TextAlign, TextNode, TrimMode,
+        };
+        let mut all_desc_paths = std::collections::HashSet::new();
+        let reps: Vec<NodeKind> = vec![
+            NodeKind::Group,
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::ONE),
+                rounded: Animated::new(0.0),
+            }),
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::ONE),
+            }),
+            NodeKind::Shape(ShapeKind::Star {
+                pos: Animated::new(glam::DVec2::ZERO),
+                points: Animated::new(5.0),
+                inner_r: Animated::new(1.0),
+                outer_r: Animated::new(2.0),
+                roundness: Animated::new(0.0),
+                kind: StarKind::Star,
+            }),
+            NodeKind::Shape(ShapeKind::Polygon {
+                pos: Animated::new(glam::DVec2::ZERO),
+                points: Animated::new(5.0),
+                outer_r: Animated::new(2.0),
+                roundness: Animated::new(0.0),
+            }),
+            NodeKind::Shape(ShapeKind::Path(Animated::new(
+                renamite_geometry::VectorPath::default(),
+            ))),
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(1.0),
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+                dash: None,
+            }),
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::linear(
+                    glam::DVec2::ZERO,
+                    glam::DVec2::X,
+                    GradientStops::default(),
+                ),
+                width: Animated::new(1.0),
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+                dash: None,
+            }),
+            NodeKind::Text(TextNode {
+                text: String::new(),
+                size: Animated::new(12.0),
+                align: TextAlign::Left,
+                font: None,
+            }),
+            NodeKind::Modifier(ModifierKind::TrimPath {
+                start: Animated::new(0.0),
+                end: Animated::new(1.0),
+                offset: Animated::new(0.0),
+                mode: TrimMode::Individually,
+            }),
+            NodeKind::Modifier(ModifierKind::Repeater {
+                copies: Animated::new(3.0),
+                offset: Animated::new(0.0),
+                transform: AnimatedTransform::identity(),
+                start_opacity: Animated::new(1.0),
+                end_opacity: Animated::new(1.0),
+            }),
+            NodeKind::Modifier(ModifierKind::RoundCorners {
+                radius: Animated::new(1.0),
+            }),
+            NodeKind::Modifier(ModifierKind::OffsetPath {
+                amount: Animated::new(1.0),
+            }),
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(1.0),
+                frequency: Animated::new(1.0),
+                smooth: false,
+            }),
+            NodeKind::Modifier(ModifierKind::PuckerBloat {
+                amount: Animated::new(0.0),
+            }),
+            NodeKind::Mask(MaskProps {
+                inverted: false,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(glam::DVec2::ZERO),
+                    size: Animated::new(glam::DVec2::ONE),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+        ];
+        for k in reps {
+            for d in super::descriptors_for(&k) {
+                all_desc_paths.insert(d.path.as_str().to_string());
+            }
+        }
+        // Named section owners / intentionally hidden (Design hides Record).
+        let section_owned: std::collections::HashSet<&str> = [
+            "fill.color",
+            "stroke.color",
+            "grad.start",
+            "grad.end",
+            "grad.stops",
+        ]
+        .into();
+        let hidden_in_design: std::collections::HashSet<&str> = ["shape.path"].into();
+        let is_section_owned = |p: &str| {
+            if section_owned.contains(p) || hidden_in_design.contains(p) {
+                return true;
+            }
+            if p.starts_with("stroke.dash.") {
+                return true;
+            }
+            // text content is structural, not an Animated<T> prop_mut path
+            false
+        };
+        // Canonical list of Animated<T> prop_mut paths (grep rn-m::lib.rs prop_mut).
+        let animated_paths = [
+            "opacity",
+            "transform.anchor",
+            "transform.position",
+            "transform.scale",
+            "transform.rotation",
+            "transform.skew",
+            "transform.skew_axis",
+            "shape.path",
+            "shape.pos",
+            "shape.size",
+            "shape.rounded",
+            "shape.points",
+            "shape.inner_r",
+            "shape.outer_r",
+            "shape.roundness",
+            "text.size",
+            "fill.color",
+            "stroke.color",
+            "stroke.width",
+            "grad.start",
+            "grad.end",
+            "grad.stops",
+            "trim.start",
+            "trim.end",
+            "trim.offset",
+            "repeater.copies",
+            "repeater.offset",
+            "repeater.start_opacity",
+            "repeater.end_opacity",
+            "repeater.transform.position",
+            "repeater.transform.scale",
+            "repeater.transform.rotation",
+            "repeater.transform.anchor",
+            "repeater.transform.skew",
+            "repeater.transform.skew_axis",
+            "round.radius",
+            "offset.amount",
+            "zigzag.amplitude",
+            "zigzag.frequency",
+            "pucker.amount",
+            "stroke.dash.offset",
+            "stroke.dash.0",
+        ];
+        for p in animated_paths {
+            let in_desc = all_desc_paths.contains(p);
+            let owned = is_section_owned(p);
+            assert!(
+                in_desc || owned,
+                "animated prop_mut path '{p}' must be in descriptors or a section owner (paint/dash)"
+            );
+        }
+    }
 }
