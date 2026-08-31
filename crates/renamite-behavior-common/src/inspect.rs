@@ -27,6 +27,9 @@ pub enum PropKind {
         a_label: &'static str,
         b_label: &'static str,
     },
+    Enum3 {
+        labels: [&'static str; 3],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +106,88 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     animated: false,
                 });
             }
+            if desc.path.as_str() == "star.kind" {
+                let kind = match &node.kind {
+                    NodeKind::Shape(ShapeKind::Star { kind, .. }) => *kind,
+                    NodeKind::Mask(m) => match &m.shape {
+                        ShapeKind::Star { kind, .. } => *kind,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(match kind {
+                        renamite_model::StarKind::Star => 0,
+                        renamite_model::StarKind::Burst => 1,
+                    }),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
+            if desc.path.as_str() == "fill.rule" {
+                let rule = match &node.kind {
+                    NodeKind::Style(StyleKind::Fill { rule, .. }) => *rule,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(match rule {
+                        renamite_model::FillRule::NonZero => 0,
+                        renamite_model::FillRule::EvenOdd => 1,
+                    }),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
+            if desc.path.as_str() == "stroke.cap" {
+                let cap = match &node.kind {
+                    NodeKind::Style(StyleKind::Stroke { cap, .. }) => *cap,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(match cap {
+                        renamite_model::StrokeCap::Butt => 0,
+                        renamite_model::StrokeCap::Round => 1,
+                        renamite_model::StrokeCap::Square => 2,
+                    }),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
+            if desc.path.as_str() == "stroke.join" {
+                let join = match &node.kind {
+                    NodeKind::Style(StyleKind::Stroke { join, .. }) => *join,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(match join {
+                        renamite_model::StrokeJoin::Miter => 0,
+                        renamite_model::StrokeJoin::Round => 1,
+                        renamite_model::StrokeJoin::Bevel => 2,
+                    }),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
+            if desc.path.as_str() == "text.align" {
+                let align = match &node.kind {
+                    NodeKind::Text(t) => t.align,
+                    _ => return None,
+                };
+                return Some(PropRow {
+                    desc,
+                    value: Value::I64(match align {
+                        renamite_model::TextAlign::Left => 0,
+                        renamite_model::TextAlign::Center => 1,
+                        renamite_model::TextAlign::Right => 2,
+                    }),
+                    diamond: DiamondState::Empty,
+                    animated: false,
+                });
+            }
             let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
             let animated = doc.property_is_animated(id, &desc.path);
             let diamond = diamond_state(doc, id, &desc.path, playhead, animated);
@@ -154,6 +239,22 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
             "Pivot / Anchor",
             "transform.anchor",
             PropKind::DVec2,
+        ),
+        pd(
+            "Transform",
+            "Skew",
+            "transform.skew",
+            PropKind::F64 {
+                min: None,
+                max: None,
+                step: 0.5,
+            },
+        ),
+        pd(
+            "Transform",
+            "Skew axis",
+            "transform.skew_axis",
+            PropKind::Angle,
         ),
     ];
     match kind {
@@ -220,6 +321,15 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                         step: 0.5,
                     },
                 ));
+                d.push(pd(
+                    "Shape",
+                    "Kind",
+                    "star.kind",
+                    PropKind::Enum2 {
+                        a_label: "Star",
+                        b_label: "Burst",
+                    },
+                ));
             }
             ShapeKind::Polygon { .. } => {
                 d.push(pd("Shape", "Position", "shape.pos", PropKind::DVec2));
@@ -243,10 +353,29 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                         step: 1.0,
                     },
                 ));
+                d.push(pd(
+                    "Shape",
+                    "Roundness",
+                    "shape.roundness",
+                    PropKind::F64 {
+                        min: Some(0.0),
+                        max: None,
+                        step: 0.5,
+                    },
+                ));
             }
         },
         NodeKind::Style(StyleKind::Fill { .. }) => {
-            d.push(pd("Fill", "Color", "fill.color", PropKind::Color));
+            // Color handled by paint_section, not generic rows
+            d.push(pd(
+                "Fill",
+                "Rule",
+                "fill.rule",
+                PropKind::Enum2 {
+                    a_label: "NonZero",
+                    b_label: "EvenOdd",
+                },
+            ));
         }
         NodeKind::Text(_) => {
             d.push(pd(
@@ -259,9 +388,17 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     step: 1.0,
                 },
             ));
+            d.push(pd(
+                "Text",
+                "Align",
+                "text.align",
+                PropKind::Enum3 {
+                    labels: ["Left", "Center", "Right"],
+                },
+            ));
         }
         NodeKind::Style(StyleKind::Stroke { .. }) => {
-            d.push(pd("Stroke", "Color", "stroke.color", PropKind::Color));
+            // Color handled by paint_section
             d.push(pd(
                 "Stroke",
                 "Width",
@@ -270,6 +407,22 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     min: Some(0.0),
                     max: None,
                     step: 0.5,
+                },
+            ));
+            d.push(pd(
+                "Stroke",
+                "Cap",
+                "stroke.cap",
+                PropKind::Enum3 {
+                    labels: ["Butt", "Round", "Square"],
+                },
+            ));
+            d.push(pd(
+                "Stroke",
+                "Join",
+                "stroke.join",
+                PropKind::Enum3 {
+                    labels: ["Miter", "Round", "Bevel"],
                 },
             ));
         }
@@ -337,6 +490,46 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     f01(),
                 ));
                 d.push(pd("Repeater", "End opacity", "repeater.end_opacity", f01()));
+                d.push(pd(
+                    "Repeater",
+                    "Position",
+                    "repeater.transform.position",
+                    PropKind::DVec2,
+                ));
+                d.push(pd(
+                    "Repeater",
+                    "Scale",
+                    "repeater.transform.scale",
+                    PropKind::DVec2,
+                ));
+                d.push(pd(
+                    "Repeater",
+                    "Rotation",
+                    "repeater.transform.rotation",
+                    PropKind::Angle,
+                ));
+                d.push(pd(
+                    "Repeater",
+                    "Anchor",
+                    "repeater.transform.anchor",
+                    PropKind::DVec2,
+                ));
+                d.push(pd(
+                    "Repeater",
+                    "Skew",
+                    "repeater.transform.skew",
+                    PropKind::F64 {
+                        min: None,
+                        max: None,
+                        step: 0.5,
+                    },
+                ));
+                d.push(pd(
+                    "Repeater",
+                    "Skew axis",
+                    "repeater.transform.skew_axis",
+                    PropKind::Angle,
+                ));
             }
             ModifierKind::OffsetPath { .. } => {
                 d.push(pd(
@@ -385,7 +578,6 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     },
                 ));
             }
-            _ => {}
         },
         NodeKind::Mask(mask) => {
             d.push(pd("Mask", "Inverted", "mask.inverted", PropKind::Bool));
@@ -451,6 +643,15 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                             step: 0.5,
                         },
                     ));
+                    d.push(pd(
+                        "Mask",
+                        "Kind",
+                        "star.kind",
+                        PropKind::Enum2 {
+                            a_label: "Star",
+                            b_label: "Burst",
+                        },
+                    ));
                 }
                 ShapeKind::Polygon { .. } => {
                     d.push(pd("Mask", "Position", "shape.pos", PropKind::DVec2));
@@ -472,6 +673,16 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                             min: Some(0.0),
                             max: None,
                             step: 1.0,
+                        },
+                    ));
+                    d.push(pd(
+                        "Mask",
+                        "Roundness",
+                        "shape.roundness",
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: None,
+                            step: 0.5,
                         },
                     ));
                 }
@@ -637,7 +848,8 @@ mod tests {
         let fill_id = doc.nodes.iter().find(|(_, n)| n.name == "f").unwrap().0;
         let rows = props_for_node(&doc, fill_id, Frame(0));
         let paths: Vec<&str> = rows.iter().map(|r| r.desc.path.as_str()).collect();
-        assert!(paths.contains(&"fill.color"));
+        assert!(paths.contains(&"fill.rule"));
+        assert!(!paths.contains(&"fill.color"), "paint section owns color");
     }
 
     #[test]

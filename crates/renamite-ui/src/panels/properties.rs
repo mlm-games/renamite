@@ -23,8 +23,9 @@ use renamite_behavior_common::stroke::{
 };
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
-    Color, GradientKind, GradientStop, GradientStops, ModifierKind, NodeId, NodeKind, PropPath,
-    ShapeKind, StyleKind, StylePaint, TrimMode, Value, node_affine,
+    Color, FillRule, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath,
+    ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign, TrimMode, Value,
+    node_affine,
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
@@ -103,34 +104,31 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         sections.push((row.desc.section, vec![row]));
     }
 
-    let mut children: Vec<View> = vec![PanelHeader(
-        Symbols::settings,
-        title,
-        vec![
-            crate::CompactSwatchButton(session.clone()),
-            CompactIconAction(
-                if record {
-                    Symbols::stop_circle
-                } else {
-                    Symbols::radio_button_unchecked
-                },
-                if record {
-                    "Stop recording keys"
-                } else {
-                    "Record keys on edit"
-                },
-                {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.record = !s.record;
-                        s.revision = s.revision.wrapping_add(1);
-                        request_frame();
-                    }
-                },
-            ),
-        ],
-    )];
+    let mut header_actions: Vec<View> = vec![crate::CompactSwatchButton(session.clone())];
+    if !diamond_quiet {
+        header_actions.push(CompactIconAction(
+            if record {
+                Symbols::stop_circle
+            } else {
+                Symbols::radio_button_unchecked
+            },
+            if record {
+                "Stop recording keys"
+            } else {
+                "Record keys on edit"
+            },
+            {
+                let session = session.clone();
+                move || {
+                    let mut s = session.borrow_mut();
+                    s.record = !s.record;
+                    s.revision = s.revision.wrapping_add(1);
+                    request_frame();
+                }
+            },
+        ));
+    }
+    let mut children: Vec<View> = vec![PanelHeader(Symbols::settings, title, header_actions)];
     // Single selected node: paint section (solid / linear / radial + axis +
     // stops) driving the fill style that paints it.
     if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
@@ -214,19 +212,39 @@ fn PropRowView(
     let th = theme();
     let path = row.desc.path.clone();
 
-    // Enum fields (TrimMode) aren't Animated<T>: render a dedicated toggle row
+    // Enum fields aren't Animated<T>: render a dedicated toggle row
     // instead of the generic scrub + diamond layout.
     if let PropKind::Enum2 { a_label, b_label } = &row.desc.kind
         && let Value::I64(v) = &row.value
     {
-        return enum2_row(session, ids, row.desc.label, *v as usize, a_label, b_label);
+        return enum2_row(
+            session,
+            ids,
+            path.clone(),
+            row.desc.label,
+            *v as usize,
+            a_label,
+            b_label,
+        );
+    }
+    if let PropKind::Enum3 { labels } = &row.desc.kind
+        && let Value::I64(v) = &row.value
+    {
+        return enum3_row(
+            session,
+            ids,
+            path.clone(),
+            row.desc.label,
+            *v as usize,
+            *labels,
+        );
     }
 
     // Bool fields aren't Animated<T> either (e.g. `mask.inverted`).
     if let PropKind::Bool = &row.desc.kind
         && let Value::Bool(v) = &row.value
     {
-        return bool_toggle_row(session, ids, row.desc.label, *v);
+        return bool_toggle_row(session, ids, path.clone(), row.desc.label, *v);
     }
 
     Row(Modifier::new()
@@ -963,6 +981,7 @@ fn modifier_chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
 fn enum2_row(
     session: SessionRef,
     ids: Vec<NodeId>,
+    path: PropPath,
     label: &'static str,
     current: usize,
     a_label: &'static str,
@@ -986,14 +1005,68 @@ fn enum2_row(
             .size(th.typography.body_medium)
             .color(th.on_surface)
             .modifier(Modifier::new().width(96.0)),
-        enum2_segment(session.clone(), ids.clone(), current, 0, a_label),
-        enum2_segment(session, ids, current, 1, b_label),
+        enum2_segment(
+            session.clone(),
+            ids.clone(),
+            path.clone(),
+            current,
+            0,
+            a_label,
+        ),
+        enum2_segment(session, ids, path, current, 1, b_label),
+    ))
+}
+
+fn enum3_row(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    path: PropPath,
+    label: &'static str,
+    current: usize,
+    labels: [&'static str; 3],
+) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .height(36.0)
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 12.0,
+            right: 8.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(8.0))
+    .child((
+        Box(Modifier::new().width(32.0)), // diamond spacer
+        Text(label)
+            .size(th.typography.body_medium)
+            .color(th.on_surface)
+            .modifier(Modifier::new().width(96.0)),
+        enum3_segment(
+            session.clone(),
+            ids.clone(),
+            path.clone(),
+            current,
+            0,
+            labels[0],
+        ),
+        enum3_segment(
+            session.clone(),
+            ids.clone(),
+            path.clone(),
+            current,
+            1,
+            labels[1],
+        ),
+        enum3_segment(session, ids, path, current, 2, labels[2]),
     ))
 }
 
 fn bool_toggle_row(
     session: SessionRef,
     ids: Vec<NodeId>,
+    path: PropPath,
     label: &'static str,
     value: bool,
 ) -> View {
@@ -1015,14 +1088,22 @@ fn bool_toggle_row(
             .size(th.typography.body_medium)
             .color(th.on_surface)
             .modifier(Modifier::new().width(96.0)),
-        bool_toggle_segment(session.clone(), ids.clone(), value, false, label),
-        bool_toggle_segment(session, ids, value, true, label),
+        bool_toggle_segment(
+            session.clone(),
+            ids.clone(),
+            path.clone(),
+            value,
+            false,
+            label,
+        ),
+        bool_toggle_segment(session, ids, path, value, true, label),
     ))
 }
 
 fn bool_toggle_segment(
     session: SessionRef,
     ids: Vec<NodeId>,
+    path: PropPath,
     current: bool,
     value: bool,
     row_label: &'static str,
@@ -1053,24 +1134,18 @@ fn bool_toggle_segment(
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
+                    let path = path.clone();
                     move |_pe: PointerEvent| {
                         let mut s = session.borrow_mut();
                         let cmds: Vec<_> = ids
                             .iter()
                             .copied()
-                            .filter_map(|id| match s.file.document.nodes.get(id) {
-                                Some(node) if matches!(node.kind, NodeKind::Mask(_)) => {
-                                    Some(EditorCommand::SetMaskInverted {
-                                        id,
-                                        inverted: value,
-                                    })
-                                }
-                                Some(node)
-                                    if matches!(
-                                        node.kind,
-                                        NodeKind::Modifier(ModifierKind::ZigZag { .. })
-                                    ) =>
-                                {
+                            .filter_map(|id| match path.as_str() {
+                                "mask.inverted" => Some(EditorCommand::SetMaskInverted {
+                                    id,
+                                    inverted: value,
+                                }),
+                                "zigzag.smooth" => {
                                     Some(EditorCommand::SetZigZagSmooth { id, smooth: value })
                                 }
                                 _ => None,
@@ -1093,6 +1168,7 @@ fn bool_toggle_segment(
 fn enum2_segment(
     session: SessionRef,
     ids: Vec<NodeId>,
+    path: PropPath,
     current: usize,
     index: usize,
     label: &'static str,
@@ -1122,24 +1198,139 @@ fn enum2_segment(
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
+                    let path = path.clone();
                     move |_pe: PointerEvent| {
                         let mut s = session.borrow_mut();
-                        // Enum2 is only wired to TrimMode today: 0 -> Individually,
-                        // 1 -> Simultaneously.
-                        let mode = if index == 1 {
-                            TrimMode::Simultaneously
-                        } else {
-                            TrimMode::Individually
-                        };
-                        let cmds: Vec<_> = ids
+                        let cmds: Vec<EditorCommand> = ids
                             .iter()
-                            .filter_map(|&id| cmd_set_trim_mode(&s.file.document, id, mode))
+                            .copied()
+                            .filter_map(|id| match path.as_str() {
+                                "trim.mode" => {
+                                    let mode = if index == 1 {
+                                        TrimMode::Simultaneously
+                                    } else {
+                                        TrimMode::Individually
+                                    };
+                                    cmd_set_trim_mode(&s.file.document, id, mode)
+                                }
+                                "fill.rule" => {
+                                    let rule = if index == 1 {
+                                        FillRule::EvenOdd
+                                    } else {
+                                        FillRule::NonZero
+                                    };
+                                    Some(EditorCommand::SetFillRule { id, rule })
+                                }
+                                "star.kind" => {
+                                    let kind = if index == 1 {
+                                        StarKind::Burst
+                                    } else {
+                                        StarKind::Star
+                                    };
+                                    Some(EditorCommand::SetStarKind { id, kind })
+                                }
+                                _ => None,
+                            })
                             .collect();
                         if cmds.is_empty() {
                             return;
                         }
+                        let tx = format!("Set {}", path.as_str());
                         s.apply_outputs(smallvec![
-                            ToolOutput::BeginTransaction("Trim mode".into()),
+                            ToolOutput::BeginTransaction(tx),
+                            ToolOutput::Commands(cmds.into()),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+        )
+}
+
+fn enum3_segment(
+    session: SessionRef,
+    ids: Vec<NodeId>,
+    path: PropPath,
+    current: usize,
+    index: usize,
+    label: &'static str,
+) -> View {
+    let th = theme();
+    let active = current == index;
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    let ids = ids.clone();
+                    let path = path.clone();
+                    move |_pe: PointerEvent| {
+                        let mut s = session.borrow_mut();
+                        let cmds: Vec<EditorCommand> = ids
+                            .iter()
+                            .copied()
+                            .filter_map(|id| match (path.as_str(), index) {
+                                ("stroke.cap", 0) => Some(EditorCommand::SetStrokeCap {
+                                    id,
+                                    cap: StrokeCap::Butt,
+                                }),
+                                ("stroke.cap", 1) => Some(EditorCommand::SetStrokeCap {
+                                    id,
+                                    cap: StrokeCap::Round,
+                                }),
+                                ("stroke.cap", 2) => Some(EditorCommand::SetStrokeCap {
+                                    id,
+                                    cap: StrokeCap::Square,
+                                }),
+                                ("stroke.join", 0) => Some(EditorCommand::SetStrokeJoin {
+                                    id,
+                                    join: StrokeJoin::Miter,
+                                }),
+                                ("stroke.join", 1) => Some(EditorCommand::SetStrokeJoin {
+                                    id,
+                                    join: StrokeJoin::Round,
+                                }),
+                                ("stroke.join", 2) => Some(EditorCommand::SetStrokeJoin {
+                                    id,
+                                    join: StrokeJoin::Bevel,
+                                }),
+                                ("text.align", 0) => Some(EditorCommand::SetTextAlign {
+                                    id,
+                                    align: TextAlign::Left,
+                                }),
+                                ("text.align", 1) => Some(EditorCommand::SetTextAlign {
+                                    id,
+                                    align: TextAlign::Center,
+                                }),
+                                ("text.align", 2) => Some(EditorCommand::SetTextAlign {
+                                    id,
+                                    align: TextAlign::Right,
+                                }),
+                                _ => None,
+                            })
+                            .collect();
+                        if cmds.is_empty() {
+                            return;
+                        }
+                        let tx = format!("Set {}", path.as_str());
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction(tx),
                             ToolOutput::Commands(cmds.into()),
                             ToolOutput::CommitTransaction,
                         ]);

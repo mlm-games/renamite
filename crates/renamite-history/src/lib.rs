@@ -184,6 +184,26 @@ pub enum EditorCommand {
         id: NodeId,
         smooth: bool,
     },
+    SetStrokeCap {
+        id: NodeId,
+        cap: renamite_model::StrokeCap,
+    },
+    SetStrokeJoin {
+        id: NodeId,
+        join: renamite_model::StrokeJoin,
+    },
+    SetFillRule {
+        id: NodeId,
+        rule: renamite_model::FillRule,
+    },
+    SetTextAlign {
+        id: NodeId,
+        align: renamite_model::TextAlign,
+    },
+    SetStarKind {
+        id: NodeId,
+        kind: renamite_model::StarKind,
+    },
     /// Swap a node's whole kind (e.g. primitive Shape -> evaluated Path).
     /// Exact inverse: restore the previous kind.
     SetNodeKind {
@@ -555,6 +575,11 @@ fn apply_command(
         | SetPaint { .. }
         | SetTrimMode { .. }
         | SetStrokeDash { .. }
+        | SetStrokeCap { .. }
+        | SetStrokeJoin { .. }
+        | SetFillRule { .. }
+        | SetTextAlign { .. }
+        | SetStarKind { .. }
         | ConvertToMask { .. }
         | ReleaseMask { .. }
         | RestoreMask { .. }
@@ -1286,6 +1311,61 @@ fn apply_document_command(
                     smooth: old,
                 }],
             ))
+        }
+        SetStrokeCap { id, cap } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(StyleKind::Stroke { cap: cur, .. }) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Stroke").into());
+            };
+            let old = std::mem::replace(cur, *cap);
+            Ok((None, vec![SetStrokeCap { id: *id, cap: old }]))
+        }
+        SetStrokeJoin { id, join } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(StyleKind::Stroke { join: cur, .. }) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Stroke").into());
+            };
+            let old = std::mem::replace(cur, *join);
+            Ok((None, vec![SetStrokeJoin { id: *id, join: old }]))
+        }
+        SetFillRule { id, rule } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Style(StyleKind::Fill { rule: cur, .. }) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Fill").into());
+            };
+            let old = std::mem::replace(cur, *rule);
+            Ok((None, vec![SetFillRule { id: *id, rule: old }]))
+        }
+        SetTextAlign { id, align } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Text(t) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Text").into());
+            };
+            let old = std::mem::replace(&mut t.align, *align);
+            Ok((
+                None,
+                vec![SetTextAlign {
+                    id: *id,
+                    align: old,
+                }],
+            ))
+        }
+        SetStarKind { id, kind } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            match &mut node.kind {
+                NodeKind::Shape(renamite_model::ShapeKind::Star { kind: cur, .. }) => {
+                    let old = std::mem::replace(cur, *kind);
+                    Ok((None, vec![SetStarKind { id: *id, kind: old }]))
+                }
+                NodeKind::Mask(renamite_model::MaskProps {
+                    shape: renamite_model::ShapeKind::Star { kind: cur, .. },
+                    ..
+                }) => {
+                    let old = std::mem::replace(cur, *kind);
+                    Ok((None, vec![SetStarKind { id: *id, kind: old }]))
+                }
+                _ => Err(ModelError::WrongNodeKind("Star").into()),
+            }
         }
         SetStatic { id, prop, value } => {
             let old = doc.set_static(*id, prop, value)?;

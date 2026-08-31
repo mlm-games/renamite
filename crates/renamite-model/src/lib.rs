@@ -1482,7 +1482,14 @@ fn apply_modifier(
             .clamp(0.0, 1.0);
             let eo =
                 ov_f64(ov, id, "repeater.end_opacity", end_opacity.value_at(frame)).clamp(0.0, 1.0);
-            let step = affine_of(&transform.sample(frame));
+            let mut ts = transform.sample(frame);
+            ts.position = ov_vec2(ov, id, "repeater.transform.position", ts.position);
+            ts.scale = ov_vec2(ov, id, "repeater.transform.scale", ts.scale);
+            ts.rotation_deg = ov_angle(ov, id, "repeater.transform.rotation", ts.rotation_deg);
+            ts.anchor = ov_vec2(ov, id, "repeater.transform.anchor", ts.anchor);
+            ts.skew = ov_f64(ov, id, "repeater.transform.skew", ts.skew);
+            ts.skew_axis = ov_f64(ov, id, "repeater.transform.skew_axis", ts.skew_axis);
+            let step = affine_of(&ts);
             let original = std::mem::take(paths);
             let n = count.max(1);
             for i in 0..n {
@@ -1753,8 +1760,8 @@ fn emit_style(
     scene: &mut Scene,
 ) {
     for e in paths {
-        let (paint, kind) = match st {
-            StyleKind::Fill { paint, rule } => (paint, PaintKind::Fill(*rule)),
+        let (paint, kind, is_stroke) = match st {
+            StyleKind::Fill { paint, rule } => (paint, PaintKind::Fill(*rule), false),
             StyleKind::Stroke {
                 paint,
                 width,
@@ -1772,10 +1779,11 @@ fn emit_style(
                         offset: d.offset.value_at(frame),
                     }),
                 }),
+                true,
             ),
         };
 
-        let paint = sample_paint_world(paint, frame, &e.affine, ov, style_id);
+        let paint = sample_paint_world(paint, frame, &e.affine, ov, style_id, is_stroke);
 
         scene.items.push(SceneItem {
             path: e.path.clone(),
@@ -1796,10 +1804,16 @@ fn sample_paint_world(
     affine: &Affine,
     ov: &Overrides,
     style_id: NodeId,
+    is_stroke: bool,
 ) -> ScenePaint {
     match paint {
         StylePaint::Solid { color } => {
-            ScenePaint::Solid(ov_color(ov, style_id, "fill.color", color.value_at(frame)))
+            let path = if is_stroke {
+                "stroke.color"
+            } else {
+                "fill.color"
+            };
+            ScenePaint::Solid(ov_color(ov, style_id, path, color.value_at(frame)))
         }
         StylePaint::Gradient(g) => {
             let kind = g.kind;
@@ -2624,6 +2638,30 @@ impl Node {
                 "repeater.end_opacity",
                 NodeKind::Modifier(ModifierKind::Repeater { end_opacity, .. }),
             ) => Some(F64(end_opacity)),
+            (
+                "repeater.transform.position",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&mut transform.position)),
+            (
+                "repeater.transform.scale",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&mut transform.scale)),
+            (
+                "repeater.transform.rotation",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Angle(&mut transform.rotation)),
+            (
+                "repeater.transform.anchor",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&mut transform.anchor)),
+            (
+                "repeater.transform.skew",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(F64(&mut transform.skew)),
+            (
+                "repeater.transform.skew_axis",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(F64(&mut transform.skew_axis)),
             ("round.radius", NodeKind::Modifier(ModifierKind::RoundCorners { radius })) => {
                 Some(F64(radius))
             }
@@ -2857,6 +2895,30 @@ impl Node {
                 "repeater.end_opacity",
                 NodeKind::Modifier(ModifierKind::Repeater { end_opacity, .. }),
             ) => Some(F64(end_opacity)),
+            (
+                "repeater.transform.position",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&transform.position)),
+            (
+                "repeater.transform.scale",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&transform.scale)),
+            (
+                "repeater.transform.rotation",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Angle(&transform.rotation)),
+            (
+                "repeater.transform.anchor",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(Vec2(&transform.anchor)),
+            (
+                "repeater.transform.skew",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(F64(&transform.skew)),
+            (
+                "repeater.transform.skew_axis",
+                NodeKind::Modifier(ModifierKind::Repeater { transform, .. }),
+            ) => Some(F64(&transform.skew_axis)),
             ("round.radius", NodeKind::Modifier(ModifierKind::RoundCorners { radius })) => {
                 Some(F64(radius))
             }

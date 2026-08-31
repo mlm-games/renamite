@@ -17,8 +17,8 @@ use renamite_machine::{InputKind, InputValue, Machine, MachineId, State, StateKi
 use renamite_model::{PropPath, Value, node_transform_context, selection_bounds};
 use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
-use repose_core::input::{PointerEvent, PointerEventKind};
 use repose_core::geometry::Rect;
+use repose_core::input::{PointerEvent, PointerEventKind};
 use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
 use repose_material::material3::DialogState;
 use smallvec::{SmallVec, smallvec};
@@ -162,14 +162,23 @@ pub enum PendingFileOp {
         path: Option<std::path::PathBuf>,
     },
     Exported,
-    ExportFinished { message: String },
+    ExportFinished {
+        message: String,
+    },
     ExportPngReady {
         bytes: Vec<u8>,
         suggested_name: String,
     },
-    ImportFontDone { name: String, bytes: Vec<u8> },
-    ImportImageDone { asset: renamite_model::ImageAsset },
-    Failed { message: String },
+    ImportFontDone {
+        name: String,
+        bytes: Vec<u8>,
+    },
+    ImportImageDone {
+        asset: renamite_model::ImageAsset,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -204,7 +213,9 @@ pub struct OpenPicker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerTarget {
     CurrentPaint,
-    StyleColor { style_id: renamite_model::NodeId },
+    StyleColor {
+        style_id: renamite_model::NodeId,
+    },
     GradientStop {
         style_id: renamite_model::NodeId,
         index: usize,
