@@ -50,7 +50,7 @@ pub struct PlayerHost {
     /// True while the widget keeps ticking playback each frame.
     pub playing: bool,
     pub last_tick: Instant,
-    /// Set when image assets changed; uploaded to `RenderContext` on the next
+    /// Set when image assets changed. Uploaded to `RenderContext` on the next
     /// draw. Constructors mark it dirty so a fresh renderer uploads once.
     pub dirty_images: bool,
     /// Most recent pointer position in surface px (wheel-zoom anchor).

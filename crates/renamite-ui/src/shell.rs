@@ -357,7 +357,7 @@ fn ExpandedWorkspace(session: SessionRef) -> View {
     ))
 }
 
-/// Panel ids for the dockable workspace; stable so per-mode default layouts
+/// Panel ids for the dockable workspace. Stable so per-mode default layouts
 /// reference the same panels across sessions.
 const PANEL_VIEWPORT: PanelId = 1;
 const PANEL_LAYERS: PanelId = 2;
@@ -368,7 +368,7 @@ const PANEL_INTERACT: PanelId = 6;
 
 /// Default dock tree per editor mode: a left rail grouping Layers + Assets for
 /// design (Timeline for animate), a big center canvas, and Properties on the
-/// right — matching the prior fixed Expanded layout, but now resizable.
+/// right - matching the prior fixed Expanded layout, but now resizable.
 fn default_dock_state(mode: EditorMode) -> DockState {
     let root = match mode {
         EditorMode::Design => DockNode {

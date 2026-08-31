@@ -153,7 +153,7 @@ pub fn discard_save(session: &SessionRef) {
     }
 }
 
-/// Guard "Save" button on non-desktop targets: dispatch the async save; the
+/// Guard "Save" button on non-desktop targets: dispatch the async save. The
 /// deferred intent runs when its `SaveOutcome` drains (or is dropped if the
 /// save is canceled).
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
@@ -553,7 +553,7 @@ fn image_asset_from_bytes(
 }
 
 /// Read PNG/JPEG/WebP bytes into the project as an image asset (undoable).
-/// Decoding happens on the picker thread; the asset is applied on the UI
+/// Decoding happens on the picker thread. The asset is applied on the UI
 /// thread via `PendingFileOp::ImportImageDone`.
 pub fn import_image(session: &SessionRef) {
     let operations = session.borrow().file_ops.clone();
@@ -675,7 +675,7 @@ fn panic_payload(panic: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Render the current frame off-thread and write it to a user-chosen PNG path.
-/// The render worker runs detached so the editor stays responsive; completion
+/// The render worker runs detached so the editor stays responsive. Completion
 /// is applied through [`PendingFileOp::ExportFinished`] on the UI thread.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn export_png(session: &SessionRef) {

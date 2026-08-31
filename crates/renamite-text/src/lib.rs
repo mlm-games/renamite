@@ -2,7 +2,7 @@
 //!
 //! Deliberately simple for v1: left-to-right horizontal layout, per-glyph
 //! advances, `\n` line breaks. No bidi, no complex-script shaping, no
-//! ligatures — documented limits, not silent wrongness. Deterministic: the
+//! ligatures - documented limits, not silent wrongness. Deterministic: the
 //! same input always yields the same path, so goldens and CLI renders match
 //! the editor exactly.
 //!

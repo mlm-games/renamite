@@ -336,7 +336,7 @@ enum ModKind {
 }
 
 /// Convert a menu action into outputs. Host-owned actions (`Rename`,
-/// `Cut`, `Copy`, `Paste`, `Duplicate`) return nothing here — the session
+/// `Cut`, `Copy`, `Paste`, `Duplicate`) return nothing here - the session
 /// implements them so it can update the clipboard / focus the rename field.
 pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolOutput> {
     match action {

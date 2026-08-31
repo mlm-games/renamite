@@ -1,6 +1,6 @@
 //! Central canvas keyboard dispatcher (Inkscape-style keymap).
 //!
-//! Every viewport key event flows through [`handle_viewport_key`]; the canvas
+//! Every viewport key event flows through [`handle_viewport_key`]. The canvas
 //! tools only ever see semantic [`CanvasKey`]s.
 
 use renamite_behavior_canvas::{CanvasEvent, Key as CanvasKey};

@@ -33,7 +33,7 @@ impl Selection {
     }
 }
 
-/// Screen ↔ world mapping; px tolerance in world units.
+/// Screen ↔ world mapping. Px tolerance in world units.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewTransform {
     pub scale: f64,

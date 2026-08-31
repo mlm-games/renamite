@@ -333,7 +333,7 @@ fn fixture_trim_half() -> Document {
     doc
 }
 
-/// `end` animated 0 → 1 over 60 frames; sampled at 30 pins the animated read
+/// `end` animated 0 → 1 over 60 frames. Sampled at 30 pins the animated read
 /// path through Animated::value_at at a non-boundary frame.
 fn fixture_trim_animated() -> Document {
     let mut doc = fixture_trim_half();

@@ -1830,7 +1830,7 @@ impl PathEditTool {
     }
 
     /// `(node id, contours)` for the edited shape. `ShapeKind::Path` is a
-    /// one-contour list; `CompoundPath` exposes every contour at the frame.
+    /// one-contour list. `CompoundPath` exposes every contour at the frame.
     fn current_contours(ctx: &ToolContext) -> Option<(NodeId, Vec<VectorPath>)> {
         let id = Self::editable_path_node(ctx)?;
         let node = ctx.doc.nodes.get(id)?;
@@ -2620,7 +2620,7 @@ impl PathEditTool {
 
     /// Shift+J: join two gathered endpoint references.
     ///
-    /// Opposite ends of one open contour close it; endpoints of different
+    /// Opposite ends of one open contour close it. Endpoints of different
     /// contours concatenate end-to-start (reversing either side as needed),
     /// merging coincident positions at the junction.
     fn join_selected_endpoints(&mut self, ctx: &ToolContext) -> OutputVec {
@@ -2723,7 +2723,7 @@ mod tests {
     use renamite_history::{History, ProjectMut};
     use std::sync::LazyLock;
 
-    /// The editor's current-paint swatch has no test hook; a shared black fill
+    /// The editor's current-paint swatch has no test hook. A shared black fill
     /// keeps `ToolContext` borrows simple (static ref, no temporaries).
     static TEST_PAINT: LazyLock<StylePaint> = LazyLock::new(|| StylePaint::solid(Color::BLACK));
     use renamite_model::{Color, Document, GradientStops, Scene, evaluate};

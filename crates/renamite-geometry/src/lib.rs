@@ -271,7 +271,7 @@ impl VectorPath {
         None
     }
 
-    /// De Casteljau split of segment `seg` at parameter `t`; new anchor is Smooth.
+    /// De Casteljau split of segment `seg` at parameter `t`. New anchor is Smooth.
     pub fn insert_anchor_at(&mut self, seg: usize, t: f64) -> Result<(), GeometryError> {
         if seg >= self.segment_count() {
             return Err(GeometryError::SegmentOutOfRange(seg));

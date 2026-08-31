@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 /// Borrowed view over everything History may mutate. The editor field-splits
-/// its `RenFile` into this per call; document-only hosts pass scratch stores.
+/// its `RenFile` into this per call. Document-only hosts pass scratch stores.
 pub struct ProjectMut<'a> {
     pub document: &'a mut Document,
     pub clips: &'a mut ClipMap,
@@ -273,7 +273,7 @@ pub enum EditorCommand {
         index: usize,
     },
     /// Detach only - clip stays in the arena for undo. Machines referencing a
-    /// detached clip keep resolving during undo windows; save-time GC decides.
+    /// detached clip keep resolving during undo windows. Save-time GC decides.
     DetachClip {
         id: ClipId,
     },
@@ -285,7 +285,7 @@ pub enum EditorCommand {
 
     // clip tracks & keys (hot path: fine-grained, coalescable)
     /// Insert-or-replace (carries full easing, so it doubles as restore).
-    /// Creates the (node, prop) track if missing.
+    /// The (node, prop) track is created if missing.
     AddClipKey {
         clip: ClipId,
         node: NodeId,
@@ -416,7 +416,7 @@ struct Created {
 struct AppliedTransaction {
     label: String,
     forward: Vec<EditorCommand>,
-    /// inverse[i] undoes forward[i]; each may be several commands.
+    /// inverse[i] undoes forward[i]. Each may be several commands.
     inverse: Vec<Vec<EditorCommand>>,
 }
 
@@ -1518,7 +1518,7 @@ fn apply_document_command(
 }
 
 /// True if `new` continues the same logical edit as `last` (live drag). The
-/// merged command replaces `last` in the transaction; its first inverse entry
+/// merged command replaces `last` in the transaction. Its first inverse entry
 /// (pre-drag state) is preserved.
 fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
     use EditorCommand::*;
@@ -1631,7 +1631,7 @@ fn clip_track_mut<'t>(c: &'t mut Clip, node: NodeId, prop: &PropPath) -> Option<
         .find(|t| t.node == node && &t.prop == prop)
 }
 
-/// Recursively create a tree's arena nodes once, filling `tree.id`; no-ops on
+/// Recursively create a tree's arena nodes once, filling `tree.id`. No-ops on
 /// redo when ids are already filled. Children are attached to their parents.
 fn ensure_tree(doc: &mut Document, tree: &mut NodeTree) -> Result<NodeId, ModelError> {
     if let Some(id) = tree.id {

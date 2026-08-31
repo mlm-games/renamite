@@ -257,7 +257,7 @@ pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'st
 
 /// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).
 ///
-/// The model `value` is synced into the field state on recomposition; edits flow
+/// The model `value` is synced into the field state on recomposition. Edits flow
 /// back through `on_change`, so the field never fights the value-driven model
 /// and pasted text stays visible.
 pub fn AppTextField(

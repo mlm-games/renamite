@@ -70,8 +70,8 @@ pub mod dialogs {
     }
 
     /// Non-blocking single-file open dialog. Works on every target:
-    /// desktop spawns a thread running the native blocking dialog; Android
-    /// spawns a thread driving the Activity picker; WASM runs the browser
+    /// desktop spawns a thread running the native blocking dialog. Android
+    /// spawns a thread driving the Activity picker. WASM runs the browser
     /// picker on the main thread. `on_done(None)` fires on cancel/error.
     pub fn pick_open_file(
         title: &'static str,
@@ -193,7 +193,7 @@ pub mod dialogs {
         }
     }
 
-    /// Ask for a write path *without* writing. Blocking; desktop only
+    /// Ask for a write path *without* writing. Blocking. Desktop only
     /// (used by the synchronous Save flow so the unsaved guard stays correct).
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn export_path(title: &str, suggested_name: &str, extensions: &[&str]) -> Option<PathBuf> {

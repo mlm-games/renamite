@@ -2,7 +2,7 @@
 //!
 //! Two entry points, one code path:
 //!
-//! * [`Engine`] - playback state only; borrows `&RenFile` per call. This is what
+//! * [`Engine`] - playback state only. Borrows `&RenFile` per call. This is what
 //!   the editor embeds: History can mutate the document between ticks and the
 //!   engine keeps its machine state, hover, and playhead.
 //! * [`Player`] - owns a `RenFile` and wraps an `Engine`. Drop-in for apps,
@@ -42,7 +42,7 @@ pub enum PlayMode {
     },
     /// Plain timeline playback.
     Timeline { playback: Playback },
-    /// Editor scrub: locked to an exact frame; ticking does not advance.
+    /// Editor scrub: locked to an exact frame. Ticking does not advance.
     Scrub { frame: f64 },
 }
 
@@ -63,7 +63,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Machine mode iff `start_machine` names a real machine; else timeline.
+    /// Machine mode iff `start_machine` names a real machine. Else timeline.
     pub fn new(project: &RenFile) -> Result<Self, PlayerError> {
         let comp = project.document.main;
         let c = project
@@ -150,7 +150,7 @@ impl Engine {
     }
 
     /// Patch a property for this frame and onward (e.g. game tint / bow stretch).
-    /// Host overrides survive `tick` and win over machine overrides; call
+    /// Host overrides survive `tick` and win over machine overrides. Call
     /// [`Player::set_host_override`] to have the scene update immediately.
     pub fn set_host_override(&mut self, id: NodeId, prop: PropPath, v: Value) {
         self.host_ov.set(id, prop, v);
@@ -818,7 +818,7 @@ mod tests {
         p.pointer_leave(); // must not panic / must clear hover state
     }
 
-    /// THE ownership-pinning test: mutate the document mid-playback; the
+    /// THE ownership-pinning test: mutate the document mid-playback. The
     /// engine keeps machine state and reflects the edit on the next tick.
     #[test]
     fn live_edit_between_ticks_preserves_machine_state() {

@@ -46,7 +46,7 @@ impl OffscreenRenderer {
     }
 
     /// Create a headless renderer-sized target. Adapter lookup happens
-    /// without a compatible surface; failure is returned, not a panic.
+    /// without a compatible surface. Failure is returned, not a panic.
     pub async fn new(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 

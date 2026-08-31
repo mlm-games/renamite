@@ -53,7 +53,7 @@ impl StrokeVertexConstructor<VectorVertex> for SolidVertexCtor {
     }
 }
 
-/// One prepared draw. `mesh` lives in world space; `transform` is the
+/// One prepared draw. `mesh` lives in world space. `transform` is the
 /// world -> screen affine applied in the vertex shader.
 pub enum PreparedDraw {
     Vector {
@@ -240,7 +240,7 @@ impl SceneRenderer {
 
     /// Convert a full affine to Repose's scale/rotate/translate `Transform`.
     ///
-    /// Skew cannot be represented by Repose's `Transform`; position,
+    /// Skew cannot be represented by Repose's `Transform`. Position,
     /// non-uniform scale, and rotation are preserved.
     fn affine_to_repose(affine: [f64; 6]) -> repose_core::Transform {
         let [a, b, c, d, tx, ty] = affine;

@@ -141,7 +141,7 @@ fn hit_key(ctx: &TimelineCtx, pos: DVec2) -> Option<KeyRef> {
 
 enum KeyState {
     Idle,
-    /// Pressed on a key; may become a drag or resolve as a click on release.
+    /// Pressed on a key. May become a drag or resolve as a click on release.
     Pending {
         press: DVec2,
         key: KeyRef,

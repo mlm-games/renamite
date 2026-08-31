@@ -3,7 +3,7 @@
 //! A `Clip` is a bag of (NodeId, PropPath) -> keyframe tracks. They are the same
 //! `KeyframeData` the history system already uses, so clip authoring reuses
 //! `EditorCommand` semantics later. A `Machine` turns inputs into an
-//! `Overrides` patch per tick; the host feeds that to `evaluate_with`.
+//! `Overrides` patch per tick. The host feeds that to `evaluate_with`.
 //!
 //! State-machine semantics (exit time, any-state, trigger consumption,
 //! crossfade) are implemented here from first principles / public

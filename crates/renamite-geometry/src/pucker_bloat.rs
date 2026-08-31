@@ -1,4 +1,4 @@
-//! Pucker & Bloat: vertices toward/away from contour centroid; handles opposite.
+//! Pucker & Bloat: vertices toward/away from contour centroid. Handles opposite.
 //! Matches AE / lottie-web `pb` semantics (amount is percent, 100 = extreme).
 
 use kurbo::{BezPath, PathEl, Point};

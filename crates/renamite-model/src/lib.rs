@@ -2,7 +2,7 @@
 //!
 //! Group evaluation: pass 1 accumulates shape paths and applies modifiers in
 //! document order; pass 2 recurses/emits styles bottom-first so `Scene.items`
-//! is in painter's order. Nodes live in a slotmap arena; tree membership is
+//! is in painter's order. Nodes live in a slotmap arena. Tree membership is
 //! attach/detach so undo/redo never changes a NodeId.
 
 use kurbo::{Affine, BezPath, ParamCurveNearest, Point, Shape as KurboShape};
@@ -625,7 +625,7 @@ pub enum ModifierKind {
         smooth: bool,
     },
     PuckerBloat {
-        /// Percent; positive = bloat, negative = pucker.
+        /// Percent. Positive = bloat, negative = pucker.
         amount: Animated<f64>,
     },
 }
@@ -1985,7 +1985,7 @@ impl Document {
     }
 
     /// Rebuild `asset_order` to match the arena: every attached id must exist
-    /// and be unique; any arena asset missing from the order gets appended.
+    /// and be unique. Any arena asset missing from the order gets appended.
     /// (Call after loading legacy projects that predate `asset_order`.)
     pub fn normalize_assets(&mut self) {
         let mut seen = std::collections::HashSet::new();

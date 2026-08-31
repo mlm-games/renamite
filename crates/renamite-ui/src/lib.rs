@@ -392,7 +392,7 @@ fn tool(
     })
 }
 
-/// Paint swatch showing the current fill paint; click opens the color picker
+/// Paint swatch showing the current fill paint. Click opens the color picker
 /// popover targeting the current paint.
 pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
     let th = theme();
