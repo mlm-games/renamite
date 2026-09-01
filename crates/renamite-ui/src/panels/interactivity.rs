@@ -10,9 +10,9 @@ use renamite_animation::LoopMode;
 use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
-    hit_transition, input_is_referenced, remove_input, remove_layer, remove_state,
-    remove_transition, rename_input, rename_layer, rename_state, set_entry_state,
-    set_transition_target, transition_mut,
+    hit_transition, input_is_referenced, remove_condition, remove_input, remove_layer,
+    remove_listener, remove_state, remove_transition, rename_input, rename_layer, rename_state,
+    set_entry_state, set_transition_target, transition_mut,
 };
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
@@ -1602,6 +1602,7 @@ fn blend_child_row(
                     if let Some(c) = children.get_mut(index) {
                         c.threshold = value;
                     }
+                    renamite_behavior_common::machine::sort_blend_children(children);
                 }
             }),
         ),
@@ -1943,11 +1944,7 @@ fn condition_editor_row(
         move || {
             let mut s = session.borrow_mut();
             s.edit_active_machine("Remove condition", move |machine| {
-                if let Ok(tr) = transition_mut(machine, layer, source, transition) {
-                    if index < tr.conditions.len() {
-                        tr.conditions.remove(index);
-                    }
-                }
+                remove_condition(machine, layer, source, transition, index)?;
                 Ok(())
             });
         }
@@ -2036,9 +2033,7 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
                     move || {
                         let mut s = session.borrow_mut();
                         s.edit_active_machine("Remove listener", move |machine| {
-                            if index < machine.listeners.len() {
-                                machine.listeners.remove(index);
-                            }
+                            remove_listener(machine, index)?;
                             Ok(())
                         });
                     }

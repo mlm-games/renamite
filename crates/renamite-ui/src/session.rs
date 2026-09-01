@@ -2732,10 +2732,67 @@ impl Session {
         ]);
 
         if self.machine_preview_enabled {
-            self.reset_machine_preview();
+            self.resync_machine_preview_after_edit();
         }
 
         true
+    }
+
+    /// Keep live input values + running instance where possible after a structural edit.
+    pub fn resync_machine_preview_after_edit(&mut self) {
+        let Some(machine_id) = self.active_machine else {
+            self.machine_preview_inputs.clear();
+            return;
+        };
+        let Some(machine) = self.file.machines.get(machine_id).cloned() else {
+            self.machine_preview_inputs.clear();
+            return;
+        };
+
+        let prev = std::mem::take(&mut self.machine_preview_inputs);
+        self.machine_preview_inputs = machine
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(i, def)| {
+                let default = match def.kind {
+                    InputKind::Bool { default } => InputValue::Bool(default),
+                    InputKind::Number { default } => InputValue::Number(default),
+                    InputKind::Trigger => InputValue::Trigger { fired: false },
+                };
+                match (def.kind, prev.get(i)) {
+                    (InputKind::Bool { .. }, Some(InputValue::Bool(b))) => InputValue::Bool(*b),
+                    (InputKind::Number { .. }, Some(InputValue::Number(n))) => {
+                        InputValue::Number(*n)
+                    }
+                    (InputKind::Trigger, Some(InputValue::Trigger { .. })) => {
+                        InputValue::Trigger { fired: false }
+                    }
+                    _ => default,
+                }
+            })
+            .collect();
+
+        let already = self.engine.playing_machine_id() == Some(machine_id);
+        if !already {
+            self.engine.play_machine(&self.file, machine_id);
+        }
+        for (i, v) in self.machine_preview_inputs.iter().enumerate() {
+            match *v {
+                InputValue::Bool(b) => {
+                    let _ = self.engine.set_bool(&self.file, &machine.inputs[i].name, b);
+                }
+                InputValue::Number(n) => {
+                    let _ = self
+                        .engine
+                        .set_number(&self.file, &machine.inputs[i].name, n);
+                }
+                InputValue::Trigger { .. } => {}
+            }
+        }
+        self.engine.reevaluate(&self.file);
+        self.revision = self.revision.wrapping_add(1);
+        request_frame();
     }
 
     pub fn select_machine(&mut self, machine: MachineId) {
@@ -2781,6 +2838,11 @@ impl Session {
         if let Some(machine) = applied.and_then(|value| value.created_machine) {
             self.active_machine = Some(machine);
             self.machine_selection = MachineSelection::None;
+            if self.file.start_machine.is_none() {
+                let _ = self.history_apply(EditorCommand::SetStartMachine {
+                    start: Some(machine),
+                });
+            }
             if self.mode == EditorMode::Interact {
                 self.machine_preview_enabled = true;
             }
@@ -2808,6 +2870,18 @@ impl Session {
             .file
             .start_machine
             .or_else(|| self.file.machine_order.first().copied());
+        if self.file.start_machine.is_none() {
+            if let Some(id) = self.file.machine_order.first().copied() {
+                self.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Set start machine".into()),
+                    ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine {
+                        start: Some(id)
+                    }]),
+                    ToolOutput::CommitTransaction,
+                ]);
+                self.active_machine = Some(id);
+            }
+        }
         self.machine_selection = MachineSelection::None;
         self.reset_machine_preview();
     }

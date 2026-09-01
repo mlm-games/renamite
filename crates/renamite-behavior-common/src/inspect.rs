@@ -70,11 +70,15 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
             // Hide inner radius when Burst (no-op).
             if desc.path.as_str() == "shape.inner_r" {
                 match &node.kind {
-                    NodeKind::Shape(ShapeKind::Star { kind, .. }) if *kind == renamite_model::StarKind::Burst => {
+                    NodeKind::Shape(ShapeKind::Star { kind, .. })
+                        if *kind == renamite_model::StarKind::Burst =>
+                    {
                         return false;
                     }
                     NodeKind::Mask(m) => match &m.shape {
-                        ShapeKind::Star { kind, .. } if *kind == renamite_model::StarKind::Burst => {
+                        ShapeKind::Star { kind, .. }
+                            if *kind == renamite_model::StarKind::Burst =>
+                        {
                             return false;
                         }
                         _ => {}
@@ -1034,8 +1038,14 @@ mod tests {
         assert!(paths.contains(&"stroke.width"));
         assert!(paths.contains(&"stroke.cap"));
         assert!(paths.contains(&"stroke.join"));
-        assert!(!paths.contains(&"stroke.color"), "color owned by paint section");
-        let cap = rows.iter().find(|r| r.desc.path.as_str() == "stroke.cap").unwrap();
+        assert!(
+            !paths.contains(&"stroke.color"),
+            "color owned by paint section"
+        );
+        let cap = rows
+            .iter()
+            .find(|r| r.desc.path.as_str() == "stroke.cap")
+            .unwrap();
         assert!(matches!(cap.desc.kind, PropKind::Enum3 { .. }));
     }
 
@@ -1054,7 +1064,10 @@ mod tests {
         ));
         doc.attach(poly, Parent::Comp(doc.main), 0).unwrap();
         let rows = props_for_node(&doc, poly, Frame(0));
-        assert!(rows.iter().any(|r| r.desc.path.as_str() == "shape.roundness"));
+        assert!(
+            rows.iter()
+                .any(|r| r.desc.path.as_str() == "shape.roundness")
+        );
     }
 
     #[test]
@@ -1133,8 +1146,8 @@ mod tests {
     fn animated_prop_mut_paths_are_described_or_owned_by_section() {
         use renamite_animation::{Animated, AnimatedTransform};
         use renamite_model::{
-            Color, FillRule, GradientStops, MaskProps, ShapeKind, StarKind, StrokeCap,
-            StrokeJoin, StyleKind, StylePaint, TextAlign, TextNode, TrimMode,
+            Color, FillRule, GradientStops, MaskProps, ShapeKind, StarKind, StrokeCap, StrokeJoin,
+            StyleKind, StylePaint, TextAlign, TextNode, TrimMode,
         };
         let mut all_desc_paths = std::collections::HashSet::new();
         let reps: Vec<NodeKind> = vec![

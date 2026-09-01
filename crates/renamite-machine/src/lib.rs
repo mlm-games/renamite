@@ -408,7 +408,7 @@ impl MachineInstance {
                         Some(vb) => value_tween(&va, vb, f.t),
                         None => va,
                     };
-                    b.entry(k).or_insert(merged);
+                    b.insert(k, merged);
                 }
             }
             for (k, v) in b {
@@ -751,5 +751,23 @@ mod tests {
             names.extend(out.events);
         }
         assert_eq!(names.iter().filter(|n| *n == "half").count(), 1);
+    }
+
+    #[test]
+    fn crossfade_tweens_overlapping_props() {
+        let (clips, m, node) = world();
+        let mut inst = MachineInstance::new(&m);
+        let mut ov = Overrides::default();
+        inst.set_bool(0, true);
+        // First tick starts fade Down->Up (duration 10)
+        inst.tick(&m, &clips, 1.0, &mut ov);
+        assert!(inst.layers[0].fade.is_some());
+        // Mid-fade: opacity must be between down and up samples, not hard-cut to `b`
+        ov.clear();
+        inst.tick(&m, &clips, 4.0, &mut ov);
+        let Some(Value::F64(op)) = ov.get(node, "opacity").cloned() else {
+            panic!("expected f64 opacity");
+        };
+        assert!(op > 0.0 && op < 1.0, "got {op}");
     }
 }

@@ -3412,13 +3412,24 @@ mod tests {
         doc.attach(stroke, Parent::Comp(comp), 1).unwrap();
         // Override stroke.color to red.
         let mut ov = Overrides::default();
-        ov.set(stroke, PropPath::new("stroke.color"), Value::Color(Color::rgba(1.0, 0.0, 0.0, 1.0)));
+        ov.set(
+            stroke,
+            PropPath::new("stroke.color"),
+            Value::Color(Color::rgba(1.0, 0.0, 0.0, 1.0)),
+        );
         let scene = evaluate_with(&doc, comp, 0.0, &ov);
         assert_eq!(scene.items.len(), 1);
-        assert_eq!(scene.items[0].paint, ScenePaint::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0)));
+        assert_eq!(
+            scene.items[0].paint,
+            ScenePaint::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0))
+        );
         // Ensure fill.color override does NOT recolor the stroke.
         let mut ov2 = Overrides::default();
-        ov2.set(stroke, PropPath::new("fill.color"), Value::Color(Color::rgba(0.0, 1.0, 0.0, 1.0)));
+        ov2.set(
+            stroke,
+            PropPath::new("fill.color"),
+            Value::Color(Color::rgba(0.0, 1.0, 0.0, 1.0)),
+        );
         let scene2 = evaluate_with(&doc, comp, 0.0, &ov2);
         assert_eq!(scene2.items[0].paint, ScenePaint::Solid(Color::BLACK));
     }

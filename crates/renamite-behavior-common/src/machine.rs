@@ -256,11 +256,7 @@ pub fn add_layer(machine: &mut Machine, name: impl Into<String>) -> Result<usize
     Ok(machine.layers.len() - 1)
 }
 
-pub fn rename_layer(
-    machine: &mut Machine,
-    layer: usize,
-    name: impl Into<String>,
-) -> Result<()> {
+pub fn rename_layer(machine: &mut Machine, layer: usize, name: impl Into<String>) -> Result<()> {
     let layer = machine
         .layers
         .get_mut(layer)
@@ -736,6 +732,78 @@ pub fn rename_machine(machine: &mut Machine, name: impl Into<String>) -> Result<
     Ok(())
 }
 
+pub fn set_input_default(machine: &mut Machine, input: usize, kind: InputKind) -> Result<()> {
+    let def = machine
+        .inputs
+        .get_mut(input)
+        .ok_or(MachineEditError::OutOfRange)?;
+    let same_family = matches!(
+        (&def.kind, &kind),
+        (InputKind::Bool { .. }, InputKind::Bool { .. })
+            | (InputKind::Number { .. }, InputKind::Number { .. })
+            | (InputKind::Trigger, InputKind::Trigger)
+    );
+    if !same_family {
+        return Err(MachineEditError::InputTypeMismatch);
+    }
+    def.kind = kind;
+    Ok(())
+}
+
+pub fn remove_condition(
+    machine: &mut Machine,
+    layer: usize,
+    source: TransitionSource,
+    transition: usize,
+    condition: usize,
+) -> Result<Condition> {
+    let tr = transition_mut(machine, layer, source, transition)?;
+    if condition >= tr.conditions.len() {
+        return Err(MachineEditError::OutOfRange);
+    }
+    Ok(tr.conditions.remove(condition))
+}
+
+pub fn remove_listener(machine: &mut Machine, index: usize) -> Result<Listener> {
+    if index >= machine.listeners.len() {
+        return Err(MachineEditError::OutOfRange);
+    }
+    Ok(machine.listeners.remove(index))
+}
+
+pub fn set_state_kind(
+    machine: &mut Machine,
+    layer: usize,
+    state: usize,
+    kind: StateKind,
+) -> Result<()> {
+    let st = machine
+        .layers
+        .get_mut(layer)
+        .ok_or(MachineEditError::OutOfRange)?
+        .states
+        .get_mut(state)
+        .ok_or(MachineEditError::OutOfRange)?;
+    if let StateKind::Blend1D { input, .. } = &kind {
+        match machine.inputs.get(*input) {
+            Some(def) if matches!(def.kind, InputKind::Number { .. }) => {}
+            Some(_) => return Err(MachineEditError::InputTypeMismatch),
+            None => return Err(MachineEditError::OutOfRange),
+        }
+    }
+    st.kind = kind;
+    Ok(())
+}
+
+/// Keep Blend1D thresholds strictly increasing (matches validate + bracket()).
+pub fn sort_blend_children(children: &mut [renamite_machine::BlendChild]) {
+    children.sort_by(|a, b| {
+        a.threshold
+            .partial_cmp(&b.threshold)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
 pub fn set_blend_children(
     machine: &mut Machine,
     layer: usize,
@@ -751,6 +819,8 @@ pub fn set_blend_children(
         .ok_or(MachineEditError::OutOfRange)?;
     match &mut st.kind {
         StateKind::Blend1D { children: c, .. } => {
+            let mut children = children;
+            sort_blend_children(&mut children);
             *c = children;
             Ok(())
         }

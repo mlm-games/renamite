@@ -62,17 +62,11 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             let s = session.borrow();
             let comp_id = s.file.document.main;
             let comp = &s.file.document.compositions[comp_id];
-            (
-                comp_id,
-                comp.name.clone(),
-                comp.size,
-                comp.rate,
-                comp.range,
-            )
+            (comp_id, comp.name.clone(), comp.size, comp.rate, comp.range)
         };
         let comp_section = {
             let th = theme();
-            let duration = (range.1 .0 - range.0 .0).max(0);
+            let duration = (range.1.0 - range.0.0).max(0);
             crate::components::CollapsibleSection(
                 "composition_props",
                 format!("Composition · {comp_name}"),
@@ -134,65 +128,65 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
                             .modifier(Modifier::new().width(96.0)),
-                        Box(Modifier::new().width(84.0)).child(
-                            crate::components::AppTextField(
-                                format!("comp_in_{comp_id:?}"),
-                                range.0 .0.to_string(),
-                                "In",
-                                true,
-                                32.0,
-                                {
-                                    let session = session.clone();
-                                    move |text: String| {
-                                        if let Ok(v) = text.trim().parse::<i64>() {
-                                            let mut s = session.borrow_mut();
-                                            s.apply_outputs(smallvec![
-                                                ToolOutput::BeginTransaction("Set composition range".into()),
-                                                ToolOutput::Commands(smallvec![
-                                                    EditorCommand::SetCompositionRange {
-                                                        comp: comp_id,
-                                                        start: Some(Frame(v)),
-                                                        end: None,
-                                                    }
-                                                ]),
-                                                ToolOutput::CommitTransaction,
-                                            ]);
-                                        }
+                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                            format!("comp_in_{comp_id:?}"),
+                            range.0.0.to_string(),
+                            "In",
+                            true,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    if let Ok(v) = text.trim().parse::<i64>() {
+                                        let mut s = session.borrow_mut();
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set composition range".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionRange {
+                                                    comp: comp_id,
+                                                    start: Some(Frame(v)),
+                                                    end: None,
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
                                     }
-                                },
-                            ),
-                        ),
+                                }
+                            },
+                        )),
                         Text("–")
                             .size(th.typography.body_medium)
                             .color(th.on_surface_variant),
-                        Box(Modifier::new().width(84.0)).child(
-                            crate::components::AppTextField(
-                                format!("comp_out_{comp_id:?}"),
-                                range.1 .0.to_string(),
-                                "Out",
-                                true,
-                                32.0,
-                                {
-                                    let session = session.clone();
-                                    move |text: String| {
-                                        if let Ok(v) = text.trim().parse::<i64>() {
-                                            let mut s = session.borrow_mut();
-                                            s.apply_outputs(smallvec![
-                                                ToolOutput::BeginTransaction("Set composition range".into()),
-                                                ToolOutput::Commands(smallvec![
-                                                    EditorCommand::SetCompositionRange {
-                                                        comp: comp_id,
-                                                        start: None,
-                                                        end: Some(Frame(v)),
-                                                    }
-                                                ]),
-                                                ToolOutput::CommitTransaction,
-                                            ]);
-                                        }
+                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                            format!("comp_out_{comp_id:?}"),
+                            range.1.0.to_string(),
+                            "Out",
+                            true,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    if let Ok(v) = text.trim().parse::<i64>() {
+                                        let mut s = session.borrow_mut();
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set composition range".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionRange {
+                                                    comp: comp_id,
+                                                    start: None,
+                                                    end: Some(Frame(v)),
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
                                     }
-                                },
-                            ),
-                        ),
+                                }
+                            },
+                        )),
                     )),
                     Row(Modifier::new()
                         .fill_max_width()
@@ -213,11 +207,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             )
         };
         return Column(Modifier::new().fill_max_size()).child((
-            PanelHeader(
-                Symbols::settings,
-                "Properties",
-                vec![],
-            ),
+            PanelHeader(Symbols::settings, "Properties", vec![]),
             Text("No selection")
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant)
@@ -292,8 +282,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         if let Some(app) = app_opt {
             let selected_is_fill = app.fill == Some(ids[0]);
             let selected_is_stroke = app.stroke == Some(ids[0]);
-            let is_shape_like =
-                !selected_is_fill && !selected_is_stroke;
+            let is_shape_like = !selected_is_fill && !selected_is_stroke;
             if let Some(fill_id) = app.fill {
                 if let Some(v) = paint_section_for_style(
                     session.clone(),
@@ -1715,12 +1704,9 @@ fn single_text_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<No
         return None;
     }
     let children = node.children.clone();
-    let mut texts = children.into_iter().filter(|&cid| {
-        matches!(
-            doc.nodes.get(cid).map(|n| &n.kind),
-            Some(NodeKind::Text(_))
-        )
-    });
+    let mut texts = children
+        .into_iter()
+        .filter(|&cid| matches!(doc.nodes.get(cid).map(|n| &n.kind), Some(NodeKind::Text(_))));
     let text_id = texts.next()?;
     if texts.next().is_some() {
         return None;
@@ -1877,8 +1863,8 @@ fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarge
             stroke: Some(selected),
         }),
         NodeKind::Shape(_) | NodeKind::Text(_) => {
-            let fill = renamite_behavior_common::fill::fill_style_for_shape(doc, selected)
-                .or_else(|| {
+            let fill =
+                renamite_behavior_common::fill::fill_style_for_shape(doc, selected).or_else(|| {
                     session
                         .engine
                         .scene()
@@ -1914,10 +1900,7 @@ fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarge
         NodeKind::Group => {
             let children = node.children.clone();
             let mut texts = children.into_iter().filter(|&cid| {
-                matches!(
-                    doc.nodes.get(cid).map(|n| &n.kind),
-                    Some(NodeKind::Text(_))
-                )
+                matches!(doc.nodes.get(cid).map(|n| &n.kind), Some(NodeKind::Text(_)))
             });
             let text_id = texts.next()?;
             if texts.next().is_some() {
@@ -1979,9 +1962,7 @@ fn paint_section_for_style(
         let session = session.borrow();
         let node = session.file.document.nodes.get(style_id)?;
         match &node.kind {
-            NodeKind::Style(StyleKind::Fill { paint, .. }) => {
-                (paint.clone(), "Fill", "fill.color")
-            }
+            NodeKind::Style(StyleKind::Fill { paint, .. }) => (paint.clone(), "Fill", "fill.color"),
             NodeKind::Style(StyleKind::Stroke { paint, .. }) => {
                 (paint.clone(), "Stroke", "stroke.color")
             }
@@ -2618,7 +2599,9 @@ fn stop_rows(
                         let mut s = session.borrow_mut();
                         let frame = s.playback.head;
                         let Ok(Value::Stops(mut stops)) =
-                            s.file.document.value_at(style_id, &PropPath::new("grad.stops"), frame)
+                            s.file
+                                .document
+                                .value_at(style_id, &PropPath::new("grad.stops"), frame)
                         else {
                             return;
                         };
