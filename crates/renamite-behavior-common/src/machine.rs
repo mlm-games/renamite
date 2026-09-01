@@ -250,6 +250,7 @@ pub fn add_layer(machine: &mut Machine, name: impl Into<String>) -> Result<usize
             name: "Entry".into(),
             kind: StateKind::Empty,
             transitions: Vec::new(),
+            graph_pos: None,
         }],
     });
 
@@ -307,6 +308,7 @@ pub fn add_state(
         name: name.to_owned(),
         kind,
         transitions: Vec::new(),
+        graph_pos: None,
     });
 
     Ok(layer.states.len() - 1)
@@ -600,12 +602,20 @@ pub fn auto_layout(machine: &Machine) -> Vec<GraphState> {
 
     for (layer_index, layer) in machine.layers.iter().enumerate() {
         for state_index in 0..layer.states.len() {
+            let (x, y) = if let Some((gx, gy)) = layer.states[state_index].graph_pos {
+                (gx, gy)
+            } else {
+                (
+                    LEFT + state_index as f64 * (WIDTH + COLUMN_GAP),
+                    TOP + layer_index as f64 * (HEIGHT + LAYER_GAP),
+                )
+            };
             output.push(GraphState {
                 layer: layer_index,
                 state: state_index,
                 rect: GraphRect {
-                    x: LEFT + state_index as f64 * (WIDTH + COLUMN_GAP),
-                    y: TOP + layer_index as f64 * (HEIGHT + LAYER_GAP),
+                    x,
+                    y,
                     width: WIDTH,
                     height: HEIGHT,
                 },
@@ -615,6 +625,24 @@ pub fn auto_layout(machine: &Machine) -> Vec<GraphState> {
     }
 
     output
+}
+
+pub fn set_state_position(
+    machine: &mut Machine,
+    layer: usize,
+    state: usize,
+    pos: Option<(f64, f64)>,
+) -> Result<()> {
+    let layer = machine
+        .layers
+        .get_mut(layer)
+        .ok_or(MachineEditError::OutOfRange)?;
+    let st = layer
+        .states
+        .get_mut(state)
+        .ok_or(MachineEditError::OutOfRange)?;
+    st.graph_pos = pos;
+    Ok(())
 }
 
 pub fn hit_state(layout: &[GraphState], position: glam::DVec2) -> Option<(usize, usize)> {
@@ -849,16 +877,19 @@ mod tests {
                         name: "Idle".into(),
                         kind: StateKind::Empty,
                         transitions: Vec::new(),
+                        graph_pos: None,
                     },
                     State {
                         name: "Hover".into(),
                         kind: StateKind::Empty,
                         transitions: Vec::new(),
+                        graph_pos: None,
                     },
                     State {
                         name: "Active".into(),
                         kind: StateKind::Empty,
                         transitions: Vec::new(),
+                        graph_pos: None,
                     },
                 ],
             }],

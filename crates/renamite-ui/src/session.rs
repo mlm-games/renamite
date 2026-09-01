@@ -133,6 +133,15 @@ pub enum MachineGraphGesture {
         from_state: Option<usize>,
         current: DVec2,
     },
+    Pan {
+        last: DVec2,
+    },
+    DragState {
+        layer: usize,
+        state: usize,
+        offset: DVec2,
+        current: DVec2,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2828,6 +2837,7 @@ impl Session {
                     name: "Idle".into(),
                     kind: StateKind::Empty,
                     transitions: Vec::new(),
+                    graph_pos: None,
                 }],
             }],
             listeners: Vec::new(),
@@ -3322,9 +3332,7 @@ impl ViewportState {
         if self.surface_size == DVec2::ZERO {
             return;
         }
-        let world = self.view.screen_to_world(screen_pos);
-        self.view.scale = (self.view.scale * factor).clamp(0.05, 64.0);
-        self.view.offset = screen_pos - world * self.view.scale;
+        self.view.zoom_at(screen_pos, factor, 0.05, 64.0);
     }
 
     pub fn begin_pan(&mut self, position: DVec2) {
@@ -3337,7 +3345,7 @@ impl ViewportState {
         };
 
         self.pan_last = Some(position);
-        self.view.offset += position - previous;
+        self.view.pan_by(position - previous);
         true
     }
 

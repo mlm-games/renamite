@@ -337,6 +337,7 @@ mod tests {
                         loop_mode: LoopMode::Once,
                     },
                     transitions: vec![],
+                    graph_pos: None,
                 }],
             }],
         });

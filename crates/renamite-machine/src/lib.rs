@@ -148,6 +148,8 @@ pub struct State {
     pub name: String,
     pub kind: StateKind,
     pub transitions: Vec<Transition>,
+    #[serde(default)]
+    pub graph_pos: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -666,6 +668,7 @@ mod tests {
                                 value: true,
                             }],
                         }],
+                        graph_pos: None,
                     },
                     State {
                         name: "Up".into(),
@@ -683,6 +686,7 @@ mod tests {
                                 value: false,
                             }],
                         }],
+                        graph_pos: None,
                     },
                 ],
             }],

@@ -60,6 +60,18 @@ impl ViewTransform {
     pub fn world_tolerance(&self, px: f64) -> f64 {
         px / self.scale
     }
+
+    /// Zoom about `screen_pos` by `factor`, clamped to `[min, max]`.
+    /// Shared by canvas viewport and machine graph to stay DRY.
+    pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64, min: f64, max: f64) {
+        let world = self.screen_to_world(screen_pos);
+        self.scale = (self.scale * factor).clamp(min, max);
+        self.offset = screen_pos - world * self.scale;
+    }
+
+    pub fn pan_by(&mut self, delta: DVec2) {
+        self.offset += delta;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

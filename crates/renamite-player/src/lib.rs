@@ -611,6 +611,7 @@ mod tests {
                                 value: true,
                             }],
                         }],
+                        graph_pos: None,
                     },
                     State {
                         name: "Move".into(),
@@ -620,6 +621,7 @@ mod tests {
                             loop_mode: LoopMode::Once,
                         },
                         transitions: vec![],
+                        graph_pos: None,
                     },
                 ],
             }],

@@ -7,12 +7,14 @@ use web_time::Instant;
 
 use glam::DVec2;
 use renamite_animation::LoopMode;
+use renamite_behavior_common::ViewTransform;
 use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
     hit_transition, input_is_referenced, remove_condition, remove_input, remove_layer,
     remove_listener, remove_state, remove_transition, rename_input, rename_layer, rename_state,
-    set_entry_state, set_transition_target, transition_mut,
+    set_entry_state, set_input_default, set_state_kind as pure_set_state_kind, set_state_position,
+    set_transition_target, transition_mut,
 };
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
@@ -22,6 +24,7 @@ use renamite_model::NodeId;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
+use repose_core::input::{PointerButton, PointerEventKind as UiPointerEventKind};
 use repose_core::{
     AlignItems, Color, Modifier, PaddingValues, Vec2, View, remember_with_key, request_frame, theme,
 };
@@ -36,6 +39,12 @@ use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use crate::components::{CollapsibleSection, CompactIconAction, PanelHeader};
 use crate::session::{MachineGraphGesture, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
+
+fn graph_view(machine_id: MachineId) -> Rc<RefCell<ViewTransform>> {
+    remember_with_key(format!("machine_graph_view_{machine_id:?}"), || {
+        RefCell::new(ViewTransform::identity())
+    })
+}
 
 pub fn InteractivityPanel(session: SessionRef) -> View {
     let active = session.borrow().active_machine;
@@ -522,13 +531,11 @@ fn InputRow(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Input default", move |machine| {
-                        if let Some(InputDef {
-                            kind: InputKind::Bool { default },
-                            ..
-                        }) = machine.inputs.get_mut(index)
-                        {
-                            *default = !*default;
-                        }
+                        let cur = match machine.inputs.get(index).map(|d| d.kind) {
+                            Some(InputKind::Bool { default }) => default,
+                            _ => default,
+                        };
+                        set_input_default(machine, index, InputKind::Bool { default: !cur })?;
                         Ok(())
                     });
                 }
@@ -541,13 +548,7 @@ fn InputRow(
                 def,
                 0.01,
                 Rc::new(move |machine, value| {
-                    if let Some(InputDef {
-                        kind: InputKind::Number { default },
-                        ..
-                    }) = machine.inputs.get_mut(index)
-                    {
-                        *default = value;
-                    }
+                    let _ = set_input_default(machine, index, InputKind::Number { default: value });
                 }),
             ));
         }
@@ -645,9 +646,14 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
         remember_with_key("machine_graph_last_click", || {
             RefCell::new(None::<(DVec2, Instant)>)
         });
+    let view = graph_view(machine_id);
+    let last_pointer: Rc<RefCell<DVec2>> =
+        remember_with_key(format!("machine_graph_last_ptr_{machine_id:?}"), || {
+            RefCell::new(DVec2::ZERO)
+        });
 
     Column(Modifier::new().fill_max_width()).child((
-        Text("Shift+drag state or Any → wire · double-click empty → add state · click edge to select")
+        Text("Shift+drag state or Any → wire · drag state → move · middle/space-drag → pan · wheel → zoom · double-click empty → add state")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -661,40 +667,155 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 .fill_max_width()
                 .height(320.0)
                 .background(theme().surface_container_lowest)
+                .on_scroll({
+                    let view = view.clone();
+                    let last_pointer = last_pointer.clone();
+                    move |delta: Vec2| {
+                        let mut v = view.borrow_mut();
+                        if delta.x.abs() > delta.y.abs() && delta.x.abs() > 0.1 {
+                            v.pan_by(DVec2::new(delta.x as f64, 0.0));
+                        } else if delta.y.abs() > 0.1 {
+                            let anchor = *last_pointer.borrow();
+                            let anchor = if anchor == DVec2::ZERO {
+                                DVec2::new(160.0, 160.0)
+                            } else {
+                                anchor
+                            };
+                            let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
+                            v.zoom_at(anchor, factor, 0.5, 2.0);
+                        }
+                        request_frame();
+                        Vec2::ZERO
+                    }
+                })
                 .on_pointer_down({
                     let session = session.clone();
                     let last_click = last_click.clone();
+                    let view = view.clone();
+                    let last_pointer = last_pointer.clone();
                     move |event: PointerEvent| {
-                        handle_graph_down(&session, machine_id, &event, &last_click);
+                        let pos = DVec2::new(event.position.x as f64, event.position.y as f64);
+                        *last_pointer.borrow_mut() = pos;
+                        handle_graph_down(&session, machine_id, &view, &event, &last_click);
                     }
                 })
                 .on_pointer_move({
                     let session = session.clone();
+                    let view = view.clone();
+                    let last_pointer = last_pointer.clone();
                     move |event: PointerEvent| {
                         let position =
                             DVec2::new(event.position.x as f64, event.position.y as f64);
+                        *last_pointer.borrow_mut() = position;
                         let mut s = session.borrow_mut();
-                        if let Some(MachineGraphGesture::WireTransition { current, .. }) =
-                            s.machine_graph_gesture.as_mut()
-                        {
-                            *current = position;
-                            request_frame();
+                        let mut view_mut = view.borrow_mut();
+                        match s.machine_graph_gesture.clone() {
+                            Some(MachineGraphGesture::WireTransition {
+                                layer,
+                                from_state,
+                                ..
+                            }) => {
+                                s.machine_graph_gesture =
+                                    Some(MachineGraphGesture::WireTransition {
+                                        layer,
+                                        from_state,
+                                        current: position,
+                                    });
+                                request_frame();
+                            }
+                            Some(MachineGraphGesture::Pan { last }) => {
+                                let delta = position - last;
+                                view_mut.pan_by(delta);
+                                s.machine_graph_gesture =
+                                    Some(MachineGraphGesture::Pan { last: position });
+                                request_frame();
+                            }
+                            Some(MachineGraphGesture::DragState {
+                                layer,
+                                state,
+                                offset,
+                                ..
+                            }) => {
+                                s.machine_graph_gesture =
+                                    Some(MachineGraphGesture::DragState {
+                                        layer,
+                                        state,
+                                        offset,
+                                        current: position,
+                                    });
+                                request_frame();
+                            }
+                            None => {}
                         }
                     }
                 })
                 .on_pointer_up({
                     let session = session.clone();
+                    let view = view.clone();
                     move |event: PointerEvent| {
-                        handle_graph_up(&session, machine_id, &event);
+                        handle_graph_up(&session, machine_id, &view, &event);
+                    }
+                })
+                .on_pointer_cancel({
+                    let session = session.clone();
+                    move |_| {
+                        session.borrow_mut().machine_graph_gesture = None;
+                        request_frame();
                     }
                 }),
             move |scope| {
                 let session = draw_session.borrow();
                 let machine = &session.file.machines[machine_id];
-                let layout = auto_layout(machine);
-                let active = session.engine.active_machine_states();
-
-                draw_machine_edges(scope, machine, &layout, &session.machine_selection);
+                let view_val = *view.borrow();
+                let mut layout = auto_layout(machine);
+                if let Some(MachineGraphGesture::DragState {
+                    layer,
+                    state,
+                    offset,
+                    current,
+                }) = &session.machine_graph_gesture
+                {
+                    let world = view_val.screen_to_world(*current) - *offset;
+                    if let Some(gs) = layout
+                        .iter_mut()
+                        .find(|g| g.layer == *layer && g.state == *state)
+                    {
+                        gs.rect.x = world.x;
+                        gs.rect.y = world.y;
+                    }
+                }
+                let active = session.engine.active_machine_states().clone();
+                let screen_layout: Vec<GraphState> = layout
+                    .iter()
+                    .map(|g| GraphState {
+                        layer: g.layer,
+                        state: g.state,
+                        rect: GraphRect {
+                            x: g.rect.x * view_val.scale + view_val.offset.x,
+                            y: g.rect.y * view_val.scale + view_val.offset.y,
+                            width: g.rect.width * view_val.scale,
+                            height: g.rect.height * view_val.scale,
+                        },
+                        entry: g.entry,
+                    })
+                    .collect();
+                let screen_any = |machine: &Machine, layout: &[GraphState], layer: usize| -> DVec2 {
+                    let wc = any_node_center(machine, layout, layer);
+                    view_val.world_to_screen(wc)
+                };
+                let screen_state_center =
+                    |machine: &Machine, layout: &[GraphState], layer: usize, state: usize| -> DVec2 {
+                        let wc = layer_state_center(machine, layout, layer, state);
+                        view_val.world_to_screen(wc)
+                    };
+                draw_machine_edges_with_view(
+                    scope,
+                    machine,
+                    &layout,
+                    &screen_layout,
+                    &view_val,
+                    &session.machine_selection,
+                );
                 if let Some(MachineGraphGesture::WireTransition {
                     layer,
                     from_state,
@@ -702,16 +823,25 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 }) = &session.machine_graph_gesture
                 {
                     let from = match from_state {
-                        Some(si) => layer_state_center(machine, &layout, *layer, *si),
-                        None => any_node_center(machine, &layout, *layer),
+                        Some(si) => screen_state_center(machine, &layout, *layer, *si),
+                        None => screen_any(machine, &layout, *layer),
                     };
                     draw_edge(scope, from, *current, theme().primary.with_alpha(220));
                 }
-                draw_any_nodes(scope, machine, &layout, &session.machine_selection);
-                draw_machine_states(
+                draw_any_nodes_with_view(
                     scope,
                     machine,
                     &layout,
+                    &screen_layout,
+                    &view_val,
+                    &session.machine_selection,
+                );
+                draw_machine_states_with_view(
+                    scope,
+                    machine,
+                    &layout,
+                    &screen_layout,
+                    &view_val,
                     &session.machine_selection,
                     active.as_deref(),
                 );
@@ -723,6 +853,7 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
 fn handle_graph_down(
     session: &SessionRef,
     machine_id: MachineId,
+    view: &Rc<RefCell<ViewTransform>>,
     event: &PointerEvent,
     last_click: &std::rc::Rc<std::cell::RefCell<Option<(DVec2, web_time::Instant)>>>,
 ) {
@@ -738,13 +869,28 @@ fn handle_graph_down(
         dbl
     };
 
+    let view_val = *view.borrow();
+    let world = view_val.screen_to_world(position);
     let machine = session.borrow().file.machines[machine_id].clone();
     let layout = auto_layout(&machine);
     let mut s = session.borrow_mut();
 
+    let is_middle = matches!(
+        event.event,
+        UiPointerEventKind::Down(PointerButton::Tertiary)
+    );
+    let is_space_pan = matches!(
+        event.event,
+        UiPointerEventKind::Down(PointerButton::Primary)
+    ) && s.viewport.space_held;
+    if is_middle || is_space_pan {
+        s.machine_graph_gesture = Some(MachineGraphGesture::Pan { last: position });
+        request_frame();
+        return;
+    }
+
     if is_double {
-        if hit_state(&layout, position).is_none() && hit_any(&machine, &layout, position).is_none()
-        {
+        if hit_state(&layout, world).is_none() && hit_any(&machine, &layout, world).is_none() {
             let layer = match s.machine_selection {
                 MachineSelection::State { layer, .. }
                 | MachineSelection::Transition { layer, .. }
@@ -760,8 +906,10 @@ fn handle_graph_down(
                     .unwrap_or(0)
                     + 1
             );
+            let world_pos = world;
             let ok = s.edit_active_machine("Add state", move |m| {
-                add_state(m, layer, name, StateKind::Empty)?;
+                let idx = add_state(m, layer, name, StateKind::Empty)?;
+                let _ = set_state_position(m, layer, idx, Some((world_pos.x, world_pos.y)));
                 Ok(())
             });
             if ok {
@@ -780,7 +928,14 @@ fn handle_graph_down(
         return;
     }
 
-    if let Some(layer) = hit_any(&machine, &layout, position) {
+    let hit_any_layer = hit_any(&machine, &layout, world);
+    let hit_state_pair = hit_state(&layout, world);
+    let hit_trans = {
+        let tol_world = 8.0 / view_val.scale.max(0.1);
+        hit_transition(&machine, &layout, world, tol_world)
+    };
+
+    if let Some(layer) = hit_any_layer {
         s.machine_selection = MachineSelection::Layer { layer };
         s.active_machine_layer = layer;
         if shift {
@@ -792,7 +947,7 @@ fn handle_graph_down(
         } else {
             s.machine_graph_gesture = None;
         }
-    } else if let Some((layer, state)) = hit_state(&layout, position) {
+    } else if let Some((layer, state)) = hit_state_pair {
         s.machine_selection = MachineSelection::State { layer, state };
         s.active_machine_layer = layer;
         if shift {
@@ -801,12 +956,31 @@ fn handle_graph_down(
                 from_state: Some(state),
                 current: position,
             });
+        } else if matches!(
+            event.event,
+            UiPointerEventKind::Down(PointerButton::Primary)
+        ) {
+            let rect = layout
+                .iter()
+                .find(|g| g.layer == layer && g.state == state)
+                .map(|g| g.rect)
+                .unwrap_or(GraphRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                });
+            let offset = world - DVec2::new(rect.x, rect.y);
+            s.machine_graph_gesture = Some(MachineGraphGesture::DragState {
+                layer,
+                state,
+                offset,
+                current: position,
+            });
         } else {
             s.machine_graph_gesture = None;
         }
-    } else if let Some((layer, source, transition)) =
-        hit_transition(&machine, &layout, position, 8.0)
-    {
+    } else if let Some((layer, source, transition)) = hit_trans {
         s.machine_selection = MachineSelection::Transition {
             layer,
             source,
@@ -821,48 +995,75 @@ fn handle_graph_down(
     request_frame();
 }
 
-fn handle_graph_up(session: &SessionRef, machine_id: MachineId, event: &PointerEvent) {
+fn handle_graph_up(
+    session: &SessionRef,
+    machine_id: MachineId,
+    view: &Rc<RefCell<ViewTransform>>,
+    event: &PointerEvent,
+) {
     let position = DVec2::new(event.position.x as f64, event.position.y as f64);
+    let view_val = *view.borrow();
+    let world = view_val.screen_to_world(position);
     let mut s = session.borrow_mut();
     let gesture = s.machine_graph_gesture.take();
-    if let Some(MachineGraphGesture::WireTransition {
-        layer, from_state, ..
-    }) = gesture
-    {
-        let machine = s.file.machines[machine_id].clone();
-        let layout = auto_layout(&machine);
-        if let Some((to_layer, to_state)) = hit_state(&layout, position) {
-            if to_layer == layer {
-                let source = match from_state {
-                    Some(from) if from != to_state => TransitionSource::State(from),
-                    None => TransitionSource::Any,
-                    _ => {
-                        request_frame();
-                        return;
-                    }
-                };
-                let ok = s.edit_active_machine("Add transition", move |m| {
-                    add_transition(m, layer, source, to_state)?;
-                    Ok(())
-                });
-                if ok {
-                    if let Some(m) = s.file.machines.get(machine_id) {
-                        let count = match source {
-                            TransitionSource::Any => m.layers[layer].any_transitions.len(),
-                            TransitionSource::State(si) => {
-                                m.layers[layer].states[si].transitions.len()
-                            }
-                        };
-                        s.machine_selection = MachineSelection::Transition {
-                            layer,
-                            source,
-                            transition: count.saturating_sub(1),
-                        };
-                        s.active_machine_layer = layer;
+    match gesture {
+        Some(MachineGraphGesture::WireTransition {
+            layer, from_state, ..
+        }) => {
+            let machine = s.file.machines[machine_id].clone();
+            let layout = auto_layout(&machine);
+            if let Some((to_layer, to_state)) = hit_state(&layout, world) {
+                if to_layer == layer {
+                    let source = match from_state {
+                        Some(from) if from != to_state => TransitionSource::State(from),
+                        None => TransitionSource::Any,
+                        _ => {
+                            request_frame();
+                            return;
+                        }
+                    };
+                    let ok = s.edit_active_machine("Add transition", move |m| {
+                        add_transition(m, layer, source, to_state)?;
+                        Ok(())
+                    });
+                    if ok {
+                        if let Some(m) = s.file.machines.get(machine_id) {
+                            let count = match source {
+                                TransitionSource::Any => m.layers[layer].any_transitions.len(),
+                                TransitionSource::State(si) => {
+                                    m.layers[layer].states[si].transitions.len()
+                                }
+                            };
+                            s.machine_selection = MachineSelection::Transition {
+                                layer,
+                                source,
+                                transition: count.saturating_sub(1),
+                            };
+                            s.active_machine_layer = layer;
+                        }
                     }
                 }
             }
         }
+        Some(MachineGraphGesture::DragState {
+            layer,
+            state,
+            offset,
+            current,
+        }) => {
+            let end_screen = current;
+            let end_world = view_val.screen_to_world(end_screen) - offset;
+            let _ = s.edit_active_machine("Move state", move |m| {
+                set_state_position(m, layer, state, Some((end_world.x, end_world.y)))?;
+                Ok(())
+            });
+            s.machine_selection = MachineSelection::State { layer, state };
+            s.active_machine_layer = layer;
+        }
+        Some(MachineGraphGesture::Pan { .. }) => {
+            // Pan already applied incrementally; nothing to commit.
+        }
+        None => {}
     }
     request_frame();
 }
@@ -904,6 +1105,7 @@ fn layer_state_center(
         .unwrap_or(DVec2::ZERO)
 }
 
+#[allow(dead_code)]
 fn draw_any_nodes(
     scope: &mut DrawScope,
     machine: &Machine,
@@ -953,6 +1155,7 @@ fn draw_any_nodes(
     }
 }
 
+#[allow(dead_code)]
 fn draw_machine_edges(
     scope: &mut DrawScope,
     machine: &Machine,
@@ -1025,6 +1228,7 @@ fn draw_edge(scope: &mut DrawScope, from: DVec2, to: DVec2, color: Color) {
     draw_polyline_overlay(scope, &pts, color);
 }
 
+#[allow(dead_code)]
 fn draw_machine_states(
     scope: &mut DrawScope,
     machine: &Machine,
@@ -1058,6 +1262,165 @@ fn draw_machine_states(
             th.surface_container_high
         };
 
+        if is_selected {
+            scope.draw_rect_stroke(rect, th.primary, 6.0, 2.0);
+        }
+        scope.draw_rect(rect, fill, 6.0);
+        scope.draw_text(
+            &state.name,
+            Vec2 {
+                x: rect.x + 8.0,
+                y: rect.y + rect.h * 0.5 - 7.0,
+            },
+            th.on_surface,
+            12.0,
+        );
+        scope.draw_text(
+            &kind_label(&state.kind),
+            Vec2 {
+                x: rect.x + 8.0,
+                y: rect.y + rect.h - 15.0,
+            },
+            th.on_surface_variant,
+            9.0,
+        );
+    }
+}
+
+fn draw_any_nodes_with_view(
+    scope: &mut DrawScope,
+    machine: &Machine,
+    layout: &[GraphState],
+    _screen_layout: &[GraphState],
+    view: &ViewTransform,
+    selection: &MachineSelection,
+) {
+    let th = theme();
+    for (li, layer) in machine.layers.iter().enumerate() {
+        if layer.states.is_empty() {
+            continue;
+        }
+        let world_c = any_node_center(machine, layout, li);
+        let c = view.world_to_screen(world_c);
+        let selected = matches!(selection, MachineSelection::Layer { layer } if *layer == li);
+        let s = view.scale as f32;
+        scope.draw_rect(
+            Rect {
+                x: (c.x - 18.0 * view.scale) as f32,
+                y: (c.y - 12.0 * view.scale) as f32,
+                w: 36.0 * s,
+                h: 24.0 * s,
+            },
+            if selected {
+                th.primary_container
+            } else {
+                th.tertiary_container
+            },
+            6.0 * s,
+        );
+        scope.draw_text(
+            "Any",
+            Vec2 {
+                x: (c.x - 12.0 * view.scale) as f32,
+                y: (c.y - 6.0 * view.scale) as f32,
+            },
+            th.on_tertiary_container,
+            (10.0 * view.scale as f32).clamp(8.0, 14.0),
+        );
+        scope.draw_text(
+            &layer.name,
+            Vec2 {
+                x: (c.x - 18.0 * view.scale) as f32,
+                y: (c.y - 28.0 * view.scale) as f32,
+            },
+            th.on_surface_variant,
+            (9.0 * view.scale as f32).clamp(7.0, 12.0),
+        );
+    }
+}
+
+fn draw_machine_edges_with_view(
+    scope: &mut DrawScope,
+    machine: &Machine,
+    layout: &[GraphState],
+    _screen_layout: &[GraphState],
+    view: &ViewTransform,
+    selection: &MachineSelection,
+) {
+    let th = theme();
+    let normal = th.outline.with_alpha(160);
+    let selected_color = th.primary;
+    for (li, layer) in machine.layers.iter().enumerate() {
+        for (si, state) in layer.states.iter().enumerate() {
+            let from = view.world_to_screen(layer_state_center(machine, layout, li, si));
+            for (ti, tr) in state.transitions.iter().enumerate() {
+                let to = view.world_to_screen(layer_state_center(machine, layout, li, tr.to));
+                let is_sel = matches!(
+                    selection,
+                    MachineSelection::Transition {
+                        layer,
+                        source: TransitionSource::State(src),
+                        transition,
+                    } if *layer == li && *src == si && *transition == ti
+                );
+                let c = if is_sel { selected_color } else { normal };
+                draw_edge(scope, from, to, c);
+                draw_arrow_head(scope, from, to, c);
+            }
+        }
+        if !layer.states.is_empty() {
+            let from = view.world_to_screen(any_node_center(machine, layout, li));
+            for (ti, tr) in layer.any_transitions.iter().enumerate() {
+                let to = view.world_to_screen(layer_state_center(machine, layout, li, tr.to));
+                let is_sel = matches!(
+                    selection,
+                    MachineSelection::Transition {
+                        layer,
+                        source: TransitionSource::Any,
+                        transition,
+                    } if *layer == li && *transition == ti
+                );
+                let c = if is_sel { selected_color } else { normal };
+                draw_edge(scope, from, to, c);
+                draw_arrow_head(scope, from, to, c);
+            }
+        }
+    }
+}
+
+fn draw_machine_states_with_view(
+    scope: &mut DrawScope,
+    machine: &Machine,
+    _layout: &[GraphState],
+    screen_layout: &[GraphState],
+    _view: &ViewTransform,
+    selection: &MachineSelection,
+    active: Option<&[usize]>,
+) {
+    let th = theme();
+    for gs in screen_layout {
+        let state = &machine.layers[gs.layer].states[gs.state];
+        let rect = Rect {
+            x: gs.rect.x as f32,
+            y: gs.rect.y as f32,
+            w: gs.rect.width as f32,
+            h: gs.rect.height as f32,
+        };
+        let is_selected = matches!(
+            selection,
+            MachineSelection::State { layer, state }
+                if *layer == gs.layer && *state == gs.state
+        );
+        let is_active = active
+            .and_then(|a| a.get(gs.layer))
+            .is_some_and(|current| *current == gs.state);
+        let fill = if is_active {
+            th.tertiary_container
+        } else if gs.entry {
+            th.primary_container
+        } else {
+            th.surface_container_high
+        };
         if is_selected {
             scope.draw_rect_stroke(rect, th.primary, 6.0, 2.0);
         }
@@ -1308,11 +1671,16 @@ fn StateInspector(
                         return;
                     };
                     s.edit_active_machine("Change state", move |machine| {
-                        machine.layers[layer].states[state].kind = StateKind::Clip {
-                            clip,
-                            speed: 1.0,
-                            loop_mode: LoopMode::Once,
-                        };
+                        pure_set_state_kind(
+                            machine,
+                            layer,
+                            state,
+                            StateKind::Clip {
+                                clip,
+                                speed: 1.0,
+                                loop_mode: LoopMode::Once,
+                            },
+                        )?;
                         Ok(())
                     });
                 }
@@ -1329,10 +1697,15 @@ fn StateInspector(
                     };
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Change state", move |machine| {
-                        machine.layers[layer].states[state].kind = StateKind::Blend1D {
-                            input,
-                            children: Vec::new(),
-                        };
+                        pure_set_state_kind(
+                            machine,
+                            layer,
+                            state,
+                            StateKind::Blend1D {
+                                input,
+                                children: Vec::new(),
+                            },
+                        )?;
                         Ok(())
                     });
                 }
@@ -2356,7 +2729,7 @@ fn set_kind_action(
     move || {
         let mut s = session.borrow_mut();
         s.edit_active_machine("Change state", |machine| {
-            machine.layers[layer].states[state].kind = kind.clone();
+            pure_set_state_kind(machine, layer, state, kind.clone())?;
             Ok(())
         });
     }
@@ -2371,7 +2744,8 @@ fn set_state_kind(
     let mut s = session.borrow_mut();
     s.edit_active_machine("Change state", move |machine| {
         let kind = machine.layers[layer].states[state].kind.clone();
-        machine.layers[layer].states[state].kind = map(kind);
+        let new_kind = map(kind);
+        pure_set_state_kind(machine, layer, state, new_kind)?;
         Ok(())
     });
 }
