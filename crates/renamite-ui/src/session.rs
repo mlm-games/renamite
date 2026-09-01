@@ -103,6 +103,7 @@ pub struct Session {
     pub clipboard: Option<ClipboardPayload>,
     pub active_machine: Option<MachineId>,
     pub machine_selection: MachineSelection,
+    pub active_machine_layer: usize,
     pub machine_preview_inputs: Vec<InputValue>,
     pub machine_preview_enabled: bool,
     pub machine_drag: Option<MachineDrag>,
@@ -292,6 +293,7 @@ impl Session {
             clipboard: None,
             active_machine,
             machine_selection: MachineSelection::None,
+            active_machine_layer: 0,
             machine_preview_inputs: Vec::new(),
             machine_preview_enabled: false,
             machine_drag: None,
@@ -353,8 +355,11 @@ impl Session {
                     }
                 }
                 ToolOutput::SetPlayhead(f) => {
-                    self.playback.head = f;
-                    self.engine.scrub(&self.file, f);
+                    if self.machine_preview_enabled {
+                    } else {
+                        self.playback.head = f;
+                        self.engine.scrub(&self.file, f);
+                    }
                     needs_repaint = true;
                 }
                 ToolOutput::SwitchTool(t) => {
@@ -2803,6 +2808,7 @@ impl Session {
 
         self.active_machine = Some(machine);
         self.machine_selection = MachineSelection::None;
+        self.active_machine_layer = 0;
         self.machine_graph_gesture = None;
 
         self.reset_machine_preview();
@@ -2838,6 +2844,7 @@ impl Session {
         if let Some(machine) = applied.and_then(|value| value.created_machine) {
             self.active_machine = Some(machine);
             self.machine_selection = MachineSelection::None;
+            self.active_machine_layer = 0;
             if self.file.start_machine.is_none() {
                 let _ = self.history_apply(EditorCommand::SetStartMachine {
                     start: Some(machine),
@@ -2883,6 +2890,7 @@ impl Session {
             }
         }
         self.machine_selection = MachineSelection::None;
+        self.active_machine_layer = 0;
         self.reset_machine_preview();
     }
 
@@ -3364,6 +3372,9 @@ pub fn timeline_ctx<'a>(
 }
 
 pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
+    if s.machine_preview_enabled {
+        return;
+    }
     let rows = timeline_rows(s);
     let (head, comp) = (s.playback.head, s.file.document.main);
     let range = s.file.document.compositions[comp].range;
@@ -3469,6 +3480,54 @@ fn apply_cmd(
     }
 }
 
+fn validate_machine_selection(s: &mut Session) {
+    let Some(mid) = s.active_machine else {
+        s.machine_selection = MachineSelection::None;
+        s.active_machine_layer = 0;
+        return;
+    };
+    let Some(m) = s.file.machines.get(mid) else {
+        s.machine_selection = MachineSelection::None;
+        s.active_machine_layer = 0;
+        return;
+    };
+    // Clamp active layer
+    if s.active_machine_layer >= m.layers.len() {
+        s.active_machine_layer = m.layers.len().saturating_sub(1);
+    }
+    let valid = match &s.machine_selection {
+        MachineSelection::None
+        | MachineSelection::Input { .. }
+        | MachineSelection::Listener { .. } => true,
+        MachineSelection::Layer { layer } => *layer < m.layers.len(),
+        MachineSelection::State { layer, state } => m
+            .layers
+            .get(*layer)
+            .is_some_and(|l| *state < l.states.len()),
+        MachineSelection::Transition {
+            layer,
+            source,
+            transition,
+        } => {
+            let Some(l) = m.layers.get(*layer) else {
+                return;
+            };
+            let len = match source {
+                renamite_behavior_common::machine::TransitionSource::Any => l.any_transitions.len(),
+                renamite_behavior_common::machine::TransitionSource::State(si) => l
+                    .states
+                    .get(*si)
+                    .map(|st| st.transitions.len())
+                    .unwrap_or(0),
+            };
+            *transition < len
+        }
+    };
+    if !valid {
+        s.machine_selection = MachineSelection::None;
+    }
+}
+
 pub fn undo_cmd(s: &mut Session) {
     let his = &mut s.history;
     let file = &mut s.file;
@@ -3489,6 +3548,7 @@ pub fn undo_cmd(s: &mut Session) {
                     .map(|c| c.children.contains(&id))
                     .unwrap_or(false)
         });
+        validate_machine_selection(s);
     }
     sync_playback_range(s);
 }
@@ -3513,6 +3573,7 @@ pub fn redo_cmd(s: &mut Session) {
                     .map(|c| c.children.contains(&id))
                     .unwrap_or(false)
         });
+        validate_machine_selection(s);
     }
     sync_playback_range(s);
 }

@@ -342,11 +342,12 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
 }
 
 fn target_layer(session: &SessionRef) -> usize {
-    match session.borrow().machine_selection {
+    let s = session.borrow();
+    match s.machine_selection {
         MachineSelection::State { layer, .. }
         | MachineSelection::Transition { layer, .. }
         | MachineSelection::Layer { layer } => layer,
-        _ => 0,
+        _ => s.active_machine_layer,
     }
 }
 
@@ -368,6 +369,7 @@ fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
                     layer,
                     state: l.states.len().saturating_sub(1),
                 };
+                s.active_machine_layer = layer;
             }
         }
     }
@@ -747,7 +749,7 @@ fn handle_graph_down(
                 MachineSelection::State { layer, .. }
                 | MachineSelection::Transition { layer, .. }
                 | MachineSelection::Layer { layer } => layer,
-                _ => 0,
+                _ => s.active_machine_layer,
             };
             let name = format!(
                 "State {}",
@@ -769,6 +771,7 @@ fn handle_graph_down(
                             layer,
                             state: l.states.len().saturating_sub(1),
                         };
+                        s.active_machine_layer = layer;
                     }
                 }
             }
@@ -779,6 +782,7 @@ fn handle_graph_down(
 
     if let Some(layer) = hit_any(&machine, &layout, position) {
         s.machine_selection = MachineSelection::Layer { layer };
+        s.active_machine_layer = layer;
         if shift {
             s.machine_graph_gesture = Some(MachineGraphGesture::WireTransition {
                 layer,
@@ -790,6 +794,7 @@ fn handle_graph_down(
         }
     } else if let Some((layer, state)) = hit_state(&layout, position) {
         s.machine_selection = MachineSelection::State { layer, state };
+        s.active_machine_layer = layer;
         if shift {
             s.machine_graph_gesture = Some(MachineGraphGesture::WireTransition {
                 layer,
@@ -807,6 +812,7 @@ fn handle_graph_down(
             source,
             transition,
         };
+        s.active_machine_layer = layer;
         s.machine_graph_gesture = None;
     } else {
         s.machine_selection = MachineSelection::None;
@@ -852,6 +858,7 @@ fn handle_graph_up(session: &SessionRef, machine_id: MachineId, event: &PointerE
                             source,
                             transition: count.saturating_sub(1),
                         };
+                        s.active_machine_layer = layer;
                     }
                 }
             }
@@ -1145,6 +1152,10 @@ fn LayerInspector(
                     }
                 },
             )),
+            chip("Add state", false, {
+                let session = session.clone();
+                move || add_state_ui(&session, machine_id, layer)
+            }),
             CompactIconAction(Symbols::delete, "Delete layer", {
                 let session = session.clone();
                 move || {
@@ -1155,6 +1166,7 @@ fn LayerInspector(
                     });
                     if ok {
                         s.machine_selection = MachineSelection::None;
+                        s.active_machine_layer = 0;
                     }
                 }
             }),
@@ -1446,6 +1458,9 @@ fn StateInspector(
                                         threshold: thr,
                                         clip,
                                     });
+                                    renamite_behavior_common::machine::sort_blend_children(
+                                        children,
+                                    );
                                 }
                                 Ok(())
                             });
