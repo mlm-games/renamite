@@ -261,6 +261,26 @@ pub enum EditorCommand {
         start: Option<Frame>,
         end: Option<Frame>,
     },
+    SetCompositionSize {
+        comp: CompId,
+        size: (u32, u32),
+    },
+    SetCompositionRate {
+        comp: CompId,
+        rate: renamite_animation::FrameRate,
+    },
+    SetLayerProps {
+        id: NodeId,
+        in_frame: Option<Frame>,
+        out_frame: Option<Frame>,
+        time_stretch: Option<f64>,
+        blend: Option<renamite_model::BlendMode>,
+    },
+    SetPrecompTimeMap {
+        id: NodeId,
+        offset: Option<Frame>,
+        stretch: Option<f64>,
+    },
 
     CreateClip {
         index: usize,
@@ -594,7 +614,11 @@ fn apply_command(
         | SetEasing { .. }
         | EditAnchors { .. }
         | ReversePath { .. }
-        | SetCompositionRange { .. } => {
+        | SetCompositionRange { .. }
+        | SetCompositionSize { .. }
+        | SetCompositionRate { .. }
+        | SetLayerProps { .. }
+        | SetPrecompTimeMap { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
             Ok((
                 Created {
@@ -1513,6 +1537,84 @@ fn apply_document_command(
                 }],
             ))
         }
+        SetCompositionSize { comp, size } => {
+            let c = doc
+                .compositions
+                .get_mut(*comp)
+                .ok_or(ModelError::MissingComp)?;
+            let old = c.size;
+            c.size = *size;
+            Ok((None, vec![SetCompositionSize { comp: *comp, size: old }]))
+        }
+        SetCompositionRate { comp, rate } => {
+            let c = doc
+                .compositions
+                .get_mut(*comp)
+                .ok_or(ModelError::MissingComp)?;
+            let old = c.rate;
+            c.rate = *rate;
+            Ok((None, vec![SetCompositionRate { comp: *comp, rate: old }]))
+        }
+        SetLayerProps {
+            id,
+            in_frame,
+            out_frame,
+            time_stretch,
+            blend,
+        } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Layer(lp) = &mut n.kind else {
+                return Err(ModelError::WrongNodeKind("Layer").into());
+            };
+            let old_in = in_frame.is_some().then_some(lp.in_frame);
+            let old_out = out_frame.is_some().then_some(lp.out_frame);
+            let old_stretch = time_stretch.is_some().then_some(lp.time_stretch);
+            let old_blend = blend.is_some().then_some(lp.blend);
+            if let Some(v) = in_frame {
+                lp.in_frame = *v;
+            }
+            if let Some(v) = out_frame {
+                lp.out_frame = *v;
+            }
+            if let Some(v) = time_stretch {
+                lp.time_stretch = (*v).max(1e-6);
+            }
+            if let Some(v) = blend {
+                lp.blend = *v;
+            }
+            Ok((
+                None,
+                vec![SetLayerProps {
+                    id: *id,
+                    in_frame: old_in,
+                    out_frame: old_out,
+                    time_stretch: old_stretch,
+                    blend: old_blend,
+                }],
+            ))
+        }
+        SetPrecompTimeMap { id, offset, stretch } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Precomp { time_map, .. } = &mut n.kind else {
+                return Err(ModelError::WrongNodeKind("Precomp").into());
+            };
+            let old_off = offset.is_some().then_some(time_map.offset);
+            let old_st = stretch.is_some().then_some(time_map.stretch);
+            if let Some(v) = offset {
+                time_map.offset = *v;
+            }
+            if let Some(v) = stretch {
+                time_map.stretch = (*v).max(1e-6);
+            }
+            Ok((
+                None,
+                vec![SetPrecompTimeMap {
+                    id: *id,
+                    offset: old_off,
+                    stretch: old_st,
+                }],
+            ))
+        }
         _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
 }
@@ -1595,6 +1697,10 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 ..
             },
         ) => *comp == *ncomp && *start == *nstart,
+        (SetCompositionSize { comp, .. }, SetCompositionSize { comp: c2, .. }) => *comp == *c2,
+        (SetCompositionRate { comp, .. }, SetCompositionRate { comp: c2, .. }) => *comp == *c2,
+        (SetLayerProps { id, .. }, SetLayerProps { id: id2, .. }) => *id == *id2,
+        (SetPrecompTimeMap { id, .. }, SetPrecompTimeMap { id: id2, .. }) => *id == *id2,
         (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,
         (MoveClipKeys { moves }, MoveClipKeys { moves: nmoves }) => {
             moves.len() == nmoves.len()

@@ -416,6 +416,7 @@ impl Session {
                 self.timeline_zoom,
             );
             self.keys.retain_valid(&ctx);
+            sync_playback_range(self);
         }
 
         if needs_evaluation {

@@ -72,12 +72,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 format!("Composition · {comp_name}"),
                 vec![],
                 Column(Modifier::new().fill_max_width()).child((
-                    // Size row (read-only)
+                    // Size row: editable W x H
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
                             left: 12.0,
-                            right: 12.0,
+                            right: 8.0,
                             top: 6.0,
                             bottom: 6.0,
                         })
@@ -88,16 +88,75 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
                             .modifier(Modifier::new().width(96.0)),
-                        Text(format!("{} × {} px", size.0, size.1))
+                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                            format!("comp_w_{comp_id:?}"),
+                            size.0.to_string(),
+                            "W",
+                            true,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    if let Ok(w) = text.trim().parse::<u32>() {
+                                        let mut s = session.borrow_mut();
+                                        let h = s.file.document.compositions[comp_id].size.1;
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set composition size".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionSize {
+                                                    comp: comp_id,
+                                                    size: (w.max(1), h.max(1)),
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
+                                    }
+                                }
+                            },
+                        )),
+                        Text("×")
                             .size(th.typography.body_medium)
                             .color(th.on_surface_variant),
+                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                            format!("comp_h_{comp_id:?}"),
+                            size.1.to_string(),
+                            "H",
+                            true,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    if let Ok(h) = text.trim().parse::<u32>() {
+                                        let mut s = session.borrow_mut();
+                                        let w = s.file.document.compositions[comp_id].size.0;
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set composition size".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionSize {
+                                                    comp: comp_id,
+                                                    size: (w.max(1), h.max(1)),
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
+                                    }
+                                }
+                            },
+                        )),
+                        Text("px")
+                            .size(th.typography.label_medium)
+                            .color(th.on_surface_variant),
                     )),
-                    // Frame rate (read-only)
+                    // Frame rate: editable fps (num, den=1)
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
                             left: 12.0,
-                            right: 12.0,
+                            right: 8.0,
                             top: 2.0,
                             bottom: 6.0,
                         })
@@ -108,8 +167,38 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
                             .modifier(Modifier::new().width(96.0)),
-                        Text(format!("{}/{} fps", rate.num, rate.den))
-                            .size(th.typography.body_medium)
+                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                            format!("comp_fps_{comp_id:?}"),
+                            rate.num.to_string(),
+                            "fps",
+                            true,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    if let Ok(num) = text.trim().parse::<u32>() {
+                                        let mut s = session.borrow_mut();
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set frame rate".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionRate {
+                                                    comp: comp_id,
+                                                    rate: renamite_animation::FrameRate {
+                                                        num: num.max(1),
+                                                        den: 1,
+                                                    },
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
+                                    }
+                                }
+                            },
+                        )),
+                        Text(format!("/{} fps", rate.den))
+                            .size(th.typography.label_medium)
                             .color(th.on_surface_variant),
                     )),
                     // Range: editable In / Out
@@ -411,6 +500,15 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         && let Some(section) = image_meta_section(session.clone(), ids[0])
     {
         children.push(section);
+    }
+
+    if ids.len() == 1 {
+        if let Some(v) = layer_section(session.clone(), ids[0]) {
+            children.push(v);
+        }
+        if let Some(v) = precomp_section(session.clone(), ids[0]) {
+            children.push(v);
+        }
     }
 
     for (section, props) in sections {
@@ -1769,6 +1867,379 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
     ))
 }
 
+fn insert_gradient_stop(stops: &mut GradientStops) {
+    if stops.0.is_empty() {
+        stops.0.push(GradientStop {
+            offset: 0.0,
+            color: Color::BLACK,
+        });
+        stops.0.push(GradientStop {
+            offset: 1.0,
+            color: Color::WHITE,
+        });
+        return;
+    }
+    let mut order: Vec<usize> = (0..stops.0.len()).collect();
+    order.sort_by(|&a, &b| {
+        stops.0[a]
+            .offset
+            .partial_cmp(&stops.0[b].offset)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut best_i = 0usize;
+    let mut best_gap = -1.0f64;
+    for w in order.windows(2) {
+        let a = stops.0[w[0]].offset;
+        let b = stops.0[w[1]].offset;
+        let gap = b - a;
+        if gap > best_gap {
+            best_gap = gap;
+            best_i = w[0];
+        }
+    }
+    let (i0, i1) = if order.len() < 2 {
+        (order[0], order[0])
+    } else {
+        let idx = order.iter().position(|&i| i == best_i).unwrap();
+        (order[idx], order[idx + 1])
+    };
+    let a = &stops.0[i0];
+    let b = &stops.0[i1];
+    let t = 0.5;
+    let color = Color {
+        r: a.color.r + (b.color.r - a.color.r) * t,
+        g: a.color.g + (b.color.g - a.color.g) * t,
+        b: a.color.b + (b.color.b - a.color.b) * t,
+        a: a.color.a + (b.color.a - a.color.a) * t,
+    };
+    let offset = if order.len() < 2 {
+        0.5
+    } else {
+        a.offset + (b.offset - a.offset) * t
+    };
+    stops.0.push(GradientStop { offset, color });
+    stops
+        .0
+        .sort_by(|x, y| x.offset.partial_cmp(&y.offset).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let (in_f, out_f, stretch, blend) = {
+        let s = session.borrow();
+        let NodeKind::Layer(lp) = &s.file.document.nodes.get(id)?.kind else {
+            return None;
+        };
+        (lp.in_frame.0, lp.out_frame.0, lp.time_stretch, lp.blend)
+    };
+    let th = theme();
+    let blend_idx = match blend {
+        renamite_model::BlendMode::Normal => 0,
+        renamite_model::BlendMode::Multiply => 1,
+        renamite_model::BlendMode::Screen => 2,
+    };
+    Some(crate::components::CollapsibleSection(
+        format!("layer_props_{id:?}"),
+        "Layer",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child((
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 6.0,
+                    bottom: 4.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("In")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    format!("layer_in_{id:?}"),
+                    in_f.to_string(),
+                    "In",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<i64>() {
+                                let mut s = session.borrow_mut();
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set layer in".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetLayerProps {
+                                        id,
+                                        in_frame: Some(Frame(v)),
+                                        out_frame: None,
+                                        time_stretch: None,
+                                        blend: None,
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Out")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    format!("layer_out_{id:?}"),
+                    out_f.to_string(),
+                    "Out",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<i64>() {
+                                let mut s = session.borrow_mut();
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set layer out".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetLayerProps {
+                                        id,
+                                        in_frame: None,
+                                        out_frame: Some(Frame(v)),
+                                        time_stretch: None,
+                                        blend: None,
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Time stretch")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    format!("layer_stretch_{id:?}"),
+                    stretch.to_string(),
+                    "stretch",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set layer stretch".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetLayerProps {
+                                        id,
+                                        in_frame: None,
+                                        out_frame: None,
+                                        time_stretch: Some(v.max(1e-6)),
+                                        blend: None,
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 8.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Blend")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                blend_segment(session.clone(), id, blend_idx, 0, "Normal"),
+                blend_segment(session.clone(), id, blend_idx, 1, "Multiply"),
+                blend_segment(session, id, blend_idx, 2, "Screen"),
+            )),
+        )),
+    ))
+}
+
+fn blend_segment(
+    session: SessionRef,
+    id: NodeId,
+    current: usize,
+    index: usize,
+    label: &'static str,
+) -> View {
+    let th = theme();
+    let active = current == index;
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down(move |_pe: PointerEvent| {
+                    let blend = match index {
+                        1 => renamite_model::BlendMode::Multiply,
+                        2 => renamite_model::BlendMode::Screen,
+                        _ => renamite_model::BlendMode::Normal,
+                    };
+                    let mut s = session.borrow_mut();
+                    s.apply_outputs(smallvec![
+                        ToolOutput::BeginTransaction("Set blend".into()),
+                        ToolOutput::Commands(smallvec![EditorCommand::SetLayerProps {
+                            id,
+                            in_frame: None,
+                            out_frame: None,
+                            time_stretch: None,
+                            blend: Some(blend),
+                        }]),
+                        ToolOutput::CommitTransaction,
+                    ]);
+                }),
+        )
+}
+
+fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let (offset, stretch) = {
+        let s = session.borrow();
+        let NodeKind::Precomp { time_map, .. } = &s.file.document.nodes.get(id)?.kind else {
+            return None;
+        };
+        (time_map.offset.0, time_map.stretch)
+    };
+    let th = theme();
+    Some(crate::components::CollapsibleSection(
+        format!("precomp_props_{id:?}"),
+        "Precomp",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child((
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 6.0,
+                    bottom: 4.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Time offset")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    format!("precomp_off_{id:?}"),
+                    offset.to_string(),
+                    "offset",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<i64>() {
+                                let mut s = session.borrow_mut();
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set precomp offset".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetPrecompTimeMap {
+                                        id,
+                                        offset: Some(Frame(v)),
+                                        stretch: None,
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 8.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Time stretch")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    format!("precomp_st_{id:?}"),
+                    stretch.to_string(),
+                    "stretch",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set precomp stretch".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetPrecompTimeMap {
+                                        id,
+                                        offset: None,
+                                        stretch: Some(v.max(1e-6)),
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+        )),
+    ))
+}
+
 fn font_chip(
     session: SessionRef,
     text_id: NodeId,
@@ -2105,12 +2576,7 @@ fn paint_section_for_style(
                             let Value::Stops(mut stops) = stops else {
                                 return;
                             };
-                            let last_color =
-                                stops.0.last().map(|x| x.color).unwrap_or(Color::BLACK);
-                            stops.0.push(GradientStop {
-                                offset: 1.0,
-                                color: last_color,
-                            });
+                            insert_gradient_stop(&mut stops);
                             let cmd = resolve_property_edit(
                                 &s.file.document,
                                 style_id,
@@ -2200,234 +2666,11 @@ fn paint_section(
         return None;
     }
     let id = ids[0];
-    let (style_id, paint, section_label, solid_path) = {
-        let session = session.borrow();
-        let style_id = paint_style_id(&session, id)?;
-        let node = session.file.document.nodes.get(style_id)?;
-
-        match &node.kind {
-            NodeKind::Style(StyleKind::Fill { paint, .. }) => {
-                (style_id, paint.clone(), "Fill", "fill.color")
-            }
-            NodeKind::Style(StyleKind::Stroke { paint, .. }) => {
-                (style_id, paint.clone(), "Stroke", "stroke.color")
-            }
-            _ => return None,
-        }
+    let style_id = {
+        let s = session.borrow();
+        paint_style_id(&s, id)?
     };
-    let th = theme();
-    let gradient = match &paint {
-        StylePaint::Gradient(g) => Some(g.clone()),
-        _ => None,
-    };
-    let active_kind = gradient.as_ref().map(|g| g.kind);
-
-    let is_solid = gradient.is_none();
-    let toggle = Row(Modifier::new()
-        .height(36.0)
-        .fill_max_width()
-        .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
-        })
-        .align_items(AlignItems::CENTER)
-        .gap(8.0))
-    .child((
-        Box(Modifier::new().width(32.0)), // diamond spacer
-        Text("Paint")
-            .size(th.typography.body_medium)
-            .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
-        paint_segment(
-            session.clone(),
-            id,
-            style_id,
-            "Solid",
-            is_solid,
-            PaintTarget::Solid,
-        ),
-        paint_segment(
-            session.clone(),
-            id,
-            style_id,
-            "Linear",
-            active_kind == Some(GradientKind::Linear),
-            PaintTarget::Gradient(GradientKind::Linear),
-        ),
-        paint_segment(
-            session.clone(),
-            id,
-            style_id,
-            "Radial",
-            active_kind == Some(GradientKind::Radial),
-            PaintTarget::Gradient(GradientKind::Radial),
-        ),
-    ));
-
-    let mut children = vec![toggle];
-
-    match &paint {
-        StylePaint::Solid { .. } => {
-            // Color row bound to the style node's solid-color property. The
-            // row's own swatch opens the picker for this style node.
-            let path = PropPath::new(solid_path);
-            children.push(
-                Row(Modifier::new()
-                    .min_height(36.0)
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 0.0,
-                    })
-                    .align_items(AlignItems::CENTER)
-                    .gap(8.0))
-                .child((
-                    Box(Modifier::new().width(32.0)),
-                    Text("Color")
-                        .size(th.typography.body_medium)
-                        .color(th.on_surface)
-                        .modifier(Modifier::new().width(96.0)),
-                    Box(Modifier::new().flex_grow(1.0)).child(color_row(
-                        session.clone(),
-                        vec![style_id],
-                        path,
-                        paint.base_color(),
-                        playhead,
-                        record,
-                    )),
-                )),
-            );
-        }
-        StylePaint::Gradient(g) => {
-            children.push(axis_row(
-                session.clone(),
-                style_id,
-                playhead,
-                record,
-                "Start",
-                "grad.start",
-                g.start.value_at(playhead.0 as f64),
-            ));
-            children.push(axis_row(
-                session.clone(),
-                style_id,
-                playhead,
-                record,
-                "End",
-                "grad.end",
-                g.end.value_at(playhead.0 as f64),
-            ));
-            children.extend(stop_rows(
-                session.clone(),
-                style_id,
-                playhead,
-                record,
-                g.stops.value_at(playhead.0 as f64),
-            ));
-            // Add-stop button.
-            children.push(
-                Row(Modifier::new()
-                    .height(32.0)
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 0.0,
-                    })
-                    .align_items(AlignItems::CENTER)
-                    .gap(4.0))
-                .child((
-                    CompactIconAction(Symbols::add, "Add stop", {
-                        let session = session.clone();
-                        move || {
-                            let mut s = session.borrow_mut();
-                            let frame = s.playback.head;
-                            let Some(stops) = s
-                                .file
-                                .document
-                                .value_at(style_id, &PropPath::new("grad.stops"), frame)
-                                .ok()
-                            else {
-                                return;
-                            };
-                            let Value::Stops(mut stops) = stops else {
-                                return;
-                            };
-                            let last_color =
-                                stops.0.last().map(|x| x.color).unwrap_or(Color::BLACK);
-                            stops.0.push(GradientStop {
-                                offset: 1.0,
-                                color: last_color,
-                            });
-                            let cmd = resolve_property_edit(
-                                &s.file.document,
-                                style_id,
-                                &PropPath::new("grad.stops"),
-                                Value::Stops(stops),
-                                Frame(frame.round() as i64),
-                                s.record,
-                            );
-                            s.apply_outputs(smallvec![
-                                ToolOutput::BeginTransaction("Add stop".into()),
-                                ToolOutput::Commands(smallvec![cmd]),
-                                ToolOutput::CommitTransaction,
-                            ]);
-                        }
-                    }),
-                    Text("Add stop")
-                        .size(th.typography.body_medium)
-                        .color(th.on_surface_variant),
-                )),
-            );
-        }
-    }
-
-    children.push(
-        Row(Modifier::new()
-            .height(32.0)
-            .fill_max_width()
-            .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
-            })
-            .align_items(AlignItems::CENTER)
-            .gap(8.0))
-        .child((
-            Box(Modifier::new().width(32.0)),
-            Text("Swatch")
-                .size(th.typography.body_medium)
-                .color(th.on_surface)
-                .modifier(Modifier::new().width(96.0)),
-            CompactIconAction(Symbols::palette, "Use as current paint", {
-                let session = session.clone();
-                let paint = paint.clone();
-                move || {
-                    let mut session = session.borrow_mut();
-                    session.current_paint = paint.snapshot(session.playback.head);
-
-                    session.status = Some("Current paint updated".into());
-                    session.revision = session.revision.wrapping_add(1);
-                    request_frame();
-                }
-            }),
-            Text("Use as current paint")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
-        )),
-    );
-
-    Some(crate::components::CollapsibleSection(
-        "paint_section",
-        section_label,
-        vec![],
-        Column(Modifier::new().fill_max_width()).child(children),
-    ))
+    paint_section_for_style(session, id, style_id, playhead, record)
 }
 
 #[derive(Clone, Copy)]

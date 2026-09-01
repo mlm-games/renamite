@@ -1272,6 +1272,7 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
             frame,
             Affine::IDENTITY,
             1.0,
+            BlendMode::Normal,
             &mut scene,
             0,
             ov,
@@ -1291,6 +1292,7 @@ fn eval_group(
     frame: f64,
     tf: Affine,
     opacity: f64,
+    blend: BlendMode,
     scene: &mut Scene,
     depth: u32,
     ov: &Overrides,
@@ -1391,6 +1393,7 @@ fn eval_group(
                     frame,
                     ntf,
                     node_op,
+                    blend,
                     scene,
                     depth + 1,
                     ov,
@@ -1412,6 +1415,7 @@ fn eval_group(
                     lf,
                     ntf,
                     node_op,
+                    lp.blend,
                     scene,
                     depth + 1,
                     ov,
@@ -1447,7 +1451,7 @@ fn eval_group(
                     kind: PaintKind::Fill(FillRule::NonZero),
                     opacity: node_op,
                     clips: clips.to_vec(),
-                    blend: BlendMode::Normal,
+                    blend,
                 });
             }
             NodeKind::Precomp { comp, time_map } => {
@@ -1461,6 +1465,7 @@ fn eval_group(
                         cf,
                         ntf,
                         node_op,
+                        blend,
                         scene,
                         depth + 1,
                         ov,
@@ -1470,7 +1475,7 @@ fn eval_group(
                     );
                 }
             }
-            NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, clips, scene),
+            NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene),
             NodeKind::Shape(_) | NodeKind::Text(_) if !n.children.is_empty() => {
                 let seeds: Vec<ShapeEntry> =
                     paths.iter().filter(|e| e.node == id).cloned().collect();
@@ -1480,6 +1485,7 @@ fn eval_group(
                     frame,
                     tf,
                     node_op,
+                    blend,
                     scene,
                     depth + 1,
                     ov,
@@ -1806,6 +1812,7 @@ fn emit_style(
     ov: &Overrides,
     paths: &[ShapeEntry],
     opacity: f64,
+    blend: BlendMode,
     active_clips: &[u32],
     scene: &mut Scene,
 ) {
@@ -1843,7 +1850,7 @@ fn emit_style(
             kind,
             opacity: opacity * e.opacity,
             clips: active_clips.to_vec(),
-            blend: BlendMode::Normal,
+            blend,
         });
     }
 }

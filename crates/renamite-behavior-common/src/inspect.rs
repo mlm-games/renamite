@@ -710,7 +710,13 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 }
             }
         }
-        _ => {}
+        NodeKind::Layer(_) => {
+            // rendered by layer_section in properties.rs.
+        }
+        NodeKind::Precomp { .. } => {
+            // precomp_section in properties.rs.
+        }
+        NodeKind::Image(_) | NodeKind::Group => {}
     }
     d
 }
