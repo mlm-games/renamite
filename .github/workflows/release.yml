@@ -42,6 +42,13 @@ jobs:
       include-universal: true
       play-track: ${{ inputs.play_track }}
       play-package-name: "org.mlm.renamite"
+      android-api: "37.0"
+      android-build-tools: "37.0.0"
+      android-ndk-version: "29.0.14206865"
+      cargo-rapk-version: "0.19.5"
+      java-version: "21"
+      java-distribution: "temurin"
+      kotlin-version: "2.2.10"
       prerelease: ${{ inputs.mark_prerelease }}
       generate-release-notes: true
       changelog-path: "CHANGELOG.md"
