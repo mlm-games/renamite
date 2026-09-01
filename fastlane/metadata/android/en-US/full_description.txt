@@ -1,0 +1,15 @@
+Renamite is a vector animation editor.
+
+Features:
+
+- Vector primitives with fill / stroke / gradient support
+- Image and font asset import
+- Layer rename, reorder and property editing with full undo
+- Timeline scrubbing and basic animation (opacity, transform, etc.)
+- Frame export as PNG/SVG and animation export as Lottie (.ren / .renb)
+- Machine system for interactive logic
+- Repose-powered canvas with GPU rendering (wgpu)
+- Cross-platform: Linux, macOS, Windows, Web (WASM), Android
+- Host-neutral playback API (renamite-player / renamite-model::Scene)
+
+Open source (MPL-2.0).

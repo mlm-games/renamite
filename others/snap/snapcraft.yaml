@@ -1,0 +1,43 @@
+name: renamite
+base: core24
+version: '0.1.0'
+summary: Motion / vector animation editor
+description: |
+  Renamite is a motion / vector animation editor, using Lyon and Kurbo.
+  Supports vector primitives, image/font import, timeline animation, undo, and Lottie/PNG/SVG export.
+grade: stable
+confinement: strict
+icon: snap/gui/icon.png
+title: Renamite
+license: MPL-2.0
+platforms:
+  amd64:
+  arm64:
+apps:
+  renamite:
+    command: renamite
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - removable-media
+      - unity7
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+parts:
+  renamite:
+    plugin: dump
+    source: ./builds/
+    source-type: local
+    stage-packages:
+      - libglu1-mesa
+      - libxcursor1
+      - libxinerama1
+      - libxrandr2
+      - libxi6
+      - libudev1
+    override-build: |
+      craftctl default
+      chmod +x $CRAFT_PART_INSTALL/renamite

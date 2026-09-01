@@ -1,0 +1,1 @@
+Initial release: vector editor, timeline, .ren/.ron export, Lottie & PNG/SVG export, undo/redo.

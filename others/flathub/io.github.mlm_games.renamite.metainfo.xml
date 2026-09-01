@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mlm_games.renamite</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <developer id="io.github.mlm_games">
+    <name>MLM Games</name>
+  </developer>
+  <name>Renamite</name>
+  <summary>Motion animation editor</summary>
+  <description>
+    <p>
+      Renamite is a motion / vector animation editor.
+    </p>
+    <ul>
+      <li>Vector primitives with fill / stroke / gradients</li>
+      <li>Image and font asset import</li>
+      <li>Layer rename, reorder and property editing with undo</li>
+      <li>Timeline scrubbing and basic animation</li>
+      <li>Export frames as PNG/SVG and animations as Lottie (.ren / .renb)</li>
+      <li>GPU-accelerated canvas via wgpu</li>
+      <li>Cross-platform: Linux, macOS, Windows, Web (WASM), Android</li>
+    </ul>
+  </description>
+  <developer_name>MLM Games</developer_name>
+  <categories>
+    <category>Graphics</category>
+    <category>2DGraphics</category>
+    <category>VectorGraphics</category>
+  </categories>
+  <keywords>
+    <keyword>animation</keyword>
+    <keyword>vector</keyword>
+    <keyword>lottie</keyword>
+    <keyword>renamite</keyword>
+    <keyword>repose</keyword>
+    <keyword>graphics</keyword>
+  </keywords>
+  <icon type="stock" width="512" height="512">io.github.mlm_games.renamite</icon>
+  <url type="homepage">https://github.com/mlm-games/renamite</url>
+  <url type="bugtracker">https://github.com/mlm-games/renamite/issues</url>
+  <url type="donation">https://github.com/sponsors/mlm-games</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Editor main view</caption>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>renamite</binary>
+    <mediatype>application/x-renamite</mediatype>
+  </provides>
+  <requires>
+    <display_length compare="ge">480</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-09-01" type="stable">
+      <description>
+        <ul>
+          <li>Initial release</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

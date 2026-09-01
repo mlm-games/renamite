@@ -18,9 +18,13 @@ path = "src/main.rs"
 package = "org.mlm.renamite"
 apk_name = "renamite"
 build_targets = ["aarch64-linux-android"]
+split_per_abi = true
+resources = "../../others/packaging/res"
 
 [package.metadata.android.application]
 label = "Renamite"
+fullscreen = false
+icon = "@drawable/ic_launcher_monochrome"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26

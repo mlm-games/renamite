@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Renamite
+Comment=Vector animation editor
+Categories=Graphics;2DGraphics;VectorGraphics;
+Keywords=animation;vector;lottie;repose;renamite;graphics;
+Exec=renamite %F
+Icon=io.github.mlm_games.renamite
+Terminal=false
+StartupNotify=true
+StartupWMClass=renamite
+MimeType=application/x-renamite;application/json;
