@@ -93,6 +93,7 @@ pub fn LayersPanel(session: SessionRef) -> View {
                                         || row.kind == LayerKind::Shape)
                             })
                             .unwrap_or(false),
+                        drop_before: drag.as_ref().map(|d| d.before).unwrap_or(true),
                         rename_draft: renaming
                             .as_ref()
                             .filter(|(id, _)| *id == row.id)
@@ -136,6 +137,7 @@ struct LayerRowState {
     is_expanded: bool,
     is_drop_target: bool,
     drop_as_child: bool,
+    drop_before: bool,
     rename_draft: Option<String>,
 }
 
@@ -143,7 +145,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     let th = theme();
     let bg = if st.is_selected {
         th.secondary_container
-    } else if st.is_drop_target {
+    } else if st.is_drop_target && st.drop_as_child {
         th.primary_container.with_alpha(180)
     } else {
         th.surface_container
@@ -157,8 +159,18 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     let kind = row.kind;
     let name = row.name.clone();
     let child_count = row.child_count;
-
-    Row(Modifier::new()
+    let show_sibling_divider = st.is_drop_target && !st.drop_as_child;
+    let divider = Box(Modifier::new()
+        .height(2.0)
+        .fill_max_width()
+        .background(th.primary)
+        .padding_values(PaddingValues {
+            left: indent,
+            right: 4.0,
+            top: 0.0,
+            bottom: 0.0,
+        }));
+    let row_view = Row(Modifier::new()
         .height(ROW_HEIGHT)
         .fill_max_width()
         .padding_values(PaddingValues {
@@ -170,15 +182,6 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
         .align_items(AlignItems::CENTER)
         .gap(2.0)
         .background(bg)
-        .border(
-            if st.is_drop_target && !st.drop_as_child {
-                2.0
-            } else {
-                0.0
-            },
-            th.primary,
-            4.0,
-        )
         .on_pointer_down({
             let session = session.clone();
             let row = row.clone();
@@ -270,11 +273,10 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                     return;
                 };
                 let y_in_row = content_y - slot as f32 * step;
-                // reorder, middle band + horizontal indent = drop inside.
-                let middle = y_in_row >= ROW_HEIGHT * 0.25 && y_in_row <= ROW_HEIGHT * 0.75;
+                let middle = y_in_row >= ROW_HEIGHT * 0.30 && y_in_row <= ROW_HEIGHT * 0.70;
                 let indent = 8.0 + row.depth as f32 * 16.0;
                 let wants_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
-                    && pe.position.x > indent + 36.0;
+                    && pe.position.x > indent + 20.0;
                 let as_child = middle && wants_child;
                 let before = if as_child {
                     false
@@ -398,7 +400,16 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 }
             },
         ),
-    ))
+    ));
+    if show_sibling_divider {
+        if st.drop_before {
+            Column(Modifier::new().fill_max_width()).child((divider, row_view))
+        } else {
+            Column(Modifier::new().fill_max_width()).child((row_view, divider))
+        }
+    } else {
+        row_view
+    }
 }
 
 fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String) -> View {
