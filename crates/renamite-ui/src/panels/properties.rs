@@ -16,7 +16,7 @@ use renamite_behavior_common::inspect::{
 };
 use renamite_behavior_common::modifiers::{
     cmd_add_offset_path_after, cmd_add_pucker_bloat_after, cmd_add_repeater_after,
-    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_zigzag_after, cmd_set_trim_mode,
+    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_zigzag_after,
 };
 use renamite_behavior_common::stroke::{
     cmd_add_stroke_dash_pair, cmd_disable_stroke_dash, cmd_enable_stroke_dash,
@@ -24,9 +24,8 @@ use renamite_behavior_common::stroke::{
 };
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
-    Color, FillRule, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath,
-    ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign, TrimMode, Value,
-    node_affine,
+    Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
+    StyleKind, StylePaint, Value, node_affine,
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
@@ -49,12 +48,24 @@ use crate::symbols::{AppIcon, Symbols};
 
 pub fn PropertiesPanel(session: SessionRef) -> View {
     let th = theme();
-    let (rows, playhead, record, ids, diamond_quiet) = {
+    let (rows, playhead, record, ids, inspect_ids, diamond_quiet) = {
         let s = session.borrow();
         let ids = s.selection.nodes.clone();
         let playhead = Frame(s.playback.head.round() as i64);
-        let rows = props_for_selection(&s.file.document, &ids, playhead);
-        (rows, playhead, s.record, ids, s.mode == EditorMode::Design)
+        let inspect_ids: Vec<NodeId> = if ids.len() == 1 {
+            vec![effective_inspect_id(&s.file.document, ids[0])]
+        } else {
+            ids.clone()
+        };
+        let rows = props_for_selection(&s.file.document, &inspect_ids, playhead);
+        (
+            rows,
+            playhead,
+            s.record,
+            ids,
+            inspect_ids,
+            s.mode == EditorMode::Design,
+        )
     };
 
     if ids.is_empty() {
@@ -72,6 +83,50 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 format!("Composition · {comp_name}"),
                 vec![],
                 Column(Modifier::new().fill_max_width()).child((
+                    // Name row
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: 12.0,
+                            right: 8.0,
+                            top: 6.0,
+                            bottom: 2.0,
+                        })
+                        .gap(8.0)
+                        .align_items(AlignItems::CENTER))
+                    .child((
+                        Text("Name")
+                            .size(th.typography.body_medium)
+                            .color(th.on_surface)
+                            .modifier(Modifier::new().width(96.0)),
+                        Box(Modifier::new().width(176.0)).child(crate::components::AppTextField(
+                            format!("comp_name_{comp_id:?}"),
+                            comp_name.clone(),
+                            "Name",
+                            false,
+                            32.0,
+                            {
+                                let session = session.clone();
+                                move |text: String| {
+                                    let name = text.trim().to_string();
+                                    if name.is_empty() {
+                                        return;
+                                    }
+                                    let mut s = session.borrow_mut();
+                                    s.apply_outputs(smallvec![
+                                        ToolOutput::BeginTransaction("Set composition name".into()),
+                                        ToolOutput::Commands(smallvec![
+                                            EditorCommand::SetCompositionName {
+                                                comp: comp_id,
+                                                name: name.clone(),
+                                            }
+                                        ]),
+                                        ToolOutput::CommitTransaction,
+                                    ]);
+                                }
+                            },
+                        )),
+                    )),
                     // Size row: editable W x H
                     Row(Modifier::new()
                         .fill_max_width()
@@ -179,9 +234,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                                     if let Ok(num) = text.trim().parse::<u32>() {
                                         let mut s = session.borrow_mut();
                                         s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction(
-                                                "Set frame rate".into()
-                                            ),
+                                            ToolOutput::BeginTransaction("Set frame rate".into()),
                                             ToolOutput::Commands(smallvec![
                                                 EditorCommand::SetCompositionRate {
                                                     comp: comp_id,
@@ -363,14 +416,20 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         ));
     }
     let mut children: Vec<View> = vec![PanelHeader(Symbols::settings, title, header_actions)];
-    if ids.len() == 1 {
+    // Use effective inspect id for shape/text appearance and modifier routing
+    let inspect_id_opt = if ids.len() == 1 {
+        Some(inspect_ids[0])
+    } else {
+        None
+    };
+    if let Some(inspect_id) = inspect_id_opt {
         let app_opt = {
             let s = session.borrow();
-            appearance_for(&s, ids[0])
+            appearance_for(&s, inspect_id)
         };
         if let Some(app) = app_opt {
-            let selected_is_fill = app.fill == Some(ids[0]);
-            let selected_is_stroke = app.stroke == Some(ids[0]);
+            let selected_is_fill = app.fill == Some(inspect_id);
+            let selected_is_stroke = app.stroke == Some(inspect_id);
             let is_shape_like = !selected_is_fill && !selected_is_stroke;
             if let Some(fill_id) = app.fill {
                 if let Some(v) = paint_section_for_style(
@@ -438,31 +497,67 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     }
                 }
             }
+            // Add fill/stroke chips when shape-like selection is missing them
+            if is_shape_like {
+                if app.fill.is_none() || app.stroke.is_none() {
+                    let mut chips: Vec<View> = Vec::new();
+                    if app.fill.is_none() {
+                        chips.push(add_style_chip(session.clone(), inspect_id, StyleAdd::Fill));
+                    }
+                    if app.stroke.is_none() {
+                        chips.push(add_style_chip(
+                            session.clone(),
+                            inspect_id,
+                            StyleAdd::Stroke,
+                        ));
+                    }
+                    if !chips.is_empty() {
+                        children.push(crate::components::CollapsibleSection(
+                            "add_style_section",
+                            "Appearance",
+                            vec![],
+                            FlowRow(
+                                Modifier::new()
+                                    .fill_max_width()
+                                    .padding_values(PaddingValues {
+                                        left: 12.0,
+                                        right: 12.0,
+                                        top: 8.0,
+                                        bottom: 8.0,
+                                    })
+                                    .gap(8.0),
+                            )
+                            .child(chips),
+                        ));
+                    }
+                }
+            }
             // When selection itself is a style node and appearance returned only one side,
             // the other side's dash is handled above. For shape-like selection where dash
             // is missing (no stroke), nothing to show.
-        } else if let Some(v) = paint_section(session.clone(), &ids, playhead, record) {
+        } else if let Some(v) = paint_section(session.clone(), &[inspect_id], playhead, record) {
             children.push(v);
             if let Some(section) =
-                stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
+                stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
             {
                 children.push(section);
             }
         } else if let Some(section) =
-            stroke_dash_section(session.clone(), ids[0], playhead, record, diamond_quiet)
+            stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
         {
             children.push(section);
         }
     }
 
-    if ids.len() == 1
-        && let Some(section) = text_section(session.clone(), ids[0])
+    if let Some(inspect_id) = inspect_id_opt
+        && let Some(section) = text_section(session.clone(), inspect_id)
     {
         children.push(section);
     }
 
-    if ids.len() == 1 {
+    if let Some(inspect_id) = inspect_id_opt {
         if let Some(text_id) = single_text_in_group(&session.borrow().file.document, ids[0]) {
+            // legacy group-text path (kept for compatibility when outer ids is a group)
             let text_rows: Vec<PropRow> = {
                 let s = session.borrow();
                 props_for_node(&s.file.document, text_id, playhead)
@@ -492,26 +587,54 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     ),
                 ));
             }
+        } else if inspect_id != ids[0] {
+            // When we unwrapped a shape group, the Text section is already handled via text_section above.
         }
     }
 
     // Single selected image: informational metadata (name, dimensions, MIME).
-    if ids.len() == 1
-        && let Some(section) = image_meta_section(session.clone(), ids[0])
+    if let Some(inspect_id) = inspect_id_opt
+        && let Some(section) = image_meta_section(session.clone(), inspect_id)
     {
         children.push(section);
     }
 
-    if ids.len() == 1 {
-        if let Some(v) = layer_section(session.clone(), ids[0]) {
+    if let Some(inspect_id) = inspect_id_opt {
+        if let Some(v) = layer_section(session.clone(), inspect_id) {
             children.push(v);
         }
-        if let Some(v) = precomp_section(session.clone(), ids[0]) {
+        if let Some(v) = precomp_section(session.clone(), inspect_id) {
             children.push(v);
+        }
+        // Also show layer/precomp for outer group id if inspect unwrapped
+        if inspect_id != ids[0] {
+            if let Some(v) = layer_section(session.clone(), ids[0]) {
+                children.push(v);
+            }
+            if let Some(v) = precomp_section(session.clone(), ids[0]) {
+                children.push(v);
+            }
         }
     }
 
     for (section, props) in sections {
+        // Skip duplicate Fill/Stroke generic sections when paint already shown via style_prop_rows
+        let skip_duplicate = if inspect_id_opt.is_some() {
+            matches!(section, "Fill" | "Stroke") && {
+                let s = session.borrow();
+                appearance_for(&s, inspect_id_opt.unwrap()).is_some()
+            }
+        } else {
+            false
+        };
+        if skip_duplicate {
+            continue;
+        }
+        let target_ids = if ids.len() == 1 {
+            inspect_ids.clone()
+        } else {
+            ids.clone()
+        };
         children.push(crate::components::CollapsibleSection(
             format!("props_section_{section}"),
             section,
@@ -522,7 +645,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     .map(|prop| {
                         PropRowView(
                             session.clone(),
-                            ids.clone(),
+                            target_ids.clone(),
                             prop.clone(),
                             playhead,
                             record,
@@ -534,8 +657,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         ));
     }
 
-    if ids.len() == 1
-        && let Some(v) = add_modifier_row(session.clone(), ids[0])
+    if let Some(inspect_id) = inspect_id_opt
+        && let Some(v) = add_modifier_row(session.clone(), inspect_id)
     {
         children.push(v);
     }
@@ -1196,14 +1319,29 @@ fn apply_channel(origin: &Value, channel: usize, f: impl FnOnce(f64) -> f64) -> 
 /// Trim Path applies to any shape; Round Corners is gated to rect/path (the
 /// corner-bearing shapes - ellipse/star/polygon have their own roundness).
 fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
-    let can_round = {
+    let shape_id = {
         let s = session.borrow();
-        match &s.file.document.nodes.get(id)?.kind {
-            NodeKind::Shape(ShapeKind::Rect { .. }) | NodeKind::Shape(ShapeKind::Path(_)) => true,
-            NodeKind::Shape(_) => false,
+        let doc = &s.file.document;
+        match &doc.nodes.get(id)?.kind {
+            NodeKind::Shape(_) => id,
+            NodeKind::Group | NodeKind::Layer(_) => {
+                let c = primary_content_in_group(doc, id)?;
+                match doc.nodes.get(c).map(|n| &n.kind) {
+                    Some(NodeKind::Shape(_)) => c,
+                    _ => return None,
+                }
+            }
             _ => return None,
         }
     };
+    let can_round = {
+        let s = session.borrow();
+        matches!(
+            &s.file.document.nodes.get(shape_id)?.kind,
+            NodeKind::Shape(ShapeKind::Rect { .. } | ShapeKind::Path(_))
+        )
+    };
+    let id = shape_id;
 
     let mut buttons: Vec<View> = Vec::new();
     buttons.push(modifier_chip("Trim Path", {
@@ -1319,6 +1457,62 @@ fn modifier_chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
         .clip_rounded(999.0)
         .border(1.0, th.outline_variant.with_alpha(140), 999.0)
         .on_pointer_down(move |_| on_click()))
+    .child(
+        Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+            AppIcon(Symbols::add, 18.0),
+            Text(label).size(th.typography.label_medium),
+        )),
+    )
+}
+
+enum StyleAdd {
+    Fill,
+    Stroke,
+}
+
+fn add_style_chip(session: SessionRef, shape_id: NodeId, kind: StyleAdd) -> View {
+    let label = match kind {
+        StyleAdd::Fill => "Add fill",
+        StyleAdd::Stroke => "Add stroke",
+    };
+    let th = theme();
+    Box(Modifier::new()
+        .padding_values(PaddingValues {
+            left: 10.0,
+            right: 10.0,
+            top: 6.0,
+            bottom: 6.0,
+        })
+        .background(th.surface_container_high)
+        .clip_rounded(999.0)
+        .border(1.0, th.outline_variant.with_alpha(140), 999.0)
+        .on_pointer_down({
+            let session = session.clone();
+            move |_| {
+                let mut s = session.borrow_mut();
+                let paint = s.current_paint.snapshot(s.playback.head);
+                let doc = &s.file.document;
+                let cmd = match kind {
+                    StyleAdd::Fill => {
+                        renamite_behavior_common::fill::cmd_add_fill_after(doc, shape_id, paint)
+                    }
+                    StyleAdd::Stroke => renamite_behavior_common::stroke::cmd_add_stroke_after(
+                        doc, shape_id, paint, 4.0,
+                    ),
+                };
+                if let Some(cmd) = cmd {
+                    let tx_label = match kind {
+                        StyleAdd::Fill => "Add fill",
+                        StyleAdd::Stroke => "Add stroke",
+                    };
+                    s.apply_outputs(smallvec![
+                        ToolOutput::BeginTransaction(tx_label.into()),
+                        ToolOutput::Commands(smallvec![cmd]),
+                        ToolOutput::CommitTransaction,
+                    ]);
+                }
+            }
+        }))
     .child(
         Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
             AppIcon(Symbols::add, 18.0),
@@ -1460,7 +1654,30 @@ fn bool_toggle_segment(
 ) -> View {
     let th = theme();
     let active = current == value;
-    let label = if value { "On" } else { "Off" };
+    // Use specific labels for known bools
+    let label = match path.as_str() {
+        "mask.inverted" => {
+            if value {
+                "Inverted"
+            } else {
+                "Normal"
+            }
+        }
+        "zigzag.smooth" => {
+            if value {
+                "Smooth"
+            } else {
+                "Corner"
+            }
+        }
+        _ => {
+            if value {
+                "On"
+            } else {
+                "Off"
+            }
+        }
+    };
     Text(label)
         .size(th.typography.body_medium)
         .color(if active {
@@ -1490,15 +1707,13 @@ fn bool_toggle_segment(
                         let cmds: Vec<_> = ids
                             .iter()
                             .copied()
-                            .filter_map(|id| match path.as_str() {
-                                "mask.inverted" => Some(EditorCommand::SetMaskInverted {
+                            .filter_map(|id| {
+                                renamite_behavior_common::inspect::cmd_set_discrete(
+                                    &s.file.document,
                                     id,
-                                    inverted: value,
-                                }),
-                                "zigzag.smooth" => {
-                                    Some(EditorCommand::SetZigZagSmooth { id, smooth: value })
-                                }
-                                _ => None,
+                                    &path,
+                                    if value { 1 } else { 0 },
+                                )
                             })
                             .collect();
                         if cmds.is_empty() {
@@ -1554,32 +1769,13 @@ fn enum2_segment(
                         let cmds: Vec<EditorCommand> = ids
                             .iter()
                             .copied()
-                            .filter_map(|id| match path.as_str() {
-                                "trim.mode" => {
-                                    let mode = if index == 1 {
-                                        TrimMode::Simultaneously
-                                    } else {
-                                        TrimMode::Individually
-                                    };
-                                    cmd_set_trim_mode(&s.file.document, id, mode)
-                                }
-                                "fill.rule" => {
-                                    let rule = if index == 1 {
-                                        FillRule::EvenOdd
-                                    } else {
-                                        FillRule::NonZero
-                                    };
-                                    Some(EditorCommand::SetFillRule { id, rule })
-                                }
-                                "star.kind" => {
-                                    let kind = if index == 1 {
-                                        StarKind::Burst
-                                    } else {
-                                        StarKind::Star
-                                    };
-                                    Some(EditorCommand::SetStarKind { id, kind })
-                                }
-                                _ => None,
+                            .filter_map(|id| {
+                                renamite_behavior_common::inspect::cmd_set_discrete(
+                                    &s.file.document,
+                                    id,
+                                    &path,
+                                    index as i64,
+                                )
                             })
                             .collect();
                         if cmds.is_empty() {
@@ -1635,44 +1831,13 @@ fn enum3_segment(
                         let cmds: Vec<EditorCommand> = ids
                             .iter()
                             .copied()
-                            .filter_map(|id| match (path.as_str(), index) {
-                                ("stroke.cap", 0) => Some(EditorCommand::SetStrokeCap {
+                            .filter_map(|id| {
+                                renamite_behavior_common::inspect::cmd_set_discrete(
+                                    &s.file.document,
                                     id,
-                                    cap: StrokeCap::Butt,
-                                }),
-                                ("stroke.cap", 1) => Some(EditorCommand::SetStrokeCap {
-                                    id,
-                                    cap: StrokeCap::Round,
-                                }),
-                                ("stroke.cap", 2) => Some(EditorCommand::SetStrokeCap {
-                                    id,
-                                    cap: StrokeCap::Square,
-                                }),
-                                ("stroke.join", 0) => Some(EditorCommand::SetStrokeJoin {
-                                    id,
-                                    join: StrokeJoin::Miter,
-                                }),
-                                ("stroke.join", 1) => Some(EditorCommand::SetStrokeJoin {
-                                    id,
-                                    join: StrokeJoin::Round,
-                                }),
-                                ("stroke.join", 2) => Some(EditorCommand::SetStrokeJoin {
-                                    id,
-                                    join: StrokeJoin::Bevel,
-                                }),
-                                ("text.align", 0) => Some(EditorCommand::SetTextAlign {
-                                    id,
-                                    align: TextAlign::Left,
-                                }),
-                                ("text.align", 1) => Some(EditorCommand::SetTextAlign {
-                                    id,
-                                    align: TextAlign::Center,
-                                }),
-                                ("text.align", 2) => Some(EditorCommand::SetTextAlign {
-                                    id,
-                                    align: TextAlign::Right,
-                                }),
-                                _ => None,
+                                    &path,
+                                    index as i64,
+                                )
                             })
                             .collect();
                         if cmds.is_empty() {
@@ -1812,6 +1977,28 @@ fn single_text_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<No
     Some(text_id)
 }
 
+fn primary_content_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<NodeId> {
+    let node = doc.nodes.get(id)?;
+    if !matches!(node.kind, NodeKind::Group | NodeKind::Layer(_)) {
+        return None;
+    }
+    let mut content = node.children.iter().copied().filter(|&cid| {
+        matches!(
+            doc.nodes.get(cid).map(|n| &n.kind),
+            Some(NodeKind::Shape(_) | NodeKind::Text(_))
+        )
+    });
+    let first = content.next()?;
+    if content.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+fn effective_inspect_id(doc: &renamite_model::Document, id: NodeId) -> NodeId {
+    primary_content_in_group(doc, id).unwrap_or(id)
+}
+
 /// One selectable font-family chip in the text properties section.
 fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
     let (name, width, height, mime) = {
@@ -1918,9 +2105,11 @@ fn insert_gradient_stop(stops: &mut GradientStops) {
         a.offset + (b.offset - a.offset) * t
     };
     stops.0.push(GradientStop { offset, color });
-    stops
-        .0
-        .sort_by(|x, y| x.offset.partial_cmp(&y.offset).unwrap_or(std::cmp::Ordering::Equal));
+    stops.0.sort_by(|x, y| {
+        x.offset
+            .partial_cmp(&y.offset)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
@@ -2184,11 +2373,13 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                                 let mut s = session.borrow_mut();
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set precomp offset".into()),
-                                    ToolOutput::Commands(smallvec![EditorCommand::SetPrecompTimeMap {
-                                        id,
-                                        offset: Some(Frame(v)),
-                                        stretch: None,
-                                    }]),
+                                    ToolOutput::Commands(smallvec![
+                                        EditorCommand::SetPrecompTimeMap {
+                                            id,
+                                            offset: Some(Frame(v)),
+                                            stretch: None,
+                                        }
+                                    ]),
                                     ToolOutput::CommitTransaction,
                                 ]);
                             }
@@ -2224,11 +2415,13 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                                 let mut s = session.borrow_mut();
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set precomp stretch".into()),
-                                    ToolOutput::Commands(smallvec![EditorCommand::SetPrecompTimeMap {
-                                        id,
-                                        offset: None,
-                                        stretch: Some(v.max(1e-6)),
-                                    }]),
+                                    ToolOutput::Commands(smallvec![
+                                        EditorCommand::SetPrecompTimeMap {
+                                            id,
+                                            offset: None,
+                                            stretch: Some(v.max(1e-6)),
+                                        }
+                                    ]),
                                     ToolOutput::CommitTransaction,
                                 ]);
                             }
@@ -2368,16 +2561,9 @@ fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarge
                 stroke,
             })
         }
-        NodeKind::Group => {
-            let children = node.children.clone();
-            let mut texts = children.into_iter().filter(|&cid| {
-                matches!(doc.nodes.get(cid).map(|n| &n.kind), Some(NodeKind::Text(_)))
-            });
-            let text_id = texts.next()?;
-            if texts.next().is_some() {
-                return None;
-            }
-            appearance_for(session, text_id)
+        NodeKind::Group | NodeKind::Layer(_) => {
+            let content = primary_content_in_group(doc, selected)?;
+            appearance_for(session, content)
         }
         _ => None,
     }
@@ -2523,12 +2709,16 @@ fn paint_section_for_style(
             );
         }
         StylePaint::Gradient(g) => {
+            let (start_label, end_label) = match g.kind {
+                GradientKind::Linear => ("Start", "End"),
+                GradientKind::Radial => ("Center", "Edge"),
+            };
             children.push(axis_row(
                 session.clone(),
                 style_id,
                 playhead,
                 record,
-                "Start",
+                start_label,
                 "grad.start",
                 g.start.value_at(playhead.0 as f64),
             ));
@@ -2537,7 +2727,7 @@ fn paint_section_for_style(
                 style_id,
                 playhead,
                 record,
-                "End",
+                end_label,
                 "grad.end",
                 g.end.value_at(playhead.0 as f64),
             ));

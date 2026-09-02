@@ -248,7 +248,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
             "transform.position",
             PropKind::DVec2,
         ),
-        pd("Transform", "Scale", "transform.scale", PropKind::DVec2),
+        pd("Transform", "Scale %", "transform.scale", PropKind::DVec2),
         pd(
             "Transform",
             "Rotation",
@@ -520,7 +520,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 ));
                 d.push(pd(
                     "Repeater",
-                    "Scale",
+                    "Scale %",
                     "repeater.transform.scale",
                     PropKind::DVec2,
                 ));
@@ -779,6 +779,91 @@ pub fn cmd_toggle_key(
         frame: playhead,
         value,
     })
+}
+
+/// Structural (non-Animated) inspector edits. Single place for path → command.
+pub fn cmd_set_discrete(
+    doc: &Document,
+    id: NodeId,
+    path: &PropPath,
+    index_or_bool: i64,
+) -> Option<EditorCommand> {
+    use renamite_model::*;
+    match path.as_str() {
+        "trim.mode" => {
+            let mode = if index_or_bool == 1 {
+                TrimMode::Simultaneously
+            } else {
+                TrimMode::Individually
+            };
+            // Validate node kind to avoid producing command for wrong node
+            let node = doc.nodes.get(id)?;
+            if !matches!(&node.kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })) {
+                return None;
+            }
+            Some(EditorCommand::SetTrimMode { id, mode })
+        }
+        "fill.rule" => Some(EditorCommand::SetFillRule {
+            id,
+            rule: if index_or_bool == 1 {
+                FillRule::EvenOdd
+            } else {
+                FillRule::NonZero
+            },
+        }),
+        "star.kind" => Some(EditorCommand::SetStarKind {
+            id,
+            kind: if index_or_bool == 1 {
+                StarKind::Burst
+            } else {
+                StarKind::Star
+            },
+        }),
+        "stroke.cap" => Some(EditorCommand::SetStrokeCap {
+            id,
+            cap: match index_or_bool {
+                1 => StrokeCap::Round,
+                2 => StrokeCap::Square,
+                _ => StrokeCap::Butt,
+            },
+        }),
+        "stroke.join" => Some(EditorCommand::SetStrokeJoin {
+            id,
+            join: match index_or_bool {
+                1 => StrokeJoin::Round,
+                2 => StrokeJoin::Bevel,
+                _ => StrokeJoin::Miter,
+            },
+        }),
+        "text.align" => Some(EditorCommand::SetTextAlign {
+            id,
+            align: match index_or_bool {
+                1 => TextAlign::Center,
+                2 => TextAlign::Right,
+                _ => TextAlign::Left,
+            },
+        }),
+        "mask.inverted" => Some(EditorCommand::SetMaskInverted {
+            id,
+            inverted: index_or_bool != 0,
+        }),
+        "zigzag.smooth" => Some(EditorCommand::SetZigZagSmooth {
+            id,
+            smooth: index_or_bool != 0,
+        }),
+        "layer.blend" => Some(EditorCommand::SetLayerProps {
+            id,
+            in_frame: None,
+            out_frame: None,
+            time_stretch: None,
+            blend: Some(match index_or_bool {
+                1 => BlendMode::Multiply,
+                2 => BlendMode::Screen,
+                _ => BlendMode::Normal,
+            }),
+        }),
+        _ => None,
+    }
 }
 
 /// Multi-selection: only show props common to all ids (same path set intersection).
@@ -1325,6 +1410,146 @@ mod tests {
                 in_desc || owned,
                 "animated prop_mut path '{p}' must be in descriptors or a section owner (paint/dash)"
             );
+        }
+    }
+
+    #[test]
+    fn discrete_paths_all_dispatch() {
+        use renamite_model::{Document, Node, Parent, ShapeKind, TextNode};
+        let mut doc = Document::empty();
+        // Create representative nodes for each discrete prop
+        let trim = doc.create_node(Node::new(
+            "trim",
+            NodeKind::Modifier(ModifierKind::TrimPath {
+                start: Animated::new(0.0),
+                end: Animated::new(1.0),
+                offset: Animated::new(0.0),
+                mode: renamite_model::TrimMode::Individually,
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: renamite_model::FillRule::NonZero,
+            }),
+        ));
+        let star = doc.create_node(Node::new(
+            "star",
+            NodeKind::Shape(ShapeKind::Star {
+                pos: Animated::new(glam::DVec2::ZERO),
+                points: Animated::new(5.0),
+                inner_r: Animated::new(10.0),
+                outer_r: Animated::new(20.0),
+                roundness: Animated::new(0.0),
+                kind: renamite_model::StarKind::Star,
+            }),
+        ));
+        let stroke = doc.create_node(Node::new(
+            "stroke",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(1.0),
+                cap: renamite_model::StrokeCap::Butt,
+                join: renamite_model::StrokeJoin::Miter,
+                dash: None,
+            }),
+        ));
+        let text = doc.create_node(Node::new(
+            "text",
+            NodeKind::Text(TextNode {
+                text: "hi".into(),
+                size: Animated::new(12.0),
+                align: renamite_model::TextAlign::Left,
+                font: None,
+            }),
+        ));
+        let mask = doc.create_node(Node::new(
+            "mask",
+            NodeKind::Mask(renamite_model::MaskProps {
+                inverted: false,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(glam::DVec2::ZERO),
+                    size: Animated::new(glam::DVec2::ONE),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+        ));
+        let zigzag = doc.create_node(Node::new(
+            "zz",
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(1.0),
+                frequency: Animated::new(1.0),
+                smooth: false,
+            }),
+        ));
+        let layer = doc.create_node(Node::new("layer", NodeKind::Layer(renamite_model::LayerProps::default())));
+        for id in [trim, fill, star, stroke, text, mask, zigzag, layer] {
+            doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
+        }
+        let reps: Vec<NodeKind> = vec![
+            NodeKind::Group,
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::ONE),
+                rounded: Animated::new(0.0),
+            }),
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: renamite_model::FillRule::NonZero,
+            }),
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::BLACK),
+                width: Animated::new(1.0),
+                cap: renamite_model::StrokeCap::Butt,
+                join: renamite_model::StrokeJoin::Miter,
+                dash: None,
+            }),
+            NodeKind::Text(TextNode {
+                text: String::new(),
+                size: Animated::new(12.0),
+                align: renamite_model::TextAlign::Left,
+                font: None,
+            }),
+            NodeKind::Modifier(ModifierKind::TrimPath {
+                start: Animated::new(0.0),
+                end: Animated::new(1.0),
+                offset: Animated::new(0.0),
+                mode: renamite_model::TrimMode::Individually,
+            }),
+            NodeKind::Mask(renamite_model::MaskProps {
+                inverted: false,
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(glam::DVec2::ZERO),
+                    size: Animated::new(glam::DVec2::ONE),
+                    rounded: Animated::new(0.0),
+                },
+            }),
+            NodeKind::Layer(renamite_model::LayerProps::default()),
+            NodeKind::Modifier(ModifierKind::ZigZag {
+                amplitude: Animated::new(1.0),
+                frequency: Animated::new(1.0),
+                smooth: false,
+            }),
+        ];
+        for kind in reps {
+            for desc in super::descriptors_for(&kind) {
+                if matches!(desc.kind, PropKind::Enum2 { .. } | PropKind::Enum3 { .. } | PropKind::Bool) {
+                    let path = &desc.path;
+                    // Find a node that can handle this path
+                    let mut handled = false;
+                    for &id in &[trim, fill, star, stroke, text, mask, zigzag, layer] {
+                        if super::cmd_set_discrete(&doc, id, path, 0).is_some()
+                            || super::cmd_set_discrete(&doc, id, path, 1).is_some()
+                            || super::cmd_set_discrete(&doc, id, path, 2).is_some()
+                        {
+                            handled = true;
+                            break;
+                        }
+                    }
+                    assert!(handled, "discrete path '{}' must be handled by cmd_set_discrete", path.as_str());
+                }
+            }
         }
     }
 }

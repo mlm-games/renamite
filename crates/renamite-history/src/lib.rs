@@ -261,6 +261,10 @@ pub enum EditorCommand {
         start: Option<Frame>,
         end: Option<Frame>,
     },
+    SetCompositionName {
+        comp: CompId,
+        name: String,
+    },
     SetCompositionSize {
         comp: CompId,
         size: (u32, u32),
@@ -615,6 +619,7 @@ fn apply_command(
         | EditAnchors { .. }
         | ReversePath { .. }
         | SetCompositionRange { .. }
+        | SetCompositionName { .. }
         | SetCompositionSize { .. }
         | SetCompositionRate { .. }
         | SetLayerProps { .. }
@@ -1528,6 +1533,16 @@ fn apply_document_command(
             if let Some(e) = end {
                 c.range.1 = *e;
             }
+            if c.range.0.0 > c.range.1.0 {
+                if start.is_some() && end.is_none() {
+                    c.range.1 = renamite_animation::Frame(c.range.0.0);
+                } else if end.is_some() && start.is_none() {
+                    c.range.0 = renamite_animation::Frame(c.range.1.0);
+                } else {
+                    let (a, b) = (c.range.0.0.min(c.range.1.0), c.range.0.0.max(c.range.1.0));
+                    c.range = (renamite_animation::Frame(a), renamite_animation::Frame(b));
+                }
+            }
             Ok((
                 None,
                 vec![SetCompositionRange {
@@ -1537,13 +1552,22 @@ fn apply_document_command(
                 }],
             ))
         }
+        SetCompositionName { comp, name } => {
+            let c = doc
+                .compositions
+                .get_mut(*comp)
+                .ok_or(ModelError::MissingComp)?;
+            let old = std::mem::replace(&mut c.name, name.clone());
+            Ok((None, vec![SetCompositionName { comp: *comp, name: old }]))
+        }
         SetCompositionSize { comp, size } => {
             let c = doc
                 .compositions
                 .get_mut(*comp)
                 .ok_or(ModelError::MissingComp)?;
             let old = c.size;
-            c.size = *size;
+            let size = (size.0.max(1), size.1.max(1));
+            c.size = size;
             Ok((None, vec![SetCompositionSize { comp: *comp, size: old }]))
         }
         SetCompositionRate { comp, rate } => {
@@ -1552,7 +1576,12 @@ fn apply_document_command(
                 .get_mut(*comp)
                 .ok_or(ModelError::MissingComp)?;
             let old = c.rate;
-            c.rate = *rate;
+            let rate = if rate.den == 0 { old } else { *rate };
+            let rate = renamite_animation::FrameRate {
+                num: rate.num.max(1),
+                den: rate.den.max(1),
+            };
+            c.rate = rate;
             Ok((None, vec![SetCompositionRate { comp: *comp, rate: old }]))
         }
         SetLayerProps {
@@ -1697,6 +1726,7 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 ..
             },
         ) => *comp == *ncomp && *start == *nstart,
+        (SetCompositionName { comp, .. }, SetCompositionName { comp: c2, .. }) => *comp == *c2,
         (SetCompositionSize { comp, .. }, SetCompositionSize { comp: c2, .. }) => *comp == *c2,
         (SetCompositionRate { comp, .. }, SetCompositionRate { comp: c2, .. }) => *comp == *c2,
         (SetLayerProps { id, .. }, SetLayerProps { id: id2, .. }) => *id == *id2,

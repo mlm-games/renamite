@@ -1,8 +1,11 @@
 //! Pure command builders for stroke dash structure.
 
 use renamite_animation::Animated;
-use renamite_history::EditorCommand;
-use renamite_model::{AnimatedDash, Document, NodeId, NodeKind, Parent, StyleKind};
+use renamite_history::{EditorCommand, NodeTree};
+use renamite_model::{
+    AnimatedDash, Document, Node, NodeId, NodeKind, Parent, StrokeCap, StrokeJoin, StyleKind,
+    StylePaint,
+};
 
 /// Prefer a stroke *after* the shape in sibling order (same as fill).
 pub fn stroke_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> {
@@ -90,6 +93,40 @@ pub fn cmd_remove_stroke_dash_pair(doc: &Document, id: NodeId) -> Option<EditorC
     Some(EditorCommand::SetStrokeDash {
         id,
         dash: Some(dash),
+    })
+}
+
+pub fn cmd_add_stroke_after(
+    doc: &Document,
+    shape_id: NodeId,
+    paint: StylePaint,
+    width: f64,
+) -> Option<EditorCommand> {
+    if stroke_style_for_shape(doc, shape_id).is_some() {
+        return None;
+    }
+    let (parent, shape_index) = doc.locate(shape_id)?;
+    let mut index = shape_index + 1;
+    if let Some(fill) = super::fill::fill_style_for_shape(doc, shape_id) {
+        if let Some((f_parent, f_idx)) = doc.locate(fill) {
+            if f_parent == parent && f_idx >= shape_index && f_idx + 1 > index {
+                index = f_idx + 1;
+            }
+        }
+    }
+    Some(EditorCommand::InsertNode {
+        parent,
+        index,
+        tree: NodeTree::leaf(Node::new(
+            "Stroke",
+            NodeKind::Style(StyleKind::Stroke {
+                paint,
+                width: Animated::new(width.max(0.0)),
+                cap: StrokeCap::Round,
+                join: StrokeJoin::Round,
+                dash: None,
+            }),
+        )),
     })
 }
 

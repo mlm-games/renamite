@@ -1,7 +1,7 @@
 //! Helpers for finding and editing the style node that paints a shape.
 
-use renamite_history::EditorCommand;
-use renamite_model::{Document, NodeId, NodeKind, Parent, StyleKind, StylePaint};
+use renamite_history::{EditorCommand, NodeTree};
+use renamite_model::{Document, FillRule, Node, NodeId, NodeKind, Parent, StyleKind, StylePaint};
 
 /// Find the nearest Fill style that paints `shape_id`.
 pub fn fill_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> {
@@ -55,6 +55,34 @@ pub fn cmd_fill_shape(
 ) -> Option<EditorCommand> {
     let fill = fill_style_for_shape(doc, shape_id)?;
     cmd_set_fill_paint(doc, fill, paint)
+}
+
+fn sibling_insert_index(doc: &Document, shape_id: NodeId) -> Option<(Parent, usize)> {
+    let (parent, shape_index) = doc.locate(shape_id)?;
+    Some((parent, shape_index + 1))
+}
+
+/// Insert a Fill after the shape (or after existing styles). None if a fill already paints it.
+pub fn cmd_add_fill_after(
+    doc: &Document,
+    shape_id: NodeId,
+    paint: StylePaint,
+) -> Option<EditorCommand> {
+    if fill_style_for_shape(doc, shape_id).is_some() {
+        return None;
+    }
+    let (parent, index) = sibling_insert_index(doc, shape_id)?;
+    Some(EditorCommand::InsertNode {
+        parent,
+        index,
+        tree: NodeTree::leaf(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint,
+                rule: FillRule::NonZero,
+            }),
+        )),
+    })
 }
 
 #[cfg(test)]
