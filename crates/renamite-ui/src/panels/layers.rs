@@ -270,9 +270,17 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                     return;
                 };
                 let y_in_row = content_y - slot as f32 * step;
-                let before = y_in_row < ROW_HEIGHT * 0.5;
-                let as_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
-                    && pe.position.x > 64.0;
+                // reorder, middle band + horizontal indent = drop inside.
+                let middle = y_in_row >= ROW_HEIGHT * 0.25 && y_in_row <= ROW_HEIGHT * 0.75;
+                let indent = 8.0 + row.depth as f32 * 16.0;
+                let wants_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
+                    && pe.position.x > indent + 36.0;
+                let as_child = middle && wants_child;
+                let before = if as_child {
+                    false
+                } else {
+                    y_in_row < ROW_HEIGHT * 0.5
+                };
                 let d = s.layer_drag.as_mut().unwrap();
                 d.hover_row = slot;
                 d.before = before;
