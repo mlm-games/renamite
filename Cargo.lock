@@ -3553,6 +3553,7 @@ dependencies = [
  "anyhow",
  "glam",
  "image",
+ "js-sys",
  "kurbo",
  "pollster",
  "renamite-animation",
@@ -3563,6 +3564,8 @@ dependencies = [
  "renamite-render-bridge",
  "repose-core",
  "repose-render-wgpu",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-workers",
  "wgpu 30.0.1",
 ]
@@ -5023,19 +5026,32 @@ dependencies = [
 
 [[package]]
 name = "web-workers"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dea83fb41c17e47168b62d62d5a8ec955ebb6218d4d90b602f856dfe3518f7d"
+checksum = "5c19355971a4b93d1c6aaef97fd759ac187cc0354c9b9d6a3019f4d9aaad64a7"
 dependencies = [
  "atomic-waker",
  "continue",
  "js-sys",
  "minicov",
  "pin-project",
+ "pollster",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "web-workers-derive",
+]
+
+[[package]]
+name = "web-workers-derive"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bc7d5d2a8d6b2347fdf1af4a1c01c4cb78366e94dfa1f3765dc4731fa7001e9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
 ]
 
 [[package]]

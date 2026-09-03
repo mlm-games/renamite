@@ -656,6 +656,7 @@ fn prepare_export(
 
 /// Rasterize `repose` and encode PNG bytes. Image assets are uploaded from
 /// `document` before drawing so image layers resolve. Runs on any thread.
+#[allow(dead_code)]
 fn render_png_bytes(
     repose: repose_core::Scene,
     w: u32,
@@ -701,7 +702,7 @@ pub fn export_png(session: &SessionRef) {
     session.borrow_mut().exporting_png = true;
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
-    web_workers::spawn(move || {
+    web_workers::spawn_unified(move || {
         let op = match catch_unwind(AssertUnwindSafe(|| {
             render_png_bytes(scene, w, h, document)
         })) {
@@ -726,8 +727,10 @@ pub fn export_png(session: &SessionRef) {
 }
 
 /// Render the current frame off-thread, then hand the bytes to the OS save
-/// picker (WASM/Android). The picker itself is non-blocking; the render no
-/// longer blocks the UI thread.
+/// picker (Android/WASM) — unified via `web_workers::spawn_unified` for all 3
+/// (native/Android/WASM). Uses blocking GPU readback where `has_block_support`
+/// (dedicated worker) and async `render_png_async` on WASM main thread where
+/// `Atomics.wait` is forbidden.
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub fn export_png(session: &SessionRef) {
     if session.borrow().exporting_png {
@@ -745,24 +748,59 @@ pub fn export_png(session: &SessionRef) {
     session.borrow_mut().exporting_png = true;
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
-    web_workers::spawn(move || {
-        let op = match catch_unwind(AssertUnwindSafe(|| {
-            render_png_bytes(scene, w, h, document)
-        })) {
-            Ok(Ok(bytes)) => PendingFileOp::ExportPngReady {
-                bytes,
-                suggested_name: suggested,
-            },
-            Ok(Err(e)) => PendingFileOp::Failed {
-                message: format!("PNG export failed: {e}"),
-            },
-            Err(panic) => PendingFileOp::Failed {
-                message: format!("PNG export failed: {}", panic_payload(&panic)),
-            },
-        };
-        ops.lock_sync().push_back(op);
-        wake_ui();
-    });
+    let has_block = {
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        {
+            web_workers::web::has_block_support()
+        }
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+        {
+            true
+        }
+    };
+    if has_block {
+        web_workers::spawn_unified(move || {
+            let op = match catch_unwind(AssertUnwindSafe(|| {
+                render_png_bytes(scene, w, h, document)
+            })) {
+                Ok(Ok(bytes)) => PendingFileOp::ExportPngReady {
+                    bytes,
+                    suggested_name: suggested,
+                },
+                Ok(Err(e)) => PendingFileOp::Failed {
+                    message: format!("PNG export failed: {e}"),
+                },
+                Err(panic) => PendingFileOp::Failed {
+                    message: format!("PNG export failed: {}", panic_payload(&panic)),
+                },
+            };
+            ops.lock_sync().push_back(op);
+            wake_ui();
+        });
+    } else {
+        web_workers::spawn_async_unified(move || async move {
+            let op = async {
+                let mut gpu = renamite_render_offscreen::OffscreenRenderer::new(w, h, 4).await?;
+                gpu.sync_document_images(&document)?;
+                let bytes = gpu
+                    .render_png_async(&scene, Some([1.0, 1.0, 1.0, 1.0]))
+                    .await?;
+                Ok::<Vec<u8>, anyhow::Error>(bytes)
+            }
+            .await;
+            let op = match op {
+                Ok(bytes) => PendingFileOp::ExportPngReady {
+                    bytes,
+                    suggested_name: suggested,
+                },
+                Err(e) => PendingFileOp::Failed {
+                    message: format!("PNG export failed: {e}"),
+                },
+            };
+            ops.lock_sync().push_back(op);
+            wake_ui();
+        });
+    }
 }
 
 fn clamp_export_size(artboard: (u32, u32)) -> (u32, u32) {

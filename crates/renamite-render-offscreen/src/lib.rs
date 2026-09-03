@@ -179,6 +179,100 @@ impl OffscreenRenderer {
         Ok(packed)
     }
 
+    /// WASM-friendly async variant
+    #[cfg(target_arch = "wasm32")]
+    pub async fn render_rgba_async(
+        &mut self,
+        scene: &Scene,
+        clear: Option<[f64; 4]>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let mut encoder =
+            self.renderer
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("renamite offscreen encoder"),
+                });
+
+        self.renderer.render_to_view(
+            scene,
+            &mut encoder,
+            &self.view,
+            self.width,
+            self.height,
+            clear,
+        );
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_bytes_per_row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.renderer
+            .queue
+            .submit(std::iter::once(encoder.finish()));
+
+        let slice = self.readback.slice(..);
+        // Use `web-workers` crate's cross-platform mpsc (handles
+        // Atomics.waitAsync on the WASM main thread vs blocking on workers).
+        let (tx, rx) = web_workers::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send_sync(result);
+        });
+
+        // Poll without blocking the main thread. `Poll` processes pending
+        // callbacks; we yield to the JS microtask queue each iteration so
+        // WebGPU's promise can resolve. Timeout after ~5s to avoid infinite
+        // hang and surface a clear error instead of "never completes".
+        let mut iterations = 0u32;
+        loop {
+            // `Poll` is non-blocking; `Wait` would deadlock on the main thread.
+            let _ = self.renderer.device.poll(wgpu::PollType::Poll);
+            if let Ok(res) = rx.try_recv() {
+                res?;
+                break;
+            }
+            if iterations > 5000 {
+                anyhow::bail!("GPU readback timeout (5000 polls)");
+            }
+            iterations += 1;
+            // Yield to browser event loop so WebGPU callbacks can fire.
+            // Uses `web-workers` crate's async yield would also work, but
+            // `JsFuture::from(Promise::resolve)` is the minimal cross-browser
+            // yield and keeps the crate's `web-workers` sync primitives as the
+            // core fix (vs raw `std::sync::mpsc` which cannot wait on the main
+            // thread).
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+                &wasm_bindgen::JsValue::NULL,
+            ))
+            .await
+            .ok();
+        }
+
+        let mapped = slice.get_mapped_range().context("mapped range")?;
+        let packed = strip_padding(&mapped, self.width, self.height, self.padded_bytes_per_row);
+        drop(mapped);
+        self.readback.unmap();
+
+        Ok(packed)
+    }
+
     /// Render `scene` and encode the result as PNG bytes.
     pub fn render_png(
         &mut self,
@@ -193,6 +287,20 @@ impl OffscreenRenderer {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image.write_to(&mut bytes, image::ImageFormat::Png)?;
 
+        Ok(bytes.into_inner())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn render_png_async(
+        &mut self,
+        scene: &Scene,
+        clear: Option<[f64; 4]>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let rgba = self.render_rgba_async(scene, clear).await?;
+        let image = image::RgbaImage::from_raw(self.width, self.height, rgba)
+            .ok_or_else(|| anyhow::anyhow!("invalid RGBA buffer"))?;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png)?;
         Ok(bytes.into_inner())
     }
 

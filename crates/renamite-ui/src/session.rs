@@ -2441,15 +2441,13 @@ impl Session {
                         bytes,
                         Box::new(move |outcome| {
                             if outcome.ok {
-                                ops.lock_sync()
-                                    .push_back(PendingFileOp::ExportFinished {
-                                        message: "Exported PNG".to_string(),
-                                    });
+                                ops.lock_sync().push_back(PendingFileOp::ExportFinished {
+                                    message: "Exported PNG".to_string(),
+                                });
                             } else {
-                                ops.lock_sync()
-                                    .push_back(PendingFileOp::ExportFinished {
-                                        message: "PNG export canceled".to_string(),
-                                    });
+                                ops.lock_sync().push_back(PendingFileOp::ExportFinished {
+                                    message: "PNG export canceled".to_string(),
+                                });
                             }
                             #[cfg(target_arch = "wasm32")]
                             repose_core::request_frame();
