@@ -1,5 +1,10 @@
 use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
+use std::mem;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use web_workers::sync::Mutex;
 
 use glam::DVec2;
 use kurbo::Point;
@@ -67,7 +72,7 @@ pub enum SelectionBoolean {
 
 pub struct Session {
     pub file: RenFile,
-    pub current_path: Option<std::path::PathBuf>,
+    pub current_path: Option<PathBuf>,
     pub dirty: bool,
     pub history: History,
     pub engine: Engine,
@@ -85,13 +90,13 @@ pub struct Session {
     pub render_context: repose_core::RenderContext,
     pub last_tick: Instant,
     pub revision: u64,
-    pub expanded_layers: std::collections::HashSet<renamite_model::NodeId>,
+    pub expanded_layers: HashSet<renamite_model::NodeId>,
     pub layer_drag: Option<LayerDragState>,
     pub renaming: Option<(renamite_model::NodeId, String)>,
     pub record: bool,
     pub inspector_drag: Option<InspectorDrag>,
     pub status: Option<String>,
-    pub file_ops: std::sync::Arc<web_workers::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
+    pub file_ops: Arc<Mutex<VecDeque<PendingFileOp>>>,
     pub pending_intent: Option<PendingIntent>,
     pub confirm_dialog: Rc<DialogState>,
     pub current_paint: renamite_model::StylePaint,
@@ -164,12 +169,12 @@ pub enum PendingIntent {
 pub enum PendingFileOp {
     OpenDone {
         file: Box<RenFile>,
-        path: Option<std::path::PathBuf>,
+        path: Option<PathBuf>,
         message: &'static str,
     },
     SaveOutcome {
         ok: bool,
-        path: Option<std::path::PathBuf>,
+        path: Option<PathBuf>,
     },
     Exported,
     ExportFinished {
@@ -282,13 +287,13 @@ impl Session {
             render_context,
             last_tick: Instant::now(),
             revision: 0,
-            expanded_layers: std::collections::HashSet::new(),
+            expanded_layers: HashSet::new(),
             layer_drag: None,
             renaming: None,
             record: false,
             inspector_drag: None,
             status: None,
-            file_ops: std::sync::Arc::new(web_workers::sync::Mutex::new(std::collections::VecDeque::new())),
+            file_ops: Arc::new(Mutex::new(VecDeque::new())),
             pending_intent: None,
             confirm_dialog: Rc::new(DialogState::new()),
             current_paint: renamite_model::StylePaint::solid(renamite_model::Color::rgba(
@@ -1216,7 +1221,7 @@ impl Session {
         };
         visit(doc, &c.children, &self.selection.nodes, false, &mut out);
 
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         out.retain(|id| seen.insert(*id));
         out
     }
@@ -1410,7 +1415,7 @@ impl Session {
             };
             let rhs_bez = renamite_geometry::contours_to_bez(&rhs);
 
-            let current = std::mem::take(&mut remaining);
+            let current = mem::take(&mut remaining);
             if current.is_empty() {
                 break;
             }
@@ -1954,11 +1959,11 @@ impl Session {
 
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let doc = &self.file.document;
-        let mut all = std::collections::HashSet::new();
+        let mut all = HashSet::new();
         fn collect(
             node: renamite_model::NodeId,
             doc: &renamite_model::Document,
-            out: &mut std::collections::HashSet<renamite_model::NodeId>,
+            out: &mut HashSet<renamite_model::NodeId>,
         ) {
             if let Some(n) = doc.nodes.get(node) {
                 match &n.kind {
@@ -2284,7 +2289,7 @@ impl Session {
     pub fn import_font(&mut self, name: String, bytes: Vec<u8>) {
         use renamite_model::{Asset, FontAsset};
         let family = renamite_text::font_family_name(&bytes).unwrap_or_else(|| {
-            std::path::Path::new(&name)
+            Path::new(&name)
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "ImportedFont".into())
@@ -2378,7 +2383,7 @@ impl Session {
         request_frame();
     }
 
-    pub fn mark_saved(&mut self, path: Option<std::path::PathBuf>) {
+    pub fn mark_saved(&mut self, path: Option<PathBuf>) {
         self.current_path = path;
         self.dirty = false;
         self.revision = self.revision.wrapping_add(1);
@@ -2386,7 +2391,7 @@ impl Session {
     }
 
     pub fn drain_file_ops(&mut self) -> bool {
-        let ops = std::mem::take(&mut *self.file_ops.lock_sync());
+        let ops = mem::take(&mut *self.file_ops.lock_sync());
         let mut run_intent = false;
         for op in ops {
             match op {
@@ -2763,7 +2768,7 @@ impl Session {
             return;
         };
 
-        let prev = std::mem::take(&mut self.machine_preview_inputs);
+        let prev = mem::take(&mut self.machine_preview_inputs);
         self.machine_preview_inputs = machine
             .inputs
             .iter()
@@ -4476,7 +4481,7 @@ mod path_op_integration_tests {
     }
 
     fn two_rects() -> (Session, renamite_model::NodeId, renamite_model::NodeId) {
-        let ids = std::cell::RefCell::new(Vec::new());
+        let ids = RefCell::new(Vec::new());
         let s = session_with(|doc| {
             let b = rect(doc, "b", DVec2::new(10.0, 10.0), DVec2::new(30.0, 30.0));
             doc.attach(b, Parent::Comp(doc.main), 0).unwrap();
@@ -4495,7 +4500,7 @@ mod path_op_integration_tests {
 
     #[test]
     fn intersection_of_disjoint_shapes_removes_all_selection() {
-        let ids = std::cell::RefCell::new(Vec::new());
+        let ids = RefCell::new(Vec::new());
         let mut s = session_with(|doc| {
             let b = rect(doc, "b", DVec2::new(40.0, 0.0), DVec2::new(50.0, 10.0));
             doc.attach(b, Parent::Comp(doc.main), 0).unwrap();
@@ -4517,7 +4522,7 @@ mod path_op_integration_tests {
 
     #[test]
     fn difference_fully_covered_produces_empty_and_removes_nodes() {
-        let ids = std::cell::RefCell::new(Vec::new());
+        let ids = RefCell::new(Vec::new());
         let mut s = session_with(|doc| {
             let big = rect(doc, "big", DVec2::new(0.0, 0.0), DVec2::new(30.0, 30.0));
             doc.attach(big, Parent::Comp(doc.main), 0).unwrap();
@@ -4571,7 +4576,7 @@ mod path_op_integration_tests {
 
     #[test]
     fn division_preserves_donut_hole_as_one_compound_shape() {
-        let ids = std::cell::RefCell::new(Vec::new());
+        let ids = RefCell::new(Vec::new());
         let mut s = session_with(|doc| {
             let hole = rect(doc, "hole", DVec2::new(25.0, 25.0), DVec2::new(75.0, 75.0));
             doc.attach(hole, Parent::Comp(doc.main), 0).unwrap();
@@ -4623,7 +4628,7 @@ mod path_op_integration_tests {
 
     #[test]
     fn division_non_intersecting_cutter_does_not_error_or_drop_geometry() {
-        let ids = std::cell::RefCell::new(Vec::new());
+        let ids = RefCell::new(Vec::new());
         let mut s = session_with(|doc| {
             let far = rect(doc, "far", DVec2::new(50.0, 50.0), DVec2::new(60.0, 60.0));
             doc.attach(far, Parent::Comp(doc.main), 0).unwrap();

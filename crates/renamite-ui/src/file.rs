@@ -10,6 +10,10 @@
 
 use crate::session::{PendingFileOp, PendingIntent, SessionRef, blank_file};
 
+use std::any::Any;
+use std::fmt::Display;
+use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use renamite_platform::dialogs::PickedFile;
@@ -38,7 +42,7 @@ fn set_status(session: &SessionRef, msg: impl Into<String>) {
     s.bump();
 }
 
-fn report_error(session: &SessionRef, e: impl std::fmt::Display) {
+fn report_error(session: &SessionRef, e: impl Display) {
     set_status(session, format!("Error: {e}"));
 }
 
@@ -55,7 +59,7 @@ fn parse_ren(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile
     if is_binary(name) {
         Ok(renamite_io_ren::open_binary(data)?)
     } else {
-        Ok(renamite_io_ren::open(std::str::from_utf8(data)?)?)
+        Ok(renamite_io_ren::open(str::from_utf8(data)?)?)
     }
 }
 
@@ -313,7 +317,7 @@ fn import_lottie_inner(session: &SessionRef) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let result = match std::fs::read(&p) {
+                    let result = match fs::read(&p) {
                         Ok(data) => import_lottie_bytes(&name, &data),
                         Err(e) => Err(e.into()),
                     };
@@ -383,7 +387,7 @@ fn import_svg_inner(session: &SessionRef) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let result = match std::fs::read(&p) {
+                    let result = match fs::read(&p) {
                         Ok(data) => import_svg_bytes(&name, &data),
                         Err(e) => Err(e.into()),
                     };
@@ -448,7 +452,7 @@ pub fn export_svg(session: &SessionRef) {
             return;
         }
     };
-    match std::fs::write(&path, svg) {
+    match fs::write(&path, svg) {
         Ok(()) => set_status(session, format!("Exported {}", path.display())),
         Err(e) => report_error(session, e),
     }
@@ -500,7 +504,7 @@ pub fn import_font(session: &SessionRef) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "Font".into());
-                    match std::fs::read(&path) {
+                    match fs::read(&path) {
                         Ok(bytes) => Some(PendingFileOp::ImportFontDone { name, bytes }),
                         Err(e) => Some(PendingFileOp::Failed {
                             message: format!("Font import failed: {e}"),
@@ -529,7 +533,7 @@ fn image_asset_from_bytes(
     let decoded = image::load_from_memory(&bytes)?;
     let (width, height) = decoded.dimensions();
 
-    let extension = std::path::Path::new(&name)
+    let extension = Path::new(&name)
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or("")
@@ -572,7 +576,7 @@ pub fn import_image(session: &SessionRef) {
                         .unwrap_or_else(|| "Image".into());
 
                     Some(
-                        std::fs::read(path)
+                        fs::read(path)
                             .map_err(anyhow::Error::from)
                             .and_then(|bytes| image_asset_from_bytes(name, bytes)),
                     )
@@ -607,7 +611,7 @@ fn write_ren(session: &SessionRef, path: &Path) -> bool {
         session.borrow().save_snapshot()
     };
     match bytes {
-        Ok(bytes) => match std::fs::write(path, bytes) {
+        Ok(bytes) => match fs::write(path, bytes) {
             Ok(()) => {
                 session.borrow_mut().mark_saved(Some(path.to_path_buf()));
                 set_status(session, "Saved");
@@ -626,7 +630,7 @@ fn write_ren(session: &SessionRef, path: &Path) -> bool {
 }
 
 fn read_ren(path: &Path) -> anyhow::Result<renamite_io_ren::RenFile> {
-    let data = std::fs::read(path)?;
+    let data = fs::read(path)?;
     parse_ren(&path.to_string_lossy(), &data)
 }
 
@@ -664,7 +668,7 @@ fn render_png_bytes(
 }
 
 /// Best-effort string for a panic payload (`Box<dyn Any + Send>`).
-fn panic_payload(panic: &(dyn std::any::Any + Send)) -> String {
+fn panic_payload(panic: &(dyn Any + Send)) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = panic.downcast_ref::<String>() {
@@ -698,10 +702,10 @@ pub fn export_png(session: &SessionRef) {
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
     web_workers::spawn(move || {
-        let op = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let op = match catch_unwind(AssertUnwindSafe(|| {
             render_png_bytes(scene, w, h, document)
         })) {
-            Ok(Ok(png)) => match std::fs::write(&path, png) {
+            Ok(Ok(png)) => match fs::write(&path, png) {
                 Ok(()) => PendingFileOp::ExportFinished {
                     message: format!("Exported {}", path.display()),
                 },
@@ -742,7 +746,7 @@ pub fn export_png(session: &SessionRef) {
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
     web_workers::spawn(move || {
-        let op = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let op = match catch_unwind(AssertUnwindSafe(|| {
             render_png_bytes(scene, w, h, document)
         })) {
             Ok(Ok(bytes)) => PendingFileOp::ExportPngReady {
