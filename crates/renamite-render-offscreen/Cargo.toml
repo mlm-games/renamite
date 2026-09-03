@@ -18,6 +18,7 @@ wgpu.workspace = true
 pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow.workspace = true
+web-workers.workspace = true
 
 [dev-dependencies]
 renamite-model.workspace = true

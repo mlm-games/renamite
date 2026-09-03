@@ -2465,6 +2465,7 @@ impl Session {
                 }
                 PendingFileOp::Failed { message } => {
                     self.clear_pending_intent();
+                    self.exporting_png = false;
                     self.status = Some(format!("Error: {message}"));
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();

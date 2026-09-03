@@ -162,14 +162,14 @@ impl OffscreenRenderer {
             .submit(std::iter::once(encoder.finish()));
 
         let slice = self.readback.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = web_workers::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
+            let _ = tx.send_sync(result);
         });
         self.renderer
             .device
             .poll(wgpu::PollType::wait_indefinitely())?;
-        rx.recv()??;
+        rx.recv_sync()??;
 
         let mapped = slice.get_mapped_range()?;
         let packed = strip_padding(&mapped, self.width, self.height, self.padded_bytes_per_row);

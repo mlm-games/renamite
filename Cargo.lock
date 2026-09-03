@@ -3563,6 +3563,7 @@ dependencies = [
  "renamite-render-bridge",
  "repose-core",
  "repose-render-wgpu",
+ "web-workers",
  "wgpu 30.0.1",
 ]
 
