@@ -91,7 +91,7 @@ pub struct Session {
     pub record: bool,
     pub inspector_drag: Option<InspectorDrag>,
     pub status: Option<String>,
-    pub file_ops: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
+    pub file_ops: std::sync::Arc<web_workers::sync::Mutex<std::collections::VecDeque<PendingFileOp>>>,
     pub pending_intent: Option<PendingIntent>,
     pub confirm_dialog: Rc<DialogState>,
     pub current_paint: renamite_model::StylePaint,
@@ -288,7 +288,7 @@ impl Session {
             record: false,
             inspector_drag: None,
             status: None,
-            file_ops: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            file_ops: std::sync::Arc::new(web_workers::sync::Mutex::new(std::collections::VecDeque::new())),
             pending_intent: None,
             confirm_dialog: Rc::new(DialogState::new()),
             current_paint: renamite_model::StylePaint::solid(renamite_model::Color::rgba(
@@ -2386,7 +2386,7 @@ impl Session {
     }
 
     pub fn drain_file_ops(&mut self) -> bool {
-        let ops = std::mem::take(&mut *self.file_ops.lock().unwrap());
+        let ops = std::mem::take(&mut *self.file_ops.lock_sync());
         let mut run_intent = false;
         for op in ops {
             match op {
@@ -2436,14 +2436,12 @@ impl Session {
                         bytes,
                         Box::new(move |outcome| {
                             if outcome.ok {
-                                ops.lock()
-                                    .unwrap()
+                                ops.lock_sync()
                                     .push_back(PendingFileOp::ExportFinished {
                                         message: "Exported PNG".to_string(),
                                     });
                             } else {
-                                ops.lock()
-                                    .unwrap()
+                                ops.lock_sync()
                                     .push_back(PendingFileOp::ExportFinished {
                                         message: "PNG export canceled".to_string(),
                                     });

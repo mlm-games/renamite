@@ -10,3 +10,4 @@ kurbo.workspace = true
 serde.workspace = true
 ttf-parser.workspace = true
 thiserror.workspace = true
+web-workers.workspace = true

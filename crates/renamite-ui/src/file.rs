@@ -111,9 +111,9 @@ pub fn export_lottie(session: &SessionRef) {
         bytes,
         Box::new(move |outcome| {
             if outcome.ok {
-                ops.lock().unwrap().push_back(PendingFileOp::Exported);
+                ops.lock_sync().push_back(PendingFileOp::Exported);
             } else {
-                ops.lock().unwrap().push_back(PendingFileOp::Failed {
+                ops.lock_sync().push_back(PendingFileOp::Failed {
                     message: "Lottie export cancelled or failed".into(),
                 });
             }
@@ -230,7 +230,7 @@ fn open_document_inner(session: &SessionRef) {
                 },
             };
             if let Some(op) = op {
-                ops.lock().unwrap().push_back(op);
+                ops.lock_sync().push_back(op);
             }
             wake_ui();
         }),
@@ -282,7 +282,7 @@ pub fn save_document_as(session: &SessionRef) -> bool {
         &["ren"],
         bytes,
         Box::new(move |outcome| {
-            ops.lock().unwrap().push_back(PendingFileOp::SaveOutcome {
+            ops.lock_sync().push_back(PendingFileOp::SaveOutcome {
                 ok: outcome.ok,
                 path: None,
             });
@@ -340,7 +340,7 @@ fn import_lottie_inner(session: &SessionRef) {
                 },
             };
             if let Some(op) = op {
-                ops.lock().unwrap().push_back(op);
+                ops.lock_sync().push_back(op);
             }
             wake_ui();
         }),
@@ -410,7 +410,7 @@ fn import_svg_inner(session: &SessionRef) {
                 },
             };
             if let Some(op) = op {
-                ops.lock().unwrap().push_back(op);
+                ops.lock_sync().push_back(op);
             }
             wake_ui();
         }),
@@ -478,7 +478,7 @@ pub fn export_svg(session: &SessionRef) {
         svg.into_bytes(),
         Box::new(move |outcome| {
             if outcome.ok {
-                ops.lock().unwrap().push_back(PendingFileOp::Exported);
+                ops.lock_sync().push_back(PendingFileOp::Exported);
             }
             wake_ui();
         }),
@@ -512,7 +512,7 @@ pub fn import_font(session: &SessionRef) {
                 }
             };
             if let Some(op) = op {
-                ops.lock().unwrap().push_back(op);
+                ops.lock_sync().push_back(op);
             }
             wake_ui();
         }),
@@ -590,7 +590,7 @@ pub fn import_image(session: &SessionRef) {
                     },
                 };
 
-                operations.lock().unwrap().push_back(operation);
+                operations.lock_sync().push_back(operation);
             }
 
             wake_ui();
@@ -716,7 +716,7 @@ pub fn export_png(session: &SessionRef) {
                 message: format!("PNG export failed: {}", panic_payload(&panic)),
             },
         };
-        ops.lock().unwrap().push_back(op);
+        ops.lock_sync().push_back(op);
         wake_ui();
     });
 }
@@ -756,7 +756,7 @@ pub fn export_png(session: &SessionRef) {
                 message: format!("PNG export failed: {}", panic_payload(&panic)),
             },
         };
-        ops.lock().unwrap().push_back(op);
+        ops.lock_sync().push_back(op);
         wake_ui();
     });
 }

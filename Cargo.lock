@@ -3593,6 +3593,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "ttf-parser",
+ "web-workers",
 ]
 
 [[package]]

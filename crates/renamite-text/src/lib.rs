@@ -13,7 +13,8 @@
 //! `TextNode.font` value to a face, falling back to the bundled default.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use web_workers::sync::Mutex;
 
 use kurbo::BezPath;
 use ttf_parser::name::name_id;
@@ -66,7 +67,7 @@ impl FontRef {
     /// Resolve the font for a logical family name (`TextNode.font`), falling
     /// back to the bundled default when the name is absent or unknown.
     pub fn for_family(name: Option<&str>) -> Self {
-        match name.and_then(|n| registry().lock().unwrap().fonts.get(n).cloned()) {
+        match name.and_then(|n| registry().lock_sync().fonts.get(n).cloned()) {
             Some(data) => Self { data },
             None => Self::default_font(),
         }
@@ -134,8 +135,7 @@ pub fn font_family_name(bytes: &[u8]) -> Option<String> {
 pub fn register_font_data(bytes: Vec<u8>) -> Option<String> {
     let family = font_family_name(&bytes)?;
     registry()
-        .lock()
-        .unwrap()
+        .lock_sync()
         .fonts
         .insert(family.clone(), Arc::from(bytes));
     Some(family)
@@ -143,7 +143,7 @@ pub fn register_font_data(bytes: Vec<u8>) -> Option<String> {
 
 /// All registered family names (including the bundled default), sorted.
 pub fn registered_families() -> Vec<String> {
-    let mut names: Vec<String> = registry().lock().unwrap().fonts.keys().cloned().collect();
+    let mut names: Vec<String> = registry().lock_sync().fonts.keys().cloned().collect();
     names.sort();
     names
 }
