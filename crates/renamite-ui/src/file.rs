@@ -15,6 +15,13 @@ use std::fmt::Display;
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::{
+    Arc,
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
+use web_time::Instant;
 
 use renamite_platform::dialogs::PickedFile;
 
@@ -654,6 +661,14 @@ fn prepare_export(
     Ok((repose, (w, h), document))
 }
 
+fn exporting_since() -> &'static std::sync::Mutex<Option<Instant>> {
+    static SINCE: OnceLock<std::sync::Mutex<Option<Instant>>> = OnceLock::new();
+    SINCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+pub fn clear_exporting_since() {
+    *exporting_since().lock().unwrap() = None;
+}
+
 /// Shared-device-first, fallback to headless.
 #[allow(dead_code)]
 fn render_png_bytes(
@@ -665,6 +680,7 @@ fn render_png_bytes(
     let mut gpu = if let Some((d, q)) = renamite_render_offscreen::shared_device() {
         renamite_render_offscreen::OffscreenRenderer::from_device(d, q, w, h, 4)?
     } else {
+        eprintln!("PNG export: shared device unavailable, creating headless adapter (slow path)");
         renamite_render_offscreen::OffscreenRenderer::new_blocking(w, h, 4)?
     };
     gpu.sync_document_images(&document)?;
@@ -685,9 +701,26 @@ fn panic_payload(panic: &(dyn Any + Send)) -> String {
 /// Render the current frame off-thread, then hand the bytes to the OS save
 /// picker.
 pub fn export_png(session: &SessionRef) {
+    const STALE_SECS: u64 = 20;
+    {
+        let s = session.borrow();
+        if s.exporting_png {
+            let since = *exporting_since().lock().unwrap();
+            if let Some(t) = since {
+                if t.elapsed().as_secs() < STALE_SECS {
+                    set_status(session, "PNG export already in progress");
+                    return;
+                }
+                eprintln!("PNG export guard stale (>{STALE_SECS}s), resetting");
+            } else {
+                set_status(session, "PNG export already in progress");
+                return;
+            }
+        }
+    }
     if session.borrow().exporting_png {
-        set_status(session, "PNG export already in progress");
-        return;
+        session.borrow_mut().exporting_png = false;
+        *exporting_since().lock().unwrap() = None;
     }
     let suggested = format!("{}.png", document_stem(session));
     let (scene, (w, h), document) = match prepare_export(session) {
@@ -697,9 +730,29 @@ pub fn export_png(session: &SessionRef) {
             return;
         }
     };
-    session.borrow_mut().exporting_png = true;
+    {
+        session.borrow_mut().exporting_png = true;
+        *exporting_since().lock().unwrap() = Some(Instant::now());
+    }
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let ops_w = ops.clone();
+        let done_w = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            if !done_w.load(Ordering::SeqCst) {
+                eprintln!("PNG export watchdog timeout 30s");
+                *exporting_since().lock().unwrap() = None;
+                ops_w.lock_sync().push_back(PendingFileOp::Failed {
+                    message: "PNG export timed out after 30s (GPU hang or very large image)".into(),
+                });
+                wake_ui();
+            }
+        });
+    }
     let has_block = {
         #[cfg(all(target_family = "wasm", target_os = "unknown"))]
         {
@@ -711,6 +764,7 @@ pub fn export_png(session: &SessionRef) {
         }
     };
     if has_block {
+        let done_inner = done.clone();
         web_workers::spawn_unified(move || {
             let op =
                 match catch_unwind(AssertUnwindSafe(|| render_png_bytes(scene, w, h, document))) {
@@ -726,14 +780,18 @@ pub fn export_png(session: &SessionRef) {
                     },
                 };
             ops.lock_sync().push_back(op);
+            *exporting_since().lock().unwrap() = None;
+            done_inner.store(true, Ordering::SeqCst);
             wake_ui();
         });
     } else {
+        let done_inner = done.clone();
         web_workers::spawn_async_unified(move || async move {
             let op = async {
                 let mut gpu = if let Some((d, q)) = renamite_render_offscreen::shared_device() {
                     renamite_render_offscreen::OffscreenRenderer::from_device(d, q, w, h, 4)?
                 } else {
+                    eprintln!("PNG export: shared device unavailable, creating headless adapter (slow path)");
                     renamite_render_offscreen::OffscreenRenderer::new(w, h, 4).await?
                 };
                 gpu.sync_document_images(&document)?;
@@ -753,6 +811,8 @@ pub fn export_png(session: &SessionRef) {
                 },
             };
             ops.lock_sync().push_back(op);
+            *exporting_since().lock().unwrap() = None;
+            done_inner.store(true, Ordering::SeqCst);
             wake_ui();
         });
     }
