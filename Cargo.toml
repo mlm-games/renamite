@@ -93,13 +93,14 @@ renamite-player = { path = "crates/renamite-player", version = "0.2.2" }
 renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.2.2" }
 
 # [patch.crates-io]
+# web-workers = { path = "../web-workers" }
 # repose-core = { path = "../repose/crates/repose-core" }
+# repose-render-wgpu = { path = "../repose/crates/repose-render-wgpu" }
 # repose-canvas = { path = "../repose/crates/repose-canvas" }
 # repose-ui = { path = "../repose/crates/repose-ui" }
 # repose-material = { path = "../repose/crates/repose-material" }
 # repose-docking = { path = "../repose/crates/repose-docking" }
 # repose-platform = { path = "../repose/crates/repose-platform" }
-# repose-render-wgpu = { path = "../repose/crates/repose-render-wgpu" }
 # repose-text = { path = "../repose/crates/repose-text" }
 # repose-app = { path = "../repose/crates/repose-app" }
 # repose-tree = { path = "../repose/crates/repose-tree" }

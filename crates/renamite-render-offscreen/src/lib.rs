@@ -12,6 +12,14 @@ use renamite_behavior_common::ViewTransform;
 use repose_core::Scene;
 use repose_render_wgpu::WgpuSceneRenderer;
 
+/// Re-export shared device.
+pub fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    repose_render_wgpu::offscreen::shared_device()
+}
+pub fn set_shared_device(device: wgpu::Device, queue: wgpu::Queue) {
+    repose_render_wgpu::offscreen::set_shared_device(device, queue)
+}
+
 /// Build a `ViewTransform` that letterboxes `artboard` into a `w×h` frame.
 pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
     let scale = (w as f64 / artboard.0.max(1) as f64)
@@ -40,13 +48,74 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
-    /// Blocking convenience wrapper around [`OffscreenRenderer::new`].
     pub fn new_blocking(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
         pollster::block_on(Self::new(width, height, msaa))
     }
 
-    /// Create a headless renderer-sized target. Adapter lookup happens
-    /// without a compatible surface. Failure is returned, not a panic.
+    /// Shared-device: reuse Device/Queue, no Adapter.
+    pub fn from_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        width: u32,
+        height: u32,
+        msaa: u32,
+    ) -> anyhow::Result<Self> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa.max(1));
+        Self::from_renderer(renderer, width, height)
+    }
+
+    pub fn from_device_with_adapter(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter: &wgpu::Adapter,
+        width: u32,
+        height: u32,
+        msaa: u32,
+    ) -> anyhow::Result<Self> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let msaa = repose_render_wgpu::pick_surface_msaa(adapter, format, msaa);
+        let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa);
+        Self::from_renderer(renderer, width, height)
+    }
+
+    pub fn from_renderer(mut renderer: WgpuSceneRenderer, width: u32, height: u32) -> anyhow::Result<Self> {
+        renderer.resize(width, height);
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("renamite offscreen target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let row_bytes = (width.max(1) as u64) * 4;
+        let padded_bytes_per_row = (256 * row_bytes.div_ceil(256)) as u32;
+        let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("renamite offscreen readback"),
+            size: (padded_bytes_per_row as u64) * (height.max(1) as u64),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        Ok(Self {
+            renderer,
+            texture,
+            view,
+            readback,
+            width: width.max(1),
+            height: height.max(1),
+            padded_bytes_per_row,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        })
+    }
+
     pub async fn new(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
@@ -113,7 +182,6 @@ impl OffscreenRenderer {
         })
     }
 
-    /// Render `scene` and return a tightly packed RGBA8 buffer.
     pub fn render_rgba(
         &mut self,
         scene: &Scene,
@@ -162,14 +230,7 @@ impl OffscreenRenderer {
             .submit(std::iter::once(encoder.finish()));
 
         let slice = self.readback.slice(..);
-        let (tx, rx) = web_workers::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send_sync(result);
-        });
-        self.renderer
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())?;
-        rx.recv_sync()??;
+        repose_render_wgpu::offscreen::map_buffer_blocking(&slice, &self.renderer.device)?;
 
         let mapped = slice.get_mapped_range()?;
         let packed = strip_padding(&mapped, self.width, self.height, self.padded_bytes_per_row);
@@ -179,8 +240,6 @@ impl OffscreenRenderer {
         Ok(packed)
     }
 
-    /// WASM-friendly async variant
-    #[cfg(target_arch = "wasm32")]
     pub async fn render_rgba_async(
         &mut self,
         scene: &Scene,
@@ -229,41 +288,7 @@ impl OffscreenRenderer {
             .submit(std::iter::once(encoder.finish()));
 
         let slice = self.readback.slice(..);
-        // Use `web-workers` crate's cross-platform mpsc (handles
-        // Atomics.waitAsync on the WASM main thread vs blocking on workers).
-        let (tx, rx) = web_workers::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send_sync(result);
-        });
-
-        // Poll without blocking the main thread. `Poll` processes pending
-        // callbacks; we yield to the JS microtask queue each iteration so
-        // WebGPU's promise can resolve. Timeout after ~5s to avoid infinite
-        // hang and surface a clear error instead of "never completes".
-        let mut iterations = 0u32;
-        loop {
-            // `Poll` is non-blocking; `Wait` would deadlock on the main thread.
-            let _ = self.renderer.device.poll(wgpu::PollType::Poll);
-            if let Ok(res) = rx.try_recv() {
-                res?;
-                break;
-            }
-            if iterations > 5000 {
-                anyhow::bail!("GPU readback timeout (5000 polls)");
-            }
-            iterations += 1;
-            // Yield to browser event loop so WebGPU callbacks can fire.
-            // Uses `web-workers` crate's async yield would also work, but
-            // `JsFuture::from(Promise::resolve)` is the minimal cross-browser
-            // yield and keeps the crate's `web-workers` sync primitives as the
-            // core fix (vs raw `std::sync::mpsc` which cannot wait on the main
-            // thread).
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
-                &wasm_bindgen::JsValue::NULL,
-            ))
-            .await
-            .ok();
-        }
+        repose_render_wgpu::offscreen::map_buffer_unified(&slice, &self.renderer.device).await?;
 
         let mapped = slice.get_mapped_range().context("mapped range")?;
         let packed = strip_padding(&mapped, self.width, self.height, self.padded_bytes_per_row);
@@ -273,7 +298,6 @@ impl OffscreenRenderer {
         Ok(packed)
     }
 
-    /// Render `scene` and encode the result as PNG bytes.
     pub fn render_png(
         &mut self,
         scene: &Scene,
@@ -290,7 +314,6 @@ impl OffscreenRenderer {
         Ok(bytes.into_inner())
     }
 
-    #[cfg(target_arch = "wasm32")]
     pub async fn render_png_async(
         &mut self,
         scene: &Scene,
@@ -304,7 +327,6 @@ impl OffscreenRenderer {
         Ok(bytes.into_inner())
     }
 
-    /// Upload the encoded bytes of an image under `handle`.
     pub fn set_image_encoded(
         &mut self,
         handle: repose_core::ImageHandle,
@@ -314,8 +336,6 @@ impl OffscreenRenderer {
         self.renderer.set_image_from_bytes(handle, bytes, srgb)
     }
 
-    /// Upload every attached image asset of `document` under its stable
-    /// Repose handle, so a later `render_*` can reference them.
     pub fn sync_document_images(
         &mut self,
         document: &renamite_model::Document,
@@ -336,7 +356,6 @@ impl OffscreenRenderer {
     }
 }
 
-/// Remove WGPU's 256-byte-per-row alignment padding, yielding one packed row.
 fn strip_padding(data: &[u8], width: u32, height: u32, padded_bytes_per_row: u32) -> Vec<u8> {
     let row_bytes = (width as usize) * 4;
     let padded = padded_bytes_per_row as usize;
