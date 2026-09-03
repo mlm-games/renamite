@@ -4034,8 +4034,7 @@ mod tests {
 
         session
             .file_ops
-            .lock()
-            .unwrap()
+            .lock_sync()
             .push_back(PendingFileOp::ImportFontDone {
                 name: "Inter-Regular.ttf".into(),
                 bytes,
@@ -4054,8 +4053,7 @@ mod tests {
 
         session
             .file_ops
-            .lock()
-            .unwrap()
+            .lock_sync()
             .push_back(PendingFileOp::ImportFontDone {
                 name: "Undo-Me.ttf".into(),
                 bytes,
