@@ -416,6 +416,11 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         ));
     }
     let mut children: Vec<View> = vec![PanelHeader(Symbols::settings, title, header_actions)];
+    if ids.len() == 1 {
+        if let Some(v) = identity_section(session.clone(), ids[0]) {
+            children.push(v);
+        }
+    }
     // Use effective inspect id for shape/text appearance and modifier routing
     let inspect_id_opt = if ids.len() == 1 {
         Some(inspect_ids[0])
@@ -474,53 +479,56 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 ) {
                     children.push(v);
                 }
-                // Dash for shape-like or when the stroke node itself is selected.
-                if is_shape_like || selected_is_stroke {
-                    if let Some(v) = stroke_dash_section(
-                        session.clone(),
-                        stroke_id,
-                        playhead,
-                        record,
-                        diamond_quiet,
-                    ) {
-                        children.push(v);
-                    }
+                if let Some(v) =
+                    stroke_dash_section(session.clone(), stroke_id, playhead, record, diamond_quiet)
+                {
+                    children.push(v);
                 }
             }
-            // Add fill/stroke chips when shape-like selection is missing them
-            if is_shape_like
-                && (app.fill.is_none() || app.stroke.is_none()) {
-                    let mut chips: Vec<View> = Vec::new();
-                    if app.fill.is_none() {
-                        chips.push(add_style_chip(session.clone(), inspect_id, StyleAdd::Fill));
-                    }
-                    if app.stroke.is_none() {
-                        chips.push(add_style_chip(
-                            session.clone(),
-                            inspect_id,
-                            StyleAdd::Stroke,
-                        ));
-                    }
-                    if !chips.is_empty() {
-                        children.push(crate::components::CollapsibleSection(
-                            "add_style_section",
-                            "Appearance",
-                            vec![],
-                            FlowRow(
-                                Modifier::new()
-                                    .fill_max_width()
-                                    .padding_values(PaddingValues {
-                                        left: 12.0,
-                                        right: 12.0,
-                                        top: 8.0,
-                                        bottom: 8.0,
-                                    })
-                                    .gap(8.0),
-                            )
-                            .child(chips),
-                        ));
-                    }
+            if is_shape_like {
+                let mut chips: Vec<View> = Vec::new();
+                match app.fill {
+                    None => chips.push(style_action_chip(
+                        session.clone(),
+                        inspect_id,
+                        StyleAction::Add(StyleAdd::Fill),
+                    )),
+                    Some(_) => chips.push(style_action_chip(
+                        session.clone(),
+                        inspect_id,
+                        StyleAction::Remove(StyleAdd::Fill),
+                    )),
                 }
+                match app.stroke {
+                    None => chips.push(style_action_chip(
+                        session.clone(),
+                        inspect_id,
+                        StyleAction::Add(StyleAdd::Stroke),
+                    )),
+                    Some(_) => chips.push(style_action_chip(
+                        session.clone(),
+                        inspect_id,
+                        StyleAction::Remove(StyleAdd::Stroke),
+                    )),
+                }
+                children.push(crate::components::CollapsibleSection(
+                    "add_style_section",
+                    "Appearance",
+                    vec![],
+                    FlowRow(
+                        Modifier::new()
+                            .fill_max_width()
+                            .padding_values(PaddingValues {
+                                left: 12.0,
+                                right: 12.0,
+                                top: 8.0,
+                                bottom: 8.0,
+                            })
+                            .gap(8.0),
+                    )
+                    .child(chips),
+                ));
+            }
             // When selection itself is a style node and appearance returned only one side,
             // the other side's dash is handled above. For shape-like selection where dash
             // is missing (no stroke), nothing to show.
@@ -1430,10 +1438,17 @@ enum StyleAdd {
     Stroke,
 }
 
-fn add_style_chip(session: SessionRef, shape_id: NodeId, kind: StyleAdd) -> View {
-    let label = match kind {
-        StyleAdd::Fill => "Add fill",
-        StyleAdd::Stroke => "Add stroke",
+enum StyleAction {
+    Add(StyleAdd),
+    Remove(StyleAdd),
+}
+
+fn style_action_chip(session: SessionRef, shape_id: NodeId, action: StyleAction) -> View {
+    let (label, icon) = match action {
+        StyleAction::Add(StyleAdd::Fill) => ("Add fill", Symbols::add),
+        StyleAction::Add(StyleAdd::Stroke) => ("Add stroke", Symbols::add),
+        StyleAction::Remove(StyleAdd::Fill) => ("Remove fill", Symbols::delete),
+        StyleAction::Remove(StyleAdd::Stroke) => ("Remove stroke", Symbols::delete),
     };
     let th = theme();
     Box(Modifier::new()
@@ -1450,21 +1465,38 @@ fn add_style_chip(session: SessionRef, shape_id: NodeId, kind: StyleAdd) -> View
             let session = session.clone();
             move |_| {
                 let mut s = session.borrow_mut();
-                let paint = s.current_paint.snapshot(s.playback.head);
                 let doc = &s.file.document;
-                let cmd = match kind {
-                    StyleAdd::Fill => {
-                        renamite_behavior_common::fill::cmd_add_fill_after(doc, shape_id, paint)
+                let (cmd, tx_label) = match action {
+                    StyleAction::Add(StyleAdd::Fill) => {
+                        let paint = s.current_paint.snapshot(s.playback.head);
+                        (
+                            renamite_behavior_common::fill::cmd_add_fill_after(
+                                doc, shape_id, paint,
+                            ),
+                            "Add fill",
+                        )
                     }
-                    StyleAdd::Stroke => renamite_behavior_common::stroke::cmd_add_stroke_after(
-                        doc, shape_id, paint, 4.0,
+                    StyleAction::Add(StyleAdd::Stroke) => (
+                        renamite_behavior_common::stroke::cmd_add_stroke_after(
+                            doc,
+                            shape_id,
+                            s.current_paint.snapshot(s.playback.head),
+                            4.0,
+                        ),
+                        "Add stroke",
+                    ),
+                    StyleAction::Remove(StyleAdd::Fill) => (
+                        renamite_behavior_common::fill::cmd_remove_fill_for_shape(doc, shape_id),
+                        "Remove fill",
+                    ),
+                    StyleAction::Remove(StyleAdd::Stroke) => (
+                        renamite_behavior_common::stroke::cmd_remove_stroke_for_shape(
+                            doc, shape_id,
+                        ),
+                        "Remove stroke",
                     ),
                 };
                 if let Some(cmd) = cmd {
-                    let tx_label = match kind {
-                        StyleAdd::Fill => "Add fill",
-                        StyleAdd::Stroke => "Add stroke",
-                    };
                     s.apply_outputs(smallvec![
                         ToolOutput::BeginTransaction(tx_label.into()),
                         ToolOutput::Commands(smallvec![cmd]),
@@ -1475,7 +1507,7 @@ fn add_style_chip(session: SessionRef, shape_id: NodeId, kind: StyleAdd) -> View
         }))
     .child(
         Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
-            AppIcon(Symbols::add, 18.0),
+            AppIcon(icon, 18.0),
             Text(label).size(th.typography.label_medium),
         )),
     )
@@ -1970,6 +2002,71 @@ fn primary_content_in_group(doc: &renamite_model::Document, id: NodeId) -> Optio
 
 fn effective_inspect_id(doc: &renamite_model::Document, id: NodeId) -> NodeId {
     primary_content_in_group(doc, id).unwrap_or(id)
+}
+
+fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let name = {
+        let s = session.borrow();
+        s.file.document.nodes.get(id)?.name.clone()
+    };
+    let th = theme();
+    Some(crate::components::CollapsibleSection(
+        format!("identity_{id:?}"),
+        "Layer",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 6.0,
+                    bottom: 6.0,
+                })
+                .gap(8.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Name")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(96.0)),
+                Box(Modifier::new().width(176.0)).child(crate::components::AppTextField(
+                    format!("node_name_{id:?}"),
+                    name,
+                    "Name",
+                    false,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            let name = text.trim().to_string();
+                            if name.is_empty() {
+                                return;
+                            }
+                            let mut s = session.borrow_mut();
+                            if s.file
+                                .document
+                                .nodes
+                                .get(id)
+                                .map(|n| n.locked)
+                                .unwrap_or(true)
+                            {
+                                return;
+                            }
+                            s.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Rename".into()),
+                                ToolOutput::Commands(smallvec![EditorCommand::SetNodeName {
+                                    id,
+                                    name,
+                                }]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    },
+                )),
+            )),
+        ),
+    ))
 }
 
 /// One selectable font-family chip in the text properties section.
@@ -2485,20 +2582,37 @@ struct AppearanceTarget {
     stroke: Option<NodeId>,
 }
 
+fn find_shape_painted_by(session: &Session, style_id: NodeId) -> Option<NodeId> {
+    session
+        .engine
+        .scene()
+        .items
+        .iter()
+        .rev()
+        .find(|it| it.style == style_id)
+        .map(|it| it.node)
+}
+
 fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarget> {
     let doc = &session.file.document;
     let node = doc.nodes.get(selected)?;
     match &node.kind {
-        NodeKind::Style(StyleKind::Fill { .. }) => Some(AppearanceTarget {
-            shape_for_axis: selected,
-            fill: Some(selected),
-            stroke: None,
-        }),
-        NodeKind::Style(StyleKind::Stroke { .. }) => Some(AppearanceTarget {
-            shape_for_axis: selected,
-            fill: None,
-            stroke: Some(selected),
-        }),
+        NodeKind::Style(StyleKind::Fill { .. }) => {
+            let shape_for_axis = find_shape_painted_by(session, selected).unwrap_or(selected);
+            Some(AppearanceTarget {
+                shape_for_axis,
+                fill: Some(selected),
+                stroke: None,
+            })
+        }
+        NodeKind::Style(StyleKind::Stroke { .. }) => {
+            let shape_for_axis = find_shape_painted_by(session, selected).unwrap_or(selected);
+            Some(AppearanceTarget {
+                shape_for_axis,
+                fill: None,
+                stroke: Some(selected),
+            })
+        }
         NodeKind::Shape(_) | NodeKind::Text(_) => {
             let fill =
                 renamite_behavior_common::fill::fill_style_for_shape(doc, selected).or_else(|| {

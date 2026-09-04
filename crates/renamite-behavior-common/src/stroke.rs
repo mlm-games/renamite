@@ -7,7 +7,8 @@ use renamite_model::{
     StylePaint,
 };
 
-/// Prefer a stroke *after* the shape in sibling order (same as fill).
+/// Prefer a stroke *after* the shape in sibling order, until the next
+/// geometry-bearing sibling (same boundary as fill).
 pub fn stroke_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> {
     let (parent, shape_index) = doc.locate(shape_id)?;
     let siblings: Vec<NodeId> = match parent {
@@ -18,13 +19,26 @@ pub fn stroke_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId
         if is_stroke(doc, id) {
             return Some(id);
         }
-    }
-    for &id in &siblings {
-        if is_stroke(doc, id) {
-            return Some(id);
+        if is_style_stack_boundary(doc, id) {
+            break;
         }
     }
-    renamite_model::stroke_style_for(doc, shape_id)
+    None
+}
+
+fn is_style_stack_boundary(doc: &Document, id: NodeId) -> bool {
+    matches!(
+        doc.nodes.get(id).map(|n| &n.kind),
+        Some(
+            NodeKind::Shape(_)
+                | NodeKind::Text(_)
+                | NodeKind::Image(_)
+                | NodeKind::Group
+                | NodeKind::Layer(_)
+                | NodeKind::Precomp { .. }
+                | NodeKind::Mask(_)
+        )
+    )
 }
 
 fn is_stroke(doc: &Document, id: NodeId) -> bool {
@@ -126,6 +140,16 @@ pub fn cmd_add_stroke_after(
             }),
         )),
     })
+}
+
+pub fn cmd_remove_stroke_for_shape(doc: &Document, shape_id: NodeId) -> Option<EditorCommand> {
+    let stroke = stroke_style_for_shape(doc, shape_id)?;
+    let (parent, shape_index) = doc.locate(shape_id)?;
+    let (s_parent, s_idx) = doc.locate(stroke)?;
+    if s_parent != parent || s_idx <= shape_index {
+        return None;
+    }
+    Some(EditorCommand::RemoveNode { id: stroke })
 }
 
 #[cfg(test)]

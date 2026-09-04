@@ -3,7 +3,7 @@
 use renamite_history::{EditorCommand, NodeTree};
 use renamite_model::{Document, FillRule, Node, NodeId, NodeKind, Parent, StyleKind, StylePaint};
 
-/// Find the nearest Fill style that paints `shape_id`.
+/// Find the Fill style that paints `shape_id`.
 pub fn fill_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> {
     let (parent, shape_index) = doc.locate(shape_id)?;
     let siblings: Vec<NodeId> = match parent {
@@ -11,21 +11,30 @@ pub fn fill_style_for_shape(doc: &Document, shape_id: NodeId) -> Option<NodeId> 
         Parent::Node(n) => doc.nodes.get(n)?.children.clone(),
     };
 
-    // Prefer a fill after the shape (shape -> modifier/style stack order).
     for &id in siblings.iter().skip(shape_index + 1) {
         if is_fill(doc, id) {
             return Some(id);
         }
-    }
-
-    // Otherwise any fill in the same scope.
-    for &id in &siblings {
-        if is_fill(doc, id) {
-            return Some(id);
+        if is_style_stack_boundary(doc, id) {
+            break;
         }
     }
+    None
+}
 
-    renamite_model::fill_style_for(doc, shape_id)
+fn is_style_stack_boundary(doc: &Document, id: NodeId) -> bool {
+    matches!(
+        doc.nodes.get(id).map(|n| &n.kind),
+        Some(
+            NodeKind::Shape(_)
+                | NodeKind::Text(_)
+                | NodeKind::Image(_)
+                | NodeKind::Group
+                | NodeKind::Layer(_)
+                | NodeKind::Precomp { .. }
+                | NodeKind::Mask(_)
+        )
+    )
 }
 
 fn is_fill(doc: &Document, id: NodeId) -> bool {
@@ -83,6 +92,17 @@ pub fn cmd_add_fill_after(
             }),
         )),
     })
+}
+
+/// Detach the fill that paints `shape_id` (if any). Inverse is AttachNode via history.
+pub fn cmd_remove_fill_for_shape(doc: &Document, shape_id: NodeId) -> Option<EditorCommand> {
+    let fill = fill_style_for_shape(doc, shape_id)?;
+    let (parent, shape_index) = doc.locate(shape_id)?;
+    let (f_parent, f_idx) = doc.locate(fill)?;
+    if f_parent != parent || f_idx <= shape_index {
+        return None;
+    }
+    Some(EditorCommand::RemoveNode { id: fill })
 }
 
 #[cfg(test)]
