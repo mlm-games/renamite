@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 //! Timeline behaviors: keyframe drag / box-select / Alt-easing-cycle, ruler
 //! scrub, and easing-curve handle editing. Pure state machines: px-space
 //! events in, `EditorCommand`s out. Rows and px mapping are supplied by the

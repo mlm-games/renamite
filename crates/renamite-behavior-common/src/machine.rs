@@ -169,11 +169,9 @@ pub fn remove_input(machine: &mut Machine, input: usize) -> Result<InputDef> {
             if let StateKind::Blend1D {
                 input: blend_input, ..
             } = &mut state.kind
-            {
-                if *blend_input > input {
+                && *blend_input > input {
                     *blend_input -= 1;
                 }
-            }
 
             remap_transition_inputs(&mut state.transitions, input);
         }

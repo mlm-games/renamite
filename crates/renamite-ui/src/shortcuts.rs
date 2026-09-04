@@ -233,12 +233,9 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
                     }
                     // Unmapped Shift+letter: fall through to the rest of the
                     // dispatcher (e.g. Shift+R reverse paths).
-                    match key {
-                        Key::Character('r') => {
-                            s.reverse_selected_paths();
-                            return true;
-                        }
-                        _ => {}
+                    if let Key::Character('r') = key {
+                        s.reverse_selected_paths();
+                        return true;
                     }
                     return false;
                 }

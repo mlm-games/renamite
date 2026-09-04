@@ -1134,8 +1134,7 @@ impl DropperTool {
             .items
             .iter()
             .rev()
-            .find(|it| it.opacity > 0.0 && paint_covers(it, pos))
-            .map(|it| it.clone())
+            .find(|it| it.opacity > 0.0 && paint_covers(it, pos)).cloned()
         else {
             return smallvec![];
         };
@@ -4846,7 +4845,7 @@ mod tests {
     fn text_tool_creates_group_with_text_and_fill() {
         let mut world = World::new();
         let mut history = History::new();
-        let mut tool = TextTool::default();
+        let mut tool = TextTool;
         let before = world.doc.compositions[world.doc.main].children.len();
 
         let scene = world.scene();

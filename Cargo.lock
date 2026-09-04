@@ -3423,17 +3423,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "renamite-io-native"
-version = "0.2.2"
-dependencies = [
- "renamite-animation",
- "renamite-model",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "renamite-io-ren"
 version = "0.2.2"
 dependencies = [

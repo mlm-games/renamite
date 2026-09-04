@@ -610,7 +610,7 @@ impl Importer {
                 NodeKind::Modifier(ModifierKind::Repeater {
                     copies: import_scalar(item.get("c").unwrap_or(&Value::Null), 1.0, 1.0),
                     offset: import_scalar(item.get("o").unwrap_or(&Value::Null), 1.0, 0.0),
-                    transform: import_repeater_transform(item.get("tr").unwrap_or(&Value::Null)),
+                    transform: Box::new(import_repeater_transform(item.get("tr").unwrap_or(&Value::Null))),
                     start_opacity: import_scalar(
                         item.pointer("/tr/so").unwrap_or(&Value::Null),
                         1.0 / 100.0,

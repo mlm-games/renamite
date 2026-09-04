@@ -50,6 +50,7 @@ impl NodeTree {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EditorCommand {
     // structure
@@ -1845,6 +1846,7 @@ pub fn resolve_property_edit(
 /// Output blocks from a `ToolBehavior` invocation.
 pub type OutputVec = SmallVec<[ToolOutput; 2]>;
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum ToolOutput {
     Commands(SmallVec<[EditorCommand; 4]>),
@@ -1897,7 +1899,7 @@ pub enum ToolId {
 mod tests {
     use super::*;
     use renamite_model::{
-        AnimatedDash, Asset, Color, FontAsset, ImageAsset, NodeKind, StrokeCap, StrokeJoin,
+        AnimatedDash, Asset, Color, FontAsset, NodeKind, StrokeCap, StrokeJoin,
         StyleKind, StylePaint, TextNode,
     };
 

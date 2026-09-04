@@ -441,8 +441,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 ) {
                     children.push(v);
                 }
-                if is_shape_like {
-                    if let Some(v) = style_prop_rows(
+                if is_shape_like
+                    && let Some(v) = style_prop_rows(
                         session.clone(),
                         fill_id,
                         playhead,
@@ -452,7 +452,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     ) {
                         children.push(v);
                     }
-                }
             }
             if let Some(stroke_id) = app.stroke {
                 if let Some(v) = paint_section_for_style(
@@ -498,8 +497,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 }
             }
             // Add fill/stroke chips when shape-like selection is missing them
-            if is_shape_like {
-                if app.fill.is_none() || app.stroke.is_none() {
+            if is_shape_like
+                && (app.fill.is_none() || app.stroke.is_none()) {
                     let mut chips: Vec<View> = Vec::new();
                     if app.fill.is_none() {
                         chips.push(add_style_chip(session.clone(), inspect_id, StyleAdd::Fill));
@@ -531,7 +530,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                         ));
                     }
                 }
-            }
             // When selection itself is a style node and appearance returned only one side,
             // the other side's dash is handled above. For shape-like selection where dash
             // is missing (no stroke), nothing to show.
@@ -619,10 +617,10 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
 
     for (section, props) in sections {
         // Skip duplicate Fill/Stroke generic sections when paint already shown via style_prop_rows
-        let skip_duplicate = if inspect_id_opt.is_some() {
+        let skip_duplicate = if let Some(id) = inspect_id_opt {
             matches!(section, "Fill" | "Stroke") && {
                 let s = session.borrow();
-                appearance_for(&s, inspect_id_opt.unwrap()).is_some()
+                appearance_for(&s, id).is_some()
             }
         } else {
             false

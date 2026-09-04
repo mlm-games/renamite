@@ -256,7 +256,18 @@ impl Session {
     }
 
     pub fn with_render_context(file: RenFile, render_context: repose_core::RenderContext) -> Self {
-        let engine = Engine::new(&file).expect("project");
+        let engine = Engine::new(&file).unwrap_or_else(|e| {
+            log::warn!(
+                "Engine::new failed for project '{}': {e}; creating fallback engine",
+                file.meta.name
+            );
+            let mut fallback =
+                RenFile::new(renamite_model::Document::empty(), file.meta.name.clone());
+            Engine::new(&fallback).unwrap_or_else(|_| {
+                fallback.document = renamite_model::Document::empty();
+                Engine::new(&fallback).expect("empty document must produce a valid engine")
+            })
+        });
         let range = file.document.compositions[file.document.main].range;
         let active_machine = file
             .start_machine
@@ -609,12 +620,11 @@ impl Session {
     }
 
     fn finalize_open_edit(&mut self) {
-        if let Some(open) = self.open_picker.clone() {
-            if open.transaction_open {
+        if let Some(open) = self.open_picker.clone()
+            && open.transaction_open {
                 let color = open.state.borrow().color();
                 self.commit_picker_color(color);
             }
-        }
 
         if self.history.transaction_open() {
             self.history.commit();
@@ -702,7 +712,7 @@ impl Session {
             scope = None;
         }
         while let Some(current) = scope {
-            let Ok(children) = (|| match current {
+            let Ok(children) = (match current {
                 renamite_model::Parent::Comp(c) => doc
                     .compositions
                     .get(c)
@@ -711,7 +721,7 @@ impl Session {
                 renamite_model::Parent::Node(p) => {
                     doc.nodes.get(p).map(|n| n.children.clone()).ok_or(())
                 }
-            })() else {
+            }) else {
                 break;
             };
             for &child in children.iter().rev() {
@@ -1967,7 +1977,7 @@ impl Session {
         ) {
             if let Some(n) = doc.nodes.get(node) {
                 match &n.kind {
-                    renamite_model::NodeKind::Group { .. } | renamite_model::NodeKind::Shape(_) => {
+                    renamite_model::NodeKind::Group | renamite_model::NodeKind::Shape(_) => {
                         out.insert(node);
                     }
                     _ => {}
@@ -2012,14 +2022,13 @@ impl Session {
             self.repaint();
             return;
         }
-        if let renamite_model::Parent::Node(p) = target.parent {
-            if p == drag.id
-                || renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, p)
+        if let renamite_model::Parent::Node(p) = target.parent
+            && (p == drag.id
+                || renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, p))
             {
                 self.repaint();
                 return;
             }
-        }
 
         let Some(cmd) = renamite_behavior_common::layers::drop_command(
             drag.id,
@@ -2354,7 +2363,14 @@ impl Session {
         self.file = file;
         self.welcome = false;
         self.history = History::new();
-        self.engine = Engine::new(&self.file).expect("valid project");
+        self.engine = Engine::new(&self.file).unwrap_or_else(|e| {
+            log::warn!("replace_file: Engine::new failed: {e}; using fallback");
+            Engine::new(&RenFile::new(
+                renamite_model::Document::empty(),
+                self.file.meta.name.clone(),
+            ))
+            .expect("empty document must produce a valid engine")
+        });
         self.selection.nodes.clear();
         self.keys = Default::default();
         self.scrub = Default::default();
@@ -2890,8 +2906,8 @@ impl Session {
             .file
             .start_machine
             .or_else(|| self.file.machine_order.first().copied());
-        if self.file.start_machine.is_none() {
-            if let Some(id) = self.file.machine_order.first().copied() {
+        if self.file.start_machine.is_none()
+            && let Some(id) = self.file.machine_order.first().copied() {
                 self.apply_outputs(smallvec![
                     ToolOutput::BeginTransaction("Set start machine".into()),
                     ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine {
@@ -2901,7 +2917,6 @@ impl Session {
                 ]);
                 self.active_machine = Some(id);
             }
-        }
         self.machine_selection = MachineSelection::None;
         self.active_machine_layer = 0;
         self.reset_machine_preview();
@@ -2956,11 +2971,10 @@ impl Session {
     }
 
     fn sync_preview_inputs_from_engine(&mut self) {
-        if let Some(inputs) = self.engine.machine_inputs() {
-            if self.machine_preview_inputs.len() == inputs.len() {
+        if let Some(inputs) = self.engine.machine_inputs()
+            && self.machine_preview_inputs.len() == inputs.len() {
                 self.machine_preview_inputs = inputs.to_vec();
             }
-        }
     }
 
     fn ensure_machine_preview_running(&mut self) {
@@ -2969,14 +2983,13 @@ impl Session {
             self.reset_machine_preview();
             return;
         }
-        if self.engine.playing_machine_id() != self.active_machine {
-            if let Some(id) = self.active_machine {
+        if self.engine.playing_machine_id() != self.active_machine
+            && let Some(id) = self.active_machine {
                 self.engine.play_machine(&self.file, id);
                 self.engine
                     .apply_machine_inputs(&self.machine_preview_inputs);
                 self.engine.reevaluate(&self.file);
             }
-        }
     }
 
     pub fn set_preview_bool(&mut self, input: usize, value: bool) {
@@ -3135,7 +3148,7 @@ impl Session {
             origin,
             press_x,
             txn,
-        }) = self.machine_drag.clone()
+        }) = self.machine_drag
         else {
             return;
         };
@@ -3191,7 +3204,7 @@ impl Session {
             input,
             origin,
             press_x,
-        }) = self.machine_drag.clone()
+        }) = self.machine_drag
         else {
             return;
         };
@@ -4147,7 +4160,7 @@ mod tests {
 
         let mut session = Session::new(seeded_demo_file());
         session.create_machine();
-        let machine = session.active_machine.expect("machine created");
+        let _machine = session.active_machine.expect("machine created");
 
         let ok = session.edit_active_machine("Build", |m| {
             add_input(m, "hover", InputKind::Bool { default: false })?;
@@ -4459,13 +4472,6 @@ mod path_op_integration_tests {
                 rule: FillRule::NonZero,
             }),
         ))
-    }
-
-    fn attach_main(s: &mut Session, ids: &[renamite_model::NodeId]) {
-        let comp = s.file.document.main;
-        for (i, &id) in ids.iter().enumerate() {
-            s.file.document.attach(id, Parent::Comp(comp), i).unwrap();
-        }
     }
 
     fn kind_of(s: &Session, id: renamite_model::NodeId) -> Option<NodeKind> {
@@ -4899,7 +4905,6 @@ mod path_op_integration_tests {
             .iter()
             .find(|(_, c)| c.name == "Second")
             .map(|(id, c)| (id, c.children.clone()))
-            .map(|(id, kids)| (id, kids))
             .into_iter()
             .flat_map(|(id, kids)| kids.into_iter().map(move |k| (id, k)))
             .collect();

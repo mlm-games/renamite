@@ -503,7 +503,11 @@ fn cmd_validate(
         }
 
         if report.has_errors() || (warnings_as_errors && report.warning_count() > 0) {
-            std::process::exit(1);
+            bail!(
+                "validation failed: {} error(s), {} warning(s)",
+                report.error_count(),
+                report.warning_count()
+            );
         }
         return Ok(());
     }
@@ -514,8 +518,7 @@ fn cmd_validate(
     } else if serde_json::to_string(&file)? == before_json {
         println!("{} is valid", input.display());
     } else {
-        println!("{} needs normalization (use --fix)", input.display());
-        std::process::exit(1);
+        bail!("{} needs normalization (use --fix)", input.display());
     }
     Ok(())
 }
@@ -537,7 +540,7 @@ fn cmd_diff(a: PathBuf, b: PathBuf, fail_on_diff: bool) -> Result<()> {
             println!("  {d}");
         }
         if fail_on_diff {
-            std::process::exit(1);
+            bail!("structural differences found: {} difference(s)", diffs.len());
         }
     }
     Ok(())

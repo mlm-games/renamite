@@ -603,7 +603,7 @@ pub enum ModifierKind {
     Repeater {
         copies: Animated<f64>,
         offset: Animated<f64>,
-        transform: AnimatedTransform,
+        transform: Box<AnimatedTransform>,
         /// Opacity of the first copy (0..=1). Lottie `so` / 100.
         #[serde(default = "animated_one")]
         start_opacity: Animated<f64>,
@@ -1286,6 +1286,7 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
 
 const MAX_DEPTH: u32 = 32; // precomp cycle guard
 
+#[allow(clippy::too_many_arguments)]
 fn eval_group(
     doc: &Document,
     children: &[NodeId],
@@ -1805,6 +1806,7 @@ fn fold_gradient_point(affine: &Affine, local: glam::DVec2) -> glam::DVec2 {
     glam::DVec2::new(p.x, p.y)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_style(
     st: &StyleKind,
     style_id: NodeId,
@@ -3872,7 +3874,7 @@ mod tests {
             NodeKind::Modifier(ModifierKind::Repeater {
                 copies: Animated::new(3.0),
                 offset: Animated::new(0.0),
-                transform: step,
+                transform: Box::new(step),
                 start_opacity: Animated::new(1.0),
                 end_opacity: Animated::new(0.2),
             }),
@@ -3909,7 +3911,7 @@ mod tests {
             NodeKind::Modifier(ModifierKind::Repeater {
                 copies: Animated::new(2.0),
                 offset: Animated::new(0.0),
-                transform: AnimatedTransform::identity(),
+                transform: Box::new(AnimatedTransform::identity()),
                 start_opacity: Animated::new(1.0),
                 end_opacity: Animated::new(0.25),
             }),
@@ -4412,12 +4414,12 @@ mod style_paint_tests {
                 },
             }),
         ));
-        let mut node = doc.nodes.get_mut(mask).unwrap();
+        let node = doc.nodes.get_mut(mask).unwrap();
         let Some(PropMut::Vec2(v)) = node.prop_mut(&PropPath::new("shape.pos")) else {
             panic!("mask shape.pos not addressable");
         };
         v.base = DVec2::new(5.0, 5.0);
-        drop(node);
+        let _ = node;
         let n = doc.nodes.get_mut(mask).unwrap();
         let Some(PropRef::Vec2(v)) = n.prop_ref(&PropPath::new("shape.pos")) else {
             panic!("mask shape.pos not readable");

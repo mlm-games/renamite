@@ -738,7 +738,7 @@ fn fixture_repeater_falloff() -> Document {
         NodeKind::Modifier(ModifierKind::Repeater {
             copies: Animated::new(5.0),
             offset: Animated::new(0.0),
-            transform: step,
+            transform: Box::new(step),
             start_opacity: Animated::new(1.0),
             end_opacity: Animated::new(0.15),
         }),

@@ -375,7 +375,7 @@ fn repeater_burst() -> RenFile {
         NodeKind::Modifier(ModifierKind::Repeater {
             copies: Animated::new(10.0),
             offset: Animated::new(0.0),
-            transform: step,
+            transform: Box::new(step),
             start_opacity: Animated::new(1.0),
             end_opacity: Animated::new(0.15),
         }),

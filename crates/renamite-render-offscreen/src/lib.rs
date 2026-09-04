@@ -43,8 +43,6 @@ pub struct OffscreenRenderer {
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
-    #[allow(dead_code)]
-    format: wgpu::TextureFormat,
 }
 
 impl OffscreenRenderer {
@@ -81,11 +79,29 @@ impl OffscreenRenderer {
 
     pub fn from_renderer(mut renderer: WgpuSceneRenderer, width: u32, height: u32) -> anyhow::Result<Self> {
         renderer.resize(width, height);
-        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        let (texture, view, readback, padded_bytes_per_row) =
+            Self::create_target(&renderer.device, width.max(1), height.max(1));
+        Ok(Self {
+            renderer,
+            texture,
+            view,
+            readback,
+            width: width.max(1),
+            height: height.max(1),
+            padded_bytes_per_row,
+        })
+    }
+
+    fn create_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("renamite offscreen target"),
             size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -96,24 +112,15 @@ impl OffscreenRenderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let row_bytes = (width.max(1) as u64) * 4;
+        let row_bytes = (width as u64) * 4;
         let padded_bytes_per_row = (256 * row_bytes.div_ceil(256)) as u32;
-        let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("renamite offscreen readback"),
-            size: (padded_bytes_per_row as u64) * (height.max(1) as u64),
+            size: (padded_bytes_per_row as u64) * (height as u64),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        Ok(Self {
-            renderer,
-            texture,
-            view,
-            readback,
-            width: width.max(1),
-            height: height.max(1),
-            padded_bytes_per_row,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        })
+        (texture, view, readback, padded_bytes_per_row)
     }
 
     pub async fn new(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
@@ -150,31 +157,8 @@ impl OffscreenRenderer {
 
         let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa);
 
-        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("renamite offscreen target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let row_bytes = (width as u64) * 4;
-        let padded_bytes_per_row = (256 * row_bytes.div_ceil(256)) as u32;
-
-        let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("renamite offscreen readback"),
-            size: (padded_bytes_per_row as u64) * (height as u64),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let (texture, view, readback, padded_bytes_per_row) =
+            Self::create_target(&renderer.device, width, height);
 
         Ok(Self {
             renderer,
@@ -184,7 +168,6 @@ impl OffscreenRenderer {
             width,
             height,
             padded_bytes_per_row,
-            format,
         })
     }
 

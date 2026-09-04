@@ -373,7 +373,6 @@ impl Engine {
 /// Topmost pickable item under `pt` (world space). Moved to `renamite-model`
 /// so canvas behaviors can hit-test without pulling the player in.
 /// See [`renamite_model::pick`].
-
 /// Self-contained player: owns the project, hides the borrow plumbing.
 pub struct Player {
     pub project: RenFile,

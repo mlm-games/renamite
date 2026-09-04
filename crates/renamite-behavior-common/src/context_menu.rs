@@ -77,7 +77,7 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
     let locked = n.map(|n| n.locked).unwrap_or(true);
     let visible = n.map(|n| n.visible).unwrap_or(true);
     let is_group = n.is_some_and(|n| matches!(n.kind, NodeKind::Group | NodeKind::Layer(_)));
-    let can_ungroup = is_group && n.map(|n| n.children.len() >= 1).unwrap_or(false);
+    let can_ungroup = is_group && n.map(|n| !n.children.is_empty()).unwrap_or(false);
     let multi = ctx.selection.len() > 1;
 
     let mut m = vec![
@@ -412,256 +412,6 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use renamite_model::ShapeKind;
-
-    fn doc_selection(ids: Vec<NodeId>) -> (Document, Vec<NodeId>) {
-        let d = Document::empty();
-        (d, ids)
-    }
-
-    #[test]
-    fn empty_canvas_menu_has_create_submenu() {
-        let (doc, sel) = doc_selection(vec![]);
-        let ctx = empty_canvas_menu(&MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp: doc.main,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        });
-        assert!(matches!(ctx[0], MenuEntry::Submenu { .. }));
-        assert!(!ctx.iter().any(|e| matches!(
-            e,
-            MenuEntry::Action {
-                id: MenuAction::Paste,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn empty_canvas_menu_prepends_paste_when_clipboard() {
-        let (doc, sel) = doc_selection(vec![]);
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp: doc.main,
-            world_pos: None,
-            has_clipboard: true,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let m = canvas_menu(&ctx);
-        assert!(matches!(
-            m[0],
-            MenuEntry::Action {
-                id: MenuAction::Paste,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn layers_menu_disables_delete_when_locked() {
-        let mut doc = Document::empty();
-        let locked = doc.create_node(Node::new(
-            "g",
-            NodeKind::Shape(ShapeKind::Ellipse {
-                pos: Animated::new(DVec2::ZERO),
-                size: Animated::new(DVec2::ONE),
-            }),
-        ));
-        doc.nodes[locked].locked = true;
-        let sel = vec![locked];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp: doc.main,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let m = layers_menu(&ctx, locked);
-        let del = m.iter().find_map(|e| match e {
-            MenuEntry::Action {
-                id: MenuAction::Delete,
-                enabled,
-                ..
-            } => Some(*enabled),
-            _ => None,
-        });
-        assert_eq!(del, Some(false));
-    }
-
-    #[test]
-    fn selection_menu_offers_edit_path_for_path_shape() {
-        let mut doc = Document::empty();
-        let comp = doc.main;
-        let path = doc.create_node(Node::new(
-            "p",
-            NodeKind::Shape(ShapeKind::Path(Animated::new(
-                renamite_geometry::VectorPath::from_bez_path(&kurbo::BezPath::new()),
-            ))),
-        ));
-        doc.attach(path, Parent::Comp(comp), 0).unwrap();
-        let sel = vec![path];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let m = selection_canvas_menu(&ctx);
-        assert!(m.iter().any(|e| matches!(
-            e,
-            MenuEntry::Action {
-                id: MenuAction::EditPath,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn dispatch_delete_emits_remove_and_clears_selection() {
-        let mut doc = Document::empty();
-        let comp = doc.main;
-        let a = doc.create_node(Node::new("a", NodeKind::Group));
-        doc.attach(a, Parent::Comp(comp), 0).unwrap();
-        let sel = vec![a];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let outs = dispatch_menu_action(&ctx, &MenuAction::Delete);
-        assert!(
-            outs.iter()
-                .any(|o| matches!(o, ToolOutput::RequestSelection(_)))
-        );
-        assert!(outs.iter().any(|o| matches!(
-            o,
-            ToolOutput::Commands(c) if matches!(c.as_slice(), [EditorCommand::RemoveNode { .. }])
-        )));
-    }
-
-    #[test]
-    fn dispatch_group_requires_two_same_parent() {
-        let mut doc = Document::empty();
-        let comp = doc.main;
-        let a = doc.create_node(Node::new("a", NodeKind::Group));
-        let b = doc.create_node(Node::new("b", NodeKind::Group));
-        doc.attach(a, Parent::Comp(comp), 0).unwrap();
-        doc.attach(b, Parent::Comp(comp), 1).unwrap();
-        let sel = vec![a, b];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let outs = dispatch_menu_action(&ctx, &MenuAction::Group);
-        assert!(outs.iter().any(|o| matches!(o, ToolOutput::Commands(c) if {
-            matches!(c.as_slice(),
-                [EditorCommand::GroupSelection { .. }])
-        })));
-    }
-
-    #[test]
-    fn mask_menu_shows_invert_and_release_for_mask() {
-        let mut doc = Document::empty();
-        let comp = doc.main;
-        let mask = doc.create_node(Node::new(
-            "m",
-            NodeKind::Mask(renamite_model::MaskProps {
-                inverted: false,
-                shape: ShapeKind::Path(Animated::new(
-                    renamite_geometry::VectorPath::from_bez_path(&kurbo::BezPath::new()),
-                )),
-            }),
-        ));
-        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
-        let sel = vec![mask];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let m = selection_canvas_menu(&ctx);
-        assert!(m.iter().any(|e| matches!(
-            e,
-            MenuEntry::Action {
-                id: MenuAction::ToggleMaskInverted,
-                ..
-            }
-        )));
-        assert!(m.iter().any(|e| matches!(
-            e,
-            MenuEntry::Action {
-                id: MenuAction::ReleaseMask,
-                ..
-            }
-        )));
-
-        let outs = dispatch_menu_action(&ctx, &MenuAction::ToggleMaskInverted);
-        assert!(outs.iter().any(|o| matches!(
-            o,
-            ToolOutput::Commands(c)
-                if matches!(c.as_slice(), [EditorCommand::SetMaskInverted { id, inverted: true }] if *id == mask)
-        )));
-    }
-
-    #[test]
-    fn shape_menu_offers_use_as_clip_mask() {
-        let mut doc = Document::empty();
-        let comp = doc.main;
-        let shape = doc.create_node(Node::new(
-            "s",
-            NodeKind::Shape(ShapeKind::Ellipse {
-                pos: Animated::new(DVec2::ZERO),
-                size: Animated::new(DVec2::ONE),
-            }),
-        ));
-        doc.attach(shape, Parent::Comp(comp), 0).unwrap();
-        let sel = vec![shape];
-        let ctx = MenuContext {
-            doc: &doc,
-            selection: &sel,
-            comp,
-            world_pos: None,
-            has_clipboard: false,
-            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
-        };
-        let m = selection_canvas_menu(&ctx);
-        assert!(m.iter().any(|e| matches!(
-            e,
-            MenuEntry::Action {
-                id: MenuAction::UseAsClipMask,
-                ..
-            }
-        )));
-
-        let outs = dispatch_menu_action(&ctx, &MenuAction::UseAsClipMask);
-        assert!(outs.iter().any(|o| matches!(
-            o,
-            ToolOutput::Commands(c)
-                if matches!(c.as_slice(), [EditorCommand::ConvertToMask { id }] if *id == shape)
-        )));
-    }
-}
-
 fn toggle_flags(ctx: &MenuContext, vis: bool, lock: bool) -> Vec<ToolOutput> {
     let mut cmds = SmallVec::new();
     for &id in ctx.selection {
@@ -951,4 +701,254 @@ fn create_text(ctx: &MenuContext, pos: DVec2, paint: StylePaint) -> Vec<ToolOutp
         ToolOutput::CommitTransaction,
         ToolOutput::SwitchTool(ToolId::Select),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renamite_model::ShapeKind;
+
+    fn doc_selection(ids: Vec<NodeId>) -> (Document, Vec<NodeId>) {
+        let d = Document::empty();
+        (d, ids)
+    }
+
+    #[test]
+    fn empty_canvas_menu_has_create_submenu() {
+        let (doc, sel) = doc_selection(vec![]);
+        let ctx = empty_canvas_menu(&MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp: doc.main,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        });
+        assert!(matches!(ctx[0], MenuEntry::Submenu { .. }));
+        assert!(!ctx.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::Paste,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn empty_canvas_menu_prepends_paste_when_clipboard() {
+        let (doc, sel) = doc_selection(vec![]);
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp: doc.main,
+            world_pos: None,
+            has_clipboard: true,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = canvas_menu(&ctx);
+        assert!(matches!(
+            m[0],
+            MenuEntry::Action {
+                id: MenuAction::Paste,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn layers_menu_disables_delete_when_locked() {
+        let mut doc = Document::empty();
+        let locked = doc.create_node(Node::new(
+            "g",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::ONE),
+            }),
+        ));
+        doc.nodes[locked].locked = true;
+        let sel = vec![locked];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp: doc.main,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = layers_menu(&ctx, locked);
+        let del = m.iter().find_map(|e| match e {
+            MenuEntry::Action {
+                id: MenuAction::Delete,
+                enabled,
+                ..
+            } => Some(*enabled),
+            _ => None,
+        });
+        assert_eq!(del, Some(false));
+    }
+
+    #[test]
+    fn selection_menu_offers_edit_path_for_path_shape() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let path = doc.create_node(Node::new(
+            "p",
+            NodeKind::Shape(ShapeKind::Path(Animated::new(
+                renamite_geometry::VectorPath::from_bez_path(&kurbo::BezPath::new()),
+            ))),
+        ));
+        doc.attach(path, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![path];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = selection_canvas_menu(&ctx);
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::EditPath,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn dispatch_delete_emits_remove_and_clears_selection() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let a = doc.create_node(Node::new("a", NodeKind::Group));
+        doc.attach(a, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![a];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let outs = dispatch_menu_action(&ctx, &MenuAction::Delete);
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, ToolOutput::RequestSelection(_)))
+        );
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            ToolOutput::Commands(c) if matches!(c.as_slice(), [EditorCommand::RemoveNode { .. }])
+        )));
+    }
+
+    #[test]
+    fn dispatch_group_requires_two_same_parent() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let a = doc.create_node(Node::new("a", NodeKind::Group));
+        let b = doc.create_node(Node::new("b", NodeKind::Group));
+        doc.attach(a, Parent::Comp(comp), 0).unwrap();
+        doc.attach(b, Parent::Comp(comp), 1).unwrap();
+        let sel = vec![a, b];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let outs = dispatch_menu_action(&ctx, &MenuAction::Group);
+        assert!(outs.iter().any(|o| matches!(o, ToolOutput::Commands(c) if {
+            matches!(c.as_slice(),
+                [EditorCommand::GroupSelection { .. }])
+        })));
+    }
+
+    #[test]
+    fn mask_menu_shows_invert_and_release_for_mask() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let mask = doc.create_node(Node::new(
+            "m",
+            NodeKind::Mask(renamite_model::MaskProps {
+                inverted: false,
+                shape: ShapeKind::Path(Animated::new(
+                    renamite_geometry::VectorPath::from_bez_path(&kurbo::BezPath::new()),
+                )),
+            }),
+        ));
+        doc.attach(mask, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![mask];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = selection_canvas_menu(&ctx);
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::ToggleMaskInverted,
+                ..
+            }
+        )));
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::ReleaseMask,
+                ..
+            }
+        )));
+
+        let outs = dispatch_menu_action(&ctx, &MenuAction::ToggleMaskInverted);
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            ToolOutput::Commands(c)
+                if matches!(c.as_slice(), [EditorCommand::SetMaskInverted { id, inverted: true }] if *id == mask)
+        )));
+    }
+
+    #[test]
+    fn shape_menu_offers_use_as_clip_mask() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let shape = doc.create_node(Node::new(
+            "s",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::ONE),
+            }),
+        ));
+        doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+        let sel = vec![shape];
+        let ctx = MenuContext {
+            doc: &doc,
+            selection: &sel,
+            comp,
+            world_pos: None,
+            has_clipboard: false,
+            current_paint: &StylePaint::solid(renamite_model::Color::BLACK),
+        };
+        let m = selection_canvas_menu(&ctx);
+        assert!(m.iter().any(|e| matches!(
+            e,
+            MenuEntry::Action {
+                id: MenuAction::UseAsClipMask,
+                ..
+            }
+        )));
+
+        let outs = dispatch_menu_action(&ctx, &MenuAction::UseAsClipMask);
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            ToolOutput::Commands(c)
+                if matches!(c.as_slice(), [EditorCommand::ConvertToMask { id }] if *id == shape)
+        )));
+    }
 }

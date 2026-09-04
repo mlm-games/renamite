@@ -854,7 +854,6 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
             "nm": name,
             "a": export_scalar(amount, 1.0)
         })),
-        _ => None,
     }
 }
 
@@ -1089,7 +1088,7 @@ mod tests {
         let path_json = value
             .pointer("/layers/0/shapes/0/ks/k")
             .expect("baked text path present");
-        assert_eq!(path_json["c"].as_array().unwrap().len() >= 1, true);
+        assert!(!path_json["c"].as_array().unwrap().is_empty());
         assert_eq!(
             path_json["v"].as_array().unwrap().len(),
             path_json["c"].as_array().unwrap().len(),

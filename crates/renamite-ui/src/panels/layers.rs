@@ -273,7 +273,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                     return;
                 };
                 let y_in_row = content_y - slot as f32 * step;
-                let middle = y_in_row >= ROW_HEIGHT * 0.30 && y_in_row <= ROW_HEIGHT * 0.70;
+                let middle = (ROW_HEIGHT * 0.30..=ROW_HEIGHT * 0.70).contains(&y_in_row);
                 let indent = 8.0 + row.depth as f32 * 16.0;
                 let wants_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
                     && pe.position.x > indent + 20.0;

@@ -371,17 +371,15 @@ fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
         add_state(machine, layer, name, StateKind::Empty)?;
         Ok(())
     });
-    if ok {
-        if let Some(m) = s.file.machines.get(machine_id) {
-            if let Some(l) = m.layers.get(layer) {
+    if ok
+        && let Some(m) = s.file.machines.get(machine_id)
+            && let Some(l) = m.layers.get(layer) {
                 s.machine_selection = MachineSelection::State {
                     layer,
                     state: l.states.len().saturating_sub(1),
                 };
                 s.active_machine_layer = layer;
             }
-        }
-    }
 }
 
 fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
@@ -912,17 +910,15 @@ fn handle_graph_down(
                 let _ = set_state_position(m, layer, idx, Some((world_pos.x, world_pos.y)));
                 Ok(())
             });
-            if ok {
-                if let Some(m) = s.file.machines.get(machine_id) {
-                    if let Some(l) = m.layers.get(layer) {
+            if ok
+                && let Some(m) = s.file.machines.get(machine_id)
+                    && let Some(l) = m.layers.get(layer) {
                         s.machine_selection = MachineSelection::State {
                             layer,
                             state: l.states.len().saturating_sub(1),
                         };
                         s.active_machine_layer = layer;
                     }
-                }
-            }
         }
         request_frame();
         return;
@@ -1012,8 +1008,8 @@ fn handle_graph_up(
         }) => {
             let machine = s.file.machines[machine_id].clone();
             let layout = auto_layout(&machine);
-            if let Some((to_layer, to_state)) = hit_state(&layout, world) {
-                if to_layer == layer {
+            if let Some((to_layer, to_state)) = hit_state(&layout, world)
+                && to_layer == layer {
                     let source = match from_state {
                         Some(from) if from != to_state => TransitionSource::State(from),
                         None => TransitionSource::Any,
@@ -1026,8 +1022,8 @@ fn handle_graph_up(
                         add_transition(m, layer, source, to_state)?;
                         Ok(())
                     });
-                    if ok {
-                        if let Some(m) = s.file.machines.get(machine_id) {
+                    if ok
+                        && let Some(m) = s.file.machines.get(machine_id) {
                             let count = match source {
                                 TransitionSource::Any => m.layers[layer].any_transitions.len(),
                                 TransitionSource::State(si) => {
@@ -1041,9 +1037,7 @@ fn handle_graph_up(
                             };
                             s.active_machine_layer = layer;
                         }
-                    }
                 }
-            }
         }
         Some(MachineGraphGesture::DragState {
             layer,
@@ -1276,7 +1270,7 @@ fn draw_machine_states(
             12.0,
         );
         scope.draw_text(
-            &kind_label(&state.kind),
+            kind_label(&state.kind),
             Vec2 {
                 x: rect.x + 8.0,
                 y: rect.y + rect.h - 15.0,
@@ -1435,7 +1429,7 @@ fn draw_machine_states_with_view(
             12.0,
         );
         scope.draw_text(
-            &kind_label(&state.kind),
+            kind_label(&state.kind),
             Vec2 {
                 x: rect.x + 8.0,
                 y: rect.y + rect.h - 15.0,
@@ -2010,11 +2004,9 @@ fn blend_child_row(
                 s.edit_active_machine("Remove blend child", move |machine| {
                     if let StateKind::Blend1D { children, .. } =
                         &mut machine.layers[layer].states[state].kind
-                    {
-                        if index < children.len() {
+                        && index < children.len() {
                             children.remove(index);
                         }
-                    }
                     Ok(())
                 });
             }
@@ -2047,11 +2039,9 @@ fn clip_dropdown_for_blend(
                     s.edit_active_machine("Blend child clip", move |machine| {
                         if let StateKind::Blend1D { children, .. } =
                             &mut machine.layers[layer].states[state].kind
-                        {
-                            if let Some(c) = children.get_mut(child_index) {
+                            && let Some(c) = children.get_mut(child_index) {
                                 c.clip = id;
                             }
-                        }
                         Ok(())
                     });
                 }
@@ -2280,13 +2270,12 @@ fn condition_editor_row(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Edit condition", move |machine| {
-                        if let Ok(tr) = transition_mut(machine, layer, source, transition) {
-                            if let Some(Condition::BoolIs { value: v, .. }) =
+                        if let Ok(tr) = transition_mut(machine, layer, source, transition)
+                            && let Some(Condition::BoolIs { value: v, .. }) =
                                 tr.conditions.get_mut(index)
                             {
                                 *v = !value;
                             }
-                        }
                         Ok(())
                     });
                 }
@@ -2298,13 +2287,12 @@ fn condition_editor_row(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Edit condition", move |machine| {
-                        if let Ok(tr) = transition_mut(machine, layer, source, transition) {
-                            if let Some(Condition::NumberCmp { op: o, .. }) =
+                        if let Ok(tr) = transition_mut(machine, layer, source, transition)
+                            && let Some(Condition::NumberCmp { op: o, .. }) =
                                 tr.conditions.get_mut(index)
                             {
                                 *o = next_cmp(*o);
                             }
-                        }
                         Ok(())
                     });
                 }
@@ -2314,13 +2302,12 @@ fn condition_editor_row(
                 value,
                 0.01,
                 Rc::new(move |machine, v| {
-                    if let Ok(tr) = transition_mut(machine, layer, source, transition) {
-                        if let Some(Condition::NumberCmp { value, .. }) =
+                    if let Ok(tr) = transition_mut(machine, layer, source, transition)
+                        && let Some(Condition::NumberCmp { value, .. }) =
                             tr.conditions.get_mut(index)
                         {
                             *value = v;
                         }
-                    }
                 }),
             ));
         }
@@ -2936,6 +2923,7 @@ fn transition_row(
 }
 
 /// `add_mode`: true = add new transition to target; false unused (use retarget_dropdown).
+#[allow(clippy::too_many_arguments)]
 fn transition_target_dropdown(
     overlay: OverlayHandle,
     session: SessionRef,
@@ -2966,8 +2954,8 @@ fn transition_target_dropdown(
                             add_transition(machine, layer, source, target)?;
                             Ok(())
                         });
-                        if ok {
-                            if let Some(m) = s.file.machines.get(machine_id) {
+                        if ok
+                            && let Some(m) = s.file.machines.get(machine_id) {
                                 let n = match source {
                                     TransitionSource::Any => m.layers[layer].any_transitions.len(),
                                     TransitionSource::State(si) => {
@@ -2980,7 +2968,6 @@ fn transition_target_dropdown(
                                     transition: n.saturating_sub(1),
                                 };
                             }
-                        }
                     }
                 }
             }))
@@ -2994,6 +2981,7 @@ fn transition_target_dropdown(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retarget_dropdown(
     overlay: OverlayHandle,
     session: SessionRef,

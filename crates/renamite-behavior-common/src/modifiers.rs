@@ -94,7 +94,7 @@ pub fn cmd_add_repeater_after(doc: &Document, after: NodeId) -> Option<EditorCom
             NodeKind::Modifier(ModifierKind::Repeater {
                 copies: Animated::new(3.0),
                 offset: Animated::new(0.0),
-                transform: step,
+                transform: Box::new(step),
                 start_opacity: Animated::new(1.0),
                 end_opacity: Animated::new(1.0),
             }),

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Test support: JSON event fixtures, scene snapshots, and proptest helpers.
 
 use renamite_model::{Document, Scene};

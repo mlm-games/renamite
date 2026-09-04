@@ -81,7 +81,6 @@ renamite-render-bridge = { path = "crates/renamite-render-bridge", version = "0.
 renamite-render-offscreen = { path = "crates/renamite-render-offscreen", version = "0.2.2" }
 renamite-ui = { path = "crates/renamite-ui", version = "0.2.2" }
 renamite-platform = { path = "crates/renamite-platform", version = "0.2.2" }
-renamite-io-native = { path = "crates/renamite-io-native", version = "0.2.2" }
 renamite-io-lottie = { path = "crates/renamite-io-lottie", version = "0.2.2" }
 renamite-io-svg = { path = "crates/renamite-io-svg", version = "0.2.2" }
 renamite-test-support = { path = "crates/renamite-test-support", version = "0.2.2" }

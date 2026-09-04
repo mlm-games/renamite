@@ -487,7 +487,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 );
                 if major {
                     scope.draw_text(
-                        &frame.to_string(),
+                        frame.to_string(),
                         Vec2 { x: x + 3.0, y: 4.0 },
                         th.on_surface_variant,
                         10.0,
@@ -533,7 +533,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 }
                 TimelineOverlay::DragDelta { frames } if frames != 0 => {
                     scope.draw_text(
-                        &format!("{frames:+}f"),
+                        format!("{frames:+}f"),
                         Vec2 {
                             x: 8.0,
                             y: scope.size.height - 18.0,

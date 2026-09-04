@@ -252,14 +252,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pos);
-                        if s.mode == crate::session::EditorMode::Interact
-                            || s.machine_preview_enabled
-                        {
-                            if !pe.modifiers.alt {
+                        if (s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled)
+                            && !pe.modifiers.alt {
                                 s.engine_pointer_move(world);
                                 return;
                             }
-                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerMove { pos: world },
@@ -281,14 +279,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pe_pos(&pe));
-                        if s.mode == crate::session::EditorMode::Interact
-                            || s.machine_preview_enabled
-                        {
-                            if !pe.modifiers.alt {
+                        if (s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled)
+                            && !pe.modifiers.alt {
                                 s.engine_pointer_up(world);
                                 return;
                             }
-                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerUp {
