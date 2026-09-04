@@ -591,7 +591,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
             ModifierKind::PuckerBloat { .. } => {
                 d.push(pd(
                     "Pucker & Bloat",
-                    "Amount",
+                    "Amount %",
                     "pucker.amount",
                     PropKind::F64 {
                         min: None,
@@ -789,79 +789,122 @@ pub fn cmd_set_discrete(
     index_or_bool: i64,
 ) -> Option<EditorCommand> {
     use renamite_model::*;
+    let node = doc.nodes.get(id)?;
     match path.as_str() {
         "trim.mode" => {
+            if !matches!(&node.kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })) {
+                return None;
+            }
             let mode = if index_or_bool == 1 {
                 TrimMode::Simultaneously
             } else {
                 TrimMode::Individually
             };
-            // Validate node kind to avoid producing command for wrong node
-            let node = doc.nodes.get(id)?;
-            if !matches!(&node.kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })) {
-                return None;
-            }
             Some(EditorCommand::SetTrimMode { id, mode })
         }
-        "fill.rule" => Some(EditorCommand::SetFillRule {
-            id,
-            rule: if index_or_bool == 1 {
-                FillRule::EvenOdd
-            } else {
-                FillRule::NonZero
-            },
-        }),
-        "star.kind" => Some(EditorCommand::SetStarKind {
-            id,
-            kind: if index_or_bool == 1 {
-                StarKind::Burst
-            } else {
-                StarKind::Star
-            },
-        }),
-        "stroke.cap" => Some(EditorCommand::SetStrokeCap {
-            id,
-            cap: match index_or_bool {
-                1 => StrokeCap::Round,
-                2 => StrokeCap::Square,
-                _ => StrokeCap::Butt,
-            },
-        }),
-        "stroke.join" => Some(EditorCommand::SetStrokeJoin {
-            id,
-            join: match index_or_bool {
-                1 => StrokeJoin::Round,
-                2 => StrokeJoin::Bevel,
-                _ => StrokeJoin::Miter,
-            },
-        }),
-        "text.align" => Some(EditorCommand::SetTextAlign {
-            id,
-            align: match index_or_bool {
-                1 => TextAlign::Center,
-                2 => TextAlign::Right,
-                _ => TextAlign::Left,
-            },
-        }),
-        "mask.inverted" => Some(EditorCommand::SetMaskInverted {
-            id,
-            inverted: index_or_bool != 0,
-        }),
-        "zigzag.smooth" => Some(EditorCommand::SetZigZagSmooth {
-            id,
-            smooth: index_or_bool != 0,
-        }),
-        "layer.blend" => Some(EditorCommand::SetLayerProps {
-            id,
-            in_frame: None,
-            out_frame: None,
-            time_stretch: None,
-            blend: Some(match index_or_bool {
-                1 => BlendMode::Multiply,
-                2 => BlendMode::Screen,
-                _ => BlendMode::Normal,
-            }),
-        }),
+        "fill.rule" => {
+            if !matches!(&node.kind, NodeKind::Style(StyleKind::Fill { .. })) {
+                return None;
+            }
+            Some(EditorCommand::SetFillRule {
+                id,
+                rule: if index_or_bool == 1 {
+                    FillRule::EvenOdd
+                } else {
+                    FillRule::NonZero
+                },
+            })
+        }
+        "star.kind" => {
+            let is_star = matches!(
+                &node.kind,
+                NodeKind::Shape(ShapeKind::Star { .. })
+            ) || matches!(&node.kind, NodeKind::Mask(m) if matches!(&m.shape, ShapeKind::Star { .. }));
+            if !is_star {
+                return None;
+            }
+            Some(EditorCommand::SetStarKind {
+                id,
+                kind: if index_or_bool == 1 {
+                    StarKind::Burst
+                } else {
+                    StarKind::Star
+                },
+            })
+        }
+        "stroke.cap" => {
+            if !matches!(&node.kind, NodeKind::Style(StyleKind::Stroke { .. })) {
+                return None;
+            }
+            Some(EditorCommand::SetStrokeCap {
+                id,
+                cap: match index_or_bool {
+                    1 => StrokeCap::Round,
+                    2 => StrokeCap::Square,
+                    _ => StrokeCap::Butt,
+                },
+            })
+        }
+        "stroke.join" => {
+            if !matches!(&node.kind, NodeKind::Style(StyleKind::Stroke { .. })) {
+                return None;
+            }
+            Some(EditorCommand::SetStrokeJoin {
+                id,
+                join: match index_or_bool {
+                    1 => StrokeJoin::Round,
+                    2 => StrokeJoin::Bevel,
+                    _ => StrokeJoin::Miter,
+                },
+            })
+        }
+        "text.align" => {
+            if !matches!(&node.kind, NodeKind::Text(_)) {
+                return None;
+            }
+            Some(EditorCommand::SetTextAlign {
+                id,
+                align: match index_or_bool {
+                    1 => TextAlign::Center,
+                    2 => TextAlign::Right,
+                    _ => TextAlign::Left,
+                },
+            })
+        }
+        "mask.inverted" => {
+            if !matches!(&node.kind, NodeKind::Mask(_)) {
+                return None;
+            }
+            Some(EditorCommand::SetMaskInverted {
+                id,
+                inverted: index_or_bool != 0,
+            })
+        }
+        "zigzag.smooth" => {
+            if !matches!(&node.kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })) {
+                return None;
+            }
+            Some(EditorCommand::SetZigZagSmooth {
+                id,
+                smooth: index_or_bool != 0,
+            })
+        }
+        "layer.blend" => {
+            if !matches!(&node.kind, NodeKind::Layer(_)) {
+                return None;
+            }
+            Some(EditorCommand::SetLayerProps {
+                id,
+                in_frame: None,
+                out_frame: None,
+                time_stretch: None,
+                blend: Some(match index_or_bool {
+                    1 => BlendMode::Multiply,
+                    2 => BlendMode::Screen,
+                    _ => BlendMode::Normal,
+                }),
+            })
+        }
         _ => None,
     }
 }

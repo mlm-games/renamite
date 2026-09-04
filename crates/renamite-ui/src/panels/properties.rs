@@ -441,17 +441,17 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 ) {
                     children.push(v);
                 }
-                if is_shape_like
-                    && let Some(v) = style_prop_rows(
-                        session.clone(),
-                        fill_id,
-                        playhead,
-                        record,
-                        diamond_quiet,
-                        "Fill",
-                    ) {
-                        children.push(v);
-                    }
+                // Always show fill structural props (rule), whether shape or Fill node is selected.
+                if let Some(v) = style_prop_rows(
+                    session.clone(),
+                    fill_id,
+                    playhead,
+                    record,
+                    diamond_quiet,
+                    "Fill",
+                ) {
+                    children.push(v);
+                }
             }
             if let Some(stroke_id) = app.stroke {
                 if let Some(v) = paint_section_for_style(
@@ -463,28 +463,19 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 ) {
                     children.push(v);
                 }
-                if is_shape_like {
-                    if let Some(v) = style_prop_rows(
-                        session.clone(),
-                        stroke_id,
-                        playhead,
-                        record,
-                        diamond_quiet,
-                        "Stroke",
-                    ) {
-                        children.push(v);
-                    }
-                    if let Some(v) = stroke_dash_section(
-                        session.clone(),
-                        stroke_id,
-                        playhead,
-                        record,
-                        diamond_quiet,
-                    ) {
-                        children.push(v);
-                    }
-                } else if selected_is_stroke {
-                    // Style Stroke node selected: dash section on itself (existing behaviour)
+                // Always show stroke structural props (width/cap/join).
+                if let Some(v) = style_prop_rows(
+                    session.clone(),
+                    stroke_id,
+                    playhead,
+                    record,
+                    diamond_quiet,
+                    "Stroke",
+                ) {
+                    children.push(v);
+                }
+                // Dash for shape-like or when the stroke node itself is selected.
+                if is_shape_like || selected_is_stroke {
                     if let Some(v) = stroke_dash_section(
                         session.clone(),
                         stroke_id,
@@ -547,48 +538,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         }
     }
 
-    if let Some(inspect_id) = inspect_id_opt
+    let showed_text_section = if let Some(inspect_id) = inspect_id_opt
         && let Some(section) = text_section(session.clone(), inspect_id)
     {
         children.push(section);
-    }
-
-    if let Some(inspect_id) = inspect_id_opt {
-        if let Some(text_id) = single_text_in_group(&session.borrow().file.document, ids[0]) {
-            // legacy group-text path (kept for compatibility when outer ids is a group)
-            let text_rows: Vec<PropRow> = {
-                let s = session.borrow();
-                props_for_node(&s.file.document, text_id, playhead)
-                    .into_iter()
-                    .filter(|r| r.desc.section == "Text")
-                    .collect()
-            };
-            if !text_rows.is_empty() {
-                children.push(crate::components::CollapsibleSection(
-                    format!("group_text_props_{text_id:?}"),
-                    "Text",
-                    vec![],
-                    Column(Modifier::new().fill_max_width()).child(
-                        text_rows
-                            .iter()
-                            .map(|prop| {
-                                PropRowView(
-                                    session.clone(),
-                                    vec![text_id],
-                                    prop.clone(),
-                                    playhead,
-                                    record,
-                                    diamond_quiet,
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                ));
-            }
-        } else if inspect_id != ids[0] {
-            // When we unwrapped a shape group, the Text section is already handled via text_section above.
-        }
-    }
+        true
+    } else {
+        false
+    };
 
     // Single selected image: informational metadata (name, dimensions, MIME).
     if let Some(inspect_id) = inspect_id_opt
@@ -616,11 +573,16 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     }
 
     for (section, props) in sections {
-        // Skip duplicate Fill/Stroke generic sections when paint already shown via style_prop_rows
+        // Skip duplicate Fill/Stroke generic sections when paint already shown via style_prop_rows,
+        // and skip Text when the dedicated text_section already covers size/align.
         let skip_duplicate = if let Some(id) = inspect_id_opt {
-            matches!(section, "Fill" | "Stroke") && {
-                let s = session.borrow();
-                appearance_for(&s, id).is_some()
+            match section {
+                "Fill" | "Stroke" => {
+                    let s = session.borrow();
+                    appearance_for(&s, id).is_some()
+                }
+                "Text" => showed_text_section,
+                _ => false,
             }
         } else {
             false
@@ -1902,6 +1864,20 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
         ));
     }
 
+    // Size / Align rows are folded into the Text section so the generic
+    // `props_for_selection` "Text" section can be skipped.
+    let (size_align_rows, playhead, record, diamond_quiet) = {
+        let s = session.borrow();
+        let ph = Frame(s.playback.head.round() as i64);
+        let rec = s.record;
+        let quiet = s.mode == EditorMode::Design;
+        let rows = props_for_node(&s.file.document, text_id, ph)
+            .into_iter()
+            .filter(|r| r.desc.section == "Text")
+            .collect::<Vec<_>>();
+        (rows, ph, rec, quiet)
+    };
+
     Some(crate::components::CollapsibleSection(
         "text_section",
         "Text",
@@ -1955,24 +1931,23 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                 })
                 .gap(6.0))
             .child(chips),
+            Column(Modifier::new().fill_max_width()).child(
+                size_align_rows
+                    .iter()
+                    .map(|prop| {
+                        PropRowView(
+                            session.clone(),
+                            vec![text_id],
+                            prop.clone(),
+                            playhead,
+                            record,
+                            diamond_quiet,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         )),
     ))
-}
-
-fn single_text_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<NodeId> {
-    let node = doc.nodes.get(id)?;
-    if !matches!(&node.kind, NodeKind::Group) {
-        return None;
-    }
-    let children = node.children.clone();
-    let mut texts = children
-        .into_iter()
-        .filter(|&cid| matches!(doc.nodes.get(cid).map(|n| &n.kind), Some(NodeKind::Text(_))));
-    let text_id = texts.next()?;
-    if texts.next().is_some() {
-        return None;
-    }
-    Some(text_id)
 }
 
 fn primary_content_in_group(doc: &renamite_model::Document, id: NodeId) -> Option<NodeId> {
