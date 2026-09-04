@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use renamite_animation::{Animated, AnimatedTransform};
 use renamite_model::{
-    BlendMode, CompId, Composition, Document, FillRule, GradientKind, LayerProps, MaskProps,
-    ModifierKind, Node, NodeId, NodeKind, Overrides, ShapeKind, StarKind, StrokeCap, StrokeJoin,
-    StyleKind, StylePaint, TimeMap, TrimMode,
+    BlendMode, CompId, Composition, Document, FillRule, GradientKind, ImageNode, LayerProps,
+    MaskProps, ModifierKind, Node, NodeId, NodeKind, Overrides, ShapeKind, StarKind, StrokeCap,
+    StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
 };
 use serde_json::{Value, json};
 
@@ -327,11 +327,11 @@ impl Exporter<'_> {
         parent: &Composition,
         index: u32,
     ) -> Result<Value, LottieError> {
-        let NodeKind::Image(asset) = node.kind else {
+        let NodeKind::Image(ref img) = node.kind else {
             return Err(LottieError::MissingAsset(format!("{id:?}")));
         };
 
-        let reference = self.ensure_image_asset(asset)?;
+        let reference = self.ensure_image_asset(img.asset())?;
 
         Ok(json!({
             "ddd": 0,
@@ -498,6 +498,14 @@ impl Exporter<'_> {
                         "animated `text.size` bakes to its base value on export",
                     ));
                 }
+                if !text.tracking.keyframes.is_empty() || !text.leading.keyframes.is_empty() {
+                    self.warnings.push(LottieWarning::new(
+                        format!("node/{id:?}"),
+                        "animated `text.tracking`/`text.leading` bake to base on export",
+                    ));
+                }
+                let tracking = text.tracking.base;
+                let leading = text.leading.base;
                 let outline = if let Some((_, font)) = text
                     .font
                     .as_deref()
@@ -508,12 +516,16 @@ impl Exporter<'_> {
                         &text.text,
                         text.size.base.max(0.1),
                         text.align,
+                        tracking,
+                        leading,
                     )
                     .unwrap_or_else(|_| {
                         renamite_text::shape_text_default(
                             &text.text,
                             text.size.base.max(0.1),
                             text.align,
+                            tracking,
+                            leading,
                         )
                     })
                 } else {
@@ -521,6 +533,8 @@ impl Exporter<'_> {
                         &text.text,
                         text.size.base.max(0.1),
                         text.align,
+                        tracking,
+                        leading,
                     )
                 };
                 let item = json!({
@@ -733,6 +747,7 @@ fn style_json(name: &str, style: &StyleKind, opacity: &Animated<f64>) -> Value {
             cap,
             join,
             dash,
+            miter_limit,
         } => {
             let mut value = match paint {
                 StylePaint::Solid { color } => json!({
@@ -742,7 +757,8 @@ fn style_json(name: &str, style: &StyleKind, opacity: &Animated<f64>) -> Value {
                     "o": export_scalar(opacity, 100.0),
                     "w": export_scalar(width, 1.0),
                     "lc": stroke_cap_to_lottie(*cap),
-                    "lj": stroke_join_to_lottie(*join)
+                    "lj": stroke_join_to_lottie(*join),
+                    "ml": export_scalar(miter_limit, 1.0)
                 }),
                 StylePaint::Gradient(gradient) => {
                     let (count, stops) = export_gradient(&gradient.stops);
@@ -759,7 +775,8 @@ fn style_json(name: &str, style: &StyleKind, opacity: &Animated<f64>) -> Value {
                         "o": export_scalar(opacity, 100.0),
                         "w": export_scalar(width, 1.0),
                         "lc": stroke_cap_to_lottie(*cap),
-                        "lj": stroke_join_to_lottie(*join)
+                        "lj": stroke_join_to_lottie(*join),
+                        "ml": export_scalar(miter_limit, 1.0)
                     });
                     if gradient.kind == GradientKind::Radial {
                         value["h"] = json!({ "a": 0, "k": 0.0 });
@@ -892,6 +909,19 @@ fn blend_to_lottie(blend: BlendMode) -> u8 {
         BlendMode::Normal => 0,
         BlendMode::Multiply => 1,
         BlendMode::Screen => 2,
+        BlendMode::Overlay => 3,
+        BlendMode::Darken => 4,
+        BlendMode::Lighten => 5,
+        BlendMode::ColorDodge => 6,
+        BlendMode::ColorBurn => 7,
+        BlendMode::HardLight => 8,
+        BlendMode::SoftLight => 9,
+        BlendMode::Difference => 10,
+        BlendMode::Exclusion => 11,
+        BlendMode::Hue => 12,
+        BlendMode::Saturation => 13,
+        BlendMode::Color => 14,
+        BlendMode::Luminosity => 15,
     }
 }
 
@@ -1071,6 +1101,8 @@ mod tests {
                 size: renamite_animation::Animated::new(48.0),
                 align: Default::default(),
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let fill = doc.create_node(Node::new(
@@ -1124,7 +1156,10 @@ mod tests {
                 srgb: true,
             }));
         doc.asset_order.push(asset);
-        let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
+        let image = doc.create_node(Node::new(
+            "Pic",
+            NodeKind::Image(ImageNode::new(asset)),
+        ));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
 
         let value = crate::export(&doc).unwrap();
@@ -1163,7 +1198,10 @@ mod tests {
                 srgb: true,
             }));
         doc.asset_order.push(asset);
-        let image = doc.create_node(Node::new("Pic", NodeKind::Image(asset)));
+        let image = doc.create_node(Node::new(
+            "Pic",
+            NodeKind::Image(ImageNode::new(asset)),
+        ));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
 
         let json = crate::export(&doc).unwrap();

@@ -217,10 +217,10 @@ fn embedded_png_imports_as_image_asset() {
     let doc = import(svg.as_bytes()).unwrap();
     let images = find_all(&doc, |n| matches!(n.kind, NodeKind::Image(_)));
     assert_eq!(images.len(), 1);
-    let NodeKind::Image(asset_id) = doc.nodes[images[0]].kind else {
+    let NodeKind::Image(img) = doc.nodes[images[0]].kind.clone() else {
         panic!("expected image");
     };
-    let asset = doc.image_asset(asset_id).unwrap();
+    let asset = doc.image_asset(img.asset()).unwrap();
     assert_eq!(asset.mime, "image/png");
     assert_eq!(asset.width, 2);
     assert_eq!(asset.height, 2);

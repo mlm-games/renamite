@@ -49,7 +49,10 @@ pub fn cmd_place_image(
 ) -> Option<renamite_history::EditorCommand> {
     let image = doc.image_asset(asset)?;
 
-    let mut node = Node::new(image.name.clone(), NodeKind::Image(asset));
+    let mut node = Node::new(
+        image.name.clone(),
+        NodeKind::Image(renamite_model::ImageNode::new(asset)),
+    );
 
     node.transform.anchor = renamite_animation::Animated::new(glam::DVec2::new(
         image.width as f64 * 0.5,
@@ -147,6 +150,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font,
+                            tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         )
     }

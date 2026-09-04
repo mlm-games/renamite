@@ -675,6 +675,8 @@ fn create_text(ctx: &MenuContext, pos: DVec2, paint: StylePaint) -> Vec<ToolOutp
             size: Animated::new(48.0),
             align: TextAlign::Left,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         }),
     );
     text_node.transform.position = Animated::new(pos);

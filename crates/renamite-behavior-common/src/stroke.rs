@@ -136,6 +136,7 @@ pub fn cmd_add_stroke_after(
                 width: Animated::new(width.max(0.0)),
                 cap: StrokeCap::Round,
                 join: StrokeJoin::Round,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         )),
@@ -167,6 +168,7 @@ mod tests {
                 width: Animated::new(4.0),
                 cap: StrokeCap::Round,
                 join: StrokeJoin::Round,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         ));
@@ -239,6 +241,7 @@ mod tests {
                 width: Animated::new(2.0),
                 cap: StrokeCap::Butt,
                 join: StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         ));

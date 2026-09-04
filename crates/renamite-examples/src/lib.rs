@@ -9,9 +9,9 @@ use glam::DVec2;
 use renamite_animation::{Animated, AnimatedTransform, EasingHandle, Frame, Interpolation};
 use renamite_io_ren::RenFile;
 use renamite_model::{
-    Color, Document, FillRule, GradientStop, GradientStops, MaskProps, ModifierKind, Node,
-    NodeKind, Parent, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TextAlign,
-    TextNode, TrimMode,
+    Color, Document, FillRule, GradientStop, GradientStops, ImageNode, MaskProps, ModifierKind,
+    Node, NodeKind, Parent, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
+    TextAlign, TextNode, TrimMode,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,6 +169,7 @@ fn solid_stroke(doc: &mut Document, color: Color, width: f64) -> renamite_model:
             width: Animated::new(width),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
+            miter_limit: Animated::new(4.0),
             dash: None,
         }),
     ))
@@ -284,6 +285,8 @@ fn masked_text() -> RenFile {
             size: Animated::new(72.0),
             align: TextAlign::Center,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         }),
     );
     text.transform.position = Animated::new(DVec2::new(256.0, 280.0));
@@ -326,7 +329,7 @@ fn photo_card() -> RenFile {
         }));
     doc.asset_order.push(asset);
 
-    let mut image = Node::new("Image", NodeKind::Image(asset));
+    let mut image = Node::new("Image", NodeKind::Image(ImageNode::new(asset)));
     image.transform.anchor = Animated::new(DVec2::new(1.0, 1.0));
     image.transform.position = Animated::new(DVec2::new(256.0, 256.0));
     image.transform.scale = Animated::new(DVec2::splat(10_000.0));
@@ -428,6 +431,8 @@ fn gradient_poster() -> RenFile {
             size: Animated::new(92.0),
             align: TextAlign::Center,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         }),
     );
     text.transform.position = Animated::new(DVec2::new(256.0, 280.0));

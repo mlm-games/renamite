@@ -1792,12 +1792,14 @@ impl Session {
                     cap,
                     join,
                     dash,
+                    miter_limit,
                 } = stroke
                 else {
                     continue;
                 };
 
                 let width_value = width.value_at(frame);
+                let miter_value = miter_limit.value_at(frame).clamp(1.0, 10.0);
                 let dash_sample: Option<(Vec<f64>, f64)> = dash.as_ref().map(|d| {
                     (
                         d.dashes.iter().map(|x| x.value_at(frame)).collect(),
@@ -1813,7 +1815,7 @@ impl Session {
                             width_value,
                             kurbo_cap(cap),
                             kurbo_join(join),
-                            4.0,
+                            miter_value,
                             dash_sample
                                 .as_ref()
                                 .map(|(pattern, offset)| (pattern.as_slice(), *offset)),
@@ -3871,6 +3873,8 @@ mod tests {
                 size: renamite_animation::Animated::new(48.0),
                 align: renamite_model::TextAlign::Left,
                 font: None,
+                tracking: renamite_animation::Animated::new(0.0),
+                leading: renamite_animation::Animated::new(0.0),
             }),
         ));
         s.file
@@ -4089,6 +4093,8 @@ mod tests {
                 size: renamite_animation::Animated::new(48.0),
                 align: renamite_model::TextAlign::Left,
                 font: None,
+                tracking: renamite_animation::Animated::new(0.0),
+                leading: renamite_animation::Animated::new(0.0),
             }),
         ));
         session
@@ -4747,6 +4753,7 @@ mod path_op_integration_tests {
                     width: Animated::new(2.0),
                     cap: renamite_model::StrokeCap::Butt,
                     join: renamite_model::StrokeJoin::Miter,
+                    miter_limit: Animated::new(4.0),
                     dash: None,
                 }),
             ));
@@ -4795,6 +4802,7 @@ mod path_op_integration_tests {
                     width: Animated::new(2.0),
                     cap: renamite_model::StrokeCap::Butt,
                     join: renamite_model::StrokeJoin::Miter,
+                    miter_limit: Animated::new(4.0),
                     dash: None,
                 }),
             ));

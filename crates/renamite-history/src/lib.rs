@@ -286,6 +286,14 @@ pub enum EditorCommand {
         offset: Option<Frame>,
         stretch: Option<f64>,
     },
+    SetPrecompComp {
+        id: NodeId,
+        comp: CompId,
+    },
+    SetImageCrop {
+        id: NodeId,
+        crop: glam::DVec4,
+    },
 
     CreateClip {
         index: usize,
@@ -624,7 +632,9 @@ fn apply_command(
         | SetCompositionSize { .. }
         | SetCompositionRate { .. }
         | SetLayerProps { .. }
-        | SetPrecompTimeMap { .. } => {
+        | SetPrecompTimeMap { .. }
+        | SetPrecompComp { .. }
+        | SetImageCrop { .. } => {
             let (node, inv) = apply_document_command(p.document, cmd)?;
             Ok((
                 Created {
@@ -1645,6 +1655,27 @@ fn apply_document_command(
                 }],
             ))
         }
+        SetPrecompComp { id, comp } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Precomp { comp: cur, .. } = &mut n.kind else {
+                return Err(ModelError::WrongNodeKind("Precomp").into());
+            };
+            if !doc.compositions.contains_key(*comp) {
+                return Err(ModelError::MissingComp.into());
+            }
+            let old = *cur;
+            *cur = *comp;
+            Ok((None, vec![SetPrecompComp { id: *id, comp: old }]))
+        }
+        SetImageCrop { id, crop } => {
+            let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Image(img) = &mut n.kind else {
+                return Err(ModelError::WrongNodeKind("Image").into());
+            };
+            let old = img.crop;
+            img.crop = *crop;
+            Ok((None, vec![SetImageCrop { id: *id, crop: old }]))
+        }
         _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
 }
@@ -1732,6 +1763,8 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
         (SetCompositionRate { comp, .. }, SetCompositionRate { comp: c2, .. }) => *comp == *c2,
         (SetLayerProps { id, .. }, SetLayerProps { id: id2, .. }) => *id == *id2,
         (SetPrecompTimeMap { id, .. }, SetPrecompTimeMap { id: id2, .. }) => *id == *id2,
+        (SetPrecompComp { id, .. }, SetPrecompComp { id: id2, .. }) => *id == *id2,
+        (SetImageCrop { id, .. }, SetImageCrop { id: id2, .. }) => *id == *id2,
         (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,
         (MoveClipKeys { moves }, MoveClipKeys { moves: nmoves }) => {
             moves.len() == nmoves.len()
@@ -2127,6 +2160,8 @@ mod tests {
             size: Animated::new(48.0),
             align: renamite_model::TextAlign::Left,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         });
 
         let mut history = History::new();
@@ -2228,7 +2263,10 @@ mod tests {
         history.commit();
 
         // Image layer referencing the asset -> cannot detach.
-        let image = world.doc.create_node(Node::new("img", NodeKind::Image(id)));
+        let image = world.doc.create_node(Node::new(
+            "img",
+            NodeKind::Image(renamite_model::ImageNode::new(id)),
+        ));
         world
             .doc
             .attach(image, Parent::Comp(world.doc.main), 0)
@@ -2321,6 +2359,8 @@ mod tests {
             size: Animated::new(48.0),
             align: Default::default(),
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         });
         let mut h = History::new();
         h.begin("Edit text");
@@ -2366,6 +2406,8 @@ mod tests {
             size: Animated::new(48.0),
             align: Default::default(),
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         });
         let mut h = History::new();
         for text in ["a", "ab", "abc"] {
@@ -2489,6 +2531,7 @@ mod tests {
             width: Animated::new(4.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
+            miter_limit: Animated::new(4.0),
             dash: None,
         });
 

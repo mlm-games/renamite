@@ -632,7 +632,22 @@ fn map_blend(b: ModelBlendMode) -> BlendMode {
     match b {
         ModelBlendMode::Normal => BlendMode::Alpha,
         ModelBlendMode::Multiply => BlendMode::Multiply,
-        ModelBlendMode::Screen => BlendMode::Alpha,
+        ModelBlendMode::Screen => BlendMode::Add,
+        ModelBlendMode::Overlay => BlendMode::Overlay,
+        // Advanced modes not yet implemented in repose renderer — fall back to alpha
+        // but preserve model value for round-tripping and future renderer upgrades.
+        ModelBlendMode::Darken
+        | ModelBlendMode::Lighten
+        | ModelBlendMode::ColorDodge
+        | ModelBlendMode::ColorBurn
+        | ModelBlendMode::HardLight
+        | ModelBlendMode::SoftLight
+        | ModelBlendMode::Difference
+        | ModelBlendMode::Exclusion
+        | ModelBlendMode::Hue
+        | ModelBlendMode::Saturation
+        | ModelBlendMode::Color
+        | ModelBlendMode::Luminosity => BlendMode::Alpha,
     }
 }
 
@@ -1016,6 +1031,7 @@ mod tests {
                 width: 8.0,
                 cap: renamite_model::StrokeCap::Round,
                 join: renamite_model::StrokeJoin::Round,
+                miter_limit: 4.0,
                 dash: Some(renamite_model::DashSample {
                     dashes: vec![12.0, 8.0],
                     offset: 0.0,
@@ -1048,6 +1064,7 @@ mod tests {
                 width: 4.0,
                 cap: renamite_model::StrokeCap::Butt,
                 join: renamite_model::StrokeJoin::Miter,
+                miter_limit: 4.0,
                 dash: Some(renamite_model::DashSample {
                     dashes: pattern,
                     offset,

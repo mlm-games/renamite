@@ -504,6 +504,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let fill = doc.create_node(Node::new(
@@ -554,6 +556,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Center,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         doc.attach(text, Parent::Node(group), 0).unwrap();

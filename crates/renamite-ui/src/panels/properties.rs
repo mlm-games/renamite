@@ -2074,16 +2074,25 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
     let (name, width, height, mime) = {
         let session = session.borrow();
         let doc = &session.file.document;
-        let NodeKind::Image(asset) = &doc.nodes.get(id)?.kind else {
+        let NodeKind::Image(img) = &doc.nodes.get(id)?.kind else {
             return None;
         };
-        let image = doc.image_asset(*asset)?;
+        let image = doc.image_asset(img.asset())?;
         (
             image.name.clone(),
             image.width,
             image.height,
             image.mime.clone(),
         )
+    };
+
+    let crop = {
+        let s = session.borrow();
+        let doc = &s.file.document;
+        let NodeKind::Image(img) = &doc.nodes.get(id)?.kind else {
+            return None;
+        };
+        img.crop()
     };
 
     let th = theme();
@@ -2116,9 +2125,175 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
         );
     }
 
+    children.push(
+        Column(Modifier::new().fill_max_width()).child((
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 6.0,
+                    bottom: 4.0,
+                })
+                .gap(6.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Crop")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(48.0)),
+                Text("X")
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                    format!("img_crop_x_{id:?}"),
+                    format!("{:.3}", crop.x),
+                    "X",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                let Some(NodeKind::Image(img)) =
+                                    s.file.document.nodes.get(id).map(|n| &n.kind)
+                                else {
+                                    return;
+                                };
+                                let mut new_crop = img.crop();
+                                new_crop.x = v.clamp(0.0, 1.0);
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set image crop".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
+                                        id,
+                                        crop: new_crop
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+                Text("Y")
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                    format!("img_crop_y_{id:?}"),
+                    format!("{:.3}", crop.y),
+                    "Y",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                let Some(NodeKind::Image(img)) =
+                                    s.file.document.nodes.get(id).map(|n| &n.kind)
+                                else {
+                                    return;
+                                };
+                                let mut new_crop = img.crop();
+                                new_crop.y = v.clamp(0.0, 1.0);
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set image crop".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
+                                        id,
+                                        crop: new_crop
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 12.0,
+                    right: 8.0,
+                    top: 0.0,
+                    bottom: 4.0,
+                })
+                .gap(6.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Box(Modifier::new().width(48.0)),
+                Text("W")
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                    format!("img_crop_w_{id:?}"),
+                    format!("{:.3}", crop.z),
+                    "W",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                let Some(NodeKind::Image(img)) =
+                                    s.file.document.nodes.get(id).map(|n| &n.kind)
+                                else {
+                                    return;
+                                };
+                                let mut new_crop = img.crop();
+                                new_crop.z = v.clamp(0.05, 1.0);
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set image crop".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
+                                        id,
+                                        crop: new_crop
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+                Text("H")
+                    .size(th.typography.label_small)
+                    .color(th.on_surface_variant),
+                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                    format!("img_crop_h_{id:?}"),
+                    format!("{:.3}", crop.w),
+                    "H",
+                    true,
+                    32.0,
+                    {
+                        let session = session.clone();
+                        move |text: String| {
+                            if let Ok(v) = text.trim().parse::<f64>() {
+                                let mut s = session.borrow_mut();
+                                let Some(NodeKind::Image(img)) =
+                                    s.file.document.nodes.get(id).map(|n| &n.kind)
+                                else {
+                                    return;
+                                };
+                                let mut new_crop = img.crop();
+                                new_crop.w = v.clamp(0.05, 1.0);
+                                s.apply_outputs(smallvec![
+                                    ToolOutput::BeginTransaction("Set image crop".into()),
+                                    ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
+                                        id,
+                                        crop: new_crop
+                                    }]),
+                                    ToolOutput::CommitTransaction,
+                                ]);
+                            }
+                        }
+                    },
+                )),
+            )),
+        )),
+    );
+
     Some(crate::components::CollapsibleSection(
         "image_meta_section",
-        "Image",
+        "Image Info",
         vec![],
         Column(Modifier::new().fill_max_width()).child(children),
     ))
@@ -2195,6 +2370,19 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
         renamite_model::BlendMode::Normal => 0,
         renamite_model::BlendMode::Multiply => 1,
         renamite_model::BlendMode::Screen => 2,
+        renamite_model::BlendMode::Overlay => 3,
+        renamite_model::BlendMode::Darken => 4,
+        renamite_model::BlendMode::Lighten => 5,
+        renamite_model::BlendMode::ColorDodge => 6,
+        renamite_model::BlendMode::ColorBurn => 7,
+        renamite_model::BlendMode::HardLight => 8,
+        renamite_model::BlendMode::SoftLight => 9,
+        renamite_model::BlendMode::Difference => 10,
+        renamite_model::BlendMode::Exclusion => 11,
+        renamite_model::BlendMode::Hue => 12,
+        renamite_model::BlendMode::Saturation => 13,
+        renamite_model::BlendMode::Color => 14,
+        renamite_model::BlendMode::Luminosity => 15,
     };
     Some(crate::components::CollapsibleSection(
         format!("layer_props_{id:?}"),
@@ -2327,25 +2515,48 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                     },
                 )),
             )),
-            Row(Modifier::new()
-                .fill_max_width()
-                .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 8.0,
-                })
-                .gap(8.0)
-                .align_items(AlignItems::CENTER))
-            .child((
-                Text("Blend")
-                    .size(th.typography.body_medium)
-                    .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                blend_segment(session.clone(), id, blend_idx, 0, "Normal"),
-                blend_segment(session.clone(), id, blend_idx, 1, "Multiply"),
-                blend_segment(session, id, blend_idx, 2, "Screen"),
-            )),
+            FlowRow(
+                Modifier::new()
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 4.0,
+                        bottom: 8.0,
+                    })
+                    .gap(6.0),
+            )
+            .child({
+                let labels: [&str; 16] = [
+                    "Normal",
+                    "Multiply",
+                    "Screen",
+                    "Overlay",
+                    "Darken",
+                    "Lighten",
+                    "ColorDodge",
+                    "ColorBurn",
+                    "HardLight",
+                    "SoftLight",
+                    "Difference",
+                    "Exclusion",
+                    "Hue",
+                    "Saturation",
+                    "Color",
+                    "Luminosity",
+                ];
+                let mut chips: Vec<View> = Vec::with_capacity(17);
+                chips.push(
+                    Text("Blend")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface)
+                        .modifier(Modifier::new().width(96.0)),
+                );
+                for (idx, label) in labels.iter().enumerate() {
+                    chips.push(blend_segment(session.clone(), id, blend_idx, idx, label));
+                }
+                chips
+            }),
         )),
     ))
 }
@@ -2383,6 +2594,19 @@ fn blend_segment(
                     let blend = match index {
                         1 => renamite_model::BlendMode::Multiply,
                         2 => renamite_model::BlendMode::Screen,
+                        3 => renamite_model::BlendMode::Overlay,
+                        4 => renamite_model::BlendMode::Darken,
+                        5 => renamite_model::BlendMode::Lighten,
+                        6 => renamite_model::BlendMode::ColorDodge,
+                        7 => renamite_model::BlendMode::ColorBurn,
+                        8 => renamite_model::BlendMode::HardLight,
+                        9 => renamite_model::BlendMode::SoftLight,
+                        10 => renamite_model::BlendMode::Difference,
+                        11 => renamite_model::BlendMode::Exclusion,
+                        12 => renamite_model::BlendMode::Hue,
+                        13 => renamite_model::BlendMode::Saturation,
+                        14 => renamite_model::BlendMode::Color,
+                        15 => renamite_model::BlendMode::Luminosity,
                         _ => renamite_model::BlendMode::Normal,
                     };
                     let mut s = session.borrow_mut();
@@ -2402,12 +2626,19 @@ fn blend_segment(
 }
 
 fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
-    let (offset, stretch) = {
+    let (offset, stretch, current_comp, comps) = {
         let s = session.borrow();
-        let NodeKind::Precomp { time_map, .. } = &s.file.document.nodes.get(id)?.kind else {
+        let NodeKind::Precomp { comp, time_map } = &s.file.document.nodes.get(id)?.kind else {
             return None;
         };
-        (time_map.offset.0, time_map.stretch)
+        let comps: Vec<(renamite_model::CompId, String)> = s
+            .file
+            .document
+            .compositions
+            .iter()
+            .map(|(cid, comp)| (cid, comp.name.clone()))
+            .collect();
+        (time_map.offset.0, time_map.stretch, *comp, comps)
     };
     let th = theme();
     Some(crate::components::CollapsibleSection(
@@ -2499,8 +2730,87 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                     },
                 )),
             )),
+            FlowRow(
+                Modifier::new()
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 8.0,
+                        top: 4.0,
+                        bottom: 8.0,
+                    })
+                    .gap(6.0),
+            )
+            .child({
+                let mut chips: Vec<View> = Vec::new();
+                chips.push(
+                    Text("Source")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface)
+                        .modifier(Modifier::new().width(96.0)),
+                );
+                for (cid, name) in comps {
+                    let active = cid == current_comp;
+                    chips.push(precomp_comp_chip(
+                        session.clone(),
+                        id,
+                        name.clone(),
+                        cid,
+                        active,
+                    ));
+                }
+                chips
+            }),
         )),
     ))
+}
+
+fn precomp_comp_chip(
+    session: SessionRef,
+    node_id: NodeId,
+    label: String,
+    comp: renamite_model::CompId,
+    active: bool,
+) -> View {
+    let th = theme();
+    Text(label)
+        .size(th.typography.body_medium)
+        .color(if active {
+            th.primary
+        } else {
+            th.on_surface_variant
+        })
+        .modifier(
+            Modifier::new()
+                .padding_values(PaddingValues {
+                    left: 8.0,
+                    right: 8.0,
+                    top: 4.0,
+                    bottom: 4.0,
+                })
+                .background(if active {
+                    th.secondary_container
+                } else {
+                    th.surface
+                })
+                .on_pointer_down({
+                    let session = session.clone();
+                    move |_| {
+                        if active {
+                            return;
+                        }
+                        let mut s = session.borrow_mut();
+                        s.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Set precomp source".into()),
+                            ToolOutput::Commands(smallvec![EditorCommand::SetPrecompComp {
+                                id: node_id,
+                                comp,
+                            }]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+        )
 }
 
 fn font_chip(

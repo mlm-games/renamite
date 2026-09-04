@@ -258,7 +258,7 @@ impl<'a> Validator<'a> {
 
         for (id, node) in &doc.nodes {
             match &node.kind {
-                NodeKind::Image(asset) => match doc.assets.get(*asset) {
+                NodeKind::Image(img) => match doc.assets.get(img.asset()) {
                     Some(Asset::Image(img)) => {
                         if img.width == 0 || img.height == 0 {
                             self.err(
@@ -324,7 +324,7 @@ impl<'a> Validator<'a> {
                     let used = doc
                         .nodes
                         .values()
-                        .any(|n| matches!(n.kind, NodeKind::Image(a) if a == id));
+                        .any(|n| matches!(&n.kind, NodeKind::Image(img) if img.asset() == id));
                     if !used {
                         self.warn(
                             format!("asset/{id:?}"),
@@ -990,8 +990,8 @@ impl<'a> Validator<'a> {
                         "Lottie mask export is best-effort and may differ from Renamite clip-stack semantics",
                     );
                 }
-                NodeKind::Image(asset) => {
-                    if doc.image_asset(*asset).is_none() {
+                NodeKind::Image(img) => {
+                    if doc.image_asset(img.asset()).is_none() {
                         self.err(
                             format!("node/{id:?}/image"),
                             "image layer references missing image asset",
@@ -1127,9 +1127,10 @@ mod tests {
     fn missing_image_asset_is_error() {
         let mut file = file("bad");
         let fake = AssetId::from(slotmap::KeyData::from_ffi(42));
-        let node = file
-            .document
-            .create_node(Node::new("img", NodeKind::Image(fake)));
+        let node = file.document.create_node(Node::new(
+            "img",
+            NodeKind::Image(renamite_model::ImageNode::new(fake)),
+        ));
         file.document
             .attach(node, Parent::Comp(file.document.main), 0)
             .unwrap();
@@ -1154,6 +1155,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font: Some("Missing".into()),
+                            tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         file.document

@@ -84,7 +84,7 @@ pub enum NodeKind {
     Style(StyleKind),
     Modifier(ModifierKind),
     Text(TextNode),
-    Image(AssetId),
+    Image(ImageNode),
     Precomp { comp: CompId, time_map: TimeMap },
     Mask(MaskProps),
 }
@@ -419,6 +419,10 @@ impl StylePaint {
     }
 }
 
+fn default_miter_limit() -> Animated<f64> {
+    Animated::new(4.0)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum StyleKind {
     Fill {
@@ -431,6 +435,8 @@ pub enum StyleKind {
         cap: StrokeCap,
         join: StrokeJoin,
         dash: Option<AnimatedDash>,
+        #[serde(default = "default_miter_limit")]
+        miter_limit: Animated<f64>,
     },
 }
 
@@ -441,6 +447,7 @@ struct StyleCompatContent {
     width: Option<Animated<f64>>,
     cap: Option<StrokeCap>,
     join: Option<StrokeJoin>,
+    miter_limit: Option<Animated<f64>>,
     dash: Option<AnimatedDash>,
     rule: Option<FillRule>,
 }
@@ -490,6 +497,7 @@ impl<'de> Deserialize<'de> for StyleKind {
                                 "width" => content.width = Some(map.next_value()?),
                                 "cap" => content.cap = Some(map.next_value()?),
                                 "join" => content.join = Some(map.next_value()?),
+                                "miter_limit" => content.miter_limit = Some(map.next_value()?),
                                 "dash" => {
                                     content.dash = map.next_value::<Option<AnimatedDash>>()?
                                 }
@@ -497,7 +505,16 @@ impl<'de> Deserialize<'de> for StyleKind {
                                 other => {
                                     return Err(A::Error::unknown_field(
                                         other,
-                                        &["paint", "color", "width", "cap", "join", "dash", "rule"],
+                                        &[
+                                            "paint",
+                                            "color",
+                                            "width",
+                                            "cap",
+                                            "join",
+                                            "dash",
+                                            "miter_limit",
+                                            "rule",
+                                        ],
                                     ));
                                 }
                             }
@@ -539,6 +556,10 @@ impl<'de> Deserialize<'de> for StyleKind {
                             content.dash = seq
                                 .next_element::<Option<AnimatedDash>>()?
                                 .ok_or_else(|| A::Error::invalid_length(4, &"dash"))?;
+                            // legacy encodings omit it.
+                            content.miter_limit = seq
+                                .next_element::<Animated<f64>>()?
+                                .or(Some(default_miter_limit()));
                         }
                         Ok(content)
                     }
@@ -549,7 +570,7 @@ impl<'de> Deserialize<'de> for StyleKind {
                         content.struct_variant(&["paint", "rule"], ContentVisitor { fill: true })?
                     }
                     StyleTag::Stroke => content.struct_variant(
-                        &["paint", "width", "cap", "join", "dash"],
+                        &["paint", "width", "cap", "join", "dash", "miter_limit"],
                         ContentVisitor { fill: false },
                     )?,
                 };
@@ -577,6 +598,7 @@ impl<'de> Deserialize<'de> for StyleKind {
                             .join
                             .ok_or_else(|| A::Error::missing_field("join"))?,
                         dash: content.dash,
+                        miter_limit: content.miter_limit.unwrap_or_else(default_miter_limit),
                     }),
                 }
             }
@@ -649,6 +671,12 @@ pub struct TimeMap {
 fn default_text_size() -> Animated<f64> {
     Animated::new(48.0)
 }
+fn default_tracking() -> Animated<f64> {
+    Animated::new(0.0)
+}
+fn default_leading() -> Animated<f64> {
+    Animated::new(0.0)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TextNode {
@@ -662,6 +690,12 @@ pub struct TextNode {
     /// Reserved for document-embedded fonts; `None` = bundled default.
     #[serde(default)]
     pub font: Option<String>,
+    /// Letter spacing in document units (extra advance per glyph).
+    #[serde(default = "default_tracking")]
+    pub tracking: Animated<f64>,
+    /// Additional line spacing in document units (added to default line height).
+    #[serde(default = "default_leading")]
+    pub leading: Animated<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -751,7 +785,149 @@ pub enum BlendMode {
     Normal,
     Multiply,
     Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
+
+fn default_tint() -> Animated<Color> {
+    Animated::new(Color::WHITE)
+}
+
+fn default_crop_vec4() -> glam::DVec4 {
+    glam::DVec4::new(0.0, 0.0, 1.0, 1.0)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ImageNode {
+    pub asset: AssetId,
+    #[serde(default = "default_tint")]
+    pub tint: Animated<Color>,
+    #[serde(default = "default_crop_vec4")]
+    pub crop: glam::DVec4,
+}
+
+impl ImageNode {
+    pub fn new(asset: AssetId) -> Self {
+        Self {
+            asset,
+            tint: default_tint(),
+            crop: default_crop_vec4(),
+        }
+    }
+    pub fn asset(&self) -> AssetId {
+        self.asset
+    }
+    pub fn tint(&self) -> &Animated<Color> {
+        &self.tint
+    }
+    pub fn tint_mut(&mut self) -> Option<&mut Animated<Color>> {
+        Some(&mut self.tint)
+    }
+    pub fn crop(&self) -> glam::DVec4 {
+        self.crop
+    }
+    pub fn crop_mut(&mut self) -> Option<&mut glam::DVec4> {
+        Some(&mut self.crop)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ImageNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ImageNodeVisitor;
+        impl<'de> Visitor<'de> for ImageNodeVisitor {
+            type Value = ImageNode;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("ImageNode struct or bare AssetId")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut asset: Option<AssetId> = None;
+                let mut tint: Option<Animated<Color>> = None;
+                let mut crop: Option<glam::DVec4> = None;
+                let mut idx: Option<u32> = None;
+                let mut version: Option<u32> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "asset" => asset = Some(map.next_value()?),
+                        "tint" => tint = Some(map.next_value()?),
+                        "crop" => crop = Some(map.next_value()?),
+                        "idx" => idx = Some(map.next_value()?),
+                        "version" => version = Some(map.next_value()?),
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                if let Some(a) = asset {
+                    Ok(ImageNode {
+                        asset: a,
+                        tint: tint.unwrap_or_else(default_tint),
+                        crop: crop.unwrap_or_else(default_crop_vec4),
+                    })
+                } else if let (Some(i), Some(v)) = (idx, version) {
+                    let kd = slotmap::KeyData::from_ffi(((v as u64) << 32) | i as u64);
+                    Ok(ImageNode {
+                        asset: AssetId::from(kd),
+                        tint: default_tint(),
+                        crop: default_crop_vec4(),
+                    })
+                } else {
+                    Err(DeError::custom(
+                        "expected ImageNode with `asset` or bare SerKey with `idx`/`version`",
+                    ))
+                }
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let asset: Option<AssetId> = seq.next_element()?;
+                let Some(asset) = asset else {
+                    return Err(DeError::invalid_length(0, &self));
+                };
+                // If there's a next element, it's tint (full struct), otherwise legacy bare.
+                if let Some(tint) = seq.next_element::<Animated<Color>>()? {
+                    let crop: glam::DVec4 = seq
+                        .next_element()?
+                        .ok_or_else(|| DeError::invalid_length(2, &self))?;
+                    Ok(ImageNode { asset, tint, crop })
+                } else {
+                    Ok(ImageNode {
+                        asset,
+                        tint: default_tint(),
+                        crop: default_crop_vec4(),
+                    })
+                }
+            }
+        }
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(ImageNodeVisitor)
+        } else {
+            deserializer.deserialize_struct(
+                "ImageNode",
+                &["asset", "tint", "crop"],
+                ImageNodeVisitor,
+            )
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Asset {
     Image(ImageAsset),
@@ -833,7 +1009,13 @@ pub struct StrokeSample {
     pub width: f64,
     pub cap: StrokeCap,
     pub join: StrokeJoin,
+    #[serde(default = "default_miter_limit_f64")]
+    pub miter_limit: f64,
     pub dash: Option<DashSample>,
+}
+
+fn default_miter_limit_f64() -> f64 {
+    4.0
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DashSample {
@@ -1325,16 +1507,25 @@ fn eval_group(
             NodeKind::Text(t) => {
                 let ntf = affine_of(&sample_transform(n, id, frame, ov));
                 let size = ov_f64(ov, id, "text.size", t.size.value_at(frame)).max(0.1);
+                let tracking = ov_f64(ov, id, "text.tracking", t.tracking.value_at(frame));
+                let leading = ov_f64(ov, id, "text.leading", t.leading.value_at(frame));
                 // Prefer an embedded project font by family.
                 let outline = if let Some((_, font)) =
                     t.font.as_deref().and_then(|f| doc.font_asset_for_family(f))
                 {
-                    renamite_text::shape_text_from_bytes(&font.bytes, &t.text, size, t.align)
-                        .unwrap_or_else(|_| {
-                            renamite_text::shape_text_default(&t.text, size, t.align)
-                        })
+                    renamite_text::shape_text_from_bytes(
+                        &font.bytes,
+                        &t.text,
+                        size,
+                        t.align,
+                        tracking,
+                        leading,
+                    )
+                    .unwrap_or_else(|_| {
+                        renamite_text::shape_text_default(&t.text, size, t.align, tracking, leading)
+                    })
                 } else {
-                    renamite_text::shape_text_default(&t.text, size, t.align)
+                    renamite_text::shape_text_default(&t.text, size, t.align, tracking, leading)
                 };
                 paths.push(ShapeEntry {
                     node: id,
@@ -1425,16 +1616,33 @@ fn eval_group(
                     &[],
                 );
             }
-            NodeKind::Image(asset_id) => {
-                let Some(asset) = doc.image_asset(*asset_id) else {
+            NodeKind::Image(image_node) => {
+                let Some(asset) = doc.image_asset(image_node.asset()) else {
                     continue;
                 };
 
                 let node_transform = affine_of(&sample_transform(n, id, frame, ov));
                 let full_transform = tf * node_transform;
 
-                let local_rect =
-                    kurbo::Rect::new(0.0, 0.0, asset.width as f64, asset.height as f64);
+                let tint = ov_color(ov, id, "image.tint()", image_node.tint().value_at(frame));
+                let crop = image_node.crop();
+                let local_rect = {
+                    let (cx, cy, cw, ch) = (crop.x, crop.y, crop.z, crop.w);
+                    if (cw - 1.0).abs() < 1e-6
+                        && (ch - 1.0).abs() < 1e-6
+                        && cx.abs() < 1e-6
+                        && cy.abs() < 1e-6
+                    {
+                        kurbo::Rect::new(0.0, 0.0, asset.width as f64, asset.height as f64)
+                    } else {
+                        kurbo::Rect::new(
+                            asset.width as f64 * cx,
+                            asset.height as f64 * cy,
+                            asset.width as f64 * (cx + cw),
+                            asset.height as f64 * (cy + ch),
+                        )
+                    }
+                };
 
                 let world_path = full_transform * local_rect.to_path(0.1);
 
@@ -1443,11 +1651,11 @@ fn eval_group(
                     node: id,
                     style: id,
                     paint: ScenePaint::Image {
-                        asset: *asset_id,
+                        asset: image_node.asset(),
                         width: asset.width,
                         height: asset.height,
                         affine: full_transform.as_coeffs(),
-                        tint: Color::WHITE,
+                        tint,
                     },
                     kind: PaintKind::Fill(FillRule::NonZero),
                     opacity: node_op,
@@ -1476,7 +1684,9 @@ fn eval_group(
                     );
                 }
             }
-            NodeKind::Style(st) => emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene),
+            NodeKind::Style(st) => {
+                emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene)
+            }
             NodeKind::Shape(_) | NodeKind::Text(_) if !n.children.is_empty() => {
                 let seeds: Vec<ShapeEntry> =
                     paths.iter().filter(|e| e.node == id).cloned().collect();
@@ -1826,6 +2036,7 @@ fn emit_style(
                 width,
                 cap,
                 join,
+                miter_limit,
                 dash,
             } => (
                 paint,
@@ -1833,6 +2044,13 @@ fn emit_style(
                     width: ov_f64(ov, style_id, "stroke.width", width.value_at(frame)).max(0.0),
                     cap: *cap,
                     join: *join,
+                    miter_limit: ov_f64(
+                        ov,
+                        style_id,
+                        "stroke.miter_limit",
+                        miter_limit.value_at(frame),
+                    )
+                    .clamp(1.0, 10.0),
                     dash: dash.as_ref().map(|d| DashSample {
                         dashes: d.dashes.iter().map(|x| x.value_at(frame)).collect(),
                         offset: d.offset.value_at(frame),
@@ -2035,8 +2253,8 @@ impl Document {
         let mut live_assets: std::collections::HashSet<AssetId> =
             self.asset_order.iter().copied().collect();
         for node in self.nodes.values() {
-            if let NodeKind::Image(asset) = node.kind {
-                live_assets.insert(asset);
+            if let NodeKind::Image(img) = &node.kind {
+                live_assets.insert(img.asset());
             }
         }
         self.assets.retain(|id, _| live_assets.contains(&id));
@@ -2071,7 +2289,7 @@ impl Document {
     pub fn image_usage_count(&self, asset: AssetId) -> usize {
         self.nodes
             .values()
-            .filter(|node| matches!(node.kind, NodeKind::Image(id) if id == asset))
+            .filter(|node| matches!(&node.kind, NodeKind::Image(img) if img.asset() == asset))
             .count()
     }
 
@@ -2535,6 +2753,8 @@ impl Node {
                 Some(F64(roundness))
             }
             ("text.size", NodeKind::Text(t)) => Some(F64(&mut t.size)),
+            ("text.tracking", NodeKind::Text(t)) => Some(F64(&mut t.tracking)),
+            ("text.leading", NodeKind::Text(t)) => Some(F64(&mut t.leading)),
             (
                 "shape.path",
                 NodeKind::Mask(MaskProps {
@@ -2634,6 +2854,13 @@ impl Node {
                 }),
             ) => Some(Color(color)),
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
+            ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
+                Some(F64(miter_limit))
+            }
+            ("image.tint()", NodeKind::Image(img)) => {
+                let tint = img.tint_mut()?;
+                Some(Color(tint))
+            }
             (
                 "grad.start",
                 NodeKind::Style(StyleKind::Fill {
@@ -2792,6 +3019,8 @@ impl Node {
                 Some(F64(roundness))
             }
             ("text.size", NodeKind::Text(t)) => Some(F64(&t.size)),
+            ("text.tracking", NodeKind::Text(t)) => Some(F64(&t.tracking)),
+            ("text.leading", NodeKind::Text(t)) => Some(F64(&t.leading)),
             (
                 "shape.path",
                 NodeKind::Mask(MaskProps {
@@ -2891,6 +3120,10 @@ impl Node {
                 }),
             ) => Some(Color(color)),
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
+            ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
+                Some(F64(miter_limit))
+            }
+            ("image.tint()", NodeKind::Image(img)) => Some(Color(img.tint())),
             (
                 "grad.start",
                 NodeKind::Style(StyleKind::Fill {
@@ -3414,6 +3647,7 @@ mod tests {
                 width: Animated::new(4.0),
                 cap: StrokeCap::Butt,
                 join: StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         ));
@@ -3464,6 +3698,8 @@ mod tests {
                 size: Animated::new(64.0),
                 align: TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let fill = doc.create_node(Node::new(
@@ -3537,6 +3773,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font: Some("testfont".into()),
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let fill = doc.create_node(Node::new(
@@ -3565,6 +3803,8 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font: Some("not-a-font-family".into()),
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let fill = doc.create_node(Node::new(
@@ -3597,7 +3837,7 @@ mod tests {
         }));
         doc.asset_order.push(asset);
 
-        let mut node = Node::new("Image", NodeKind::Image(asset));
+        let mut node = Node::new("Image", NodeKind::Image(ImageNode::new(asset)));
         node.transform.anchor = Animated::new(glam::DVec2::new(32.0, 16.0));
         node.transform.position = Animated::new(glam::DVec2::new(100.0, 100.0));
 
@@ -3638,7 +3878,7 @@ mod tests {
         }));
         doc.asset_order.push(used);
 
-        let image = doc.create_node(Node::new("Image", NodeKind::Image(used)));
+        let image = doc.create_node(Node::new("Image", NodeKind::Image(ImageNode::new(used))));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
 
         doc.garbage_collect();
@@ -3710,6 +3950,7 @@ mod tests {
                     width: 4.0,
                     cap: StrokeCap::Butt,
                     join: StrokeJoin::Miter,
+                    miter_limit: 4.0,
                     dash: Some(DashSample {
                         dashes: vec![10.0, 10.0],
                         offset: 0.0,
@@ -3823,6 +4064,7 @@ mod tests {
                 width: Animated::new(4.0),
                 cap: StrokeCap::Round,
                 join: StrokeJoin::Round,
+                miter_limit: Animated::new(4.0),
                 dash: Some(AnimatedDash {
                     dashes: vec![Animated::new(12.0), Animated::new(8.0)],
                     offset: Animated::new(2.0),
@@ -4391,7 +4633,7 @@ mod style_paint_tests {
             height: 64,
             srgb: true,
         }));
-        let img = doc.create_node(Node::new("i", NodeKind::Image(img_asset)));
+        let img = doc.create_node(Node::new("i", NodeKind::Image(ImageNode::new(img_asset))));
         doc.attach(mask, Parent::Comp(comp), 0).unwrap();
         doc.attach(img, Parent::Comp(comp), 1).unwrap();
 

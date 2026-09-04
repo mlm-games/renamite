@@ -1279,6 +1279,8 @@ impl TextTool {
                 size: Animated::new(48.0),
                 align: renamite_model::TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         );
         // Place the baseline at the click point via the node's own transform.

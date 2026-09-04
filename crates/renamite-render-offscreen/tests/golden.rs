@@ -94,7 +94,10 @@ fn fixture_image_layer() -> Document {
 
     document.asset_order.push(asset);
 
-    let mut node = Node::new("Image", NodeKind::Image(asset));
+    let mut node = Node::new(
+        "Image",
+        NodeKind::Image(renamite_model::ImageNode::new(asset)),
+    );
 
     node.transform.anchor = Animated::new(DVec2::new(1.0, 1.0));
     node.transform.position = Animated::new(DVec2::new(256.0, 256.0));
@@ -234,6 +237,7 @@ fn fixture_stroke() -> Document {
             width: Animated::new(24.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
+            miter_limit: Animated::new(4.0),
             dash: None,
         }),
     ));
@@ -322,6 +326,7 @@ fn fixture_trim_half() -> Document {
             width: Animated::new(16.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
+            miter_limit: Animated::new(4.0),
             dash: None,
         }),
     ));
@@ -647,6 +652,8 @@ fn fixture_text() -> Document {
             size: Animated::new(140.0),
             align: TextAlign::Left,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         }),
     ));
     doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));
@@ -695,6 +702,7 @@ fn fixture_dashed_stroke() -> Document {
             width: Animated::new(18.0),
             cap: StrokeCap::Round,
             join: StrokeJoin::Round,
+            miter_limit: Animated::new(4.0),
             dash: Some(AnimatedDash {
                 dashes: vec![Animated::new(32.0), Animated::new(18.0)],
                 offset: Animated::new(0.0),
@@ -798,6 +806,8 @@ fn fixture_masked_text() -> Document {
             size: Animated::new(140.0),
             align: TextAlign::Left,
             font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
         }),
     ));
     doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));

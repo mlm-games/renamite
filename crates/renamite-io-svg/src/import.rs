@@ -10,8 +10,8 @@ use image::GenericImageView;
 use kurbo::Affine;
 use renamite_animation::{Animated, Frame};
 use renamite_model::{
-    Asset, BlendMode, Document, ImageAsset, LayerProps, MaskProps, Node, NodeKind, Parent,
-    ShapeKind,
+    Asset, BlendMode, Color, Document, ImageAsset, ImageNode, LayerProps, MaskProps, Node,
+    NodeKind, Parent, ShapeKind,
 };
 use usvg::ImageKind;
 use usvg::Node as SvgNode;
@@ -202,15 +202,19 @@ impl Importer {
             usvg::BlendMode::Normal => BlendMode::Normal,
             usvg::BlendMode::Multiply => BlendMode::Multiply,
             usvg::BlendMode::Screen => BlendMode::Screen,
-            unsupported => {
-                self.warnings.push(SvgWarning {
-                    path: path.into(),
-                    message: format!(
-                        "SVG blend mode `{unsupported:?}` is not supported; using normal"
-                    ),
-                });
-                BlendMode::Normal
-            }
+            usvg::BlendMode::Overlay => BlendMode::Overlay,
+            usvg::BlendMode::Darken => BlendMode::Darken,
+            usvg::BlendMode::Lighten => BlendMode::Lighten,
+            usvg::BlendMode::ColorDodge => BlendMode::ColorDodge,
+            usvg::BlendMode::ColorBurn => BlendMode::ColorBurn,
+            usvg::BlendMode::HardLight => BlendMode::HardLight,
+            usvg::BlendMode::SoftLight => BlendMode::SoftLight,
+            usvg::BlendMode::Difference => BlendMode::Difference,
+            usvg::BlendMode::Exclusion => BlendMode::Exclusion,
+            usvg::BlendMode::Hue => BlendMode::Hue,
+            usvg::BlendMode::Saturation => BlendMode::Saturation,
+            usvg::BlendMode::Color => BlendMode::Color,
+            usvg::BlendMode::Luminosity => BlendMode::Luminosity,
         };
         if blend != BlendMode::Normal {
             node.kind = NodeKind::Layer(LayerProps {
@@ -413,7 +417,7 @@ impl Importer {
                 return None;
             }
         };
-        let mut node = Node::new(name, NodeKind::Image(asset_id));
+        let mut node = Node::new(name, NodeKind::Image(ImageNode::new(asset_id)));
         node.transform = transform;
         Some(ImportTree::leaf(node))
     }

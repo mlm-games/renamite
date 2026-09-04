@@ -4,8 +4,9 @@ use glam::DVec2;
 use renamite_animation::{Animated, AnimatedTransform, Frame, FrameRate};
 use renamite_model::{
     AnimatedDash, Asset, BlendMode, Color, CompId, Composition, Document, FillRule, Gradient,
-    GradientKind, ImageAsset, LayerProps, MaskProps, ModifierKind, Node, NodeId, NodeKind, Parent,
-    ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
+    GradientKind, ImageAsset, ImageNode, LayerProps, MaskProps, ModifierKind, Node, NodeId,
+    NodeKind, Parent, ShapeKind, StarKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, TimeMap,
+    TrimMode,
 };
 use serde_json::Value;
 
@@ -187,7 +188,7 @@ impl Importer {
 
         let mut node = Node::new(
             layer.get("nm").and_then(Value::as_str).unwrap_or("Image"),
-            NodeKind::Image(asset),
+            NodeKind::Image(ImageNode::new(asset)),
         );
 
         node.visible = !layer.get("hd").and_then(Value::as_bool).unwrap_or(false);
@@ -519,6 +520,11 @@ impl Importer {
                             item.get("lj").and_then(Value::as_u64).unwrap_or(1),
                         ),
                         dash: import_dash(item.get("d")),
+                        miter_limit: import_scalar(
+                            item.get("ml").unwrap_or(&Value::Null),
+                            1.0,
+                            4.0,
+                        ),
                     }),
                 );
                 node.opacity =
@@ -560,6 +566,11 @@ impl Importer {
                                 item.get("lj").and_then(Value::as_u64).unwrap_or(1),
                             ),
                             dash: import_dash(item.get("d")),
+                            miter_limit: import_scalar(
+                                item.get("ml").unwrap_or(&Value::Null),
+                                1.0,
+                                4.0,
+                            ),
                         }),
                     )
                 };
@@ -806,6 +817,19 @@ fn blend_from_lottie(value: u64) -> BlendMode {
     match value {
         1 => BlendMode::Multiply,
         2 => BlendMode::Screen,
+        3 => BlendMode::Overlay,
+        4 => BlendMode::Darken,
+        5 => BlendMode::Lighten,
+        6 => BlendMode::ColorDodge,
+        7 => BlendMode::ColorBurn,
+        8 => BlendMode::HardLight,
+        9 => BlendMode::SoftLight,
+        10 => BlendMode::Difference,
+        11 => BlendMode::Exclusion,
+        12 => BlendMode::Hue,
+        13 => BlendMode::Saturation,
+        14 => BlendMode::Color,
+        15 => BlendMode::Luminosity,
         _ => BlendMode::Normal,
     }
 }

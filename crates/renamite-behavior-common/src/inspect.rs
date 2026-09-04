@@ -418,6 +418,26 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     labels: ["Left", "Center", "Right"],
                 },
             ));
+            d.push(pd(
+                "Text",
+                "Tracking",
+                "text.tracking",
+                PropKind::F64 {
+                    min: None,
+                    max: None,
+                    step: 1.0,
+                },
+            ));
+            d.push(pd(
+                "Text",
+                "Leading",
+                "text.leading",
+                PropKind::F64 {
+                    min: None,
+                    max: None,
+                    step: 1.0,
+                },
+            ));
         }
         NodeKind::Style(StyleKind::Stroke { .. }) => {
             // Color handled by paint_section
@@ -445,6 +465,16 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 "stroke.join",
                 PropKind::Enum3 {
                     labels: ["Miter", "Round", "Bevel"],
+                },
+            ));
+            d.push(pd(
+                "Stroke",
+                "Miter limit",
+                "stroke.miter_limit",
+                PropKind::F64 {
+                    min: Some(1.0),
+                    max: Some(10.0),
+                    step: 0.1,
                 },
             ));
         }
@@ -716,7 +746,10 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
         NodeKind::Precomp { .. } => {
             // precomp_section in properties.rs.
         }
-        NodeKind::Image(_) | NodeKind::Group => {}
+        NodeKind::Image(_) => {
+            d.push(pd("Image", "Tint", "image.tint()", PropKind::Color));
+        }
+        NodeKind::Group => {}
     }
     d
 }
@@ -901,6 +934,19 @@ pub fn cmd_set_discrete(
                 blend: Some(match index_or_bool {
                     1 => BlendMode::Multiply,
                     2 => BlendMode::Screen,
+                    3 => BlendMode::Overlay,
+                    4 => BlendMode::Darken,
+                    5 => BlendMode::Lighten,
+                    6 => BlendMode::ColorDodge,
+                    7 => BlendMode::ColorBurn,
+                    8 => BlendMode::HardLight,
+                    9 => BlendMode::SoftLight,
+                    10 => BlendMode::Difference,
+                    11 => BlendMode::Exclusion,
+                    12 => BlendMode::Hue,
+                    13 => BlendMode::Saturation,
+                    14 => BlendMode::Color,
+                    15 => BlendMode::Luminosity,
                     _ => BlendMode::Normal,
                 }),
             })
@@ -1130,6 +1176,8 @@ mod tests {
                 size: Animated::new(64.0),
                 align: TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         doc.attach(t, Parent::Comp(doc.main), 0).unwrap();
@@ -1163,6 +1211,7 @@ mod tests {
                 width: Animated::new(4.0),
                 cap: StrokeCap::Butt,
                 join: StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         ));
@@ -1238,6 +1287,8 @@ mod tests {
                 size: Animated::new(20.0),
                 align: TextAlign::Center,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         doc.attach(t, Parent::Comp(doc.main), 0).unwrap();
@@ -1321,6 +1372,7 @@ mod tests {
                 width: Animated::new(1.0),
                 cap: StrokeCap::Butt,
                 join: StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
             NodeKind::Style(StyleKind::Stroke {
@@ -1332,6 +1384,7 @@ mod tests {
                 width: Animated::new(1.0),
                 cap: StrokeCap::Butt,
                 join: StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
             NodeKind::Text(TextNode {
@@ -1339,6 +1392,8 @@ mod tests {
                 size: Animated::new(12.0),
                 align: TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
             NodeKind::Modifier(ModifierKind::TrimPath {
                 start: Animated::new(0.0),
@@ -1495,6 +1550,7 @@ mod tests {
                 width: Animated::new(1.0),
                 cap: renamite_model::StrokeCap::Butt,
                 join: renamite_model::StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
         ));
@@ -1505,6 +1561,8 @@ mod tests {
                 size: Animated::new(12.0),
                 align: renamite_model::TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
         ));
         let mask = doc.create_node(Node::new(
@@ -1546,6 +1604,7 @@ mod tests {
                 width: Animated::new(1.0),
                 cap: renamite_model::StrokeCap::Butt,
                 join: renamite_model::StrokeJoin::Miter,
+                miter_limit: Animated::new(4.0),
                 dash: None,
             }),
             NodeKind::Text(TextNode {
@@ -1553,6 +1612,8 @@ mod tests {
                 size: Animated::new(12.0),
                 align: renamite_model::TextAlign::Left,
                 font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
             }),
             NodeKind::Modifier(ModifierKind::TrimPath {
                 start: Animated::new(0.0),

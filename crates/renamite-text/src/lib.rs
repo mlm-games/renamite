@@ -211,29 +211,54 @@ pub fn shape_text_from_bytes(
     text: &str,
     size: f64,
     align: TextAlign,
+    tracking: f64,
+    leading: f64,
 ) -> Result<BezPath, TextError> {
     let font = FontRef::parse(bytes)?;
-    Ok(shape_text(&font, text, size, align))
+    Ok(shape_text(&font, text, size, align, tracking, leading))
 }
 
 /// Shape `text` with the bundled default face.
-pub fn shape_text_default(text: &str, size: f64, align: TextAlign) -> BezPath {
-    shape_text(&FontRef::default_font(), text, size, align)
+pub fn shape_text_default(
+    text: &str,
+    size: f64,
+    align: TextAlign,
+    tracking: f64,
+    leading: f64,
+) -> BezPath {
+    shape_text(
+        &FontRef::default_font(),
+        text,
+        size,
+        align,
+        tracking,
+        leading,
+    )
 }
 
 /// Shape `text` at `size` (px per em) into one combined outline path.
 ///
 /// Origin: (0, 0) is the first line's baseline start; lines advance downward.
-pub fn shape_text(font: &FontRef, text: &str, size: f64, align: TextAlign) -> BezPath {
+/// `tracking` is extra advance per glyph in px. `leading` is extra line spacing in px added to the face's default line height.
+pub fn shape_text(
+    font: &FontRef,
+    text: &str,
+    size: f64,
+    align: TextAlign,
+    tracking: f64,
+    leading: f64,
+) -> BezPath {
     let face = font.face();
     let upem = face.units_per_em() as f64;
     let scale = size / upem.max(1.0);
-    let line_height =
-        (face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64) * scale;
+    let line_height = (face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64)
+        * scale
+        + leading;
     let mut out = BezPath::new();
     for (line_idx, line) in text.split('\n').enumerate() {
         let baseline = line_idx as f64 * line_height;
-        let width = line_advance(&face, line) * scale;
+        let width = line_advance(&face, line) * scale
+            + tracking * line.chars().count().saturating_sub(1) as f64;
         let start_x = match align {
             TextAlign::Left => 0.0,
             TextAlign::Center => -width / 2.0,
@@ -250,7 +275,7 @@ pub fn shape_text(font: &FontRef, text: &str, size: f64, align: TextAlign) -> Be
             };
             let _ = face.outline_glyph(gid, &mut sink);
             out.extend(sink.path);
-            pen += face.glyph_hor_advance(gid).unwrap_or(0) as f64 * scale;
+            pen += face.glyph_hor_advance(gid).unwrap_or(0) as f64 * scale + tracking;
         }
     }
     out
@@ -274,7 +299,7 @@ mod tests {
     #[test]
     fn nonempty_text_produces_outline() {
         let font = FontRef::default_font();
-        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
+        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left, 0.0, 0.0);
         assert!(!p.elements().is_empty());
         assert!(p.bounding_box().width() > 10.0);
     }
@@ -282,23 +307,23 @@ mod tests {
     #[test]
     fn newline_advances_baseline_downward() {
         let font = FontRef::default_font();
-        let one = shape_text(&font, "A", 48.0, TextAlign::Left).bounding_box();
-        let two = shape_text(&font, "A\nA", 48.0, TextAlign::Left).bounding_box();
+        let one = shape_text(&font, "A", 48.0, TextAlign::Left, 0.0, 0.0).bounding_box();
+        let two = shape_text(&font, "A\nA", 48.0, TextAlign::Left, 0.0, 0.0).bounding_box();
         assert!(two.height() > one.height() + 10.0);
     }
 
     #[test]
     fn center_align_straddles_origin() {
         let font = FontRef::default_font();
-        let bb = shape_text(&font, "WW", 48.0, TextAlign::Center).bounding_box();
+        let bb = shape_text(&font, "WW", 48.0, TextAlign::Center, 0.0, 0.0).bounding_box();
         assert!(bb.x0 < 0.0 && bb.x1 > 0.0);
     }
 
     #[test]
     fn shaping_is_deterministic() {
         let font = FontRef::default_font();
-        let a = shape_text(&font, "Renamite", 32.0, TextAlign::Left);
-        let b = shape_text(&font, "Renamite", 32.0, TextAlign::Left);
+        let a = shape_text(&font, "Renamite", 32.0, TextAlign::Left, 0.0, 0.0);
+        let b = shape_text(&font, "Renamite", 32.0, TextAlign::Left, 0.0, 0.0);
         assert_eq!(a.elements(), b.elements());
     }
 
@@ -316,14 +341,14 @@ mod tests {
     #[test]
     fn for_family_none_resolves_to_default() {
         let font = FontRef::for_family(None);
-        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
+        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left, 0.0, 0.0);
         assert!(!p.elements().is_empty());
     }
 
     #[test]
     fn for_family_unknown_falls_back_to_default() {
         let font = FontRef::for_family(Some("Definitely Not A Font"));
-        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left);
+        let p = shape_text(&font, "Ab", 48.0, TextAlign::Left, 0.0, 0.0);
         assert!(!p.elements().is_empty());
     }
 
@@ -339,8 +364,8 @@ mod tests {
 
         let by_name = FontRef::for_family(Some(&name));
         let by_default = FontRef::default_font();
-        let a = shape_text(&by_name, "Renamite", 32.0, TextAlign::Left);
-        let b = shape_text(&by_default, "Renamite", 32.0, TextAlign::Left);
+        let a = shape_text(&by_name, "Renamite", 32.0, TextAlign::Left, 0.0, 0.0);
+        let b = shape_text(&by_default, "Renamite", 32.0, TextAlign::Left, 0.0, 0.0);
         assert_eq!(
             a.elements(),
             b.elements(),

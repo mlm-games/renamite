@@ -317,6 +317,11 @@ impl Tween for DVec2 {
         *a + (*b - *a) * t
     }
 }
+impl Tween for glam::DVec4 {
+    fn tween(a: &Self, b: &Self, t: f64) -> Self {
+        *a + (*b - *a) * t
+    }
+}
 
 /// Degrees; lerp WITHOUT modulo (preserves multi-turn values (like glax)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
