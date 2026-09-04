@@ -2628,14 +2628,26 @@ fn blend_segment(
 fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
     let (offset, stretch, current_comp, comps) = {
         let s = session.borrow();
-        let NodeKind::Precomp { comp, time_map } = &s.file.document.nodes.get(id)?.kind else {
+        let doc = &s.file.document;
+        let NodeKind::Precomp { comp, time_map } = &doc.nodes.get(id)?.kind else {
             return None;
         };
-        let comps: Vec<(renamite_model::CompId, String)> = s
-            .file
-            .document
+        // Filter out ones that would create a cycle if selected.
+        let host = find_host_comp(doc, id);
+        let comps: Vec<(renamite_model::CompId, String)> = doc
             .compositions
             .iter()
+            .filter(|(cid, _)| {
+                if let Some(h) = host {
+                    if *cid == h {
+                        return false;
+                    }
+                    if is_comp_reachable(doc, *cid, h) {
+                        return false;
+                    }
+                }
+                true
+            })
             .map(|(cid, comp)| (cid, comp.name.clone()))
             .collect();
         (time_map.offset.0, time_map.stretch, *comp, comps)
@@ -2856,6 +2868,73 @@ fn font_chip(
                     }
                 }),
         )
+}
+
+fn find_host_comp(
+    doc: &renamite_model::Document,
+    mut node: NodeId,
+) -> Option<renamite_model::CompId> {
+    loop {
+        if let Some((parent, _)) = doc.locate(node) {
+            match parent {
+                renamite_model::Parent::Comp(c) => return Some(c),
+                renamite_model::Parent::Node(p) => node = p,
+            }
+        } else {
+            for (cid, comp) in &doc.compositions {
+                if comp.children.contains(&node) {
+                    return Some(cid);
+                }
+            }
+            return None;
+        }
+    }
+}
+
+fn is_comp_reachable(
+    doc: &renamite_model::Document,
+    from: renamite_model::CompId,
+    target: renamite_model::CompId,
+) -> bool {
+    use std::collections::HashSet;
+    let mut stack = vec![from];
+    let mut visited = HashSet::new();
+    while let Some(cur) = stack.pop() {
+        if cur == target {
+            return true;
+        }
+        if !visited.insert(cur) {
+            continue;
+        }
+        if let Some(comp) = doc.compositions.get(cur) {
+            for &child in &comp.children {
+                if let Some(node) = doc.nodes.get(child) {
+                    if let renamite_model::NodeKind::Precomp {
+                        comp: child_comp, ..
+                    } = &node.kind
+                    {
+                        stack.push(*child_comp);
+                    }
+                    let mut inner = vec![child];
+                    while let Some(nid) = inner.pop() {
+                        if let Some(n) = doc.nodes.get(nid) {
+                            for &c in &n.children {
+                                if let Some(cn) = doc.nodes.get(c) {
+                                    if let renamite_model::NodeKind::Precomp { comp: cc, .. } =
+                                        &cn.kind
+                                    {
+                                        stack.push(*cc);
+                                    }
+                                    inner.push(c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn paint_style_id(session: &Session, selected: NodeId) -> Option<NodeId> {

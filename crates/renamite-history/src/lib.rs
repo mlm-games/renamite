@@ -1617,7 +1617,8 @@ fn apply_document_command(
                 lp.out_frame = *v;
             }
             if let Some(v) = time_stretch {
-                lp.time_stretch = (*v).max(1e-6);
+                let st = if v.is_finite() { v.max(1e-6) } else { 1.0 };
+                lp.time_stretch = st;
             }
             if let Some(v) = blend {
                 lp.blend = *v;
@@ -1644,7 +1645,8 @@ fn apply_document_command(
                 time_map.offset = *v;
             }
             if let Some(v) = stretch {
-                time_map.stretch = (*v).max(1e-6);
+                let st = if v.is_finite() { v.max(1e-6) } else { 1.0 };
+                time_map.stretch = st;
             }
             Ok((
                 None,
@@ -1656,13 +1658,30 @@ fn apply_document_command(
             ))
         }
         SetPrecompComp { id, comp } => {
+            // Validate kind and target before mutable borrow (cycle check needs &doc)
+            if !matches!(
+                doc.nodes.get(*id).map(|n| &n.kind),
+                Some(NodeKind::Precomp { .. })
+            ) {
+                if doc.nodes.get(*id).is_none() {
+                    return Err(ModelError::MissingNode.into());
+                } else {
+                    return Err(ModelError::WrongNodeKind("Precomp").into());
+                }
+            }
+            if !doc.compositions.contains_key(*comp) {
+                return Err(ModelError::MissingComp.into());
+            }
+            // Cycle guard: precomp must not be reachable from its target.
+            if let Some(host) = find_host_comp(doc, *id) {
+                if *comp == host || is_comp_reachable(doc, *comp, host) {
+                    return Err(EditError::Model(ModelError::PrecompCycle));
+                }
+            }
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Precomp { comp: cur, .. } = &mut n.kind else {
                 return Err(ModelError::WrongNodeKind("Precomp").into());
             };
-            if !doc.compositions.contains_key(*comp) {
-                return Err(ModelError::MissingComp.into());
-            }
             let old = *cur;
             *cur = *comp;
             Ok((None, vec![SetPrecompComp { id: *id, comp: old }]))
@@ -1678,6 +1697,64 @@ fn apply_document_command(
         }
         _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
+}
+
+fn find_host_comp(doc: &Document, mut node: NodeId) -> Option<CompId> {
+    loop {
+        if let Some((parent, _)) = doc.locate(node) {
+            match parent {
+                renamite_model::Parent::Comp(c) => return Some(c),
+                renamite_model::Parent::Node(p) => node = p,
+            }
+        } else {
+            // Check if node is root child of any composition (locate failed but node.parent is None)
+            for (cid, comp) in &doc.compositions {
+                if comp.children.contains(&node) {
+                    return Some(cid);
+                }
+            }
+            return None;
+        }
+    }
+}
+
+fn is_comp_reachable(doc: &Document, from: CompId, target: CompId) -> bool {
+    use std::collections::HashSet;
+    let mut stack = vec![from];
+    let mut visited = HashSet::new();
+    while let Some(cur) = stack.pop() {
+        if cur == target {
+            return true;
+        }
+        if !visited.insert(cur) {
+            continue;
+        }
+        if let Some(comp) = doc.compositions.get(cur) {
+            for &child in &comp.children {
+                if let Some(node) = doc.nodes.get(child) {
+                    if let NodeKind::Precomp { comp: child_comp, .. } = &node.kind {
+                        stack.push(*child_comp);
+                    }
+                    // Also check nested precomps inside groups/layers via recursion
+                    // For deep search, walk node children
+                    let mut inner_stack = vec![child];
+                    while let Some(nid) = inner_stack.pop() {
+                        if let Some(n) = doc.nodes.get(nid) {
+                            for &c in &n.children {
+                                if let Some(cn) = doc.nodes.get(c) {
+                                    if let NodeKind::Precomp { comp: cc, .. } = &cn.kind {
+                                        stack.push(*cc);
+                                    }
+                                    inner_stack.push(c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// True if `new` continues the same logical edit as `last` (live drag). The
@@ -1761,8 +1838,31 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
         (SetCompositionName { comp, .. }, SetCompositionName { comp: c2, .. }) => *comp == *c2,
         (SetCompositionSize { comp, .. }, SetCompositionSize { comp: c2, .. }) => *comp == *c2,
         (SetCompositionRate { comp, .. }, SetCompositionRate { comp: c2, .. }) => *comp == *c2,
-        (SetLayerProps { id, .. }, SetLayerProps { id: id2, .. }) => *id == *id2,
-        (SetPrecompTimeMap { id, .. }, SetPrecompTimeMap { id: id2, .. }) => *id == *id2,
+        (
+            SetLayerProps {
+                id,
+                in_frame,
+                out_frame,
+                time_stretch,
+                blend,
+            },
+            SetLayerProps {
+                id: id2,
+                in_frame: inf2,
+                out_frame: outf2,
+                time_stretch: ts2,
+                blend: bl2,
+            },
+        ) => {
+            *id == *id2
+                && (in_frame.is_some() == inf2.is_some())
+                && (out_frame.is_some() == outf2.is_some())
+                && (time_stretch.is_some() == ts2.is_some())
+                && (blend.is_some() == bl2.is_some())
+        }
+        (SetPrecompTimeMap { id, offset, stretch }, SetPrecompTimeMap { id: id2, offset: o2, stretch: s2 }) => {
+            *id == *id2 && (offset.is_some() == o2.is_some()) && (stretch.is_some() == s2.is_some())
+        }
         (SetPrecompComp { id, .. }, SetPrecompComp { id: id2, .. }) => *id == *id2,
         (SetImageCrop { id, .. }, SetImageCrop { id: id2, .. }) => *id == *id2,
         (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,

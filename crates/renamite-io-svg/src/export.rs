@@ -94,6 +94,14 @@ impl Exporter<'_> {
             .iter()
             .map(|&clip| format!("<g clip-path=\"url(#clip{clip})\">\n"))
             .collect();
+        let blend_open = if item.blend != renamite_model::BlendMode::Normal {
+            Some(format!(
+                "<g style=\"mix-blend-mode:{};isolation:isolate\">\n",
+                blend_to_css(item.blend)
+            ))
+        } else {
+            None
+        };
 
         let mut content = String::new();
         match &item.paint {
@@ -120,9 +128,15 @@ impl Exporter<'_> {
             return;
         }
 
+        if let Some(ref b) = blend_open {
+            out.push_str(b);
+        }
         out.push_str(&open.iter().map(|s| s.as_str()).collect::<Vec<_>>().concat());
         out.push_str(&content);
         for _ in &open {
+            out.push_str("</g>\n");
+        }
+        if blend_open.is_some() {
             out.push_str("</g>\n");
         }
     }
@@ -371,4 +385,25 @@ fn image_data_uri(mime: &str, bytes: &[u8]) -> String {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
+}
+
+fn blend_to_css(blend: renamite_model::BlendMode) -> &'static str {
+    match blend {
+        renamite_model::BlendMode::Normal => "normal",
+        renamite_model::BlendMode::Multiply => "multiply",
+        renamite_model::BlendMode::Screen => "screen",
+        renamite_model::BlendMode::Overlay => "overlay",
+        renamite_model::BlendMode::Darken => "darken",
+        renamite_model::BlendMode::Lighten => "lighten",
+        renamite_model::BlendMode::ColorDodge => "color-dodge",
+        renamite_model::BlendMode::ColorBurn => "color-burn",
+        renamite_model::BlendMode::HardLight => "hard-light",
+        renamite_model::BlendMode::SoftLight => "soft-light",
+        renamite_model::BlendMode::Difference => "difference",
+        renamite_model::BlendMode::Exclusion => "exclusion",
+        renamite_model::BlendMode::Hue => "hue",
+        renamite_model::BlendMode::Saturation => "saturation",
+        renamite_model::BlendMode::Color => "color",
+        renamite_model::BlendMode::Luminosity => "luminosity",
+    }
 }

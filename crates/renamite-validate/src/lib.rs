@@ -369,6 +369,8 @@ impl<'a> Validator<'a> {
             NodeKind::Modifier(modifier) => self.validate_modifier_animations(id, modifier),
             NodeKind::Text(text) => {
                 self.check_animated(&format!("{base}/text/size"), &text.size, finite_f64);
+                self.check_animated(&format!("{base}/text/tracking"), &text.tracking, finite_f64);
+                self.check_animated(&format!("{base}/text/leading"), &text.leading, finite_f64);
             }
             NodeKind::Layer(props) => {
                 if !props.time_stretch.is_finite() || props.time_stretch <= 0.0 {
@@ -390,7 +392,33 @@ impl<'a> Validator<'a> {
                     self.warn(format!("{base}/mask"), "mask has no geometry");
                 }
             }
-            NodeKind::Group | NodeKind::Image(_) | NodeKind::Precomp { .. } => {}
+            NodeKind::Image(img) => {
+                self.check_animated(&format!("{base}/image/tint"), img.tint(), finite_color);
+                let c = img.crop();
+                if !c.x.is_finite() || !c.y.is_finite() || !c.z.is_finite() || !c.w.is_finite() {
+                    self.err(format!("{base}/image/crop"), "crop is not finite");
+                } else {
+                    if !(0.0..=1.0).contains(&c.x)
+                        || !(0.0..=1.0).contains(&c.y)
+                        || c.z <= 0.0
+                        || c.w <= 0.0
+                        || c.z > 1.0
+                        || c.w > 1.0
+                    {
+                        self.err(
+                            format!("{base}/image/crop"),
+                            "crop must be x,y in [0,1] and w,h in (0,1]",
+                        );
+                    }
+                    if c.x + c.z > 1.0 + 1e-9 || c.y + c.w > 1.0 + 1e-9 {
+                        self.err(
+                            format!("{base}/image/crop"),
+                            "crop rect must be inside [0,1] image bounds (x+w<=1, y+h<=1)",
+                        );
+                    }
+                }
+            }
+            NodeKind::Group | NodeKind::Precomp { .. } => {}
         }
     }
 
@@ -651,7 +679,7 @@ impl<'a> Validator<'a> {
                         "referenced composition does not exist",
                     );
                 }
-                if !time_map.stretch.is_finite() || time_map.stretch.abs() < 1e-9 {
+                if !time_map.stretch.is_finite() || time_map.stretch.abs() < 1e-6 {
                     self.err(
                         format!("node/{id:?}/precomp/stretch"),
                         "invalid time stretch",
@@ -685,11 +713,20 @@ impl<'a> Validator<'a> {
         }
         on_stack.insert(comp);
         if let Some(c) = self.file.document.compositions.get(comp) {
-            for &child in &c.children {
-                if let Some(node) = self.file.document.nodes.get(child)
-                    && let NodeKind::Precomp { comp: target, .. } = &node.kind
-                {
+            let mut stack: Vec<NodeId> = c.children.clone();
+            let mut seen_nodes = HashSet::new();
+            while let Some(nid) = stack.pop() {
+                if !seen_nodes.insert(nid) {
+                    continue;
+                }
+                let Some(node) = self.file.document.nodes.get(nid) else {
+                    continue;
+                };
+                if let NodeKind::Precomp { comp: target, .. } = &node.kind {
                     self.walk_precomp(*target, on_stack, visited);
+                }
+                if matches!(node.kind, NodeKind::Group | NodeKind::Layer(_)) {
+                    stack.extend(node.children.iter().copied());
                 }
             }
         }
@@ -1155,7 +1192,7 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font: Some("Missing".into()),
-                            tracking: Animated::new(0.0),
+                tracking: Animated::new(0.0),
                 leading: Animated::new(0.0),
             }),
         ));

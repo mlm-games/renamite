@@ -85,16 +85,31 @@ pub enum NodeKind {
     Modifier(ModifierKind),
     Text(TextNode),
     Image(ImageNode),
-    Precomp { comp: CompId, time_map: TimeMap },
+    Precomp {
+        comp: CompId,
+        #[serde(default)]
+        time_map: TimeMap,
+    },
     Mask(MaskProps),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct LayerProps {
+    #[serde(default)]
     pub in_frame: Frame,
+    #[serde(default = "default_out_frame")]
     pub out_frame: Frame,
+    #[serde(default = "default_time_stretch")]
     pub time_stretch: f64,
+    #[serde(default)]
     pub blend: BlendMode,
+}
+
+fn default_out_frame() -> Frame {
+    Frame(i64::MAX / 2)
+}
+fn default_time_stretch() -> f64 {
+    1.0
 }
 
 impl Default for LayerProps {
@@ -104,6 +119,77 @@ impl Default for LayerProps {
             out_frame: Frame(i64::MAX / 2),
             time_stretch: 1.0,
             blend: BlendMode::Normal,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LayerProps {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct LayerPropsVisitor;
+        impl<'de> Visitor<'de> for LayerPropsVisitor {
+            type Value = LayerProps;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("LayerProps")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut in_frame: Option<Frame> = None;
+                let mut out_frame: Option<Frame> = None;
+                let mut time_stretch: Option<f64> = None;
+                let mut blend: Option<BlendMode> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "in_frame" => in_frame = Some(map.next_value()?),
+                        "out_frame" => out_frame = Some(map.next_value()?),
+                        "time_stretch" => time_stretch = Some(map.next_value()?),
+                        "blend" => blend = Some(map.next_value()?),
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(LayerProps {
+                    in_frame: in_frame.unwrap_or_default(),
+                    out_frame: out_frame.unwrap_or_else(default_out_frame),
+                    time_stretch: time_stretch.unwrap_or_else(default_time_stretch),
+                    blend: blend.unwrap_or_default(),
+                })
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let in_frame: Frame = seq
+                    .next_element()?
+                    .unwrap_or_default();
+                let out_frame: Frame = seq
+                    .next_element()?
+                    .unwrap_or_else(default_out_frame);
+                let time_stretch: f64 = seq
+                    .next_element()?
+                    .unwrap_or_else(default_time_stretch);
+                let blend: BlendMode = seq.next_element()?.unwrap_or_default();
+                Ok(LayerProps {
+                    in_frame,
+                    out_frame,
+                    time_stretch,
+                    blend,
+                })
+            }
+        }
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(LayerPropsVisitor)
+        } else {
+            deserializer.deserialize_struct(
+                "LayerProps",
+                &["in_frame", "out_frame", "time_stretch", "blend"],
+                LayerPropsVisitor,
+            )
         }
     }
 }
@@ -664,8 +750,19 @@ pub enum TrimMode {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimeMap {
+    #[serde(default)]
     pub offset: Frame,
+    #[serde(default = "default_time_stretch")]
     pub stretch: f64,
+}
+
+impl Default for TimeMap {
+    fn default() -> Self {
+        Self {
+            offset: Frame(0),
+            stretch: 1.0,
+        }
+    }
 }
 
 fn default_text_size() -> Animated<f64> {
@@ -678,11 +775,10 @@ fn default_leading() -> Animated<f64> {
     Animated::new(0.0)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TextNode {
     pub text: String,
-    /// Em size in document units. The one animatable text property (strings
-    /// aren't tweenable, so content/align/font are whole-field structural).
+    /// Em size in document units.
     #[serde(default = "default_text_size")]
     pub size: Animated<f64>,
     #[serde(default)]
@@ -696,6 +792,86 @@ pub struct TextNode {
     /// Additional line spacing in document units (added to default line height).
     #[serde(default = "default_leading")]
     pub leading: Animated<f64>,
+}
+
+impl<'de> Deserialize<'de> for TextNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TextNodeVisitor;
+        impl<'de> Visitor<'de> for TextNodeVisitor {
+            type Value = TextNode;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("TextNode")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut text: Option<String> = None;
+                let mut size: Option<Animated<f64>> = None;
+                let mut align: Option<TextAlign> = None;
+                let mut font: Option<Option<String>> = None;
+                let mut tracking: Option<Animated<f64>> = None;
+                let mut leading: Option<Animated<f64>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "text" => text = Some(map.next_value()?),
+                        "size" => size = Some(map.next_value()?),
+                        "align" => align = Some(map.next_value()?),
+                        "font" => font = Some(map.next_value()?),
+                        "tracking" => tracking = Some(map.next_value()?),
+                        "leading" => leading = Some(map.next_value()?),
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let text = text.ok_or_else(|| DeError::missing_field("text"))?;
+                Ok(TextNode {
+                    text,
+                    size: size.unwrap_or_else(default_text_size),
+                    align: align.unwrap_or_default(),
+                    font: font.unwrap_or_default(),
+                    tracking: tracking.unwrap_or_else(default_tracking),
+                    leading: leading.unwrap_or_else(default_leading),
+                })
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let text: String = seq
+                    .next_element()?
+                    .ok_or_else(|| DeError::invalid_length(0, &self))?;
+                let size: Animated<f64> = seq
+                    .next_element()?
+                    .unwrap_or_else(default_text_size);
+                let align: TextAlign = seq.next_element()?.unwrap_or_default();
+                let font: Option<String> = seq.next_element()?.unwrap_or_default();
+                let tracking: Animated<f64> = seq.next_element()?.unwrap_or_else(default_tracking);
+                let leading: Animated<f64> = seq.next_element()?.unwrap_or_else(default_leading);
+                Ok(TextNode {
+                    text,
+                    size,
+                    align,
+                    font,
+                    tracking,
+                    leading,
+                })
+            }
+        }
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(TextNodeVisitor)
+        } else {
+            deserializer.deserialize_struct(
+                "TextNode",
+                &["text", "size", "align", "font", "tracking", "leading"],
+                TextNodeVisitor,
+            )
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -780,8 +956,9 @@ pub enum StarKind {
     Star,
     Burst,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlendMode {
+    #[default]
     Normal,
     Multiply,
     Screen,
@@ -905,7 +1082,7 @@ impl<'de> serde::Deserialize<'de> for ImageNode {
                 if let Some(tint) = seq.next_element::<Animated<Color>>()? {
                     let crop: glam::DVec4 = seq
                         .next_element()?
-                        .ok_or_else(|| DeError::invalid_length(2, &self))?;
+                        .unwrap_or_else(default_crop_vec4);
                     Ok(ImageNode { asset, tint, crop })
                 } else {
                     Ok(ImageNode {
@@ -1645,6 +1822,10 @@ fn eval_group(
                 };
 
                 let world_path = full_transform * local_rect.to_path(0.1);
+                let paint_width = (asset.width as f64 * crop.z).round().max(1.0) as u32;
+                let paint_height = (asset.height as f64 * crop.w).round().max(1.0) as u32;
+                let crop_affine = Affine::translate((asset.width as f64 * crop.x, asset.height as f64 * crop.y));
+                let paint_affine = full_transform * crop_affine;
 
                 scene.items.push(SceneItem {
                     path: world_path,
@@ -1652,9 +1833,9 @@ fn eval_group(
                     style: id,
                     paint: ScenePaint::Image {
                         asset: image_node.asset(),
-                        width: asset.width,
-                        height: asset.height,
-                        affine: full_transform.as_coeffs(),
+                        width: paint_width,
+                        height: paint_height,
+                        affine: paint_affine.as_coeffs(),
                         tint,
                     },
                     kind: PaintKind::Fill(FillRule::NonZero),
@@ -2134,6 +2315,8 @@ pub enum ModelError {
     WrongNodeKind(&'static str),
     #[error("composition not found")]
     MissingComp,
+    #[error("precomposition cycle detected")]
+    PrecompCycle,
     #[error("no property at path {0}")]
     MissingProp(String),
     #[error("value type mismatch for {0}")]
@@ -2228,6 +2411,43 @@ impl Document {
 
     /// Drop arena nodes not reachable from any composition (call before save).
     pub fn garbage_collect(&mut self) {
+        // 1) Find compositions reachable from `main` through Precomp nodes (including nested in Groups/Layers)
+        let mut live_comps = std::collections::HashSet::new();
+        live_comps.insert(self.main);
+        let mut comp_stack = vec![self.main];
+        let mut visited_nodes_for_comps = std::collections::HashSet::new();
+        while let Some(cid) = comp_stack.pop() {
+            let Some(comp) = self.compositions.get(cid) else {
+                continue;
+            };
+            // DFS through nodes in this composition to find Precomp targets
+            let mut node_stack: Vec<NodeId> = comp.children.clone();
+            visited_nodes_for_comps.clear();
+            while let Some(nid) = node_stack.pop() {
+                if !visited_nodes_for_comps.insert(nid) {
+                    continue;
+                }
+                let Some(node) = self.nodes.get(nid) else {
+                    continue;
+                };
+                if let NodeKind::Precomp { comp: target, .. } = &node.kind {
+                    if live_comps.insert(*target) {
+                        comp_stack.push(*target);
+                    }
+                }
+                if matches!(node.kind, NodeKind::Group | NodeKind::Layer(_)) {
+                    node_stack.extend(node.children.iter().copied());
+                }
+            }
+        }
+        // Prune orphan compositions (keep at least main even if cycle handling above kept it)
+        self.compositions.retain(|id, _| live_comps.contains(&id));
+        // Ensure main still exists (should, but guard)
+        if !self.compositions.contains_key(self.main) {
+            // Should not happen; keep GC conservative
+            return;
+        }
+
         let mut live = std::collections::HashSet::new();
         fn mark(doc: &Document, id: NodeId, live: &mut std::collections::HashSet<NodeId>) {
             if !live.insert(id) {
