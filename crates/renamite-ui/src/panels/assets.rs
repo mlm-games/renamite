@@ -185,7 +185,7 @@ fn ImageRow(session: SessionRef, row: renamite_behavior_common::assets::ImageAss
                 .size(th.typography.body_medium)
                 .color(th.on_surface),
             Text(format!(
-                "{}×{} · {} use{}",
+                "{}x{}, {} use{}",
                 row.width,
                 row.height,
                 row.usage_count,
@@ -283,7 +283,7 @@ fn FontRow(
                 .size(th.typography.body_medium)
                 .color(th.on_surface),
             Text(format!(
-                "{} · {} use{}",
+                "{}, {} use{}",
                 row.name,
                 row.usage_count,
                 if row.usage_count == 1 { "" } else { "s" },

@@ -58,7 +58,7 @@ fn render_doc_images(gpu: &mut OffscreenRenderer, doc: &Document, frame: f64) ->
     render_doc(gpu, doc, frame)
 }
 
-/// A deterministic 2×2 RGBA PNG: red / green / blue / yellow.
+/// A deterministic 2x2 RGBA PNG: red / green / blue / yellow.
 fn tiny_test_png() -> Vec<u8> {
     let mut image = image::RgbaImage::new(2, 2);
 
@@ -76,7 +76,7 @@ fn tiny_test_png() -> Vec<u8> {
     cursor.into_inner()
 }
 
-/// A 2×2 image, anchored at its center, scaled 10,000× around the composition
+/// A 2x2 image, anchored at its center, scaled 10,000x around the composition
 /// center. All four pixels meet at the anchor, so the fit view shows the
 /// four-color quadrant seam.
 fn fixture_image_layer() -> Document {

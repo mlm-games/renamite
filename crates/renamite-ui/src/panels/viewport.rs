@@ -456,11 +456,11 @@ fn ViewportStageHud(session: SessionRef) -> View {
                             })
                         })
                         .collect::<Vec<_>>()
-                        .join(" · ")
+                        .join(", ")
                 })
                 .unwrap_or_default();
             vec![
-                Text("▶ Interact · Preview")
+                Text("▶ Interact, Preview")
                     .size(theme().typography.label_medium)
                     .color(theme().primary),
                 Text(if names.is_empty() {
@@ -483,7 +483,7 @@ fn ViewportStageHud(session: SessionRef) -> View {
         } else {
             vec![
                 Text("Main").size(theme().typography.label_medium),
-                Text(format!("{w}×{h}"))
+                Text(format!("{w}x{h}"))
                     .size(theme().typography.label_small)
                     .color(theme().on_surface_variant),
                 Text(format!("Frame {frame}"))
@@ -506,9 +506,9 @@ fn ViewportHint(session: SessionRef) -> View {
     }
     let is_interact = session.borrow().mode == crate::session::EditorMode::Interact;
     let text = if is_interact {
-        "Click shapes to fire listeners · Alt+click to select · Preview inputs in the panel"
+        "Alt+click to select, click fires"
     } else {
-        "Middle or Space drag to pan · Wheel or +/- zoom · F fits · S/V select · B/P pen · N nodes · R/E shapes · T text"
+        "Middle or Space drag to pan, Wheel or +/- zoom, F fits, S/V select, B/P pen, N nodes, R/E shapes, T text"
     };
     Box(Modifier::new()
         .absolute()

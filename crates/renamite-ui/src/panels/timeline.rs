@@ -315,7 +315,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                     let label = prop_label(session.clone(), row.node, &row.prop);
                     let name = match label {
                         Some(prop) => {
-                            format!("{} · {}", session.borrow().node_name(row.node), prop)
+                            format!("{}, {}", session.borrow().node_name(row.node), prop)
                         }
                         None => session.borrow().node_name(row.node),
                     };

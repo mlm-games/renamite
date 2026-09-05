@@ -562,7 +562,7 @@ mod tests {
         s.items[0].path.bounding_box().center().x
     }
 
-    /// 100×100 box + fill under main. Returns (project, shape, fill).
+    /// 100x100 box + fill under main. Returns (project, shape, fill).
     fn static_box() -> (RenFile, NodeId, NodeId) {
         let mut doc = Document::empty();
         let comp = doc.main;

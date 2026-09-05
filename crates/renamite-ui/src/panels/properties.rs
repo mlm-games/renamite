@@ -80,7 +80,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             let duration = (range.1.0 - range.0.0).max(0);
             crate::components::CollapsibleSection(
                 "composition_props",
-                format!("Composition · {comp_name}"),
+                format!("Composition, {comp_name}"),
                 vec![],
                 Column(Modifier::new().fill_max_width()).child((
                     // Name row
@@ -171,7 +171,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                                 }
                             },
                         )),
-                        Text("×")
+                        Text("x")
                             .size(th.typography.body_medium)
                             .color(th.on_surface_variant),
                         Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
@@ -2100,7 +2100,7 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
 
     for (label, value) in [
         ("Name", name),
-        ("Dimensions", format!("{width}×{height} px")),
+        ("Dimensions", format!("{width}x{height} px")),
         ("Type", mime),
     ] {
         children.push(

@@ -136,11 +136,11 @@ fn PreviewStatusBar(session: SessionRef) -> View {
                             .to_string()
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ")
+                    .join(", ")
             };
-            format!("▶ {name}  ·  {names}")
+            format!("▶ {name} ,  {names}")
         }
-        _ => format!("▶ {name}  ·  waiting"),
+        _ => format!("▶ {name} ,  waiting"),
     };
     Text(label)
         .size(th.typography.label_small)
@@ -651,7 +651,7 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
         });
 
     Column(Modifier::new().fill_max_width()).child((
-        Text("Shift+drag state or Any → wire · drag state → move · middle/space-drag → pan · wheel → zoom · double-click empty → add state")
+        Text("Shift+drag state to wire")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -1444,7 +1444,7 @@ fn kind_label(kind: &StateKind) -> String {
     match kind {
         StateKind::Empty => "empty".into(),
         StateKind::Clip { .. } => "clip".into(),
-        StateKind::Blend1D { children, .. } => format!("blend · {}", children.len()),
+        StateKind::Blend1D { children, .. } => format!("blend, {}", children.len()),
     }
 }
 
@@ -1529,7 +1529,7 @@ fn LayerInspector(
             }),
         )),
         Text(format!(
-            "{state_count} states · {any_count} any-transitions"
+            "{state_count} states, {any_count} any-transitions"
         ))
         .size(th.typography.body_small)
         .color(th.on_surface_variant)
@@ -2095,7 +2095,7 @@ fn TransitionInspector(
 
     let mut rows: Vec<View> = vec![
         Text(match source {
-            TransitionSource::Any => "Transition · Any",
+            TransitionSource::Any => "Transition, Any",
             TransitionSource::State(_) => "Transition",
         })
         .size(th.typography.label_medium)

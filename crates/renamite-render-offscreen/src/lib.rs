@@ -20,7 +20,7 @@ pub fn set_shared_device(device: wgpu::Device, queue: wgpu::Queue) {
     repose_render_wgpu::offscreen::set_shared_device(device, queue)
 }
 
-/// Build a `ViewTransform` that letterboxes `artboard` into a `w×h` frame.
+/// Build a `ViewTransform` that letterboxes `artboard` into a `wxh` frame.
 pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
     let scale = (w as f64 / artboard.0.max(1) as f64)
         .min(h as f64 / artboard.1.max(1) as f64)

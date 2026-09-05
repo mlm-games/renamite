@@ -36,7 +36,7 @@ pub fn templates() -> &'static [TemplateInfo] {
         TemplateInfo {
             id: TemplateId::Blank,
             name: "Blank",
-            description: "Empty 512×512 composition.",
+            description: "Empty 512x512 composition.",
         },
         TemplateInfo {
             id: TemplateId::BouncingBall,
@@ -299,7 +299,7 @@ fn masked_text() -> RenFile {
     RenFile::new(doc, "Masked Text")
 }
 
-/// A deterministic 2×2 RGBA PNG: red / green / blue / yellow.
+/// A deterministic 2x2 RGBA PNG: red / green / blue / yellow.
 fn tiny_png() -> Vec<u8> {
     let mut image = image::RgbaImage::new(2, 2);
     image.put_pixel(0, 0, image::Rgba([255, 80, 80, 255]));
