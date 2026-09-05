@@ -3,7 +3,7 @@ resolver = "3"
 members = ["apps/renamite-editor", "apps/renamite-cli", "crates/*"]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 rust-version = "1.93"
 license = "MPL-2.0"
@@ -69,27 +69,27 @@ clap_complete = "4.5"
 pollster = "0.4"
 tempfile = "3"
 
-renamite-animation = { path = "crates/renamite-animation", version = "0.2.4" }
-renamite-geometry = { path = "crates/renamite-geometry", version = "0.2.4" }
-renamite-text = { path = "crates/renamite-text", version = "0.2.4" }
-renamite-model = { path = "crates/renamite-model", version = "0.2.4" }
-renamite-history = { path = "crates/renamite-history", version = "0.2.4" }
-renamite-behavior-common = { path = "crates/renamite-behavior-common", version = "0.2.4" }
-renamite-behavior-canvas = { path = "crates/renamite-behavior-canvas", version = "0.2.4" }
-renamite-behavior-timeline = { path = "crates/renamite-behavior-timeline", version = "0.2.4" }
-renamite-render-bridge = { path = "crates/renamite-render-bridge", version = "0.2.4" }
-renamite-render-offscreen = { path = "crates/renamite-render-offscreen", version = "0.2.4" }
-renamite-ui = { path = "crates/renamite-ui", version = "0.2.4" }
-renamite-platform = { path = "crates/renamite-platform", version = "0.2.4" }
-renamite-io-lottie = { path = "crates/renamite-io-lottie", version = "0.2.4" }
-renamite-io-svg = { path = "crates/renamite-io-svg", version = "0.2.4" }
-renamite-test-support = { path = "crates/renamite-test-support", version = "0.2.4" }
-renamite-machine = { path = "crates/renamite-machine", version = "0.2.4" }
-renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.2.4" }
-renamite-validate = { path = "crates/renamite-validate", version = "0.2.4" }
-renamite-examples = { path = "crates/renamite-examples", version = "0.2.4" }
-renamite-player = { path = "crates/renamite-player", version = "0.2.4" }
-renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.2.4" }
+renamite-animation = { path = "crates/renamite-animation", version = "0.2.5" }
+renamite-geometry = { path = "crates/renamite-geometry", version = "0.2.5" }
+renamite-text = { path = "crates/renamite-text", version = "0.2.5" }
+renamite-model = { path = "crates/renamite-model", version = "0.2.5" }
+renamite-history = { path = "crates/renamite-history", version = "0.2.5" }
+renamite-behavior-common = { path = "crates/renamite-behavior-common", version = "0.2.5" }
+renamite-behavior-canvas = { path = "crates/renamite-behavior-canvas", version = "0.2.5" }
+renamite-behavior-timeline = { path = "crates/renamite-behavior-timeline", version = "0.2.5" }
+renamite-render-bridge = { path = "crates/renamite-render-bridge", version = "0.2.5" }
+renamite-render-offscreen = { path = "crates/renamite-render-offscreen", version = "0.2.5" }
+renamite-ui = { path = "crates/renamite-ui", version = "0.2.5" }
+renamite-platform = { path = "crates/renamite-platform", version = "0.2.5" }
+renamite-io-lottie = { path = "crates/renamite-io-lottie", version = "0.2.5" }
+renamite-io-svg = { path = "crates/renamite-io-svg", version = "0.2.5" }
+renamite-test-support = { path = "crates/renamite-test-support", version = "0.2.5" }
+renamite-machine = { path = "crates/renamite-machine", version = "0.2.5" }
+renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.2.5" }
+renamite-validate = { path = "crates/renamite-validate", version = "0.2.5" }
+renamite-examples = { path = "crates/renamite-examples", version = "0.2.5" }
+renamite-player = { path = "crates/renamite-player", version = "0.2.5" }
+renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.2.5" }
 
 # [patch.crates-io]
 # web-workers = { path = "../web-workers" }
