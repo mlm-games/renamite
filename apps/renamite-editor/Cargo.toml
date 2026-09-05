@@ -27,7 +27,7 @@ fullscreen = false
 icon = "@drawable/ic_launcher_monochrome"
 
 [package.metadata.android.sdk]
-version_code = 16777734
+version_code = 16777735
 min_sdk_version = 26
 target_sdk_version = 37
 
