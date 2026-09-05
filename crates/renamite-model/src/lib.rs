@@ -2565,60 +2565,169 @@ pub enum Value {
     Paint(StylePaint),
 }
 
-/// Topmost pickable item under `pt` (world space).
+/// Low-level geometry hit: returns the leaf shape/text/image node.
 pub fn pick(scene: &Scene, pt: glam::DVec2) -> Option<NodeId> {
     let q = Point::new(pt.x, pt.y);
     for item in scene.items.iter().rev() {
-        if item.opacity <= 0.0 {
-            continue;
-        }
-
-        let dashed_path = match &item.kind {
-            PaintKind::Stroke(stroke) => stroke
-                .dash
-                .as_ref()
-                .and_then(|dash| dash_bez_path(&item.path, &dash.dashes, dash.offset)),
-            PaintKind::Fill(_) => None,
-        };
-
-        let hit_path = dashed_path.as_ref().unwrap_or(&item.path);
-
-        let padding = match &item.kind {
-            PaintKind::Stroke(stroke) => (stroke.width * 0.5).max(1.0),
-            PaintKind::Fill(_) => 0.0,
-        };
-
-        if !hit_path
-            .bounding_box()
-            .inflate(padding, padding)
-            .contains(q)
-        {
-            continue;
-        }
-        let clips_ok = item.clips.iter().all(|&ci| {
-            let Some(c) = scene.clips.get(ci as usize) else {
-                return false; // dangling index: not pickable
-            };
-            match c.rule {
-                FillRule::NonZero => c.path.winding(q) != 0,
-                FillRule::EvenOdd => c.path.winding(q) % 2 != 0,
-            }
-        });
-        if !clips_ok {
-            continue;
-        }
-        let hit = match &item.kind {
-            PaintKind::Fill(rule) => match rule {
-                FillRule::NonZero => hit_path.winding(q) != 0,
-                FillRule::EvenOdd => hit_path.winding(q) % 2 != 0,
-            },
-            PaintKind::Stroke(_) => nearest_dist(hit_path, q) <= padding,
-        };
-        if hit {
+        if scene_item_hits(scene, item, q) {
             return Some(item.node);
         }
     }
     None
+}
+
+fn scene_item_hits(scene: &Scene, item: &SceneItem, q: Point) -> bool {
+    if item.opacity <= 0.0 {
+        return false;
+    }
+
+    let dashed_path = match &item.kind {
+        PaintKind::Stroke(stroke) => stroke
+            .dash
+            .as_ref()
+            .and_then(|dash| dash_bez_path(&item.path, &dash.dashes, dash.offset)),
+        PaintKind::Fill(_) => None,
+    };
+
+    let hit_path = dashed_path.as_ref().unwrap_or(&item.path);
+
+    let padding = match &item.kind {
+        PaintKind::Stroke(stroke) => (stroke.width * 0.5).max(1.0),
+        PaintKind::Fill(_) => 0.0,
+    };
+
+    if !hit_path
+        .bounding_box()
+        .inflate(padding, padding)
+        .contains(q)
+    {
+        return false;
+    }
+    let clips_ok = item.clips.iter().all(|&ci| {
+        let Some(c) = scene.clips.get(ci as usize) else {
+            return false; // dangling index: not pickable
+        };
+        match c.rule {
+            FillRule::NonZero => c.path.winding(q) != 0,
+            FillRule::EvenOdd => c.path.winding(q) % 2 != 0,
+        }
+    });
+    if !clips_ok {
+        return false;
+    }
+    match &item.kind {
+        PaintKind::Fill(rule) => match rule {
+            FillRule::NonZero => hit_path.winding(q) != 0,
+            FillRule::EvenOdd => hit_path.winding(q) % 2 != 0,
+        },
+        PaintKind::Stroke(_) => nearest_dist(hit_path, q) <= padding,
+    }
+}
+
+/// Outermost selectable container for `picked` under `comp`.
+pub fn outer_select_target(doc: &Document, comp: CompId, picked: NodeId) -> NodeId {
+    let mut candidate: Option<NodeId> = match doc.nodes.get(picked).map(|n| &n.kind) {
+        Some(NodeKind::Group) | Some(NodeKind::Layer(_)) => Some(picked),
+        _ => None,
+    };
+    let mut cur = picked;
+    // Follow parent links; `attach/detach` keeps them acyclic, but guard anyway.
+    for _ in 0..256 {
+        let Some(node) = doc.nodes.get(cur) else {
+            break;
+        };
+        let Some(parent) = node.parent else {
+            break;
+        };
+        let Some(parent_node) = doc.nodes.get(parent) else {
+            break;
+        };
+        if matches!(
+            parent_node.kind,
+            NodeKind::Group | NodeKind::Layer(_)
+        ) {
+            candidate = Some(parent);
+        }
+        cur = parent;
+    }
+    let Some(outer) = candidate else {
+        return picked;
+    };
+    if is_under_comp(doc, comp, outer) {
+        outer
+    } else {
+        picked
+    }
+}
+
+fn is_under_comp(doc: &Document, comp: CompId, node: NodeId) -> bool {
+    let mut cur = node;
+    for _ in 0..256 {
+        // Direct child of `comp`?
+        if let Some(c) = doc.compositions.get(comp)
+            && c.children.contains(&cur)
+        {
+            return true;
+        }
+        let Some(n) = doc.nodes.get(cur) else {
+            return false;
+        };
+        let Some(parent) = n.parent else {
+            return false;
+        };
+        cur = parent;
+    }
+    false
+}
+
+fn pick_chain_locked(doc: &Document, leaf: NodeId, outer: NodeId) -> bool {
+    let mut cur = leaf;
+    for _ in 0..256 {
+        let Some(node) = doc.nodes.get(cur) else {
+            return false;
+        };
+        if node.locked {
+            return true;
+        }
+        if cur == outer {
+            return false;
+        }
+        let Some(parent) = node.parent else {
+            return false;
+        };
+        cur = parent;
+    }
+    false
+}
+
+/// Topmost `(outer, leaf)` hit under `pt`, skipping locked subtrees.
+pub fn pick_selectable_with_leaf(
+    doc: &Document,
+    scene: &Scene,
+    comp: CompId,
+    pt: glam::DVec2,
+) -> Option<(NodeId, NodeId)> {
+    let q = Point::new(pt.x, pt.y);
+    for item in scene.items.iter().rev() {
+        if !scene_item_hits(scene, item, q) {
+            continue;
+        }
+        let outer = outer_select_target(doc, comp, item.node);
+        if pick_chain_locked(doc, item.node, outer) {
+            continue;
+        }
+        return Some((outer, item.node));
+    }
+    None
+}
+
+pub fn pick_selectable(
+    doc: &Document,
+    scene: &Scene,
+    comp: CompId,
+    pt: glam::DVec2,
+) -> Option<NodeId> {
+    pick_selectable_with_leaf(doc, scene, comp, pt).map(|(outer, _)| outer)
 }
 
 fn nearest_dist(path: &BezPath, q: Point) -> f64 {
@@ -2644,6 +2753,27 @@ pub fn pick_box(scene: &Scene, min: glam::DVec2, max: glam::DVec2) -> Vec<NodeId
             && !out.contains(&item.node)
         {
             out.push(item.node);
+        }
+    }
+    out
+}
+
+/// Rubber-band variant of [`pick_selectable`].
+pub fn pick_box_selectable(
+    doc: &Document,
+    scene: &Scene,
+    comp: CompId,
+    min: glam::DVec2,
+    max: glam::DVec2,
+) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    for leaf in pick_box(scene, min, max) {
+        let outer = outer_select_target(doc, comp, leaf);
+        if pick_chain_locked(doc, leaf, outer) {
+            continue;
+        }
+        if !out.contains(&outer) {
+            out.push(outer);
         }
     }
     out
@@ -4945,6 +5075,133 @@ mod group_transform_tests {
         assert_eq!(
             selected_ancestor_for_pick(&doc, shape, &[group]),
             Some(group),
+        );
+    }
+
+    #[test]
+    fn outer_target_selects_group_for_inner_shape() {
+        let (doc, group, shape) = grouped_rect();
+
+        assert_eq!(outer_select_target(&doc, doc.main, shape), group);
+        assert_eq!(outer_select_target(&doc, doc.main, group), group);
+    }
+
+    #[test]
+    fn outer_target_selects_outermost_nested_group() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        let outer = doc.create_node(Node::new("Outer", NodeKind::Group));
+        let inner = doc.create_node(Node::new("Inner", NodeKind::Group));
+        let shape = doc.create_node(Node::new(
+            "Shape",
+            NodeKind::Shape(ShapeKind::Ellipse {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::ONE),
+            }),
+        ));
+
+        doc.attach(shape, Parent::Node(inner), 0).unwrap();
+        doc.attach(inner, Parent::Node(outer), 0).unwrap();
+        doc.attach(outer, Parent::Comp(comp), 0).unwrap();
+
+        assert_eq!(outer_select_target(&doc, comp, shape), outer);
+        assert_eq!(outer_select_target(&doc, comp, inner), outer);
+    }
+
+    #[test]
+    fn pick_selectable_returns_outer_group() {
+        let (doc, group, _) = grouped_rect();
+        let scene = evaluate(&doc, doc.main, 0.0);
+
+        assert_eq!(
+            pick_selectable(&doc, &scene, doc.main, glam::DVec2::new(100.0, 80.0)),
+            Some(group),
+        );
+    }
+
+    #[test]
+    fn pick_selectable_skips_locked_subtree() {
+        let (mut doc, group, _) = grouped_rect();
+        doc.nodes[group].locked = true;
+        let scene = evaluate(&doc, doc.main, 0.0);
+
+        assert_eq!(
+            pick_selectable(&doc, &scene, doc.main, glam::DVec2::new(100.0, 80.0)),
+            None,
+        );
+    }
+
+    #[test]
+    fn pick_selectable_clicks_through_locked_top_group() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+
+        // Bottom unlocked group.
+        let bottom = doc.create_node(Node::new("Bottom", NodeKind::Group));
+        let shape_b = doc.create_node(Node::new(
+            "RectB",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::new(100.0, 80.0)),
+                size: Animated::new(glam::DVec2::new(60.0, 40.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let fill_b = doc.create_node(Node::new(
+            "FillB",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(shape_b, Parent::Node(bottom), 0).unwrap();
+        doc.attach(fill_b, Parent::Node(bottom), 1).unwrap();
+
+        // Top locked group, same geometry (index 0 = top of stack).
+        let top = doc.create_node(Node::new("Top", NodeKind::Group));
+        let shape_t = doc.create_node(Node::new(
+            "RectT",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::new(100.0, 80.0)),
+                size: Animated::new(glam::DVec2::new(60.0, 40.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let fill_t = doc.create_node(Node::new(
+            "FillT",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(shape_t, Parent::Node(top), 0).unwrap();
+        doc.attach(fill_t, Parent::Node(top), 1).unwrap();
+        doc.nodes[top].locked = true;
+
+        doc.attach(bottom, Parent::Comp(comp), 0).unwrap();
+        doc.attach(top, Parent::Comp(comp), 0).unwrap();
+
+        let scene = evaluate(&doc, comp, 0.0);
+        assert_eq!(
+            pick_selectable(&doc, &scene, comp, glam::DVec2::new(100.0, 80.0)),
+            Some(bottom),
+        );
+    }
+
+    #[test]
+    fn pick_box_selectable_dedupes_to_outer_group() {
+        let (doc, group, _) = grouped_rect();
+        let scene = evaluate(&doc, doc.main, 0.0);
+
+        assert_eq!(
+            pick_box_selectable(
+                &doc,
+                &scene,
+                doc.main,
+                glam::DVec2::new(0.0, 0.0),
+                glam::DVec2::new(200.0, 200.0),
+            ),
+            vec![group],
         );
     }
 

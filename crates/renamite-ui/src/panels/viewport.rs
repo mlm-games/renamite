@@ -152,7 +152,13 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             focus.request_focus();
                             let world = s.viewport.view.screen_to_world(pos);
                             let scene = s.engine.scene().clone();
-                            if let Some(id) = renamite_model::pick(&scene, world) {
+                            let comp = s.file.document.main;
+                            if let Some(id) = renamite_model::pick_selectable(
+                                &s.file.document,
+                                &scene,
+                                comp,
+                                world,
+                            ) {
                                 if !s.selection.nodes.contains(&id) {
                                     s.selection.nodes = vec![id];
                                 }

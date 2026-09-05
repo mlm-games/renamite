@@ -19,8 +19,9 @@ use renamite_history::{
 use renamite_model::{
     Document, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath,
     ShapeKind, StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine,
-    node_is_ancestor, node_transform_context, pick, pick_box, selected_ancestor_for_pick,
-    selection_bounds, world_delta_to_parent,
+    node_is_ancestor, node_transform_context, pick_box_selectable, pick_selectable,
+    pick_selectable_with_leaf, selected_ancestor_for_pick, selection_bounds,
+    world_delta_to_parent,
 };
 use smallvec::{SmallVec, smallvec};
 use std::f64::consts::{PI, TAU};
@@ -433,7 +434,7 @@ impl SelectTool {
                 return smallvec![];
             }
         }
-        match pick(ctx.scene, pos).filter(|n| !ctx.doc.nodes.get(*n).is_none_or(|x| x.locked)) {
+        match pick_selectable(ctx.doc, ctx.scene, ctx.comp, pos) {
             Some(picked) => {
                 let target = selected_ancestor_for_pick(ctx.doc, picked, &ctx.selection.nodes)
                     .unwrap_or(picked);
@@ -696,7 +697,7 @@ impl SelectTool {
             }
             SelState::RubberBand { start, current } => {
                 let (min, max) = (start.min(current), start.max(current));
-                let mut picked = pick_box(ctx.scene, min, max);
+                let mut picked = pick_box_selectable(ctx.doc, ctx.scene, ctx.comp, min, max);
                 if ctx.modifiers.shift || ctx.modifiers.ctrl {
                     let mut s = ctx.selection.nodes.clone();
                     for n in picked.drain(..) {
@@ -741,16 +742,20 @@ impl SelectTool {
     }
 
     fn double_click(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
-        let Some(picked) = pick(ctx.scene, pos) else {
+        let Some((outer, leaf)) = pick_selectable_with_leaf(ctx.doc, ctx.scene, ctx.comp, pos)
+        else {
             return smallvec![];
         };
 
         let target = match ctx.selection.nodes.as_slice() {
-            [selected] if node_is_ancestor(ctx.doc, *selected, picked) => {
-                immediate_child_below(ctx.doc, *selected, picked).unwrap_or(picked)
+            [selected] if *selected == outer => {
+                immediate_child_below(ctx.doc, *selected, leaf).unwrap_or(leaf)
+            }
+            [selected] if node_is_ancestor(ctx.doc, *selected, leaf) => {
+                immediate_child_below(ctx.doc, *selected, leaf).unwrap_or(leaf)
             }
 
-            _ => picked,
+            _ => outer,
         };
 
         smallvec![ToolOutput::RequestSelection(SelectionChange::Set(vec![
@@ -913,8 +918,7 @@ impl GradientTool {
     }
 
     fn press(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
-        let Some(shape) =
-            pick(ctx.scene, pos).filter(|n| !ctx.doc.nodes.get(*n).is_none_or(|x| x.locked))
+        let Some((outer, shape)) = pick_selectable_with_leaf(ctx.doc, ctx.scene, ctx.comp, pos)
         else {
             return smallvec![];
         };
@@ -984,7 +988,7 @@ impl GradientTool {
             dragging: false,
         };
         smallvec![ToolOutput::RequestSelection(SelectionChange::Set(vec![
-            shape
+            outer
         ]))]
     }
 
@@ -1080,13 +1084,11 @@ impl FillTool {
                 pos,
                 button: PointerButton::Primary,
             } => {
-                let Some(shape) = pick(ctx.scene, pos) else {
+                let Some((_, shape)) =
+                    pick_selectable_with_leaf(ctx.doc, ctx.scene, ctx.comp, pos)
+                else {
                     return smallvec![];
                 };
-
-                if ctx.doc.nodes.get(shape).is_none_or(|n| n.locked) {
-                    return smallvec![];
-                }
 
                 let paint = ctx.current_paint.snapshot(ctx.playhead.0 as f64);
 
