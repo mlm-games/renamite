@@ -1,4 +1,6 @@
-Renamite is a vector animation editor.
+Renamite is meant to be a multiplatform vector animation editor. 
+
+Note: It currently needs an external keyboard for a lot of general actions (like Ctrl+Shift++ for combine, or for connecting 2 states). A mouse should not be necessary. (is usable on mobile, but would be better when used via a tablet or in landscape mode)
 
 Features:
 
