@@ -17,6 +17,3 @@ glam.workspace = true
 kurbo.workspace = true
 base64.workspace = true
 image = { workspace = true }
-
-[dev-dependencies]
-resvg = { workspace = true }
