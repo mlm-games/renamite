@@ -18,6 +18,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_only:
+        description: "Only publish crates, skip triggering release.yml (no editor bins)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ github.ref }}
@@ -33,6 +38,6 @@ jobs:
       create-release: false
       generate-release-notes: false
       system-deps: libasound2-dev libudev-dev pkg-config libx11-dev libxcb1-dev libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libfontconfig-dev libwayland-dev libxkbcommon-dev
-      dispatch-on-release: '["release.yml"]'
+      dispatch-on-release: ${{ inputs.publish_only && '[]' || '["release.yml"]' }}
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
