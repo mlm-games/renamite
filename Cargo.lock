@@ -20,18 +20,18 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.24.1"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320"
+checksum = "438a7081a65b95c668db56591a4fef9bc5dad275f448bd6223fc6949d823db38"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "accesskit_atspi_common"
-version = "0.19.1"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023da0e5097f46df7092d5280b02efb9bbf8d93298daeced42652463e357d636"
+checksum = "c9d47ad644916f6cb7e432a5ca0dbd7cc78281a9772881057bb72d4aadb93257"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -43,23 +43,23 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.38.0"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d10a236f96f87d70732e44520046785431ef01d5bcd6b041317bfadd2f88245"
+checksum = "cc882fa0c9c24c53649e256311b51046cf36eca9a8f7e54ff4ef682160b0cb27"
 dependencies = [
  "accesskit",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
 name = "accesskit_ios"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "750c4e9f6ce888dfe8a10c0f1b5ceb646a7854fd46579d74919219d1bb314083"
+checksum = "d5e9b29c6ba5f4d2e0662e9c562484f061ffc58f658479c538ecca8299ada1e9"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
@@ -67,13 +67,13 @@ dependencies = [
 
 [[package]]
 name = "accesskit_macos"
-version = "0.26.3"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076"
+checksum = "a3f278988416e5fb600f24d0cfffe31a249ebbff980fb9c5a3b5fbed2c579f73"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -81,9 +81,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_unix"
-version = "0.22.1"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03e156ed3802e35eefe894ef2671bc6c889303d8a7e110b5e1b48f504b91362f"
+checksum = "665c9079b7325a8168a6793437a172dda44b19a05af8ed52d7e32abaada996fe"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -99,13 +99,13 @@ dependencies = [
 
 [[package]]
 name = "accesskit_windows"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106c2b961215864d1c2e703ee63269c25c4e80a577ffb2c1017b9c17dcdf83a1"
+checksum = "a59e8d7160cbac991c1345c99153783ab96423644ccb1f20617cf80c97596aa1"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "static_assertions",
  "windows",
  "windows-core",
@@ -113,9 +113,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_winit"
-version = "0.33.2"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5b41e63a69f36d9f1f41e70464c7e5f72eee485ef26aab19f0b4f86e6c0a84c"
+checksum = "1eb960a51582305f94b3884a7ff54b3462abe38f0de95a9e7e04dd7ab7b757da"
 dependencies = [
  "accesskit",
  "accesskit_ios",
@@ -1525,12 +1525,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grid"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
-
-[[package]]
 name = "guillotiere"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2811,9 +2805,9 @@ dependencies = [
 
 [[package]]
 name = "phf"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
+checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
  "phf_macros",
  "phf_shared",
@@ -2822,9 +2816,9 @@ dependencies = [
 
 [[package]]
 name = "phf_generator"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
+checksum = "aeb62e0959d5a1bebc965f4d15d9e2b7cea002b6b0f5ba8cde6cc26738467100"
 dependencies = [
  "fastrand",
  "phf_shared",
@@ -2832,9 +2826,9 @@ dependencies = [
 
 [[package]]
 name = "phf_macros"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
+checksum = "5fa8d0ca26d424d27630da600c6624696e7dec8bf7b3b492b383c5dc49e5e085"
 dependencies = [
  "phf_generator",
  "phf_shared",
@@ -2845,9 +2839,9 @@ dependencies = [
 
 [[package]]
 name = "phf_shared"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
 ]
@@ -2939,6 +2933,12 @@ name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+
+[[package]]
+name = "pollster"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
 
 [[package]]
 name = "polycool"
@@ -3331,7 +3331,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "glam",
- "pollster",
+ "pollster 0.4.0",
  "renamite-animation",
  "renamite-behavior-common",
  "renamite-examples",
@@ -3544,7 +3544,7 @@ dependencies = [
  "image",
  "js-sys",
  "kurbo",
- "pollster",
+ "pollster 0.4.0",
  "renamite-animation",
  "renamite-behavior-common",
  "renamite-examples",
@@ -3651,23 +3651,22 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repose-app"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d4e5b74c1729e7e24d68eebe70806e448880146bf07799ab51ecb65742f28ef"
+checksum = "2c222ab1338d84301d98127e2c7fe8cd2f06b17b47a2a9185c16728897e3911a"
 dependencies = [
  "log",
  "repose-core",
  "repose-text",
  "repose-ui",
- "rustc-hash 2.1.3",
  "web-time",
 ]
 
 [[package]]
 name = "repose-canvas"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3ecefe7a8020ff31660212a7cd4707c9848087de7af6aa17d226fc30859fbc"
+checksum = "a18fc5da9757714eaa3cff792894ba25c88802e7e388ae40cdaeee68a862e6c4"
 dependencies = [
  "repose-core",
  "repose-ui",
@@ -3675,41 +3674,35 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1600165cecd842911bfe4310e2cdc0f2305e666348e7ed796e558e306827135a"
+checksum = "da72a1935f11f5bb0b7e5ebf00fd4595ee1ff4087caf01ac8c41ba2abbc97b92"
 dependencies = [
  "accesskit",
- "bitflags 2.13.1",
  "log",
  "parking_lot",
  "repose-macros",
  "rustc-hash 2.1.3",
- "slotmap",
- "smallvec",
  "taffy",
- "thiserror 2.0.20",
  "web-time",
 ]
 
 [[package]]
 name = "repose-devtools"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f70503ada2439737c5037414e27d8bfb66db2fb1c10f5a254f5e46abcf3208"
+checksum = "44a2fddc39607e7e518e3d1104e137d652aa0aeb77e9f7ddc8408044b0795eb6"
 dependencies = [
- "log",
  "repose-core",
  "web-time",
 ]
 
 [[package]]
 name = "repose-docking"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "530c8fa1492152030a816a5a7e39bdf548897d9741ecba9df8024ad36ef92806"
+checksum = "dee3db10779e136ff9fd4750e816e85671b41f96bf2e188e30efaf9e85b234ed"
 dependencies = [
- "log",
  "repose-core",
  "repose-ui",
  "web-time",
@@ -3717,9 +3710,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ac0987d6ec2929112a0a4695d502deffeee519d5156b14964520b1e2a5afa84"
+checksum = "ec5da7d83d94fae1ad37c907e887db8fd1076b5836497fb51fa603e7645c4c75"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3728,23 +3721,23 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc6d07c97cc45e996cfc79cea03f9a96266cb5062b594bd3060f36637528746"
+checksum = "1c91bdf4b2244f95d0a48d16c799b664bd335f7c1ff1c6780fdf895869487530"
 dependencies = [
  "repose-core",
  "repose-text",
+ "repose-tree",
  "repose-ui",
  "web-time",
 ]
 
 [[package]]
 name = "repose-navigation"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cd62ca090c3eb6165ee925b675329abe98dcb0c9ab2ae0e495c5e520b0c1e5c"
+checksum = "d67fc2f8c604f905d28bde43fa042dd855b0a9164462b3c9ed4338aa08142f43"
 dependencies = [
- "log",
  "repose-core",
  "repose-ui",
  "serde",
@@ -3753,9 +3746,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d9d91adc2e513568c4457d737032a6005d4427ced62467dfae7fd7dfcbf9478"
+checksum = "abe64fe37d74efc2972ddad572190e7229f97b14cfabd92674cfe372109c73ff"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3765,7 +3758,7 @@ dependencies = [
  "console_log",
  "getrandom 0.3.4",
  "log",
- "pollster",
+ "pollster 1.0.1",
  "repose-app",
  "repose-core",
  "repose-devtools",
@@ -3784,9 +3777,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "705e3ee6112e81be13ba39a8115785d35771e32b65effc7593dde4f7b6f69e8a"
+checksum = "fca27a61311d972cb5d01c9eeb8bcb429d1266c7f8a838941321b1483554ccd8"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3794,7 +3787,7 @@ dependencies = [
  "log",
  "lyon_path",
  "lyon_tessellation",
- "pollster",
+ "pollster 1.0.1",
  "repose-core",
  "repose-text",
  "web-workers",
@@ -3804,14 +3797,13 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16c4205057c28ff0018b5cb498f44a896d8587fec1191d9481914eecb4a440f3"
+checksum = "58b06d303d245d92636f3f516522b1228276a91d1dcb3037e16739c8bb015af3"
 dependencies = [
  "font-awl",
  "js-sys",
  "log",
- "once_cell",
  "parley",
  "rapidhash",
  "skrifa 0.44.0",
@@ -3824,9 +3816,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01296ce24eff3c2cfff0de15265d3fa62556aa6970896a6e6b08fcc33745bba0"
+checksum = "c8377a1e7a1d83de7d22a27d85900856776dd1d783de7c8bfb92ebbde47fcb32"
 dependencies = [
  "log",
  "rapidhash",
@@ -3834,20 +3826,20 @@ dependencies = [
  "rustc-hash 2.1.3",
  "slotmap",
  "smallvec",
+ "taffy",
 ]
 
 [[package]]
 name = "repose-ui"
-version = "0.28.16"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa11e7ab5e096bc22fd5c484e2603f8c9aaa0a46efa6299a8ce340a5129aa35c"
+checksum = "128e48a6b2f30a25c5b31d34fe1365aec0c75d07bee47e896c4b77686cc6e9c4"
 dependencies = [
  "log",
  "repose-core",
  "repose-text",
  "repose-tree",
  "rustc-hash 2.1.3",
- "smallvec",
  "taffy",
  "unicode-segmentation",
  "web-time",
@@ -3888,7 +3880,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "percent-encoding",
- "pollster",
+ "pollster 0.4.0",
  "raw-window-handle 0.6.2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4370,14 +4362,14 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.12.2"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "340a09581f29809fc0df82a3955501dc7f2a21f887e5d1c13dbe288fe1c0bef4"
+checksum = "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99"
 dependencies = [
  "arrayvec",
- "grid",
  "serde",
  "slotmap",
+ "smallvec",
 ]
 
 [[package]]
@@ -5029,7 +5021,7 @@ dependencies = [
  "js-sys",
  "minicov",
  "pin-project",
- "pollster",
+ "pollster 0.4.0",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
