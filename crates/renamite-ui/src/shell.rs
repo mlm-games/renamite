@@ -55,12 +55,13 @@ pub fn EditorShell(session: SessionRef) -> View {
                 message: message.clone(),
                 action: None,
                 duration_ms: 3500,
-                builder: Rc::new(move || {
+                builder: Rc::new(move |dismissing| {
                     Snackbar(
                         message.clone(),
                         None,
                         Modifier::new(),
                         SnackbarConfig::default(),
+                        dismissing,
                     )
                 }),
             });

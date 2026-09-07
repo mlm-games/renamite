@@ -37,7 +37,7 @@ use repose_material::material3::{
     IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
-use repose_ui::{Box, Column, FlowRow, Row, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, FlowRow, FlowRowConfig, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
 use crate::components::{CompactIconAction, PanelHeader};
@@ -525,6 +525,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                                 bottom: 8.0,
                             })
                             .gap(8.0),
+                        FlowRowConfig::default(),
                     )
                     .child(chips),
                 ));
@@ -769,7 +770,8 @@ fn diamond_button(
 
     TooltipBox(
         tip,
-        (*tooltip_state).clone(),
+        tooltip_state.clone(),
+        Modifier::new(),
         IconButton(
             AppIcon(sym, 20.0).color(color),
             {
@@ -1407,6 +1409,7 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
                     bottom: 8.0,
                 })
                 .gap(8.0),
+            FlowRowConfig::default(),
         )
         .child(buttons),
     ))
@@ -2525,6 +2528,7 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                         bottom: 8.0,
                     })
                     .gap(6.0),
+                FlowRowConfig::default(),
             )
             .child({
                 let labels: [&str; 16] = [
@@ -2752,6 +2756,7 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                         bottom: 8.0,
                     })
                     .gap(6.0),
+                FlowRowConfig::default(),
             )
             .child({
                 let mut chips: Vec<View> = Vec::new();
