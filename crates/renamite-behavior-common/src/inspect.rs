@@ -825,7 +825,10 @@ pub fn cmd_set_discrete(
     let node = doc.nodes.get(id)?;
     match path.as_str() {
         "trim.mode" => {
-            if !matches!(&node.kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })) {
+            if !matches!(
+                &node.kind,
+                NodeKind::Modifier(ModifierKind::TrimPath { .. })
+            ) {
                 return None;
             }
             let mode = if index_or_bool == 1 {
@@ -849,10 +852,8 @@ pub fn cmd_set_discrete(
             })
         }
         "star.kind" => {
-            let is_star = matches!(
-                &node.kind,
-                NodeKind::Shape(ShapeKind::Star { .. })
-            ) || matches!(&node.kind, NodeKind::Mask(m) if matches!(&m.shape, ShapeKind::Star { .. }));
+            let is_star = matches!(&node.kind, NodeKind::Shape(ShapeKind::Star { .. }))
+                || matches!(&node.kind, NodeKind::Mask(m) if matches!(&m.shape, ShapeKind::Star { .. }));
             if !is_star {
                 return None;
             }
@@ -1587,7 +1588,10 @@ mod tests {
                 smooth: false,
             }),
         ));
-        let layer = doc.create_node(Node::new("layer", NodeKind::Layer(renamite_model::LayerProps::default())));
+        let layer = doc.create_node(Node::new(
+            "layer",
+            NodeKind::Layer(renamite_model::LayerProps::default()),
+        ));
         for id in [trim, fill, star, stroke, text, mask, zigzag, layer] {
             doc.attach(id, Parent::Comp(doc.main), 0).unwrap();
         }
@@ -1641,7 +1645,10 @@ mod tests {
         ];
         for kind in reps {
             for desc in super::descriptors_for(&kind) {
-                if matches!(desc.kind, PropKind::Enum2 { .. } | PropKind::Enum3 { .. } | PropKind::Bool) {
+                if matches!(
+                    desc.kind,
+                    PropKind::Enum2 { .. } | PropKind::Enum3 { .. } | PropKind::Bool
+                ) {
                     let path = &desc.path;
                     // Find a node that can handle this path
                     let mut handled = false;
@@ -1654,7 +1661,11 @@ mod tests {
                             break;
                         }
                     }
-                    assert!(handled, "discrete path '{}' must be handled by cmd_set_discrete", path.as_str());
+                    assert!(
+                        handled,
+                        "discrete path '{}' must be handled by cmd_set_discrete",
+                        path.as_str()
+                    );
                 }
             }
         }

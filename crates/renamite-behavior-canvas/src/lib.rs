@@ -20,8 +20,7 @@ use renamite_model::{
     Document, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath,
     ShapeKind, StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine,
     node_is_ancestor, node_transform_context, pick_box_selectable, pick_selectable,
-    pick_selectable_with_leaf, selected_ancestor_for_pick, selection_bounds,
-    world_delta_to_parent,
+    pick_selectable_with_leaf, selected_ancestor_for_pick, selection_bounds, world_delta_to_parent,
 };
 use smallvec::{SmallVec, smallvec};
 use std::f64::consts::{PI, TAU};
@@ -1084,8 +1083,7 @@ impl FillTool {
                 pos,
                 button: PointerButton::Primary,
             } => {
-                let Some((_, shape)) =
-                    pick_selectable_with_leaf(ctx.doc, ctx.scene, ctx.comp, pos)
+                let Some((_, shape)) = pick_selectable_with_leaf(ctx.doc, ctx.scene, ctx.comp, pos)
                 else {
                     return smallvec![];
                 };
@@ -1136,7 +1134,8 @@ impl DropperTool {
             .items
             .iter()
             .rev()
-            .find(|it| it.opacity > 0.0 && paint_covers(it, pos)).cloned()
+            .find(|it| it.opacity > 0.0 && paint_covers(it, pos))
+            .cloned()
         else {
             return smallvec![];
         };

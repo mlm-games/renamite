@@ -1,5 +1,5 @@
-use repose_core::{JustifyContent, Modifier, PaddingValues, View, remember_with_key, theme};
 use repose_core::input::{Key, KeyEvent, KeyEventType};
+use repose_core::{JustifyContent, Modifier, PaddingValues, View, remember_with_key, theme};
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
     Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, Surface, SurfaceConfig, TextButton,
@@ -93,17 +93,19 @@ pub fn EditorShell(session: SessionRef) -> View {
     // App-level key fallback: repose delivers keys to the focused widget
     // but we want them to be global, so forward unconsumed keys to the viewport
     let session_keys = session.clone();
-    let shell_keys = Modifier::new().fill_max_size().on_key_event(move |ke: KeyEvent| {
-        if matches!(ke.key, Key::Space | Key::Enter) {
-            // Never steal activation, but don't leave a stuck pan modifier
-            // if Space was released outside the canvas.
-            if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
-                session_keys.borrow_mut().viewport.space_held = false;
+    let shell_keys = Modifier::new()
+        .fill_max_size()
+        .on_key_event(move |ke: KeyEvent| {
+            if matches!(ke.key, Key::Space | Key::Enter) {
+                // Never steal activation, but don't leave a stuck pan modifier
+                // if Space was released outside the canvas.
+                if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
+                    session_keys.borrow_mut().viewport.space_held = false;
+                }
+                return false;
             }
-            return false;
-        }
-        crate::shortcuts::handle_viewport_key(&session_keys, ke)
-    });
+            crate::shortcuts::handle_viewport_key(&session_keys, ke)
+        });
 
     overlay.host(
         shell_keys,

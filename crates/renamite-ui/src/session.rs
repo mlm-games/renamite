@@ -621,10 +621,11 @@ impl Session {
 
     fn finalize_open_edit(&mut self) {
         if let Some(open) = self.open_picker.clone()
-            && open.transaction_open {
-                let color = open.state.borrow().color();
-                self.commit_picker_color(color);
-            }
+            && open.transaction_open
+        {
+            let color = open.state.borrow().color();
+            self.commit_picker_color(color);
+        }
 
         if self.history.transaction_open() {
             self.history.commit();
@@ -2027,10 +2028,10 @@ impl Session {
         if let renamite_model::Parent::Node(p) = target.parent
             && (p == drag.id
                 || renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, p))
-            {
-                self.repaint();
-                return;
-            }
+        {
+            self.repaint();
+            return;
+        }
 
         let Some(cmd) = renamite_behavior_common::layers::drop_command(
             drag.id,
@@ -2909,16 +2910,17 @@ impl Session {
             .start_machine
             .or_else(|| self.file.machine_order.first().copied());
         if self.file.start_machine.is_none()
-            && let Some(id) = self.file.machine_order.first().copied() {
-                self.apply_outputs(smallvec![
-                    ToolOutput::BeginTransaction("Set start machine".into()),
-                    ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine {
-                        start: Some(id)
-                    }]),
-                    ToolOutput::CommitTransaction,
-                ]);
-                self.active_machine = Some(id);
-            }
+            && let Some(id) = self.file.machine_order.first().copied()
+        {
+            self.apply_outputs(smallvec![
+                ToolOutput::BeginTransaction("Set start machine".into()),
+                ToolOutput::Commands(smallvec![EditorCommand::SetStartMachine {
+                    start: Some(id)
+                }]),
+                ToolOutput::CommitTransaction,
+            ]);
+            self.active_machine = Some(id);
+        }
         self.machine_selection = MachineSelection::None;
         self.active_machine_layer = 0;
         self.reset_machine_preview();
@@ -2974,9 +2976,10 @@ impl Session {
 
     fn sync_preview_inputs_from_engine(&mut self) {
         if let Some(inputs) = self.engine.machine_inputs()
-            && self.machine_preview_inputs.len() == inputs.len() {
-                self.machine_preview_inputs = inputs.to_vec();
-            }
+            && self.machine_preview_inputs.len() == inputs.len()
+        {
+            self.machine_preview_inputs = inputs.to_vec();
+        }
     }
 
     fn ensure_machine_preview_running(&mut self) {
@@ -2986,12 +2989,13 @@ impl Session {
             return;
         }
         if self.engine.playing_machine_id() != self.active_machine
-            && let Some(id) = self.active_machine {
-                self.engine.play_machine(&self.file, id);
-                self.engine
-                    .apply_machine_inputs(&self.machine_preview_inputs);
-                self.engine.reevaluate(&self.file);
-            }
+            && let Some(id) = self.active_machine
+        {
+            self.engine.play_machine(&self.file, id);
+            self.engine
+                .apply_machine_inputs(&self.machine_preview_inputs);
+            self.engine.reevaluate(&self.file);
+        }
     }
 
     pub fn set_preview_bool(&mut self, input: usize, value: bool) {

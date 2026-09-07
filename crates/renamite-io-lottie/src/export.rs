@@ -1156,10 +1156,7 @@ mod tests {
                 srgb: true,
             }));
         doc.asset_order.push(asset);
-        let image = doc.create_node(Node::new(
-            "Pic",
-            NodeKind::Image(ImageNode::new(asset)),
-        ));
+        let image = doc.create_node(Node::new("Pic", NodeKind::Image(ImageNode::new(asset))));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
 
         let value = crate::export(&doc).unwrap();
@@ -1198,10 +1195,7 @@ mod tests {
                 srgb: true,
             }));
         doc.asset_order.push(asset);
-        let image = doc.create_node(Node::new(
-            "Pic",
-            NodeKind::Image(ImageNode::new(asset)),
-        ));
+        let image = doc.create_node(Node::new("Pic", NodeKind::Image(ImageNode::new(asset))));
         doc.attach(image, Parent::Comp(comp), 0).unwrap();
 
         let json = crate::export(&doc).unwrap();

@@ -150,7 +150,7 @@ mod tests {
                 size: Animated::new(48.0),
                 align: TextAlign::Left,
                 font,
-                            tracking: Animated::new(0.0),
+                tracking: Animated::new(0.0),
                 leading: Animated::new(0.0),
             }),
         )

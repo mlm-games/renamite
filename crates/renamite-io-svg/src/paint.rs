@@ -66,9 +66,7 @@ pub fn import_stroke(
             cap,
             join,
             dash,
-            miter_limit: renamite_animation::Animated::new(
-                stroke.miterlimit().get() as f64
-            ),
+            miter_limit: renamite_animation::Animated::new(stroke.miterlimit().get() as f64),
         }),
     );
     node.opacity = renamite_animation::Animated::new(stroke.opacity().get() as f64);

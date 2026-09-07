@@ -1569,7 +1569,13 @@ fn apply_document_command(
                 .get_mut(*comp)
                 .ok_or(ModelError::MissingComp)?;
             let old = std::mem::replace(&mut c.name, name.clone());
-            Ok((None, vec![SetCompositionName { comp: *comp, name: old }]))
+            Ok((
+                None,
+                vec![SetCompositionName {
+                    comp: *comp,
+                    name: old,
+                }],
+            ))
         }
         SetCompositionSize { comp, size } => {
             let c = doc
@@ -1579,7 +1585,13 @@ fn apply_document_command(
             let old = c.size;
             let size = (size.0.max(1), size.1.max(1));
             c.size = size;
-            Ok((None, vec![SetCompositionSize { comp: *comp, size: old }]))
+            Ok((
+                None,
+                vec![SetCompositionSize {
+                    comp: *comp,
+                    size: old,
+                }],
+            ))
         }
         SetCompositionRate { comp, rate } => {
             let c = doc
@@ -1593,7 +1605,13 @@ fn apply_document_command(
                 den: rate.den.max(1),
             };
             c.rate = rate;
-            Ok((None, vec![SetCompositionRate { comp: *comp, rate: old }]))
+            Ok((
+                None,
+                vec![SetCompositionRate {
+                    comp: *comp,
+                    rate: old,
+                }],
+            ))
         }
         SetLayerProps {
             id,
@@ -1634,7 +1652,11 @@ fn apply_document_command(
                 }],
             ))
         }
-        SetPrecompTimeMap { id, offset, stretch } => {
+        SetPrecompTimeMap {
+            id,
+            offset,
+            stretch,
+        } => {
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Precomp { time_map, .. } = &mut n.kind else {
                 return Err(ModelError::WrongNodeKind("Precomp").into());
@@ -1732,7 +1754,10 @@ fn is_comp_reachable(doc: &Document, from: CompId, target: CompId) -> bool {
         if let Some(comp) = doc.compositions.get(cur) {
             for &child in &comp.children {
                 if let Some(node) = doc.nodes.get(child) {
-                    if let NodeKind::Precomp { comp: child_comp, .. } = &node.kind {
+                    if let NodeKind::Precomp {
+                        comp: child_comp, ..
+                    } = &node.kind
+                    {
                         stack.push(*child_comp);
                     }
                     // Also check nested precomps inside groups/layers via recursion
@@ -1860,7 +1885,18 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 && (time_stretch.is_some() == ts2.is_some())
                 && (blend.is_some() == bl2.is_some())
         }
-        (SetPrecompTimeMap { id, offset, stretch }, SetPrecompTimeMap { id: id2, offset: o2, stretch: s2 }) => {
+        (
+            SetPrecompTimeMap {
+                id,
+                offset,
+                stretch,
+            },
+            SetPrecompTimeMap {
+                id: id2,
+                offset: o2,
+                stretch: s2,
+            },
+        ) => {
             *id == *id2 && (offset.is_some() == o2.is_some()) && (stretch.is_some() == s2.is_some())
         }
         (SetPrecompComp { id, .. }, SetPrecompComp { id: id2, .. }) => *id == *id2,
@@ -2032,8 +2068,8 @@ pub enum ToolId {
 mod tests {
     use super::*;
     use renamite_model::{
-        AnimatedDash, Asset, Color, FontAsset, NodeKind, StrokeCap, StrokeJoin,
-        StyleKind, StylePaint, TextNode,
+        AnimatedDash, Asset, Color, FontAsset, NodeKind, StrokeCap, StrokeJoin, StyleKind,
+        StylePaint, TextNode,
     };
 
     fn f64_key(f: i64, v: f64) -> KeyframeData {
@@ -2260,8 +2296,8 @@ mod tests {
             size: Animated::new(48.0),
             align: renamite_model::TextAlign::Left,
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         });
 
         let mut history = History::new();
@@ -2459,8 +2495,8 @@ mod tests {
             size: Animated::new(48.0),
             align: Default::default(),
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         });
         let mut h = History::new();
         h.begin("Edit text");
@@ -2506,8 +2542,8 @@ mod tests {
             size: Animated::new(48.0),
             align: Default::default(),
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         });
         let mut h = History::new();
         for text in ["a", "ab", "abc"] {

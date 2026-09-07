@@ -143,9 +143,10 @@ pub fn drop_command(
     }
     // Sibling insert: refuse if target's parent is inside dragged (would cycle).
     if let Parent::Node(p) = target.parent
-        && p == dragged {
-            return None;
-        }
+        && p == dragged
+    {
+        return None;
+    }
     let index = if before {
         target.sibling_index
     } else {

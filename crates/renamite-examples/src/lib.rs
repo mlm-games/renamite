@@ -285,8 +285,8 @@ fn masked_text() -> RenFile {
             size: Animated::new(72.0),
             align: TextAlign::Center,
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         }),
     );
     text.transform.position = Animated::new(DVec2::new(256.0, 280.0));
@@ -431,8 +431,8 @@ fn gradient_poster() -> RenFile {
             size: Animated::new(92.0),
             align: TextAlign::Center,
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         }),
     );
     text.transform.position = Animated::new(DVec2::new(256.0, 280.0));

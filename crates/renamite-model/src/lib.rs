@@ -164,15 +164,9 @@ impl<'de> Deserialize<'de> for LayerProps {
             where
                 A: serde::de::SeqAccess<'de>,
             {
-                let in_frame: Frame = seq
-                    .next_element()?
-                    .unwrap_or_default();
-                let out_frame: Frame = seq
-                    .next_element()?
-                    .unwrap_or_else(default_out_frame);
-                let time_stretch: f64 = seq
-                    .next_element()?
-                    .unwrap_or_else(default_time_stretch);
+                let in_frame: Frame = seq.next_element()?.unwrap_or_default();
+                let out_frame: Frame = seq.next_element()?.unwrap_or_else(default_out_frame);
+                let time_stretch: f64 = seq.next_element()?.unwrap_or_else(default_time_stretch);
                 let blend: BlendMode = seq.next_element()?.unwrap_or_default();
                 Ok(LayerProps {
                     in_frame,
@@ -845,9 +839,7 @@ impl<'de> Deserialize<'de> for TextNode {
                 let text: String = seq
                     .next_element()?
                     .ok_or_else(|| DeError::invalid_length(0, &self))?;
-                let size: Animated<f64> = seq
-                    .next_element()?
-                    .unwrap_or_else(default_text_size);
+                let size: Animated<f64> = seq.next_element()?.unwrap_or_else(default_text_size);
                 let align: TextAlign = seq.next_element()?.unwrap_or_default();
                 let font: Option<String> = seq.next_element()?.unwrap_or_default();
                 let tracking: Animated<f64> = seq.next_element()?.unwrap_or_else(default_tracking);
@@ -1080,9 +1072,7 @@ impl<'de> serde::Deserialize<'de> for ImageNode {
                 };
                 // If there's a next element, it's tint (full struct), otherwise legacy bare.
                 if let Some(tint) = seq.next_element::<Animated<Color>>()? {
-                    let crop: glam::DVec4 = seq
-                        .next_element()?
-                        .unwrap_or_else(default_crop_vec4);
+                    let crop: glam::DVec4 = seq.next_element()?.unwrap_or_else(default_crop_vec4);
                     Ok(ImageNode { asset, tint, crop })
                 } else {
                     Ok(ImageNode {
@@ -1824,7 +1814,8 @@ fn eval_group(
                 let world_path = full_transform * local_rect.to_path(0.1);
                 let paint_width = (asset.width as f64 * crop.z).round().max(1.0) as u32;
                 let paint_height = (asset.height as f64 * crop.w).round().max(1.0) as u32;
-                let crop_affine = Affine::translate((asset.width as f64 * crop.x, asset.height as f64 * crop.y));
+                let crop_affine =
+                    Affine::translate((asset.width as f64 * crop.x, asset.height as f64 * crop.y));
                 let paint_affine = full_transform * crop_affine;
 
                 scene.items.push(SceneItem {
@@ -2642,10 +2633,7 @@ pub fn outer_select_target(doc: &Document, comp: CompId, picked: NodeId) -> Node
         let Some(parent_node) = doc.nodes.get(parent) else {
             break;
         };
-        if matches!(
-            parent_node.kind,
-            NodeKind::Group | NodeKind::Layer(_)
-        ) {
+        if matches!(parent_node.kind, NodeKind::Group | NodeKind::Layer(_)) {
             candidate = Some(parent);
         }
         cur = parent;

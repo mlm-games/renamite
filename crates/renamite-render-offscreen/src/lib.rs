@@ -77,7 +77,11 @@ impl OffscreenRenderer {
         Self::from_renderer(renderer, width, height)
     }
 
-    pub fn from_renderer(mut renderer: WgpuSceneRenderer, width: u32, height: u32) -> anyhow::Result<Self> {
+    pub fn from_renderer(
+        mut renderer: WgpuSceneRenderer,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Self> {
         renderer.resize(width, height);
         let (texture, view, readback, padded_bytes_per_row) =
             Self::create_target(&renderer.device, width.max(1), height.max(1));

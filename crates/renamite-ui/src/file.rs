@@ -16,8 +16,7 @@ use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{
-    Arc,
-    OnceLock,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 

@@ -652,8 +652,8 @@ fn fixture_text() -> Document {
             size: Animated::new(140.0),
             align: TextAlign::Left,
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         }),
     ));
     doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));
@@ -806,8 +806,8 @@ fn fixture_masked_text() -> Document {
             size: Animated::new(140.0),
             align: TextAlign::Left,
             font: None,
-                tracking: Animated::new(0.0),
-                leading: Animated::new(0.0),
+            tracking: Animated::new(0.0),
+            leading: Animated::new(0.0),
         }),
     ));
     doc.nodes[text].transform.position = Animated::new(DVec2::new(48.0, 300.0));

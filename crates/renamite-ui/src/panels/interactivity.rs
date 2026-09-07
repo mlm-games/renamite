@@ -373,13 +373,14 @@ fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
     });
     if ok
         && let Some(m) = s.file.machines.get(machine_id)
-            && let Some(l) = m.layers.get(layer) {
-                s.machine_selection = MachineSelection::State {
-                    layer,
-                    state: l.states.len().saturating_sub(1),
-                };
-                s.active_machine_layer = layer;
-            }
+        && let Some(l) = m.layers.get(layer)
+    {
+        s.machine_selection = MachineSelection::State {
+            layer,
+            state: l.states.len().saturating_sub(1),
+        };
+        s.active_machine_layer = layer;
+    }
 }
 
 fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
@@ -702,16 +703,13 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     let view = view.clone();
                     let last_pointer = last_pointer.clone();
                     move |event: PointerEvent| {
-                        let position =
-                            DVec2::new(event.position.x as f64, event.position.y as f64);
+                        let position = DVec2::new(event.position.x as f64, event.position.y as f64);
                         *last_pointer.borrow_mut() = position;
                         let mut s = session.borrow_mut();
                         let mut view_mut = view.borrow_mut();
                         match s.machine_graph_gesture.clone() {
                             Some(MachineGraphGesture::WireTransition {
-                                layer,
-                                from_state,
-                                ..
+                                layer, from_state, ..
                             }) => {
                                 s.machine_graph_gesture =
                                     Some(MachineGraphGesture::WireTransition {
@@ -734,13 +732,12 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                                 offset,
                                 ..
                             }) => {
-                                s.machine_graph_gesture =
-                                    Some(MachineGraphGesture::DragState {
-                                        layer,
-                                        state,
-                                        offset,
-                                        current: position,
-                                    });
+                                s.machine_graph_gesture = Some(MachineGraphGesture::DragState {
+                                    layer,
+                                    state,
+                                    offset,
+                                    current: position,
+                                });
                                 request_frame();
                             }
                             None => {}
@@ -797,15 +794,19 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                         entry: g.entry,
                     })
                     .collect();
-                let screen_any = |machine: &Machine, layout: &[GraphState], layer: usize| -> DVec2 {
-                    let wc = any_node_center(machine, layout, layer);
-                    view_val.world_to_screen(wc)
-                };
-                let screen_state_center =
-                    |machine: &Machine, layout: &[GraphState], layer: usize, state: usize| -> DVec2 {
-                        let wc = layer_state_center(machine, layout, layer, state);
+                let screen_any =
+                    |machine: &Machine, layout: &[GraphState], layer: usize| -> DVec2 {
+                        let wc = any_node_center(machine, layout, layer);
                         view_val.world_to_screen(wc)
                     };
+                let screen_state_center = |machine: &Machine,
+                                           layout: &[GraphState],
+                                           layer: usize,
+                                           state: usize|
+                 -> DVec2 {
+                    let wc = layer_state_center(machine, layout, layer, state);
+                    view_val.world_to_screen(wc)
+                };
                 draw_machine_edges_with_view(
                     scope,
                     machine,
@@ -912,13 +913,14 @@ fn handle_graph_down(
             });
             if ok
                 && let Some(m) = s.file.machines.get(machine_id)
-                    && let Some(l) = m.layers.get(layer) {
-                        s.machine_selection = MachineSelection::State {
-                            layer,
-                            state: l.states.len().saturating_sub(1),
-                        };
-                        s.active_machine_layer = layer;
-                    }
+                && let Some(l) = m.layers.get(layer)
+            {
+                s.machine_selection = MachineSelection::State {
+                    layer,
+                    state: l.states.len().saturating_sub(1),
+                };
+                s.active_machine_layer = layer;
+            }
         }
         request_frame();
         return;
@@ -1009,35 +1011,33 @@ fn handle_graph_up(
             let machine = s.file.machines[machine_id].clone();
             let layout = auto_layout(&machine);
             if let Some((to_layer, to_state)) = hit_state(&layout, world)
-                && to_layer == layer {
-                    let source = match from_state {
-                        Some(from) if from != to_state => TransitionSource::State(from),
-                        None => TransitionSource::Any,
-                        _ => {
-                            request_frame();
-                            return;
-                        }
+                && to_layer == layer
+            {
+                let source = match from_state {
+                    Some(from) if from != to_state => TransitionSource::State(from),
+                    None => TransitionSource::Any,
+                    _ => {
+                        request_frame();
+                        return;
+                    }
+                };
+                let ok = s.edit_active_machine("Add transition", move |m| {
+                    add_transition(m, layer, source, to_state)?;
+                    Ok(())
+                });
+                if ok && let Some(m) = s.file.machines.get(machine_id) {
+                    let count = match source {
+                        TransitionSource::Any => m.layers[layer].any_transitions.len(),
+                        TransitionSource::State(si) => m.layers[layer].states[si].transitions.len(),
                     };
-                    let ok = s.edit_active_machine("Add transition", move |m| {
-                        add_transition(m, layer, source, to_state)?;
-                        Ok(())
-                    });
-                    if ok
-                        && let Some(m) = s.file.machines.get(machine_id) {
-                            let count = match source {
-                                TransitionSource::Any => m.layers[layer].any_transitions.len(),
-                                TransitionSource::State(si) => {
-                                    m.layers[layer].states[si].transitions.len()
-                                }
-                            };
-                            s.machine_selection = MachineSelection::Transition {
-                                layer,
-                                source,
-                                transition: count.saturating_sub(1),
-                            };
-                            s.active_machine_layer = layer;
-                        }
+                    s.machine_selection = MachineSelection::Transition {
+                        layer,
+                        source,
+                        transition: count.saturating_sub(1),
+                    };
+                    s.active_machine_layer = layer;
                 }
+            }
         }
         Some(MachineGraphGesture::DragState {
             layer,
@@ -1528,17 +1528,15 @@ fn LayerInspector(
                 }
             }),
         )),
-        Text(format!(
-            "{state_count} states, {any_count} any-transitions"
-        ))
-        .size(th.typography.body_small)
-        .color(th.on_surface_variant)
-        .modifier(Modifier::new().padding_values(PaddingValues {
-            left: 12.0,
-            right: 12.0,
-            top: 0.0,
-            bottom: 4.0,
-        })),
+        Text(format!("{state_count} states, {any_count} any-transitions"))
+            .size(th.typography.body_small)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().padding_values(PaddingValues {
+                left: 12.0,
+                right: 12.0,
+                top: 0.0,
+                bottom: 4.0,
+            })),
         Text("Shift+drag from Any to wire a global transition")
             .size(th.typography.label_small)
             .color(th.on_surface_variant)
@@ -2004,9 +2002,10 @@ fn blend_child_row(
                 s.edit_active_machine("Remove blend child", move |machine| {
                     if let StateKind::Blend1D { children, .. } =
                         &mut machine.layers[layer].states[state].kind
-                        && index < children.len() {
-                            children.remove(index);
-                        }
+                        && index < children.len()
+                    {
+                        children.remove(index);
+                    }
                     Ok(())
                 });
             }
@@ -2039,9 +2038,10 @@ fn clip_dropdown_for_blend(
                     s.edit_active_machine("Blend child clip", move |machine| {
                         if let StateKind::Blend1D { children, .. } =
                             &mut machine.layers[layer].states[state].kind
-                            && let Some(c) = children.get_mut(child_index) {
-                                c.clip = id;
-                            }
+                            && let Some(c) = children.get_mut(child_index)
+                        {
+                            c.clip = id;
+                        }
                         Ok(())
                     });
                 }
@@ -2273,9 +2273,9 @@ fn condition_editor_row(
                         if let Ok(tr) = transition_mut(machine, layer, source, transition)
                             && let Some(Condition::BoolIs { value: v, .. }) =
                                 tr.conditions.get_mut(index)
-                            {
-                                *v = !value;
-                            }
+                        {
+                            *v = !value;
+                        }
                         Ok(())
                     });
                 }
@@ -2290,9 +2290,9 @@ fn condition_editor_row(
                         if let Ok(tr) = transition_mut(machine, layer, source, transition)
                             && let Some(Condition::NumberCmp { op: o, .. }) =
                                 tr.conditions.get_mut(index)
-                            {
-                                *o = next_cmp(*o);
-                            }
+                        {
+                            *o = next_cmp(*o);
+                        }
                         Ok(())
                     });
                 }
@@ -2305,9 +2305,9 @@ fn condition_editor_row(
                     if let Ok(tr) = transition_mut(machine, layer, source, transition)
                         && let Some(Condition::NumberCmp { value, .. }) =
                             tr.conditions.get_mut(index)
-                        {
-                            *value = v;
-                        }
+                    {
+                        *value = v;
+                    }
                 }),
             ));
         }
@@ -2954,20 +2954,19 @@ fn transition_target_dropdown(
                             add_transition(machine, layer, source, target)?;
                             Ok(())
                         });
-                        if ok
-                            && let Some(m) = s.file.machines.get(machine_id) {
-                                let n = match source {
-                                    TransitionSource::Any => m.layers[layer].any_transitions.len(),
-                                    TransitionSource::State(si) => {
-                                        m.layers[layer].states[si].transitions.len()
-                                    }
-                                };
-                                s.machine_selection = MachineSelection::Transition {
-                                    layer,
-                                    source,
-                                    transition: n.saturating_sub(1),
-                                };
-                            }
+                        if ok && let Some(m) = s.file.machines.get(machine_id) {
+                            let n = match source {
+                                TransitionSource::Any => m.layers[layer].any_transitions.len(),
+                                TransitionSource::State(si) => {
+                                    m.layers[layer].states[si].transitions.len()
+                                }
+                            };
+                            s.machine_selection = MachineSelection::Transition {
+                                layer,
+                                source,
+                                transition: n.saturating_sub(1),
+                            };
+                        }
                     }
                 }
             }))

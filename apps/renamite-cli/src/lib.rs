@@ -540,7 +540,10 @@ fn cmd_diff(a: PathBuf, b: PathBuf, fail_on_diff: bool) -> Result<()> {
             println!("  {d}");
         }
         if fail_on_diff {
-            bail!("structural differences found: {} difference(s)", diffs.len());
+            bail!(
+                "structural differences found: {} difference(s)",
+                diffs.len()
+            );
         }
     }
     Ok(())

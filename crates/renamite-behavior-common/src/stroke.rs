@@ -123,9 +123,12 @@ pub fn cmd_add_stroke_after(
     let mut index = shape_index + 1;
     if let Some(fill) = super::fill::fill_style_for_shape(doc, shape_id)
         && let Some((f_parent, f_idx)) = doc.locate(fill)
-            && f_parent == parent && f_idx >= shape_index && f_idx + 1 > index {
-                index = f_idx + 1;
-            }
+        && f_parent == parent
+        && f_idx >= shape_index
+        && f_idx + 1 > index
+    {
+        index = f_idx + 1;
+    }
     Some(EditorCommand::InsertNode {
         parent,
         index,
