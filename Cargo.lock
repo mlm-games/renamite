@@ -3475,6 +3475,7 @@ dependencies = [
  "serde_json",
  "slotmap",
  "smallvec",
+ "wasm-bindgen-futures",
  "web-sys",
  "web-time",
  "web-workers",

@@ -180,6 +180,11 @@ impl OffscreenRenderer {
         scene: &Scene,
         clear: Option<[f64; 4]>,
     ) -> anyhow::Result<Vec<u8>> {
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        debug_assert!(
+            web_workers::web::has_block_support(),
+            "render_rgba (blocking) called on wasm main thread; use render_rgba_async"
+        );
         let mut encoder =
             self.renderer
                 .device

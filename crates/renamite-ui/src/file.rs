@@ -10,9 +10,9 @@
 
 use crate::session::{PendingFileOp, PendingIntent, SessionRef, blank_file};
 
-use std::any::Any;
 use std::fmt::Display;
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{
@@ -31,6 +31,22 @@ fn wake_ui() {
     repose_core::request_frame();
     #[cfg(not(target_arch = "wasm32"))]
     repose_platform::wake_event_loop();
+}
+
+/// Stage logging for the PNG path. `eprintln!` reaches the browser console
+/// on wasm; previously the wasm path could fail without leaving any trace.
+#[allow(dead_code)]
+fn png_log(msg: &str) {
+    eprintln!("PNG export: {msg}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&msg.into());
+}
+
+#[allow(dead_code)]
+fn png_err(msg: String) {
+    eprintln!("PNG export: {msg}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::error_1(&msg.into());
 }
 
 fn document_stem(session: &SessionRef) -> String {
@@ -660,12 +676,12 @@ fn prepare_export(
     Ok((repose, (w, h), document))
 }
 
-fn exporting_since() -> &'static std::sync::Mutex<Option<Instant>> {
-    static SINCE: OnceLock<std::sync::Mutex<Option<Instant>>> = OnceLock::new();
-    SINCE.get_or_init(|| std::sync::Mutex::new(None))
+fn exporting_since() -> &'static web_workers::sync::Mutex<Option<Instant>> {
+    static SINCE: OnceLock<web_workers::sync::Mutex<Option<Instant>>> = OnceLock::new();
+    SINCE.get_or_init(|| web_workers::sync::Mutex::new(None))
 }
 pub fn clear_exporting_since() {
-    *exporting_since().lock().unwrap() = None;
+    *exporting_since().lock_sync() = None;
 }
 
 /// Shared-device-first, fallback to headless.
@@ -687,7 +703,8 @@ fn render_png_bytes(
 }
 
 /// Best-effort string for a panic payload (`Box<dyn Any + Send>`).
-fn panic_payload(panic: &(dyn Any + Send)) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+fn panic_payload(panic: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = panic.downcast_ref::<String>() {
@@ -704,7 +721,7 @@ pub fn export_png(session: &SessionRef) {
     {
         let s = session.borrow();
         if s.exporting_png {
-            let since = *exporting_since().lock().unwrap();
+            let since = *exporting_since().lock_sync();
             if let Some(t) = since {
                 if t.elapsed().as_secs() < STALE_SECS {
                     set_status(session, "PNG export already in progress");
@@ -719,7 +736,7 @@ pub fn export_png(session: &SessionRef) {
     }
     if session.borrow().exporting_png {
         session.borrow_mut().exporting_png = false;
-        *exporting_since().lock().unwrap() = None;
+        *exporting_since().lock_sync() = None;
     }
     let suggested = format!("{}.png", document_stem(session));
     let (scene, (w, h), document) = match prepare_export(session) {
@@ -731,7 +748,7 @@ pub fn export_png(session: &SessionRef) {
     };
     {
         session.borrow_mut().exporting_png = true;
-        *exporting_since().lock().unwrap() = Some(Instant::now());
+        *exporting_since().lock_sync() = Some(Instant::now());
     }
     set_status(session, "Rendering PNG…");
     let ops = session.borrow().file_ops.clone();
@@ -744,7 +761,7 @@ pub fn export_png(session: &SessionRef) {
             std::thread::sleep(std::time::Duration::from_secs(30));
             if !done_w.load(Ordering::SeqCst) {
                 eprintln!("PNG export watchdog timeout 30s");
-                *exporting_since().lock().unwrap() = None;
+                *exporting_since().lock_sync() = None;
                 ops_w.lock_sync().push_back(PendingFileOp::Failed {
                     message: "PNG export timed out after 30s (GPU hang or very large image)".into(),
                 });
@@ -752,17 +769,32 @@ pub fn export_png(session: &SessionRef) {
             }
         });
     }
-    let has_block = {
-        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-        {
-            web_workers::web::has_block_support()
-        }
-        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-        {
-            true
-        }
-    };
-    if has_block {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let ops_w = ops.clone();
+        let done_w = done.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let start = web_time::Instant::now();
+            loop {
+                web_workers::web::yield_now_async(web_workers::web::YieldTime::Background).await;
+                if done_w.load(Ordering::SeqCst) {
+                    return;
+                }
+                if start.elapsed().as_secs() >= 30 {
+                    png_err("watchdog timeout 30s (GPU hang or very large image)".to_string());
+                    *exporting_since().lock_sync() = None;
+                    ops_w.lock_sync().push_back(PendingFileOp::Failed {
+                        message: "PNG export timed out after 30s (GPU hang or very large image)"
+                            .into(),
+                    });
+                    wake_ui();
+                    return;
+                }
+            }
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
         let done_inner = done.clone();
         web_workers::spawn_unified(move || {
             let op =
@@ -779,38 +811,67 @@ pub fn export_png(session: &SessionRef) {
                     },
                 };
             ops.lock_sync().push_back(op);
-            *exporting_since().lock().unwrap() = None;
+            *exporting_since().lock_sync() = None;
             done_inner.store(true, Ordering::SeqCst);
             wake_ui();
         });
-    } else {
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
         let done_inner = done.clone();
-        web_workers::spawn_async_unified(move || async move {
+        wasm_bindgen_futures::spawn_local(async move {
+            png_log(&format!(
+                "render start {w}x{h} (spawn_support={})",
+                web_workers::web::has_spawn_support()
+            ));
             let op = async {
                 let mut gpu = if let Some((d, q)) = renamite_render_offscreen::shared_device() {
-                    renamite_render_offscreen::OffscreenRenderer::from_device(d, q, w, h, 4)?
+                    png_log("using shared device");
+                    match renamite_render_offscreen::OffscreenRenderer::from_device(
+                        d.clone(),
+                        q.clone(),
+                        w,
+                        h,
+                        4,
+                    ) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            png_err(format!("MSAA4 target failed ({e}), retrying MSAA1"));
+                            renamite_render_offscreen::OffscreenRenderer::from_device(
+                                d, q, w, h, 1,
+                            )?
+                        }
+                    }
                 } else {
-                    eprintln!("PNG export: shared device unavailable, creating headless adapter (slow path)");
-                    renamite_render_offscreen::OffscreenRenderer::new(w, h, 4).await?
+                    png_log("shared device unavailable, creating headless adapter (slow path)");
+                    renamite_render_offscreen::OffscreenRenderer::new(w, h, 1).await?
                 };
                 gpu.sync_document_images(&document)?;
+                png_log("images synced, rendering");
                 let bytes = gpu
                     .render_png_async(&scene, Some([1.0, 1.0, 1.0, 1.0]))
                     .await?;
+                png_log(&format!("render done, {} bytes", bytes.len()));
                 Ok::<Vec<u8>, anyhow::Error>(bytes)
             }
             .await;
             let op = match op {
-                Ok(bytes) => PendingFileOp::ExportPngReady {
-                    bytes,
-                    suggested_name: suggested,
-                },
-                Err(e) => PendingFileOp::Failed {
-                    message: format!("PNG export failed: {e}"),
-                },
+                Ok(bytes) => {
+                    png_log(&format!("pushing ExportPngReady ({} bytes)", bytes.len()));
+                    PendingFileOp::ExportPngReady {
+                        bytes,
+                        suggested_name: suggested,
+                    }
+                }
+                Err(e) => {
+                    png_err(format!("render failed: {e}"));
+                    PendingFileOp::Failed {
+                        message: format!("PNG export failed: {e}"),
+                    }
+                }
             };
             ops.lock_sync().push_back(op);
-            *exporting_since().lock().unwrap() = None;
+            *exporting_since().lock_sync() = None;
             done_inner.store(true, Ordering::SeqCst);
             wake_ui();
         });
