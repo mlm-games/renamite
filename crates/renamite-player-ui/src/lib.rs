@@ -139,7 +139,12 @@ impl PlayerHost {
     }
 
     /// Fit the artboard inside `surface` with a margin, centering it.
+    /// Records `surface` so [`zoom_at`](Self::zoom_at) /
+    /// [`zoom_centered`](Self::zoom_centered) work after an explicit fit.
     pub fn fit(&mut self, surface: DVec2) {
+        if surface.x > 1.0 && surface.y > 1.0 {
+            self.surface_size = surface;
+        }
         let artboard = self.artboard();
         if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
             return;
