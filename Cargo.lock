@@ -3124,7 +3124,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renamite-animation"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "renamite-geometry",
@@ -3133,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-canvas"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-common"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-timeline"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-editor"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-examples"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "image",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-geometry"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-history"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "proptest",
@@ -3260,7 +3260,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-lottie"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-ren"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "postcard",
  "renamite-animation",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-svg"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3306,7 +3306,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-machine"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3319,7 +3319,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-model"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3334,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-platform"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "futures-lite",
  "log",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3358,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player-ui"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "renamite-behavior-common",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-bridge"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "kurbo",
@@ -3388,7 +3388,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-offscreen"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "glam",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-test-support"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "proptest",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-text"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "kurbo",
  "serde",
@@ -3441,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-ui"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3483,7 +3483,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-validate"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "glam",
  "renamite-animation",
