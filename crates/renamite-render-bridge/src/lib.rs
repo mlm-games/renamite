@@ -238,33 +238,70 @@ impl SceneRenderer {
         ]
     }
 
-    /// Convert a full affine to Repose's scale/rotate/translate `Transform`.
-    ///
-    /// Skew cannot be represented by Repose's `Transform`. Position,
-    /// non-uniform scale, and rotation are preserved.
+    /// Convert a full affine to Repose's scale/rotate/shear/translate `Transform`.
     fn affine_to_repose(affine: [f64; 6]) -> repose_core::Transform {
-        let [a, b, c, d, tx, ty] = affine;
-
-        let scale_x = (a * a + b * b).sqrt();
-        let determinant = a * d - b * c;
-        let scale_y = if scale_x > 1e-12 {
-            determinant / scale_x
-        } else {
-            (c * c + d * d).sqrt()
-        };
+        let m = [affine[0], affine[2], affine[1], affine[3]];
+        let (scale_x, scale_y, rotate, shear_x, shear_y) = Self::decompose_linear(m)
+            .unwrap_or_else(|| {
+                let [a, b, c, d, _, _] = affine;
+                let scale_x = (a * a + b * b).sqrt();
+                let scale_y = if scale_x > 1e-12 {
+                    (a * d - b * c) / scale_x
+                } else {
+                    (c * c + d * d).sqrt()
+                };
+                (scale_x, scale_y, b.atan2(a), 0.0, 0.0)
+            });
 
         repose_core::Transform {
-            translate_x: tx as f32,
-            translate_y: ty as f32,
+            translate_x: affine[4] as f32,
+            translate_y: affine[5] as f32,
             scale_x: scale_x as f32,
             scale_y: scale_y as f32,
-            rotate: b.atan2(a) as f32,
-            shear_x: 0.0,
-            shear_y: 0.0,
+            rotate: rotate as f32,
+            shear_x: shear_x as f32,
+            shear_y: shear_y as f32,
             origin_x: 0.0,
             origin_y: 0.0,
             perspective: [0.0, 0.0, 1.0],
         }
+    }
+
+    /// Split a row-major 2x2 `[m00, m01, m10, m11]` into
+    /// `(scale_x, scale_y, rotate, shear_x, shear_y)` such that
+    /// `M = R(rotate) * H(shear) * S(scale)`, or `None` when degenerate.
+    fn decompose_linear(m: [f64; 4]) -> Option<(f64, f64, f64, f64, f64)> {
+        let (mut a, mut b, c, d) = (m[0], m[1], m[2], m[3]);
+        let mut angle_sign = 1.0;
+        if a * d - b * c < 0.0 {
+            a = -a;
+            b = -b;
+            angle_sign = -1.0;
+        }
+        let e = a * a + c * c;
+        let f = a * b + c * d;
+        let g = b * b + d * d;
+        let det_p = (e * g - f * f).max(0.0);
+        let s = (e + g + 2.0 * det_p.sqrt()).sqrt();
+        if !(s > 1e-12) {
+            return None;
+        }
+        let root_det = det_p.sqrt();
+        let k00 = (e + root_det) / s;
+        let k01 = f / s;
+        let k10 = f / s;
+        let k11 = (g + root_det) / s;
+        let det_k = (k00 * k11 - k01 * k10).max(1e-24);
+        let r00 = (a * k11 - b * k10) / det_k;
+        let r10 = (c * k11 - d * k10) / det_k;
+        let rotate = r10.atan2(r00);
+        if k00.abs() < 1e-12 || k11.abs() < 1e-12 {
+            return None;
+        }
+        if angle_sign < 0.0 {
+            return Some((-k00, k11, -rotate, -(k01 / k11), -(k10 / k00)));
+        }
+        Some((k00, k11, rotate, k01 / k11, k10 / k00))
     }
 
     fn model_color_to_repose(color: renamite_model::Color, opacity: f64) -> repose_core::Color {
@@ -899,6 +936,65 @@ mod tests {
             clips: vec![],
             blend: renamite_model::BlendMode::Normal,
         }
+    }
+
+    #[test]
+    fn affine_recovers_fax_shear() {
+        let t = SceneRenderer::affine_to_repose([1.0, 0.0, 0.75, 1.0, 10.0, 20.0]);
+        let m = t.linear();
+        for (got, want) in m.iter().zip([1.0f32, 0.75, 0.0, 1.0].iter()) {
+            assert!((got - want).abs() < 1e-5, "got {m:?}");
+        }
+        assert!(
+            t.shear_x.abs() > 1e-6 || t.shear_y.abs() > 1e-6 || t.rotate.abs() > 1e-6,
+            "skew must be expressed somewhere, got {t:?}"
+        );
+        assert!((t.translate_x - 10.0).abs() < 1e-6);
+        assert!((t.translate_y - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn affine_round_trips_rotate_scale_shear() {
+        for affine in [
+            [2.0, 0.0, 0.0, 3.0, 0.0, 0.0],
+            [0.0, -1.5, 1.5, 0.0, 4.0, -2.0],
+            [1.0, 0.5, -0.25, 2.0, -3.0, 8.0],
+            [0.7, 0.7, -0.7, 0.7, 0.0, 0.0],
+            [-2.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        ] {
+            let t = SceneRenderer::affine_to_repose(affine);
+            let m = t.linear();
+            let want = [
+                affine[0] as f32,
+                affine[2] as f32,
+                affine[1] as f32,
+                affine[3] as f32,
+            ];
+            for (got, w) in m.iter().zip(want.iter()) {
+                assert!(
+                    (got - w).abs() < 1e-4,
+                    "affine {affine:?}: got {m:?}, want {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn affine_pure_rotation_has_no_shear() {
+        let angle = 0.6f64;
+        let t = SceneRenderer::affine_to_repose([
+            angle.cos(),
+            angle.sin(),
+            -angle.sin(),
+            angle.cos(),
+            0.0,
+            0.0,
+        ]);
+        assert!((t.rotate as f64 - angle).abs() < 1e-6, "got {t:?}");
+        assert!(t.shear_x.abs() < 1e-6, "got {t:?}");
+        assert!(t.shear_y.abs() < 1e-6, "got {t:?}");
+        assert!((t.scale_x - 1.0).abs() < 1e-6, "got {t:?}");
+        assert!((t.scale_y - 1.0).abs() < 1e-6, "got {t:?}");
     }
 
     #[test]
