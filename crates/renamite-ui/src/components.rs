@@ -1,6 +1,6 @@
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Modifier, PaddingValues, TextFieldLineLimits, View, remember,
+    AlignItems, Dp, Modifier, PaddingValues, TextFieldLineLimits, UnitExt, View, remember,
     remember_state_with_key, remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
@@ -22,8 +22,8 @@ pub fn PanelSurface(content: View) -> View {
             modifier: Modifier::new().fill_max_size(),
             color: theme().surface_container_low,
             content_color: theme().on_surface,
-            shape_radius: 14.0,
-            border: Some((1.0, theme().outline_variant.with_alpha(140))),
+            shape_radius: 14.0.dp(),
+            border: Some((1.0.dp(), theme().outline_variant.with_alpha(140))),
             ..Default::default()
         },
         move || content,
@@ -34,20 +34,20 @@ pub fn PanelHeader(symbol: Symbol, title: impl Into<String>, actions: Vec<View>)
     let title = title.into();
 
     Row(Modifier::new()
-        .height(48.0)
+        .height(Dp(48.0))
         .fill_max_width()
         .padding_values(repose_core::PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER))
     .child((
         AppIcon(symbol, 20.0),
         Text(title)
             .size(theme().typography.title_small)
-            .modifier(Modifier::new().padding(8.0)),
+            .modifier(Modifier::new().padding(Dp(8.0))),
         Box(Modifier::new().flex_grow(1.0)),
         Row(Modifier::new().align_items(AlignItems::CENTER)).child(actions),
     ))
@@ -80,23 +80,23 @@ pub fn CollapsibleSection(
             modifier: Modifier::new().fill_max_width(),
             color: th.surface_container_low,
             content_color: th.on_surface,
-            shape_radius: 12.0,
-            border: Some((1.0, th.outline_variant.with_alpha(140))),
+            shape_radius: 12.0.dp(),
+            border: Some((1.0.dp(), th.outline_variant.with_alpha(140))),
             ..Default::default()
         },
         move || {
             Column(Modifier::new().fill_max_width()).child((
                 Row(Modifier::new()
-                    .height(40.0)
+                    .height(Dp(40.0))
                     .fill_max_width()
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 0.0,
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(0.0),
+                        bottom: Dp(0.0),
                     })
                     .align_items(AlignItems::CENTER)
-                    .gap(4.0)
+                    .gap(Dp(4.0))
                     .clickable()
                     .cursor(repose_core::CursorIcon::Pointer)
                     .on_pointer_down(toggle_open))
@@ -119,10 +119,10 @@ pub fn CollapsibleSection(
                     Box(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 0.0,
-                            right: 0.0,
-                            top: 0.0,
-                            bottom: 4.0,
+                            left: Dp(0.0),
+                            right: Dp(0.0),
+                            top: Dp(0.0),
+                            bottom: Dp(4.0),
                         }))
                     .child(body)
                 } else {
@@ -148,7 +148,7 @@ pub fn CompactIconAction(
             AppIcon(symbol, 22.0),
             on_click,
             IconButtonConfig {
-                container_size: Some(40.0),
+                container_size: Some(40.0.dp()),
                 ..Default::default()
             },
         ),
@@ -172,7 +172,7 @@ pub fn CompactIconActionWithKey(
             AppIcon(symbol, 22.0),
             on_click,
             IconButtonConfig {
-                container_size: Some(40.0),
+                container_size: Some(40.0.dp()),
                 ..Default::default()
             },
         ),
@@ -189,8 +189,8 @@ pub fn ToolAction(
     let tooltip_state = remember_with_key(format!("tool_tip_{label}"), TooltipState::new);
 
     let config = IconButtonConfig {
-        container_size: Some(48.0),
-        shape_radius: Some(16.0),
+        container_size: Some(48.0.dp()),
+        shape_radius: Some(16.0.dp()),
         ..Default::default()
     };
 
@@ -221,13 +221,13 @@ pub fn StatusChip(
         .modifier(
             Modifier::new()
                 .padding_values(repose_core::PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(bg)
-                .clip_rounded(999.0),
+                .clip_rounded(Dp(999.0)),
         )
 }
 
@@ -247,13 +247,13 @@ pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'st
 
     Box(Modifier::new()
         .padding_values(repose_core::PaddingValues {
-            left: 10.0,
-            right: 10.0,
-            top: 6.0,
-            bottom: 6.0,
+            left: Dp(10.0),
+            right: Dp(10.0),
+            top: Dp(6.0),
+            bottom: Dp(6.0),
         })
         .background(bg)
-        .clip_rounded(999.0)
+        .clip_rounded(Dp(999.0))
         .on_pointer_down(move |_| on_click()))
     .child(Text(label).size(th.typography.label_medium).color(fg))
 }
@@ -287,15 +287,15 @@ pub fn AppTextField(
         tf_state,
         Modifier::new()
             .fill_max_width()
-            .height(min_height)
+            .height(Dp(min_height))
             .padding_values(PaddingValues {
-                left: 8.0,
-                right: 8.0,
-                top: 6.0,
-                bottom: 6.0,
+                left: Dp(8.0),
+                right: Dp(8.0),
+                top: Dp(6.0),
+                bottom: Dp(6.0),
             })
             .background(th.surface_container_highest)
-            .clip_rounded(8.0),
+            .clip_rounded(Dp(8.0)),
         hint,
         TextFieldConfig {
             line_limits: if single_line {
@@ -356,15 +356,15 @@ pub fn name_field(
         tf_state,
         Modifier::new()
             .fill_max_width()
-            .height(min_height)
+            .height(Dp(min_height))
             .padding_values(PaddingValues {
-                left: 8.0,
-                right: 8.0,
-                top: 6.0,
-                bottom: 6.0,
+                left: Dp(8.0),
+                right: Dp(8.0),
+                top: Dp(6.0),
+                bottom: Dp(6.0),
             })
             .background(th.surface_container_highest)
-            .clip_rounded(8.0)
+            .clip_rounded(Dp(8.0))
             .on_key_event(move |ek: KeyEvent| {
                 if matches!(ek.key, Key::Escape) {
                     focused.set(false);

@@ -34,7 +34,7 @@ use renamite_render_bridge::SceneRenderer;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
-use repose_core::{Color, Modifier, RenderContext, Vec2, View, request_frame, theme};
+use repose_core::{Color, Modifier, Px, RenderContext, Vec2, View, request_frame, theme};
 use web_time::Instant;
 
 /// Shared host handle: the embed owner builds it and passes it to the widget.
@@ -283,7 +283,7 @@ fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) 
             h: height as f32 + 8.0,
         },
         Color(0, 0, 0, 48),
-        3.0,
+        Px(3.0),
     );
 
     // Checkerboard (transparent pixels read as a neutral grid).
@@ -306,7 +306,7 @@ fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) 
                     h: (tile_world * view.scale).ceil() as f32,
                 },
                 color,
-                0.0,
+                Px(0.0),
             );
         }
     }
@@ -319,7 +319,7 @@ fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) 
         width as f32,
         height as f32,
     );
-    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, 0.0);
+    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, Px(0.0));
     scope.draw_rect(
         Rect {
             x,
@@ -328,9 +328,9 @@ fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) 
             h: 1.0,
         },
         border,
-        0.0,
+        Px(0.0),
     );
-    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, 0.0);
+    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, Px(0.0));
     scope.draw_rect(
         Rect {
             x: x + w - 1.0,
@@ -339,6 +339,6 @@ fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) 
             h,
         },
         border,
-        0.0,
+        Px(0.0),
     );
 }

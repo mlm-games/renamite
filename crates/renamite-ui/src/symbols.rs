@@ -1,6 +1,6 @@
 #![allow(non_upper_case_globals)]
 
-use repose_core::{View, theme};
+use repose_core::{UnitExt, View, theme};
 use repose_material::{Icon, Symbol};
 use repose_ui::TextStyle;
 
@@ -71,7 +71,7 @@ repose_material::material_symbols! {
 }
 
 pub fn AppIcon(symbol: Symbol, size: f32) -> View {
-    Icon(symbol).size(size).single_line()
+    Icon(symbol).size(size.sp()).single_line()
 }
 
 pub fn MutedIcon(symbol: Symbol, size: f32) -> View {

@@ -26,7 +26,8 @@ use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
 use repose_core::input::{PointerButton, PointerEventKind as UiPointerEventKind};
 use repose_core::{
-    AlignItems, Color, Modifier, PaddingValues, Vec2, View, remember_with_key, request_frame, theme,
+    AlignItems, Color, Dp, Modifier, PaddingValues, Px, Vec2, View, remember_with_key,
+    request_frame, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
@@ -111,10 +112,10 @@ fn PreviewStatusBar(session: SessionRef) -> View {
             .size(th.typography.label_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 2.0,
-                bottom: 6.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(2.0),
+                bottom: Dp(6.0),
             }));
     }
     let label = match states {
@@ -146,34 +147,34 @@ fn PreviewStatusBar(session: SessionRef) -> View {
         .size(th.typography.label_small)
         .color(th.primary)
         .modifier(Modifier::new().padding_values(PaddingValues {
-            left: 12.0,
-            right: 12.0,
-            top: 2.0,
-            bottom: 6.0,
+            left: Dp(12.0),
+            right: Dp(12.0),
+            top: Dp(2.0),
+            bottom: Dp(6.0),
         }))
 }
 
 fn EmptyMachineState(session: SessionRef) -> View {
     let th = theme();
-    Column(Modifier::new().fill_max_size().gap(8.0)).child((
+    Column(Modifier::new().fill_max_size().gap(Dp(8.0))).child((
         Text("No state machines yet")
             .size(th.typography.body_medium)
             .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding(16.0)),
+            .modifier(Modifier::new().padding(Dp(16.0))),
         Text("State machines drive clips from inputs and pointer listeners — like Rive Interact.")
             .size(th.typography.body_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 16.0,
-                right: 16.0,
-                top: 0.0,
-                bottom: 8.0,
+                left: Dp(16.0),
+                right: Dp(16.0),
+                top: Dp(0.0),
+                bottom: Dp(8.0),
             })),
         Box(Modifier::new().padding_values(PaddingValues {
-            left: 16.0,
-            right: 16.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(16.0),
+            right: Dp(16.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         }))
         .child(Button(
             Modifier::new(),
@@ -197,7 +198,7 @@ fn MachineSelector(session: SessionRef) -> View {
         )
     };
     if machines.is_empty() {
-        return Box(Modifier::new().height(8.0));
+        return Box(Modifier::new().height(Dp(8.0)));
     }
     let th = theme();
     let mut chips = Vec::new();
@@ -227,17 +228,17 @@ fn MachineSelector(session: SessionRef) -> View {
                 .modifier(
                     Modifier::new()
                         .padding_values(PaddingValues {
-                            left: 10.0,
-                            right: 10.0,
-                            top: 6.0,
-                            bottom: 6.0,
+                            left: Dp(10.0),
+                            right: Dp(10.0),
+                            top: Dp(6.0),
+                            bottom: Dp(6.0),
                         })
                         .background(if is_active {
                             th.secondary_container
                         } else {
                             th.surface_container
                         })
-                        .clip_rounded(8.0)
+                        .clip_rounded(Dp(8.0))
                         .on_pointer_down({
                             let session = session.clone();
                             move |_| {
@@ -262,12 +263,12 @@ fn MachineSelector(session: SessionRef) -> View {
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 8.0,
-            right: 8.0,
-            top: 4.0,
-            bottom: 4.0,
+            left: Dp(8.0),
+            right: Dp(8.0),
+            top: Dp(4.0),
+            bottom: Dp(4.0),
         })
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER))
     .child(chips)
 }
@@ -275,17 +276,16 @@ fn MachineSelector(session: SessionRef) -> View {
 fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
     let name = session.borrow().file.machines[machine_id].name.clone();
 
-    Column(Modifier::new().fill_max_width().gap(8.0)).child((
-        // Rename
+    Column(Modifier::new().fill_max_width().gap(Dp(8.0))).child((
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 4.0,
-                bottom: 0.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(4.0),
+                bottom: Dp(0.0),
             })
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child(crate::components::name_field(
             format!("machine_name_{machine_id:?}"),
@@ -394,16 +394,16 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
 
     let mut rows = vec![
         Row(Modifier::new()
-            .height(36.0)
+            .height(Dp(36.0))
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(0.0),
+                bottom: Dp(0.0),
             })
             .align_items(AlignItems::CENTER)
-            .gap(4.0))
+            .gap(Dp(4.0)))
         .child((
             Text("Add")
                 .size(theme().typography.label_small)
@@ -442,7 +442,7 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
             Text("No inputs — add Bool / Number / Trigger to drive transitions")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
-                .modifier(Modifier::new().padding(12.0)),
+                .modifier(Modifier::new().padding(Dp(12.0))),
         );
     }
 
@@ -512,13 +512,13 @@ fn InputRow(
             .modifier(
                 Modifier::new()
                     .padding_values(PaddingValues {
-                        left: 6.0,
-                        right: 6.0,
-                        top: 2.0,
-                        bottom: 2.0,
+                        left: Dp(6.0),
+                        right: Dp(6.0),
+                        top: Dp(2.0),
+                        bottom: Dp(2.0),
                     })
                     .background(th.secondary_container)
-                    .clip_rounded(4.0),
+                    .clip_rounded(Dp(4.0)),
             ),
     ];
 
@@ -622,19 +622,19 @@ fn InputRow(
             }
         }));
     } else {
-        controls.push(Box(Modifier::new().width(40.0)));
+        controls.push(Box(Modifier::new().width(Dp(40.0))));
     }
 
     Row(Modifier::new()
-        .height(40.0)
+        .height(Dp(40.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER))
     .child(controls)
 }
@@ -656,15 +656,15 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 4.0,
-                bottom: 4.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(4.0),
+                bottom: Dp(4.0),
             })),
         Canvas(
             Modifier::new()
                 .fill_max_width()
-                .height(320.0)
+                .height(Dp(320.0))
                 .background(theme().surface_container_lowest)
                 .on_scroll({
                     let view = view.clone();
@@ -1125,7 +1125,7 @@ fn draw_any_nodes(
             } else {
                 th.tertiary_container
             },
-            6.0,
+            Px(6.0),
         );
         scope.draw_text(
             "Any",
@@ -1134,9 +1134,8 @@ fn draw_any_nodes(
                 y: (from.y - 6.0) as f32,
             },
             th.on_tertiary_container,
-            10.0,
+            Px(10.0),
         );
-        // layer label
         scope.draw_text(
             &layer.name,
             Vec2 {
@@ -1144,7 +1143,7 @@ fn draw_any_nodes(
                 y: (from.y - 28.0) as f32,
             },
             th.on_surface_variant,
-            9.0,
+            Px(9.0),
         );
     }
 }
@@ -1257,9 +1256,9 @@ fn draw_machine_states(
         };
 
         if is_selected {
-            scope.draw_rect_stroke(rect, th.primary, 6.0, 2.0);
+            scope.draw_rect_stroke(rect, th.primary, Px(6.0), Px(2.0));
         }
-        scope.draw_rect(rect, fill, 6.0);
+        scope.draw_rect(rect, fill, Px(6.0));
         scope.draw_text(
             &state.name,
             Vec2 {
@@ -1267,7 +1266,7 @@ fn draw_machine_states(
                 y: rect.y + rect.h * 0.5 - 7.0,
             },
             th.on_surface,
-            12.0,
+            Px(12.0),
         );
         scope.draw_text(
             kind_label(&state.kind),
@@ -1276,7 +1275,7 @@ fn draw_machine_states(
                 y: rect.y + rect.h - 15.0,
             },
             th.on_surface_variant,
-            9.0,
+            Px(9.0),
         );
     }
 }
@@ -1310,7 +1309,7 @@ fn draw_any_nodes_with_view(
             } else {
                 th.tertiary_container
             },
-            6.0 * s,
+            Px(6.0 * s),
         );
         scope.draw_text(
             "Any",
@@ -1319,7 +1318,7 @@ fn draw_any_nodes_with_view(
                 y: (c.y - 6.0 * view.scale) as f32,
             },
             th.on_tertiary_container,
-            (10.0 * view.scale as f32).clamp(8.0, 14.0),
+            Px((10.0 * view.scale as f32).clamp(8.0, 14.0)),
         );
         scope.draw_text(
             &layer.name,
@@ -1328,7 +1327,7 @@ fn draw_any_nodes_with_view(
                 y: (c.y - 28.0 * view.scale) as f32,
             },
             th.on_surface_variant,
-            (9.0 * view.scale as f32).clamp(7.0, 12.0),
+            Px((9.0 * view.scale as f32).clamp(7.0, 12.0)),
         );
     }
 }
@@ -1416,9 +1415,9 @@ fn draw_machine_states_with_view(
             th.surface_container_high
         };
         if is_selected {
-            scope.draw_rect_stroke(rect, th.primary, 6.0, 2.0);
+            scope.draw_rect_stroke(rect, th.primary, Px(6.0), Px(2.0));
         }
-        scope.draw_rect(rect, fill, 6.0);
+        scope.draw_rect(rect, fill, Px(6.0));
         scope.draw_text(
             &state.name,
             Vec2 {
@@ -1426,7 +1425,7 @@ fn draw_machine_states_with_view(
                 y: rect.y + rect.h * 0.5 - 7.0,
             },
             th.on_surface,
-            12.0,
+            Px(12.0),
         );
         scope.draw_text(
             kind_label(&state.kind),
@@ -1435,7 +1434,7 @@ fn draw_machine_states_with_view(
                 y: rect.y + rect.h - 15.0,
             },
             th.on_surface_variant,
-            9.0,
+            Px(9.0),
         );
     }
 }
@@ -1463,7 +1462,7 @@ fn SelectionInspector(overlay: OverlayHandle, session: SessionRef, machine_id: M
         _ => Text("Select a state, edge, or Any node")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
-            .modifier(Modifier::new().padding(12.0)),
+            .modifier(Modifier::new().padding(Dp(12.0))),
     }
 }
 
@@ -1481,16 +1480,16 @@ fn LayerInspector(
         };
         (l.name.clone(), l.any_transitions.len(), l.states.len())
     };
-    Column(Modifier::new().fill_max_width().gap(4.0)).child((
+    Column(Modifier::new().fill_max_width().gap(Dp(4.0))).child((
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 8.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(8.0),
+                bottom: Dp(2.0),
             })
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             Box(Modifier::new().flex_grow(1.0)).child(crate::components::name_field(
@@ -1532,28 +1531,28 @@ fn LayerInspector(
             .size(th.typography.body_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 0.0,
-                bottom: 4.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(0.0),
+                bottom: Dp(4.0),
             })),
         Text("Shift+drag from Any to wire a global transition")
             .size(th.typography.label_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 0.0,
-                bottom: 8.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(0.0),
+                bottom: Dp(8.0),
             })),
         Row(Modifier::new()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 8.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(0.0),
+                bottom: Dp(8.0),
             })
-            .gap(6.0))
+            .gap(Dp(6.0)))
         .child((
             Text("Add any →")
                 .size(th.typography.body_medium)
@@ -1584,10 +1583,10 @@ fn StateInspector(
         let s = session.borrow();
         let machine = &s.file.machines[machine_id];
         let Some(l) = machine.layers.get(layer) else {
-            return Box(Modifier::new().height(4.0));
+            return Box(Modifier::new().height(Dp(4.0)));
         };
         let Some(st) = l.states.get(state) else {
-            return Box(Modifier::new().height(4.0));
+            return Box(Modifier::new().height(Dp(4.0)));
         };
         (
             st.name.clone(),
@@ -1603,20 +1602,20 @@ fn StateInspector(
             .size(th.typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 8.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(8.0),
+                bottom: Dp(2.0),
             })),
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(0.0),
+                bottom: Dp(2.0),
             })
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child(crate::components::name_field(
             format!("machine_state_name_{layer}_{state}"),
@@ -1637,17 +1636,17 @@ fn StateInspector(
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(2.0),
+                bottom: Dp(2.0),
             })
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             Text("Kind")
                 .size(th.typography.body_medium)
-                .modifier(Modifier::new().width(48.0)),
+                .modifier(Modifier::new().width(Dp(48.0))),
             chip(
                 "Empty",
                 matches!(kind, StateKind::Empty),
@@ -1743,12 +1742,12 @@ fn StateInspector(
                 Row(Modifier::new()
                     .fill_max_width()
                     .padding_values(pad_row())
-                    .gap(6.0)
+                    .gap(Dp(6.0))
                     .align_items(AlignItems::CENTER))
                 .child((
                     Text("Loop")
                         .size(th.typography.body_medium)
-                        .modifier(Modifier::new().width(48.0)),
+                        .modifier(Modifier::new().width(Dp(48.0))),
                     chip("Once", loop_mode == LoopMode::Once, {
                         let session = session.clone();
                         move || set_clip_loop(session.clone(), layer, state, LoopMode::Once)
@@ -1781,10 +1780,10 @@ fn StateInspector(
                     .size(th.typography.label_medium)
                     .color(th.on_surface_variant)
                     .modifier(Modifier::new().padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 12.0,
-                        top: 8.0,
-                        bottom: 2.0,
+                        left: Dp(12.0),
+                        right: Dp(12.0),
+                        top: Dp(8.0),
+                        bottom: Dp(2.0),
                     })),
             );
             for (ci, child) in children.iter().enumerate() {
@@ -1801,7 +1800,7 @@ fn StateInspector(
             rows.push(
                 Row(Modifier::new()
                     .padding_values(pad_row())
-                    .gap(6.0)
+                    .gap(Dp(6.0))
                     .align_items(AlignItems::CENTER))
                 .child(Button(
                     Modifier::new(),
@@ -1843,12 +1842,11 @@ fn StateInspector(
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(pad_row())
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             if is_entry {
-                // Already the entry state: static label, not an action.
-                Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+                Row(Modifier::new().gap(Dp(4.0)).align_items(AlignItems::CENTER)).child((
                     AppIcon(Symbols::play_arrow, 16.0),
                     Text("Entry")
                         .size(th.typography.body_medium)
@@ -1888,10 +1886,10 @@ fn StateInspector(
             .size(th.typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 10.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(10.0),
+                bottom: Dp(2.0),
             })),
     );
 
@@ -1918,7 +1916,7 @@ fn StateInspector(
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(pad_row())
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             Text("Add transition")
@@ -1965,7 +1963,7 @@ fn blend_child_row(
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(pad_row())
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER))
     .child((
         Text("thr")
@@ -2069,19 +2067,19 @@ fn TransitionInspector(
         let s = session.borrow();
         let machine = &s.file.machines[machine_id];
         let Some(l) = machine.layers.get(layer) else {
-            return Box(Modifier::new().height(4.0));
+            return Box(Modifier::new().height(Dp(4.0)));
         };
         let transitions = match source {
             TransitionSource::Any => &l.any_transitions,
             TransitionSource::State(si) => {
                 if si >= l.states.len() {
-                    return Box(Modifier::new().height(4.0));
+                    return Box(Modifier::new().height(Dp(4.0)));
                 }
                 &l.states[si].transitions
             }
         };
         let Some(tr) = transitions.get(transition) else {
-            return Box(Modifier::new().height(4.0));
+            return Box(Modifier::new().height(Dp(4.0)));
         };
         (
             l.states.len(),
@@ -2101,10 +2099,10 @@ fn TransitionInspector(
         .size(th.typography.label_medium)
         .color(th.on_surface_variant)
         .modifier(Modifier::new().padding_values(PaddingValues {
-            left: 12.0,
-            right: 12.0,
-            top: 8.0,
-            bottom: 2.0,
+            left: Dp(12.0),
+            right: Dp(12.0),
+            top: Dp(8.0),
+            bottom: Dp(2.0),
         })),
         labeled_row(
             "Target",
@@ -2135,12 +2133,12 @@ fn TransitionInspector(
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(pad_row())
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             Text("Exit")
                 .size(th.typography.body_medium)
-                .modifier(Modifier::new().width(48.0)),
+                .modifier(Modifier::new().width(Dp(48.0))),
             chip("When finished", exit_time.is_some(), {
                 let session = session.clone();
                 move || {
@@ -2181,10 +2179,10 @@ fn TransitionInspector(
             .size(th.typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 10.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(10.0),
+                bottom: Dp(2.0),
             })),
     );
 
@@ -2204,7 +2202,7 @@ fn TransitionInspector(
         Row(Modifier::new()
             .fill_max_width()
             .padding_values(pad_row())
-            .gap(6.0)
+            .gap(Dp(6.0))
             .align_items(AlignItems::CENTER))
         .child((
             Text("Add condition")
@@ -2328,7 +2326,7 @@ fn condition_editor_row(
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(pad_row())
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER))
     .child(parts)
 }
@@ -2372,10 +2370,10 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
             .size(th.typography.label_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 2.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(12.0),
+                bottom: Dp(2.0),
             })),
     ];
 
@@ -2386,12 +2384,12 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 2.0,
-                    bottom: 2.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(2.0),
+                    bottom: Dp(2.0),
                 })
-                .gap(6.0)
+                .gap(Dp(6.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text(format!(
@@ -2432,10 +2430,10 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
                 .size(th.typography.label_small)
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 12.0,
-                    top: 2.0,
-                    bottom: 2.0,
+                    left: Dp(12.0),
+                    right: Dp(12.0),
+                    top: Dp(2.0),
+                    bottom: Dp(2.0),
                 })),
         );
     }
@@ -2591,18 +2589,18 @@ fn AddListenerRow(
     let number_editor: View = if matches!(input_kind, Some(InputKind::Number { .. })) {
         listener_draft_number_scrub(session.clone(), draft.number_value, 0.01)
     } else {
-        Box(Modifier::new().width(0.0))
+        Box(Modifier::new().width(Dp(0.0)))
     };
 
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 2.0,
-            bottom: 2.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(2.0),
+            bottom: Dp(2.0),
         })
-        .gap(4.0)
+        .gap(Dp(4.0))
         .align_items(AlignItems::CENTER))
     .child((
         Text(node_name)
@@ -2886,10 +2884,10 @@ fn transition_row(
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(pad_row())
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER)
         .background(th.surface_container)
-        .clip_rounded(6.0)
+        .clip_rounded(Dp(6.0))
         .on_pointer_down({
             let session = session.clone();
             move |_| {
@@ -3095,27 +3093,27 @@ fn chip(label: &'static str, active: bool, on_click: impl Fn() + 'static) -> Vie
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
                 } else {
                     th.surface
                 })
-                .clip_rounded(6.0)
+                .clip_rounded(Dp(6.0))
                 .on_pointer_down(move |_| on_click()),
         )
 }
 
 fn pad_row() -> PaddingValues {
     PaddingValues {
-        left: 12.0,
-        right: 8.0,
-        top: 2.0,
-        bottom: 2.0,
+        left: Dp(12.0),
+        right: Dp(8.0),
+        top: Dp(2.0),
+        bottom: Dp(2.0),
     }
 }
 
@@ -3124,12 +3122,12 @@ fn labeled_row(label: &'static str, child: View) -> View {
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(pad_row())
-        .gap(6.0)
+        .gap(Dp(6.0))
         .align_items(AlignItems::CENTER))
     .child((
         Text(label)
             .size(th.typography.body_medium)
-            .modifier(Modifier::new().width(56.0)),
+            .modifier(Modifier::new().width(Dp(56.0))),
         Box(Modifier::new().flex_grow(1.0)).child(child),
     ))
 }
@@ -3144,7 +3142,7 @@ fn machine_scrub_number(session: SessionRef, value: f64, step: f64, edit: Machin
         .color(th.primary)
         .modifier(
             Modifier::new()
-                .min_width(52.0)
+                .min_width(Dp(52.0))
                 .cursor(repose_core::CursorIcon::EwResize)
                 .on_pointer_down({
                     let session = session.clone();
@@ -3183,7 +3181,7 @@ fn preview_scrub_number(session: SessionRef, input: usize, value: f64, step: f64
         .color(th.primary)
         .modifier(
             Modifier::new()
-                .min_width(52.0)
+                .min_width(Dp(52.0))
                 .cursor(repose_core::CursorIcon::EwResize)
                 .on_pointer_down({
                     let session = session.clone();
@@ -3222,7 +3220,7 @@ fn listener_draft_number_scrub(session: SessionRef, value: f64, step: f64) -> Vi
         .color(th.primary)
         .modifier(
             Modifier::new()
-                .min_width(52.0)
+                .min_width(Dp(52.0))
                 .cursor(repose_core::CursorIcon::EwResize)
                 .on_pointer_down({
                     let drag = drag.clone();
@@ -3269,13 +3267,13 @@ fn dropdown(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(th.surface_container)
-                .clip_rounded(6.0)
+                .clip_rounded(Dp(6.0))
                 .on_pointer_down({
                     let state = state.clone();
                     move |_| state.open()
@@ -3289,8 +3287,8 @@ fn dropdown(
         trigger,
         items,
         DropdownMenuConfig {
-            min_width: 140.0,
-            max_width: 220.0,
+            min_width: Dp(140.0),
+            max_width: Dp(220.0),
             ..Default::default()
         },
     )

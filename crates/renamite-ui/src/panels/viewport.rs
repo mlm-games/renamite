@@ -6,8 +6,8 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Color, CursorIcon, FocusRequester, JustifyContent, Modifier, View, remember,
-    remember_with_key, request_frame, theme,
+    AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Px, View,
+    remember, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -398,8 +398,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 fn HudSurface(content: View) -> View {
     Box(Modifier::new()
         .background(theme().surface_container_high)
-        .clip_rounded(12.0)
-        .border(1.0, theme().outline_variant, 12.0))
+        .clip_rounded(Dp(12.0))
+        .border(Dp(1.0), theme().outline_variant, Dp(12.0)))
     .child(content)
 }
 
@@ -434,11 +434,11 @@ fn ViewportStageHud(session: SessionRef) -> View {
 
     Box(Modifier::new()
         .absolute()
-        .offset(Some(16.0), Some(16.0), None, None))
+        .offset(Some(Dp(16.0)), Some(Dp(16.0)), None, None))
     .child(HudSurface(
         Row(Modifier::new()
-            .padding(8.0)
-            .gap(8.0)
+            .padding(Dp(8.0))
+            .gap(Dp(8.0))
             .align_items(AlignItems::CENTER))
         .child(if is_interact {
             let names = states
@@ -514,12 +514,12 @@ fn ViewportHint(session: SessionRef) -> View {
     };
     Box(Modifier::new()
         .absolute()
-        .offset(Some(16.0), None, None, Some(16.0)))
+        .offset(Some(Dp(16.0)), None, None, Some(Dp(16.0))))
     .child(HudSurface(
         Text(text)
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
-            .modifier(Modifier::new().padding(8.0)),
+            .modifier(Modifier::new().padding(Dp(8.0))),
     ))
 }
 
@@ -542,7 +542,7 @@ fn TemplatePicker(session: SessionRef) -> View {
         .collect();
     let rows: Vec<View> = cards
         .chunks(cols)
-        .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
+        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
         .collect();
 
     let tiles: Vec<View> = vec![
@@ -565,14 +565,14 @@ fn TemplatePicker(session: SessionRef) -> View {
     ];
     let tile_rows: Vec<View> = tiles
         .chunks(tile_cols)
-        .map(|chunk| Row(Modifier::new().gap(12.0)).child(chunk.to_vec()))
+        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
         .collect();
 
     Column(
         Modifier::new()
             .fill_max_size()
-            .padding(24.0)
-            .gap(20.0)
+            .padding(Dp(24.0))
+            .gap(Dp(20.0))
             .justify_content(JustifyContent::CENTER)
             .align_items(AlignItems::CENTER)
             .on_size_changed({
@@ -596,14 +596,14 @@ fn TemplatePicker(session: SessionRef) -> View {
             .size(th.typography.body_medium)
             .color(th.on_surface_variant),
     )
-    .child(Column(Modifier::new().gap(12.0)).child(tile_rows))
+    .child(Column(Modifier::new().gap(Dp(12.0))).child(tile_rows))
     .child(ScrollArea(
         Modifier::new().fill_max_size(),
         remember_scroll_state("template_picker_scroll"),
         Column(
             Modifier::new()
                 .fill_max_width()
-                .gap(12.0)
+                .gap(Dp(12.0))
                 .align_items(AlignItems::CENTER),
         )
         .child(
@@ -611,7 +611,7 @@ fn TemplatePicker(session: SessionRef) -> View {
                 .size(th.typography.title_medium)
                 .color(th.on_surface),
         )
-        .child(Column(Modifier::new().gap(12.0)).child(rows)),
+        .child(Column(Modifier::new().gap(Dp(12.0))).child(rows)),
     ))
     .child(
         Text("Or dismiss to a blank canvas")
@@ -667,13 +667,13 @@ fn LauncherTile(
 ) -> View {
     let th = theme();
     Box(Modifier::new()
-        .width(width)
-        .padding(14.0)
+        .width(Dp(width))
+        .padding(Dp(14.0))
         .background(th.surface_container_high)
-        .clip_rounded(12.0)
+        .clip_rounded(Dp(12.0))
         .on_pointer_down(move |_| on_click()))
     .child(
-        Column(Modifier::new().gap(6.0)).child((
+        Column(Modifier::new().gap(Dp(6.0))).child((
             Text(title)
                 .size(th.typography.title_small)
                 .color(th.on_surface),
@@ -691,10 +691,10 @@ fn TemplateCard(
 ) -> View {
     let th = theme();
     Box(Modifier::new()
-        .width(width)
-        .padding(14.0)
+        .width(Dp(width))
+        .padding(Dp(14.0))
         .background(th.surface_container_high)
-        .clip_rounded(10.0)
+        .clip_rounded(Dp(10.0))
         .on_pointer_down({
             let session = session.clone();
             let id = template.id;
@@ -709,7 +709,7 @@ fn TemplateCard(
             }
         }))
     .child(
-        Column(Modifier::new().gap(6.0)).child((
+        Column(Modifier::new().gap(Dp(6.0))).child((
             Text(template.name)
                 .size(th.typography.title_small)
                 .color(th.on_surface),
@@ -734,7 +734,7 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
             h: height as f32 + 8.0,
         },
         Color(0, 0, 0, 48),
-        3.0,
+        Px(3.0),
     );
 
     let tile_world = 32.0;
@@ -759,7 +759,7 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
                     h: (tile_world * view.scale).ceil() as f32,
                 },
                 color,
-                0.0,
+                Px(0.0),
             );
         }
     }
@@ -770,7 +770,7 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
     let w = width as f32;
     let h = height as f32;
 
-    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, 0.0);
+    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, Px(0.0));
     scope.draw_rect(
         Rect {
             x,
@@ -779,9 +779,9 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
             h: 1.0,
         },
         border,
-        0.0,
+        Px(0.0),
     );
-    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, 0.0);
+    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, Px(0.0));
     scope.draw_rect(
         Rect {
             x: x + w - 1.0,
@@ -790,7 +790,7 @@ fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransfor
             h,
         },
         border,
-        0.0,
+        Px(0.0),
     );
 }
 
@@ -825,7 +825,7 @@ fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::sessi
                 h: height as f32,
             },
             color,
-            0.0,
+            Px(0.0),
         );
     }
     for r in 1..rows {
@@ -839,7 +839,7 @@ fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::sessi
                 h: 1.0,
             },
             color,
-            0.0,
+            Px(0.0),
         );
     }
 }
@@ -858,7 +858,7 @@ fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::se
                         h: 1.0,
                     },
                     color,
-                    0.0,
+                    Px(0.0),
                 );
             }
             crate::session::GuideAxis::Vertical => {
@@ -871,7 +871,7 @@ fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::se
                         h: scope.size.height,
                     },
                     color,
-                    0.0,
+                    Px(0.0),
                 );
             }
         }
@@ -883,12 +883,12 @@ fn ViewportControls(session: SessionRef) -> View {
 
     Box(Modifier::new()
         .absolute()
-        .offset(None, None, Some(16.0), Some(16.0)))
+        .offset(None, None, Some(Dp(16.0)), Some(Dp(16.0))))
     .child(HudSurface(
         Row(Modifier::new()
             .align_items(AlignItems::CENTER)
-            .gap(2.0)
-            .padding(4.0))
+            .gap(Dp(2.0))
+            .padding(Dp(4.0)))
         .child((
             CompactIconAction(Symbols::zoom_out, "Zoom out", {
                 let session = session.clone();
@@ -900,7 +900,7 @@ fn ViewportControls(session: SessionRef) -> View {
             Text(format!("{zoom:.0}%"))
                 .size(theme().typography.label_medium)
                 .color(theme().on_surface_variant)
-                .modifier(Modifier::new().min_width(52.0)),
+                .modifier(Modifier::new().min_width(Dp(52.0))),
             CompactIconAction(Symbols::zoom_in, "Zoom in", {
                 let session = session.clone();
                 move || {
@@ -949,7 +949,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
         ToolOverlay::None => {}
         ToolOverlay::RubberBand { min, max } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
         }
         ToolOverlay::Selection {
             min,
@@ -959,7 +959,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             pivot,
         } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
             for point in [rotate, scale] {
                 draw_selection_handle(scope, view.world_to_screen(*point), primary, th.on_primary);
             }
@@ -969,7 +969,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
         }
         ToolOverlay::ShapePreview { min, max, kind } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), 0.0, 1.0);
+            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
             let pts = star_preview_pts(*min, *max, *kind, view);
             draw_polyline_overlay(scope, &pts, primary.with_alpha(180));
         }
@@ -982,8 +982,8 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                     w: 8.0,
                     h: 8.0,
                 };
-                scope.draw_rect(rect, th.surface, 0.0);
-                scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
+                scope.draw_rect(rect, th.surface, Px(0.0));
+                scope.draw_rect_stroke(rect, primary, Px(0.0), Px(1.0));
             }
             if let Some(h) = hover {
                 let sp = view.world_to_screen(*h);
@@ -993,7 +993,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                     w: 6.0,
                     h: 6.0,
                 };
-                scope.draw_rect(rect, primary.with_alpha(180), 3.0);
+                scope.draw_rect(rect, primary.with_alpha(180), Px(3.0));
             }
         }
         ToolOverlay::PathHandles {
@@ -1013,10 +1013,10 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                     };
                     let active = ci == 0 && *active_anchor == Some(i);
                     if active {
-                        scope.draw_rect(rect, primary, 1.0);
+                        scope.draw_rect(rect, primary, Px(1.0));
                     } else {
-                        scope.draw_rect(rect, th.surface, 0.0);
-                        scope.draw_rect_stroke(rect, primary, 0.0, 1.0);
+                        scope.draw_rect(rect, th.surface, Px(0.0));
+                        scope.draw_rect_stroke(rect, primary, Px(0.0), Px(1.0));
                     }
 
                     if a.tan_in.length_squared() > 1e-12 {
@@ -1076,7 +1076,7 @@ fn draw_handle_dot(scope: &mut DrawScope, tip: DVec2, color: Color) {
         w: 5.0,
         h: 5.0,
     };
-    scope.draw_rect(rect, color, 5.0);
+    scope.draw_rect(rect, color, Px(5.0));
 }
 
 fn draw_selection_handle(scope: &mut DrawScope, point: DVec2, stroke: Color, fill: Color) {
@@ -1087,8 +1087,8 @@ fn draw_selection_handle(scope: &mut DrawScope, point: DVec2, stroke: Color, fil
         h: 8.0,
     };
 
-    scope.draw_rect(rect, fill, 2.0);
-    scope.draw_rect_stroke(rect, stroke, 2.0, 1.0);
+    scope.draw_rect(rect, fill, Px(2.0));
+    scope.draw_rect_stroke(rect, stroke, Px(2.0), Px(1.0));
 }
 
 fn draw_pivot(scope: &mut DrawScope, point: DVec2, color: Color) {
@@ -1106,8 +1106,8 @@ fn draw_pivot(scope: &mut DrawScope, point: DVec2, color: Color) {
         h: 14.0,
     };
 
-    scope.draw_rect(horizontal, color, 1.0);
-    scope.draw_rect(vertical, color, 1.0);
+    scope.draw_rect(horizontal, color, Px(1.0));
+    scope.draw_rect(vertical, color, Px(1.0));
 
     scope.draw_rect_stroke(
         Rect {
@@ -1117,8 +1117,8 @@ fn draw_pivot(scope: &mut DrawScope, point: DVec2, color: Color) {
             h: 8.0,
         },
         color,
-        4.0,
-        1.0,
+        Px(4.0),
+        Px(1.0),
     );
 }
 

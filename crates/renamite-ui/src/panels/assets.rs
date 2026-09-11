@@ -2,7 +2,7 @@ use renamite_behavior_common::assets::{
     cmd_place_image, font_rows, image_rows, selected_text_node,
 };
 use renamite_history::{EditorCommand, ToolOutput};
-use repose_core::{AlignItems, Modifier, View, theme};
+use repose_core::{AlignItems, Dp, Modifier, View, theme};
 use repose_material::material3::{Button, ButtonConfig};
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, ImageExt, Row, Text, TextStyle, ViewExt};
@@ -40,7 +40,13 @@ pub fn AssetsPanel(session: SessionRef) -> View {
 
     if rows.is_empty() && image_rows.is_empty() {
         children.push(
-            Column(Modifier::new().fill_max_width().gap(8.0).padding(16.0)).child((
+            Column(
+                Modifier::new()
+                    .fill_max_width()
+                    .gap(Dp(8.0))
+                    .padding(Dp(16.0)),
+            )
+            .child((
                 Text("No assets yet")
                     .size(theme().typography.body_medium)
                     .color(theme().on_surface),
@@ -54,7 +60,7 @@ pub fn AssetsPanel(session: SessionRef) -> View {
             Text("FONTS")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
-                .modifier(Modifier::new().padding(12.0)),
+                .modifier(Modifier::new().padding(Dp(12.0))),
         );
 
         for row in rows {
@@ -65,7 +71,7 @@ pub fn AssetsPanel(session: SessionRef) -> View {
             Text("IMAGES")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
-                .modifier(Modifier::new().padding(12.0)),
+                .modifier(Modifier::new().padding(Dp(12.0))),
         );
 
         for row in image_rows {
@@ -78,18 +84,18 @@ pub fn AssetsPanel(session: SessionRef) -> View {
             .size(theme().typography.label_medium)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 4.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(12.0),
+                bottom: Dp(4.0),
             })),
     );
     children.push(
         Row(Modifier::new().padding_values(repose_core::PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 4.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(4.0),
         }))
         .child(Button(
             Modifier::new(),
@@ -116,12 +122,12 @@ pub fn AssetsPanel(session: SessionRef) -> View {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(repose_core::PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 2.0,
-                    bottom: 2.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(2.0),
+                    bottom: Dp(2.0),
                 })
-                .gap(6.0)
+                .gap(Dp(6.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text(name)
@@ -160,23 +166,23 @@ fn ImageRow(session: SessionRef, row: renamite_behavior_common::assets::ImageAss
     let handle = renamite_render_bridge::image_handle(row.id);
 
     Row(Modifier::new()
-        .height(64.0)
+        .height(Dp(64.0))
         .fill_max_width()
         .padding_values(repose_core::PaddingValues {
-            left: 8.0,
-            right: 8.0,
-            top: 4.0,
-            bottom: 4.0,
+            left: Dp(8.0),
+            right: Dp(8.0),
+            top: Dp(4.0),
+            bottom: Dp(4.0),
         })
-        .gap(8.0)
+        .gap(Dp(8.0))
         .align_items(AlignItems::CENTER))
     .child((
         repose_ui::Image(
             Modifier::new()
-                .width(52.0)
-                .height(52.0)
+                .width(Dp(52.0))
+                .height(Dp(52.0))
                 .background(th.surface_container_high)
-                .clip_rounded(6.0),
+                .clip_rounded(Dp(6.0)),
             handle,
         )
         .image_fit(repose_core::ImageFit::Contain),
@@ -239,7 +245,7 @@ fn ImageRow(session: SessionRef, row: renamite_behavior_common::assets::ImageAss
                 }
             })
         } else {
-            Box(Modifier::new().width(40.0))
+            Box(Modifier::new().width(Dp(40.0)))
         },
     ))
 }
@@ -261,16 +267,16 @@ fn FontRow(
     });
 
     Row(Modifier::new()
-        .height(44.0)
+        .height(Dp(44.0))
         .fill_max_width()
         .padding_values(repose_core::PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0)
+        .gap(Dp(8.0))
         .background(if active {
             th.secondary_container
         } else {
@@ -312,7 +318,7 @@ fn FontRow(
                 }
             })
         } else {
-            Box(Modifier::new().width(40.0))
+            Box(Modifier::new().width(Dp(40.0)))
         },
         if !row.bundled && row.usage_count == 0 {
             CompactIconAction(Symbols::delete, "Remove font asset", {
@@ -330,7 +336,7 @@ fn FontRow(
                 }
             })
         } else {
-            Box(Modifier::new().width(40.0))
+            Box(Modifier::new().width(Dp(40.0)))
         },
     ))
 }

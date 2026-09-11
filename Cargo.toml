@@ -11,16 +11,16 @@ repository = "https://github.com/mlm-games/renamite"
 
 [workspace.dependencies]
 
-repose-core = "0.29"
-repose-ui = "0.29"
-repose-material = "0.29"
-repose-canvas = "0.29"
-repose-docking = "0.29"
-repose-platform = "0.29"
-repose-render-wgpu = { version = "0.29", default-features = false }
-repose-text = "0.29"
-repose-app = "0.29"
-repose-tree = "0.29"
+repose-core = "0.30"
+repose-ui = "0.30"
+repose-material = "0.30"
+repose-canvas = "0.30"
+repose-docking = "0.30"
+repose-platform = "0.30"
+repose-render-wgpu = { version = "0.30", default-features = false }
+repose-text = "0.30"
+repose-app = "0.30"
+repose-tree = "0.30"
 
 
 kurbo = { version = "0.13", features = ["serde"] }

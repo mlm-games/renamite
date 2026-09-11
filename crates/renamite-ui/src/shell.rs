@@ -1,5 +1,7 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
-use repose_core::{JustifyContent, Modifier, PaddingValues, View, remember_with_key, theme};
+use repose_core::{
+    Dp, JustifyContent, Modifier, PaddingValues, UnitExt, View, remember_with_key, theme,
+};
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
     Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, Surface, SurfaceConfig, TextButton,
@@ -131,18 +133,18 @@ fn context_menu_overlay(session: SessionRef) -> View {
         })),
         Box(Modifier::new()
             .absolute()
-            .offset(Some(x), Some(y), None, None))
+            .offset(Some(Dp(x)), Some(Dp(y)), None, None))
         .child(Surface(
             SurfaceConfig {
-                modifier: Modifier::new().width(220.0).padding(4.0),
+                modifier: Modifier::new().width(Dp(220.0)).padding(Dp(4.0)),
                 color: th.surface_container_high,
                 content_color: th.on_surface,
-                shape_radius: 8.0,
-                border: Some((1.0, th.outline_variant)),
+                shape_radius: 8.0.dp(),
+                border: Some((1.0.dp(), th.outline_variant)),
                 ..Default::default()
             },
             move || {
-                Column(Modifier::new().fill_max_width().gap(2.0))
+                Column(Modifier::new().fill_max_width().gap(Dp(2.0)))
                     .child(render_menu_entries(session_entries.clone(), &entries))
             },
         )),
@@ -191,7 +193,7 @@ fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> 
         .flat_map(|e| match e {
             MenuEntry::Separator => {
                 vec![Box(Modifier::new()
-                    .height(1.0)
+                    .height(Dp(1.0))
                     .fill_max_width()
                     .background(th.outline_variant))]
             }
@@ -202,13 +204,13 @@ fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> 
                 let en = *enabled;
                 vec![
                     Box(Modifier::new()
-                        .height(36.0)
+                        .height(Dp(36.0))
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 12.0,
-                            top: 0.0,
-                            bottom: 0.0,
+                            left: Dp(12.0),
+                            right: Dp(12.0),
+                            top: Dp(0.0),
+                            bottom: Dp(0.0),
                         })
                         .align_items(repose_core::AlignItems::CENTER)
                         .on_pointer_down({
@@ -234,10 +236,10 @@ fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> 
                         .size(th.typography.label_small)
                         .color(th.on_surface_variant)
                         .modifier(Modifier::new().padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 8.0,
-                            top: 8.0,
-                            bottom: 2.0,
+                            left: Dp(12.0),
+                            right: Dp(8.0),
+                            top: Dp(8.0),
+                            bottom: Dp(2.0),
                         })),
                 ];
                 views.extend(render_menu_entries(session.clone(), children));
@@ -270,7 +272,7 @@ fn color_picker_overlay(session: SessionRef) -> View {
         })),
         Box(Modifier::new()
             .absolute()
-            .offset(Some(x), Some(y), None, None))
+            .offset(Some(Dp(x)), Some(Dp(y)), None, None))
         .child(crate::color_picker::ColorPicker(
             picker.state.clone(),
             swatches,
@@ -313,20 +315,20 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
     let label = theme().typography.label_large;
 
     let content = Column(Modifier::new().padding_values(PaddingValues {
-        left: 24.0,
-        right: 24.0,
-        top: 24.0,
-        bottom: 24.0,
+        left: Dp(24.0),
+        right: Dp(24.0),
+        top: Dp(24.0),
+        bottom: Dp(24.0),
     }))
     .child((
         Text("Unsaved changes").size(theme().typography.title_large),
-        Box(Modifier::new().height(12.0)),
+        Box(Modifier::new().height(Dp(12.0))),
         Text("Save changes to your project before continuing?")
             .size(theme().typography.body_medium)
             .color(theme().on_surface_variant),
         Spacer(),
         Row(Modifier::new()
-            .gap(8.0)
+            .gap(Dp(8.0))
             .justify_content(JustifyContent::END))
         .child((
             TextButton(
@@ -369,7 +371,11 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 }
 
 fn ExpandedWorkspace(session: SessionRef) -> View {
-    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
+    Row(Modifier::new()
+        .fill_max_size()
+        .padding(Dp(8.0))
+        .gap(Dp(8.0)))
+    .child((
         crate::ToolRail(session.clone()),
         Box(Modifier::new().weight(1.0).fill_max_height())
             .child(DockWorkspace(session.clone(), session.borrow().mode)),
@@ -583,7 +589,11 @@ fn MediumSideTabs(session: SessionRef) -> View {
         .map(|i| tabs[i])
         .unwrap_or(tabs[0]);
 
-    Row(Modifier::new().fill_max_width().padding(8.0).gap(6.0)).child(
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding(Dp(8.0))
+        .gap(Dp(6.0)))
+    .child(
         tabs.iter()
             .enumerate()
             .map(|(i, &page)| {
@@ -598,11 +608,15 @@ fn MediumSideTabs(session: SessionRef) -> View {
 }
 
 fn MediumWorkspace(session: SessionRef) -> View {
-    Row(Modifier::new().fill_max_size().padding(8.0).gap(8.0)).child((
+    Row(Modifier::new()
+        .fill_max_size()
+        .padding(Dp(8.0))
+        .gap(Dp(8.0)))
+    .child((
         crate::ToolRail(session.clone()),
         Box(Modifier::new().weight(1.0).fill_max_height())
             .child(PanelSurface(ViewportPanel(session.clone()))),
-        Box(Modifier::new().width(320.0).fill_max_height()).child(PanelSurface(
+        Box(Modifier::new().width(Dp(320.0)).fill_max_height()).child(PanelSurface(
             Column(Modifier::new().fill_max_size()).child((
                 MediumSideTabs(session.clone()),
                 Box(Modifier::new().weight(1.0).fill_max_width()).child(active_side_panel(session)),
@@ -648,14 +662,14 @@ fn compact_tool(
 fn CompactToolPalette(session: SessionRef) -> View {
     Box(Modifier::new()
         .absolute()
-        .offset(Some(12.0), None, None, Some(12.0)))
+        .offset(Some(Dp(12.0)), None, None, Some(Dp(12.0))))
     .child(
         Box(Modifier::new()
-            .padding(6.0)
+            .padding(Dp(6.0))
             .background(theme().surface_container_high)
-            .clip_rounded(12.0)
-            .border(1.0, theme().outline_variant, 12.0))
-        .child(Column(Modifier::new().gap(4.0)).child(vec![
+            .clip_rounded(Dp(12.0))
+            .border(Dp(1.0), theme().outline_variant, Dp(12.0)))
+        .child(Column(Modifier::new().gap(Dp(4.0))).child(vec![
             compact_tool(
                 session.clone(),
                 renamite_history::ToolId::Select,

@@ -21,7 +21,7 @@ use renamite_model::{
 };
 use repose_canvas::{DrawCommand, DrawScope};
 use repose_core::{
-    BlendMode, PaintDesc, Scene as ReposeScene, SceneNode, VectorMeshData, VectorVertex,
+    BlendMode, ClipOp, PaintDesc, Scene as ReposeScene, SceneNode, VectorMeshData, VectorVertex,
 };
 use rustc_hash::FxHashMap;
 use slotmap::Key as _;
@@ -259,8 +259,11 @@ impl SceneRenderer {
             scale_x: scale_x as f32,
             scale_y: scale_y as f32,
             rotate: b.atan2(a) as f32,
+            shear_x: 0.0,
+            shear_y: 0.0,
             origin_x: 0.0,
             origin_y: 0.0,
+            perspective: [0.0, 0.0, 1.0],
         }
     }
 
@@ -289,6 +292,7 @@ impl SceneRenderer {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             scope.commands.push(DrawCommand::PushVectorClip {
                                 mesh: clip.mesh.clone(),
+                                op: ClipOp::Intersect,
                             });
                         }
                     }
@@ -316,6 +320,7 @@ impl SceneRenderer {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             scope.commands.push(DrawCommand::PushVectorClip {
                                 mesh: clip.mesh.clone(),
+                                op: ClipOp::Intersect,
                             });
                         }
                     }
@@ -356,6 +361,7 @@ impl SceneRenderer {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             out.nodes.push(SceneNode::PushVectorClip {
                                 mesh: clip.mesh.clone(),
+                                op: ClipOp::Intersect,
                             });
                         }
                     }
@@ -383,6 +389,7 @@ impl SceneRenderer {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             out.nodes.push(SceneNode::PushVectorClip {
                                 mesh: clip.mesh.clone(),
+                                op: ClipOp::Intersect,
                             });
                         }
                     }

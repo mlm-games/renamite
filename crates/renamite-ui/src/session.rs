@@ -3646,8 +3646,8 @@ pub fn map_modifiers(pe: &PointerEvent) -> Modifiers {
 pub fn overlay_anchor(pe: &PointerEvent) -> DVec2 {
     let p = pe.position_in_window();
     DVec2::new(
-        repose_core::px_to_dp(p.x) as f64,
-        repose_core::px_to_dp(p.y) as f64,
+        repose_core::px_to_dp(repose_core::Px(p.x)).0 as f64,
+        repose_core::px_to_dp(repose_core::Px(p.y)).0 as f64,
     )
 }
 

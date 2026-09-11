@@ -8,7 +8,7 @@ use renamite_model::Color as ModelColor;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
-use repose_core::{AlignItems, Color, Modifier, View, theme};
+use repose_core::{AlignItems, Color, Dp, Modifier, Px, View, theme};
 use repose_material::material3::{Button, ButtonConfig, TextField, TextFieldConfig};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use std::cell::RefCell;
@@ -78,10 +78,10 @@ pub fn ColorPicker(
 ) -> View {
     Column(
         Modifier::new()
-            .gap(STRIP_GAP)
-            .padding(12.0)
+            .gap(Dp(STRIP_GAP))
+            .padding(Dp(12.0))
             .background(theme().surface_container_high)
-            .clip_rounded(12.0),
+            .clip_rounded(Dp(12.0)),
     )
     .child((
         sv_square(state.clone(), on_change.clone(), on_commit.clone()),
@@ -119,9 +119,9 @@ fn sv_square(
 
     Canvas(
         Modifier::new()
-            .width(SV_SIZE)
-            .height(SV_SIZE)
-            .clip_rounded(8.0)
+            .width(Dp(SV_SIZE))
+            .height(Dp(SV_SIZE))
+            .clip_rounded(Dp(8.0))
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -164,8 +164,8 @@ fn sv_square(
                     h: r * 2.0,
                 },
                 Color::WHITE,
-                r,
-                2.0,
+                Px(r),
+                Px(2.0),
             );
             scope.draw_rect_stroke(
                 Rect {
@@ -175,8 +175,8 @@ fn sv_square(
                     h: r * 2.0 + 2.0,
                 },
                 Color(0, 0, 0, 180),
-                r + 1.0,
-                1.0,
+                Px(r + 1.0),
+                Px(1.0),
             );
         },
     )
@@ -205,7 +205,7 @@ fn paint_sv_square(scope: &mut DrawScope, hue: f64) {
                     (c.b * 255.0) as u8,
                     255,
                 ),
-                0.0,
+                Px(0.0),
             );
         }
     }
@@ -230,9 +230,9 @@ fn hue_strip(
 
     Canvas(
         Modifier::new()
-            .width(SV_SIZE)
-            .height(STRIP_H)
-            .clip_rounded(6.0)
+            .width(Dp(SV_SIZE))
+            .height(Dp(STRIP_H))
+            .clip_rounded(Dp(6.0))
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -286,7 +286,7 @@ fn hue_strip(
                         (c.b * 255.0) as u8,
                         255,
                     ),
-                    0.0,
+                    Px(0.0),
                 );
             }
             let hue = state.borrow().hsv.h;
@@ -314,9 +314,9 @@ fn alpha_strip(
 
     Canvas(
         Modifier::new()
-            .width(SV_SIZE)
-            .height(STRIP_H)
-            .clip_rounded(6.0)
+            .width(Dp(SV_SIZE))
+            .height(Dp(STRIP_H))
+            .clip_rounded(Dp(6.0))
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -363,10 +363,10 @@ fn alpha_strip(
                         h: STRIP_H,
                     },
                     bg,
-                    0.0,
+                    Px(0.0),
                 );
             }
-            // Solid color, alpha ramp left(0)->right(1).
+
             let base = state.borrow().color();
             const CELLS: i32 = 36;
             let cell_w = SV_SIZE / CELLS as f32;
@@ -386,7 +386,7 @@ fn alpha_strip(
                         h: STRIP_H,
                     },
                     c,
-                    0.0,
+                    Px(0.0),
                 );
             }
             let x = state.borrow().alpha as f32 * SV_SIZE;
@@ -403,9 +403,9 @@ fn hex_row(
     let draft = state.borrow().hex_draft.clone();
     let error = state.borrow().hex_error;
 
-    Row(Modifier::new().gap(8.0).align_items(AlignItems::CENTER)).child((
+    Row(Modifier::new().gap(Dp(8.0)).align_items(AlignItems::CENTER)).child((
         TextField(
-            Modifier::new().width(120.0),
+            Modifier::new().width(Dp(120.0)),
             draft,
             {
                 let state = state.clone();
@@ -435,11 +435,10 @@ fn hex_row(
                 ..Default::default()
             },
         ),
-        // Live preview; click commits the (currently valid) hex.
         Box(Modifier::new()
-            .width(28.0)
-            .height(28.0)
-            .clip_rounded(6.0)
+            .width(Dp(28.0))
+            .height(Dp(28.0))
+            .clip_rounded(Dp(6.0))
             .background({
                 let c = state.borrow().color();
                 Color::from_rgba(
@@ -488,9 +487,9 @@ fn swatch_row(
     // "+" cell: save the current color as a new swatch.
     cells.push(
         Box(Modifier::new()
-            .width(20.0)
-            .height(20.0)
-            .clip_rounded(4.0)
+            .width(Dp(20.0))
+            .height(Dp(20.0))
+            .clip_rounded(Dp(4.0))
             .background(th.surface_container_low)
             .on_pointer_down({
                 let state = state.clone();
@@ -504,15 +503,15 @@ fn swatch_row(
         ),
     );
 
-    Row(Modifier::new().gap(4.0)).child(cells)
+    Row(Modifier::new().gap(Dp(4.0))).child(cells)
 }
 
 fn swatch_cell(c: ModelColor, on_click: impl Fn() + 'static) -> View {
     Box(Modifier::new()
-        .width(20.0)
-        .height(20.0)
-        .clip_rounded(4.0)
-        .border(1.0, theme().outline_variant, 4.0)
+        .width(Dp(20.0))
+        .height(Dp(20.0))
+        .clip_rounded(Dp(4.0))
+        .border(Dp(1.0), theme().outline_variant, Dp(4.0))
         .background(Color::from_rgba(
             (c.r * 255.0) as u8,
             (c.g * 255.0) as u8,
@@ -532,7 +531,7 @@ fn draw_strip_cursor(scope: &mut DrawScope, x: f32, h: f32) {
             h: h + 4.0,
         },
         Color::WHITE,
-        1.0,
+        Px(1.0),
     );
     scope.draw_rect_stroke(
         Rect {
@@ -542,7 +541,7 @@ fn draw_strip_cursor(scope: &mut DrawScope, x: f32, h: f32) {
             h: h + 4.0,
         },
         Color(0, 0, 0, 180),
-        1.0,
-        1.0,
+        Px(1.0),
+        Px(1.0),
     );
 }

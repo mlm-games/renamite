@@ -6,7 +6,7 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{Key, KeyEvent, PointerEvent};
 use repose_core::{
-    AlignItems, Color, JustifyContent, Modifier, TextFieldLineLimits, Vec2, View,
+    AlignItems, Color, Dp, JustifyContent, Modifier, Px, TextFieldLineLimits, Vec2, View,
     remember_with_key, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
@@ -110,15 +110,15 @@ pub fn TimelinePanel(session: SessionRef) -> View {
             Box(Modifier::new()
                 .fill_max_size()
                 .padding_values(repose_core::PaddingValues {
-                    left: 24.0,
-                    right: 24.0,
-                    top: 0.0,
-                    bottom: 0.0,
+                    left: Dp(24.0),
+                    right: Dp(24.0),
+                    top: Dp(0.0),
+                    bottom: Dp(0.0),
                 })
                 .align_items(AlignItems::CENTER)
                 .justify_content(JustifyContent::CENTER))
             .child(
-                Column(Modifier::new().gap(8.0).align_items(AlignItems::CENTER)).child((
+                Column(Modifier::new().gap(Dp(8.0)).align_items(AlignItems::CENTER)).child((
                     Text("No animated properties yet")
                         .size(th.typography.body_medium)
                         .color(th.on_surface),
@@ -151,8 +151,8 @@ fn TimelineInfoBar(
 ) -> View {
     Row(Modifier::new()
         .fill_max_width()
-        .padding(8.0)
-        .gap(8.0)
+        .padding(Dp(8.0))
+        .gap(Dp(8.0))
         .align_items(AlignItems::CENTER))
     .child((
         StatusChip(
@@ -235,20 +235,23 @@ fn RangeEditor(
         let end_state = end_state.clone();
         BasicTextField(
             state,
-            Modifier::new().width(48.0).height(28.0).on_key_event({
-                let committed = committed.clone();
-                let start_state = start_state.clone();
-                let end_state = end_state.clone();
-                move |ke: KeyEvent| {
-                    if matches!(ke.key, Key::Escape) {
-                        let c = committed.borrow();
-                        start_state.borrow_mut().text = c.0.to_string();
-                        end_state.borrow_mut().text = c.1.to_string();
-                        return true;
+            Modifier::new()
+                .width(Dp(48.0))
+                .height(Dp(28.0))
+                .on_key_event({
+                    let committed = committed.clone();
+                    let start_state = start_state.clone();
+                    let end_state = end_state.clone();
+                    move |ke: KeyEvent| {
+                        if matches!(ke.key, Key::Escape) {
+                            let c = committed.borrow();
+                            start_state.borrow_mut().text = c.0.to_string();
+                            end_state.borrow_mut().text = c.1.to_string();
+                            return true;
+                        }
+                        false
                     }
-                    false
-                }
-            }),
+                }),
             "",
             TextFieldConfig {
                 line_limits: TextFieldLineLimits::SingleLine,
@@ -280,7 +283,7 @@ fn RangeEditor(
         )
     };
 
-    Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+    Row(Modifier::new().gap(Dp(4.0)).align_items(AlignItems::CENTER)).child((
         field(start_state.clone(), start_focus),
         Text("–")
             .size(th.typography.body_small)
@@ -306,7 +309,7 @@ fn prop_label(
 }
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
-    Box(Modifier::new().width(170.0).fill_max_height()).child(ScrollArea(
+    Box(Modifier::new().width(Dp(170.0)).fill_max_height()).child(ScrollArea(
         Modifier::new().fill_max_size(),
         remember_scroll_state("timeline_labels_scroll"),
         Column(Modifier::new().fill_max_width()).child(
@@ -320,13 +323,13 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                         None => session.borrow().node_name(row.node),
                     };
                     Box(Modifier::new()
-                        .height(22.0)
+                        .height(Dp(22.0))
                         .fill_max_width()
                         .padding_values(repose_core::PaddingValues {
-                            left: 10.0,
-                            right: 8.0,
-                            top: 0.0,
-                            bottom: 0.0,
+                            left: Dp(10.0),
+                            right: Dp(8.0),
+                            top: Dp(0.0),
+                            bottom: Dp(0.0),
                         })
                         .align_items(AlignItems::CENTER))
                     .child(
@@ -443,7 +446,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     h: layout.row_top as f32,
                 },
                 th.surface_container_highest,
-                0.0,
+                Px(0.0),
             );
 
             // Zebra rows.
@@ -462,7 +465,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         h: layout.row_height as f32,
                     },
                     bg,
-                    0.0,
+                    Px(0.0),
                 );
             }
 
@@ -483,14 +486,14 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     } else {
                         th.outline_variant
                     },
-                    0.0,
+                    Px(0.0),
                 );
                 if major {
                     scope.draw_text(
                         frame.to_string(),
                         Vec2 { x: x + 3.0, y: 4.0 },
                         th.on_surface_variant,
-                        10.0,
+                        Px(10.0),
                     );
                 }
             }
@@ -528,8 +531,8 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         w: (max.x - min.x).abs() as f32,
                         h: (max.y - min.y).abs() as f32,
                     };
-                    scope.draw_rect(r, th.primary.with_alpha(40), 0.0);
-                    scope.draw_rect_stroke(r, th.primary.with_alpha(200), 0.0, 1.0);
+                    scope.draw_rect(r, th.primary.with_alpha(40), Px(0.0));
+                    scope.draw_rect_stroke(r, th.primary.with_alpha(200), Px(0.0), Px(1.0));
                 }
                 TimelineOverlay::DragDelta { frames } if frames != 0 => {
                     scope.draw_text(
@@ -539,7 +542,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                             y: scope.size.height - 18.0,
                         },
                         th.primary,
-                        12.0,
+                        Px(12.0),
                     );
                 }
                 _ => {}
@@ -564,7 +567,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     h: scope.size.height,
                 },
                 th.primary,
-                0.0,
+                Px(0.0),
             );
         },
     )

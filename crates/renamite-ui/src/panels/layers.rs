@@ -7,7 +7,7 @@ use renamite_behavior_common::layers::{
 use renamite_history::ToolOutput;
 use repose_core::input::{Key, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
+    AlignItems, Dp, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
@@ -43,14 +43,12 @@ pub fn LayersPanel(session: SessionRef) -> View {
         Modifier::new()
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 4.0,
-                right: 4.0,
-                top: 0.0,
-                bottom: 8.0,
+                left: Dp(4.0),
+                right: Dp(4.0),
+                top: Dp(0.0),
+                bottom: Dp(8.0),
             })
-            .gap(ROW_GAP)
-            // Safety net: a drag can end even if the pointer was released
-            // outside any row.
+            .gap(Dp(ROW_GAP))
             .on_pointer_up({
                 let session = session.clone();
                 move |pe: PointerEvent| {
@@ -161,26 +159,26 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     let child_count = row.child_count;
     let show_sibling_divider = st.is_drop_target && !st.drop_as_child;
     let divider = Box(Modifier::new()
-        .height(2.0)
+        .height(Dp(2.0))
         .fill_max_width()
         .background(th.primary)
         .padding_values(PaddingValues {
-            left: indent,
-            right: 4.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(indent),
+            right: Dp(4.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         }));
     let row_view = Row(Modifier::new()
-        .height(ROW_HEIGHT)
+        .height(Dp(ROW_HEIGHT))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: indent,
-            right: 4.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(indent),
+            right: Dp(4.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(2.0)
+        .gap(Dp(2.0))
         .background(bg)
         .on_pointer_down({
             let session = session.clone();
@@ -334,9 +332,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 },
             )
         } else {
-            Box(Modifier::new().width(40.0)) // spacer
+            Box(Modifier::new().width(Dp(40.0))) // spacer
         },
-        // Kind glyph
         AppIcon(
             match kind {
                 LayerKind::Shape => Symbols::circle,
@@ -428,21 +425,24 @@ fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String)
 
     Row(Modifier::new()
         .flex_grow(1.0)
-        .gap(2.0)
+        .gap(Dp(2.0))
         .align_items(AlignItems::CENTER))
     .child((
         BasicTextField(
             tf_state,
-            Modifier::new().flex_grow(1.0).height(32.0).on_key_event({
-                let session = session.clone();
-                move |ke: KeyEvent| {
-                    if matches!(ke.key, Key::Escape) {
-                        session.borrow_mut().cancel_rename();
-                        return true;
+            Modifier::new()
+                .flex_grow(1.0)
+                .height(Dp(32.0))
+                .on_key_event({
+                    let session = session.clone();
+                    move |ke: KeyEvent| {
+                        if matches!(ke.key, Key::Escape) {
+                            session.borrow_mut().cancel_rename();
+                            return true;
+                        }
+                        false
                     }
-                    false
-                }
-            }),
+                }),
             "",
             TextFieldConfig {
                 line_limits: repose_core::TextFieldLineLimits::SingleLine,

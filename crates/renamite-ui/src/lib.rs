@@ -17,7 +17,7 @@ pub mod symbols;
 
 use renamite_animation::PlayState;
 use renamite_history::ToolId;
-use repose_core::{Color, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
+use repose_core::{Color, Dp, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
 use repose_material::material3::{
     DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem, MenuState, TopAppBar,
     TopAppBarConfig,
@@ -57,7 +57,7 @@ pub fn init_wasm() {
 
 fn EditorModeSwitch(session: SessionRef) -> View {
     let mode = session.borrow().mode;
-    Row(Modifier::new().gap(6.0)).child((
+    Row(Modifier::new().gap(Dp(6.0))).child((
         crate::components::PillButton("Design", mode == EditorMode::Design, {
             let session = session.clone();
             move || session.borrow_mut().set_mode(EditorMode::Design)
@@ -235,8 +235,8 @@ pub fn FileMenu(session: SessionRef, overlay: OverlayHandle) -> View {
         trigger,
         items,
         DropdownMenuConfig {
-            min_width: 220.0,
-            max_width: 280.0,
+            min_width: Dp(220.0),
+            max_width: Dp(280.0),
             ..Default::default()
         },
     )
@@ -285,15 +285,15 @@ pub fn ToolRail(session: SessionRef) -> View {
 
     Column(
         Modifier::new()
-            .width(72.0)
+            .width(Dp(72.0))
             .fill_max_height()
             .padding_values(repose_core::PaddingValues {
-                left: 12.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 12.0,
+                left: Dp(12.0),
+                right: Dp(12.0),
+                top: Dp(12.0),
+                bottom: Dp(12.0),
             })
-            .gap(6.0)
+            .gap(Dp(6.0))
             .background(theme().surface_container),
     )
     .child(vec![
@@ -395,17 +395,17 @@ pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
     };
 
     Box(Modifier::new()
-        .width(32.0)
-        .height(32.0)
-        .clip_rounded(8.0)
+        .width(Dp(32.0))
+        .height(Dp(32.0))
+        .clip_rounded(Dp(8.0))
         .border(
-            2.0,
+            Dp(2.0),
             if is_open {
                 th.primary
             } else {
                 th.outline_variant
             },
-            8.0,
+            Dp(8.0),
         )
         .background(Color::from_rgba(
             (color.r * 255.0) as u8,

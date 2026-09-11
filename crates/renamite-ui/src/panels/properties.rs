@@ -29,9 +29,9 @@ use renamite_model::{
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
-    AlignItems, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardType, Modifier,
-    PaddingValues, TextFieldLineLimits, TextInputConfig, View, ViewKind, remember_with_key,
-    request_frame, theme,
+    AlignItems, Dp, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardType, Modifier,
+    PaddingValues, TextFieldLineLimits, TextInputConfig, UnitExt, View, ViewKind,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
@@ -87,121 +87,128 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 8.0,
-                            top: 6.0,
-                            bottom: 2.0,
+                            left: Dp(12.0),
+                            right: Dp(8.0),
+                            top: Dp(6.0),
+                            bottom: Dp(2.0),
                         })
-                        .gap(8.0)
+                        .gap(Dp(8.0))
                         .align_items(AlignItems::CENTER))
                     .child((
                         Text("Name")
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
-                            .modifier(Modifier::new().width(96.0)),
-                        Box(Modifier::new().width(176.0)).child(crate::components::AppTextField(
-                            format!("comp_name_{comp_id:?}"),
-                            comp_name.clone(),
-                            "Name",
-                            false,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    let name = text.trim().to_string();
-                                    if name.is_empty() {
-                                        return;
+                            .modifier(Modifier::new().width(Dp(96.0))),
+                        Box(Modifier::new().width(Dp(176.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_name_{comp_id:?}"),
+                                comp_name.clone(),
+                                "Name",
+                                false,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        let name = text.trim().to_string();
+                                        if name.is_empty() {
+                                            return;
+                                        }
+                                        let mut s = session.borrow_mut();
+                                        s.apply_outputs(smallvec![
+                                            ToolOutput::BeginTransaction(
+                                                "Set composition name".into()
+                                            ),
+                                            ToolOutput::Commands(smallvec![
+                                                EditorCommand::SetCompositionName {
+                                                    comp: comp_id,
+                                                    name: name.clone(),
+                                                }
+                                            ]),
+                                            ToolOutput::CommitTransaction,
+                                        ]);
                                     }
-                                    let mut s = session.borrow_mut();
-                                    s.apply_outputs(smallvec![
-                                        ToolOutput::BeginTransaction("Set composition name".into()),
-                                        ToolOutput::Commands(smallvec![
-                                            EditorCommand::SetCompositionName {
-                                                comp: comp_id,
-                                                name: name.clone(),
-                                            }
-                                        ]),
-                                        ToolOutput::CommitTransaction,
-                                    ]);
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                     )),
-                    // Size row: editable W x H
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 8.0,
-                            top: 6.0,
-                            bottom: 6.0,
+                            left: Dp(12.0),
+                            right: Dp(8.0),
+                            top: Dp(6.0),
+                            bottom: Dp(6.0),
                         })
-                        .gap(8.0)
+                        .gap(Dp(8.0))
                         .align_items(AlignItems::CENTER))
                     .child((
                         Text("Size")
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
-                            .modifier(Modifier::new().width(96.0)),
-                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
-                            format!("comp_w_{comp_id:?}"),
-                            size.0.to_string(),
-                            "W",
-                            true,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    if let Ok(w) = text.trim().parse::<u32>() {
-                                        let mut s = session.borrow_mut();
-                                        let h = s.file.document.compositions[comp_id].size.1;
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction(
-                                                "Set composition size".into()
-                                            ),
-                                            ToolOutput::Commands(smallvec![
-                                                EditorCommand::SetCompositionSize {
-                                                    comp: comp_id,
-                                                    size: (w.max(1), h.max(1)),
-                                                }
-                                            ]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
+                            .modifier(Modifier::new().width(Dp(96.0))),
+                        Box(Modifier::new().width(Dp(84.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_w_{comp_id:?}"),
+                                size.0.to_string(),
+                                "W",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(w) = text.trim().parse::<u32>() {
+                                            let mut s = session.borrow_mut();
+                                            let h = s.file.document.compositions[comp_id].size.1;
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction(
+                                                    "Set composition size".into()
+                                                ),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionSize {
+                                                        comp: comp_id,
+                                                        size: (w.max(1), h.max(1)),
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
                                     }
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                         Text("x")
                             .size(th.typography.body_medium)
                             .color(th.on_surface_variant),
-                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
-                            format!("comp_h_{comp_id:?}"),
-                            size.1.to_string(),
-                            "H",
-                            true,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    if let Ok(h) = text.trim().parse::<u32>() {
-                                        let mut s = session.borrow_mut();
-                                        let w = s.file.document.compositions[comp_id].size.0;
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction(
-                                                "Set composition size".into()
-                                            ),
-                                            ToolOutput::Commands(smallvec![
-                                                EditorCommand::SetCompositionSize {
-                                                    comp: comp_id,
-                                                    size: (w.max(1), h.max(1)),
-                                                }
-                                            ]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
+                        Box(Modifier::new().width(Dp(84.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_h_{comp_id:?}"),
+                                size.1.to_string(),
+                                "H",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(h) = text.trim().parse::<u32>() {
+                                            let mut s = session.borrow_mut();
+                                            let w = s.file.document.compositions[comp_id].size.0;
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction(
+                                                    "Set composition size".into()
+                                                ),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionSize {
+                                                        comp: comp_id,
+                                                        size: (w.max(1), h.max(1)),
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
                                     }
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                         Text("px")
                             .size(th.typography.label_medium)
                             .color(th.on_surface_variant),
@@ -210,46 +217,50 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 8.0,
-                            top: 2.0,
-                            bottom: 6.0,
+                            left: Dp(12.0),
+                            right: Dp(8.0),
+                            top: Dp(2.0),
+                            bottom: Dp(6.0),
                         })
-                        .gap(8.0)
+                        .gap(Dp(8.0))
                         .align_items(AlignItems::CENTER))
                     .child((
                         Text("Frame rate")
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
-                            .modifier(Modifier::new().width(96.0)),
-                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
-                            format!("comp_fps_{comp_id:?}"),
-                            rate.num.to_string(),
-                            "fps",
-                            true,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    if let Ok(num) = text.trim().parse::<u32>() {
-                                        let mut s = session.borrow_mut();
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction("Set frame rate".into()),
-                                            ToolOutput::Commands(smallvec![
-                                                EditorCommand::SetCompositionRate {
-                                                    comp: comp_id,
-                                                    rate: renamite_animation::FrameRate {
-                                                        num: num.max(1),
-                                                        den: 1,
-                                                    },
-                                                }
-                                            ]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
+                            .modifier(Modifier::new().width(Dp(96.0))),
+                        Box(Modifier::new().width(Dp(84.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_fps_{comp_id:?}"),
+                                rate.num.to_string(),
+                                "fps",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(num) = text.trim().parse::<u32>() {
+                                            let mut s = session.borrow_mut();
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction(
+                                                    "Set frame rate".into()
+                                                ),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionRate {
+                                                        comp: comp_id,
+                                                        rate: renamite_animation::FrameRate {
+                                                            num: num.max(1),
+                                                            den: 1,
+                                                        },
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
                                     }
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                         Text(format!("/{} fps", rate.den))
                             .size(th.typography.label_medium)
                             .color(th.on_surface_variant),
@@ -258,89 +269,93 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 8.0,
-                            top: 4.0,
-                            bottom: 4.0,
+                            left: Dp(12.0),
+                            right: Dp(8.0),
+                            top: Dp(4.0),
+                            bottom: Dp(4.0),
                         })
-                        .gap(8.0)
+                        .gap(Dp(8.0))
                         .align_items(AlignItems::CENTER))
                     .child((
                         Text("Range")
                             .size(th.typography.body_medium)
                             .color(th.on_surface)
-                            .modifier(Modifier::new().width(96.0)),
-                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
-                            format!("comp_in_{comp_id:?}"),
-                            range.0.0.to_string(),
-                            "In",
-                            true,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    if let Ok(v) = text.trim().parse::<i64>() {
-                                        let mut s = session.borrow_mut();
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction(
-                                                "Set composition range".into()
-                                            ),
-                                            ToolOutput::Commands(smallvec![
-                                                EditorCommand::SetCompositionRange {
-                                                    comp: comp_id,
-                                                    start: Some(Frame(v)),
-                                                    end: None,
-                                                }
-                                            ]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
+                            .modifier(Modifier::new().width(Dp(96.0))),
+                        Box(Modifier::new().width(Dp(84.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_in_{comp_id:?}"),
+                                range.0.0.to_string(),
+                                "In",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(v) = text.trim().parse::<i64>() {
+                                            let mut s = session.borrow_mut();
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction(
+                                                    "Set composition range".into()
+                                                ),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionRange {
+                                                        comp: comp_id,
+                                                        start: Some(Frame(v)),
+                                                        end: None,
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
                                     }
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                         Text("–")
                             .size(th.typography.body_medium)
                             .color(th.on_surface_variant),
-                        Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
-                            format!("comp_out_{comp_id:?}"),
-                            range.1.0.to_string(),
-                            "Out",
-                            true,
-                            32.0,
-                            {
-                                let session = session.clone();
-                                move |text: String| {
-                                    if let Ok(v) = text.trim().parse::<i64>() {
-                                        let mut s = session.borrow_mut();
-                                        s.apply_outputs(smallvec![
-                                            ToolOutput::BeginTransaction(
-                                                "Set composition range".into()
-                                            ),
-                                            ToolOutput::Commands(smallvec![
-                                                EditorCommand::SetCompositionRange {
-                                                    comp: comp_id,
-                                                    start: None,
-                                                    end: Some(Frame(v)),
-                                                }
-                                            ]),
-                                            ToolOutput::CommitTransaction,
-                                        ]);
+                        Box(Modifier::new().width(Dp(84.0))).child(
+                            crate::components::AppTextField(
+                                format!("comp_out_{comp_id:?}"),
+                                range.1.0.to_string(),
+                                "Out",
+                                true,
+                                32.0,
+                                {
+                                    let session = session.clone();
+                                    move |text: String| {
+                                        if let Ok(v) = text.trim().parse::<i64>() {
+                                            let mut s = session.borrow_mut();
+                                            s.apply_outputs(smallvec![
+                                                ToolOutput::BeginTransaction(
+                                                    "Set composition range".into()
+                                                ),
+                                                ToolOutput::Commands(smallvec![
+                                                    EditorCommand::SetCompositionRange {
+                                                        comp: comp_id,
+                                                        start: None,
+                                                        end: Some(Frame(v)),
+                                                    }
+                                                ]),
+                                                ToolOutput::CommitTransaction,
+                                            ]);
+                                        }
                                     }
-                                }
-                            },
-                        )),
+                                },
+                            ),
+                        ),
                     )),
                     Row(Modifier::new()
                         .fill_max_width()
                         .padding_values(PaddingValues {
-                            left: 12.0,
-                            right: 12.0,
-                            top: 2.0,
-                            bottom: 8.0,
+                            left: Dp(12.0),
+                            right: Dp(12.0),
+                            top: Dp(2.0),
+                            bottom: Dp(8.0),
                         })
-                        .gap(8.0))
+                        .gap(Dp(8.0)))
                     .child((
-                        Box(Modifier::new().width(96.0)),
+                        Box(Modifier::new().width(Dp(96.0))),
                         Text(format!("{duration} frames"))
                             .size(th.typography.label_medium)
                             .color(th.on_surface_variant),
@@ -353,15 +368,15 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             Text("No selection")
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant)
-                .modifier(Modifier::new().padding(16.0)),
+                .modifier(Modifier::new().padding(Dp(16.0))),
             Text("Select a layer on the canvas or in Layers to edit its properties.")
                 .size(th.typography.body_small)
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
-                    left: 16.0,
-                    right: 16.0,
-                    top: 0.0,
-                    bottom: 12.0,
+                    left: Dp(16.0),
+                    right: Dp(16.0),
+                    top: Dp(0.0),
+                    bottom: Dp(12.0),
                 })),
             comp_section,
         ));
@@ -519,12 +534,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                         Modifier::new()
                             .fill_max_width()
                             .padding_values(PaddingValues {
-                                left: 12.0,
-                                right: 12.0,
-                                top: 8.0,
-                                bottom: 8.0,
+                                left: Dp(12.0),
+                                right: Dp(12.0),
+                                top: Dp(8.0),
+                                bottom: Dp(8.0),
                             })
-                            .gap(8.0),
+                            .gap(Dp(8.0)),
                         FlowRowConfig::default(),
                     )
                     .child(chips),
@@ -690,16 +705,16 @@ fn PropRowView(
     }
 
     Row(Modifier::new()
-        .min_height(36.0)
+        .min_height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
         diamond_button(
             session.clone(),
@@ -712,7 +727,7 @@ fn PropRowView(
         Text(row.desc.label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         Box(Modifier::new().flex_grow(1.0)).child(match (&row.desc.kind, &row.value) {
             (PropKind::F64 { step, min, max }, Value::F64(v)) => scrub_f64_w(
                 session, ids, path, *v, *step, *min, *max, playhead, record, 0, 64.0,
@@ -751,7 +766,7 @@ fn diamond_button(
     diamond_quiet: bool,
 ) -> View {
     if diamond_quiet && state == DiamondState::Empty {
-        return Box(Modifier::new().width(32.0));
+        return Box(Modifier::new().width(Dp(32.0)));
     }
 
     let (sym, tip) = match state {
@@ -795,7 +810,7 @@ fn diamond_button(
                 }
             },
             IconButtonConfig {
-                container_size: Some(32.0),
+                container_size: Some(32.0.dp()),
                 ..Default::default()
             },
         ),
@@ -875,7 +890,7 @@ fn scrub_f64_w(
         if *focused_once.borrow() && !focus.get() {
             *editing.borrow_mut() = false;
             request_frame();
-            return Box(Modifier::new().min_width(min_width)).child(
+            return Box(Modifier::new().min_width(Dp(min_width))).child(
                 Text(label)
                     .size(th.typography.body_medium)
                     .color(th.primary),
@@ -886,7 +901,7 @@ fn scrub_f64_w(
         if !focus.get() {
             focus_requester.request_focus();
         }
-        return Box(Modifier::new().width(min_width)).child(
+        return Box(Modifier::new().width(Dp(min_width))).child(
             View::new(0, ViewKind::Box).modifier(
                 Modifier::new()
                     .focus_requester(focus_requester.as_ref().clone())
@@ -914,7 +929,7 @@ fn scrub_f64_w(
                         cursor_color: Some(th.primary),
                         on_text_layout: None,
                         text_style: Some(repose_core::TextStyle {
-                            font_size: 14.0,
+                            font_size: 14.0.sp(),
                             color: Some(th.primary),
                             ..Default::default()
                         }),
@@ -931,7 +946,7 @@ fn scrub_f64_w(
         .color(th.primary)
         .modifier(
             Modifier::new()
-                .min_width(min_width)
+                .min_width(Dp(min_width))
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
@@ -1026,7 +1041,7 @@ fn dvec2_editor(
     record: bool,
 ) -> View {
     let th = theme();
-    Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+    Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child((
         Text("X")
             .size(th.typography.label_medium)
             .color(th.on_surface_variant),
@@ -1095,10 +1110,10 @@ fn color_row(
     };
 
     let swatch = Box(Modifier::new()
-        .width(20.0)
-        .height(20.0)
-        .clip_rounded(4.0)
-        .border(1.0, th.outline_variant, 4.0)
+        .width(Dp(20.0))
+        .height(Dp(20.0))
+        .clip_rounded(Dp(4.0))
+        .border(Dp(1.0), th.outline_variant, Dp(4.0))
         .background(repose_core::Color(
             (c.r * 255.0) as u8,
             (c.g * 255.0) as u8,
@@ -1119,7 +1134,7 @@ fn color_row(
         }));
 
     let is_open = *open.borrow();
-    let summary = Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+    let summary = Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child((
         swatch,
         Text(hex)
             .size(th.typography.body_medium)
@@ -1138,17 +1153,17 @@ fn color_row(
             .modifier(
                 Modifier::new()
                     .padding_values(PaddingValues {
-                        left: 8.0,
-                        right: 8.0,
-                        top: 3.0,
-                        bottom: 3.0,
+                        left: Dp(8.0),
+                        right: Dp(8.0),
+                        top: Dp(3.0),
+                        bottom: Dp(3.0),
                     })
                     .background(if is_open {
                         th.secondary_container
                     } else {
                         th.surface
                     })
-                    .clip_rounded(999.0)
+                    .clip_rounded(Dp(999.0))
                     .on_pointer_down({
                         let open = open.clone();
                         move |_pe: PointerEvent| {
@@ -1163,7 +1178,7 @@ fn color_row(
     let mut children: Vec<View> = vec![summary];
     if is_open {
         children.push(
-            Row(Modifier::new().gap(4.0).align_items(AlignItems::CENTER)).child((
+            Row(Modifier::new().gap(Dp(4.0)).align_items(AlignItems::CENTER)).child((
                 Text("R")
                     .size(th.typography.label_medium)
                     .color(th.on_surface_variant),
@@ -1403,12 +1418,12 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 12.0,
-                    top: 8.0,
-                    bottom: 8.0,
+                    left: Dp(12.0),
+                    right: Dp(12.0),
+                    top: Dp(8.0),
+                    bottom: Dp(8.0),
                 })
-                .gap(8.0),
+                .gap(Dp(8.0)),
             FlowRowConfig::default(),
         )
         .child(buttons),
@@ -1419,17 +1434,17 @@ fn modifier_chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
     let th = theme();
     Box(Modifier::new()
         .padding_values(PaddingValues {
-            left: 10.0,
-            right: 10.0,
-            top: 6.0,
-            bottom: 6.0,
+            left: Dp(10.0),
+            right: Dp(10.0),
+            top: Dp(6.0),
+            bottom: Dp(6.0),
         })
         .background(th.surface_container_high)
-        .clip_rounded(999.0)
-        .border(1.0, th.outline_variant.with_alpha(140), 999.0)
+        .clip_rounded(Dp(999.0))
+        .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
         .on_pointer_down(move |_| on_click()))
     .child(
-        Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+        Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child((
             AppIcon(Symbols::add, 18.0),
             Text(label).size(th.typography.label_medium),
         )),
@@ -1456,14 +1471,14 @@ fn style_action_chip(session: SessionRef, shape_id: NodeId, action: StyleAction)
     let th = theme();
     Box(Modifier::new()
         .padding_values(PaddingValues {
-            left: 10.0,
-            right: 10.0,
-            top: 6.0,
-            bottom: 6.0,
+            left: Dp(10.0),
+            right: Dp(10.0),
+            top: Dp(6.0),
+            bottom: Dp(6.0),
         })
         .background(th.surface_container_high)
-        .clip_rounded(999.0)
-        .border(1.0, th.outline_variant.with_alpha(140), 999.0)
+        .clip_rounded(Dp(999.0))
+        .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
         .on_pointer_down({
             let session = session.clone();
             move |_| {
@@ -1509,7 +1524,7 @@ fn style_action_chip(session: SessionRef, shape_id: NodeId, action: StyleAction)
             }
         }))
     .child(
-        Row(Modifier::new().gap(6.0).align_items(AlignItems::CENTER)).child((
+        Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child((
             AppIcon(icon, 18.0),
             Text(label).size(th.typography.label_medium),
         )),
@@ -1528,22 +1543,22 @@ fn enum2_row(
 ) -> View {
     let th = theme();
     Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
-        Box(Modifier::new().width(32.0)), // diamond spacer
+        Box(Modifier::new().width(Dp(32.0))), // diamond spacer
         Text(label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         enum2_segment(
             session.clone(),
             ids.clone(),
@@ -1566,22 +1581,22 @@ fn enum3_row(
 ) -> View {
     let th = theme();
     Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
-        Box(Modifier::new().width(32.0)), // diamond spacer
+        Box(Modifier::new().width(Dp(32.0))), // diamond spacer
         Text(label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         enum3_segment(
             session.clone(),
             ids.clone(),
@@ -1611,22 +1626,22 @@ fn bool_toggle_row(
 ) -> View {
     let th = theme();
     Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
-        Box(Modifier::new().width(32.0)), // diamond spacer
+        Box(Modifier::new().width(Dp(32.0))), // diamond spacer
         Text(label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         bool_toggle_segment(
             session.clone(),
             ids.clone(),
@@ -1683,10 +1698,10 @@ fn bool_toggle_segment(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -1745,10 +1760,10 @@ fn enum2_segment(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -1807,10 +1822,10 @@ fn enum3_segment(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -1921,10 +1936,10 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 0.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(4.0),
                 }))
             .child(crate::components::AppTextField(
                 format!("text_content_{text_id:?}"),
@@ -1951,20 +1966,20 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                 .size(th.typography.body_medium)
                 .color(th.on_surface)
                 .modifier(Modifier::new().padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 8.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(8.0),
+                    bottom: Dp(4.0),
                 })),
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 0.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(6.0))
+                .gap(Dp(6.0)))
             .child(chips),
             Column(Modifier::new().fill_max_width()).child(
                 size_align_rows
@@ -2021,19 +2036,19 @@ fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 6.0,
-                    bottom: 6.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(6.0),
+                    bottom: Dp(6.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Name")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(176.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(176.0))).child(crate::components::AppTextField(
                     format!("node_name_{id:?}"),
                     name,
                     "Name",
@@ -2110,12 +2125,12 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 12.0,
-                    top: 2.0,
-                    bottom: 2.0,
+                    left: Dp(12.0),
+                    right: Dp(12.0),
+                    top: Dp(2.0),
+                    bottom: Dp(2.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text(label)
@@ -2133,22 +2148,22 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 6.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(6.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(6.0)
+                .gap(Dp(6.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Crop")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(48.0)),
+                    .modifier(Modifier::new().width(Dp(48.0))),
                 Text("X")
                     .size(th.typography.label_small)
                     .color(th.on_surface_variant),
-                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                Box(Modifier::new().width(Dp(56.0))).child(crate::components::AppTextField(
                     format!("img_crop_x_{id:?}"),
                     format!("{:.3}", crop.x),
                     "X",
@@ -2181,7 +2196,7 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                 Text("Y")
                     .size(th.typography.label_small)
                     .color(th.on_surface_variant),
-                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                Box(Modifier::new().width(Dp(56.0))).child(crate::components::AppTextField(
                     format!("img_crop_y_{id:?}"),
                     format!("{:.3}", crop.y),
                     "Y",
@@ -2215,19 +2230,19 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 0.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(6.0)
+                .gap(Dp(6.0))
                 .align_items(AlignItems::CENTER))
             .child((
-                Box(Modifier::new().width(48.0)),
+                Box(Modifier::new().width(Dp(48.0))),
                 Text("W")
                     .size(th.typography.label_small)
                     .color(th.on_surface_variant),
-                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                Box(Modifier::new().width(Dp(56.0))).child(crate::components::AppTextField(
                     format!("img_crop_w_{id:?}"),
                     format!("{:.3}", crop.z),
                     "W",
@@ -2260,7 +2275,7 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                 Text("H")
                     .size(th.typography.label_small)
                     .color(th.on_surface_variant),
-                Box(Modifier::new().width(56.0)).child(crate::components::AppTextField(
+                Box(Modifier::new().width(Dp(56.0))).child(crate::components::AppTextField(
                     format!("img_crop_h_{id:?}"),
                     format!("{:.3}", crop.w),
                     "H",
@@ -2395,19 +2410,19 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 6.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(6.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("In")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
                     format!("layer_in_{id:?}"),
                     in_f.to_string(),
                     "In",
@@ -2437,19 +2452,19 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Out")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
                     format!("layer_out_{id:?}"),
                     out_f.to_string(),
                     "Out",
@@ -2479,19 +2494,19 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Time stretch")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
                     format!("layer_stretch_{id:?}"),
                     stretch.to_string(),
                     "stretch",
@@ -2522,12 +2537,12 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                 Modifier::new()
                     .fill_max_width()
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 4.0,
-                        bottom: 8.0,
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(4.0),
+                        bottom: Dp(8.0),
                     })
-                    .gap(6.0),
+                    .gap(Dp(6.0)),
                 FlowRowConfig::default(),
             )
             .child({
@@ -2554,7 +2569,7 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                     Text("Blend")
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
-                        .modifier(Modifier::new().width(96.0)),
+                        .modifier(Modifier::new().width(Dp(96.0))),
                 );
                 for (idx, label) in labels.iter().enumerate() {
                     chips.push(blend_segment(session.clone(), id, blend_idx, idx, label));
@@ -2584,10 +2599,10 @@ fn blend_segment(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -2665,19 +2680,19 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 6.0,
-                    bottom: 4.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(6.0),
+                    bottom: Dp(4.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Time offset")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
                     format!("precomp_off_{id:?}"),
                     offset.to_string(),
                     "offset",
@@ -2707,19 +2722,19 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
             Row(Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 8.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(8.0),
                 })
-                .gap(8.0)
+                .gap(Dp(8.0))
                 .align_items(AlignItems::CENTER))
             .child((
                 Text("Time stretch")
                     .size(th.typography.body_medium)
                     .color(th.on_surface)
-                    .modifier(Modifier::new().width(96.0)),
-                Box(Modifier::new().width(84.0)).child(crate::components::AppTextField(
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
                     format!("precomp_st_{id:?}"),
                     stretch.to_string(),
                     "stretch",
@@ -2750,12 +2765,12 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                 Modifier::new()
                     .fill_max_width()
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 4.0,
-                        bottom: 8.0,
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(4.0),
+                        bottom: Dp(8.0),
                     })
-                    .gap(6.0),
+                    .gap(Dp(6.0)),
                 FlowRowConfig::default(),
             )
             .child({
@@ -2764,7 +2779,7 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                     Text("Source")
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
-                        .modifier(Modifier::new().width(96.0)),
+                        .modifier(Modifier::new().width(Dp(96.0))),
                 );
                 for (cid, name) in comps {
                     let active = cid == current_comp;
@@ -2800,10 +2815,10 @@ fn precomp_comp_chip(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -2848,10 +2863,10 @@ fn font_chip(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -3115,22 +3130,22 @@ fn paint_section_for_style(
     let active_kind = gradient.as_ref().map(|g| g.kind);
     let is_solid = gradient.is_none();
     let toggle = Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
-        Box(Modifier::new().width(32.0)),
+        Box(Modifier::new().width(Dp(32.0))),
         Text("Paint")
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         paint_segment(
             session.clone(),
             shape_for_axis,
@@ -3162,22 +3177,22 @@ fn paint_section_for_style(
             let path = PropPath::new(solid_path);
             children.push(
                 Row(Modifier::new()
-                    .min_height(36.0)
+                    .min_height(Dp(36.0))
                     .fill_max_width()
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 0.0,
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(0.0),
+                        bottom: Dp(0.0),
                     })
                     .align_items(AlignItems::CENTER)
-                    .gap(8.0))
+                    .gap(Dp(8.0)))
                 .child((
-                    Box(Modifier::new().width(32.0)),
+                    Box(Modifier::new().width(Dp(32.0))),
                     Text("Color")
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
-                        .modifier(Modifier::new().width(96.0)),
+                        .modifier(Modifier::new().width(Dp(96.0))),
                     Box(Modifier::new().flex_grow(1.0)).child(color_row(
                         session.clone(),
                         vec![style_id],
@@ -3221,15 +3236,15 @@ fn paint_section_for_style(
             ));
             children.push(
                 Row(Modifier::new()
-                    .height(32.0)
+                    .height(Dp(32.0))
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 8.0,
-                        top: 0.0,
-                        bottom: 0.0,
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(0.0),
+                        bottom: Dp(0.0),
                     })
                     .align_items(AlignItems::CENTER)
-                    .gap(4.0))
+                    .gap(Dp(4.0)))
                 .child((
                     CompactIconAction(Symbols::add, "Add stop", {
                         let session = session.clone();
@@ -3272,22 +3287,22 @@ fn paint_section_for_style(
     }
     children.push(
         Row(Modifier::new()
-            .height(32.0)
+            .height(Dp(32.0))
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(0.0),
+                bottom: Dp(0.0),
             })
             .align_items(AlignItems::CENTER)
-            .gap(8.0))
+            .gap(Dp(8.0)))
         .child((
-            Box(Modifier::new().width(32.0)),
+            Box(Modifier::new().width(Dp(32.0))),
             Text("Swatch")
                 .size(th.typography.body_medium)
                 .color(th.on_surface)
-                .modifier(Modifier::new().width(96.0)),
+                .modifier(Modifier::new().width(Dp(96.0))),
             CompactIconAction(Symbols::palette, "Use as current paint", {
                 let session = session.clone();
                 let paint = paint.clone();
@@ -3369,10 +3384,10 @@ fn paint_segment(
         .modifier(
             Modifier::new()
                 .padding_values(PaddingValues {
-                    left: 8.0,
-                    right: 8.0,
-                    top: 4.0,
-                    bottom: 4.0,
+                    left: Dp(8.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
                 })
                 .background(if active {
                     th.secondary_container
@@ -3440,22 +3455,22 @@ fn axis_row(
 ) -> View {
     let th = theme();
     Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
-        Box(Modifier::new().width(32.0)),
+        Box(Modifier::new().width(Dp(32.0))),
         Text(label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         Box(Modifier::new().flex_grow(1.0)).child(dvec2_editor(
             session,
             vec![style_id],
@@ -3484,10 +3499,10 @@ fn stop_rows(
             let path = PropPath::new("grad.stops");
             let stop_color = stop.color;
             let swatch = Box(Modifier::new()
-                .width(20.0)
-                .height(20.0)
-                .clip_rounded(4.0)
-                .border(1.0, th.outline_variant, 4.0)
+                .width(Dp(20.0))
+                .height(Dp(20.0))
+                .clip_rounded(Dp(4.0))
+                .border(Dp(1.0), th.outline_variant, Dp(4.0))
                 .background(repose_core::Color(
                     (stop_color.r * 255.0) as u8,
                     (stop_color.g * 255.0) as u8,
@@ -3539,21 +3554,21 @@ fn stop_rows(
                     }
                 })
             } else {
-                Box(Modifier::new().width(28.0))
+                Box(Modifier::new().width(Dp(28.0)))
             };
             Row(Modifier::new()
-                .height(36.0)
+                .height(Dp(36.0))
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 0.0,
-                    bottom: 0.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(0.0),
                 })
                 .align_items(AlignItems::CENTER)
-                .gap(4.0))
+                .gap(Dp(4.0)))
             .child((
-                Box(Modifier::new().width(24.0)).child(
+                Box(Modifier::new().width(Dp(24.0))).child(
                     Text(format!("{}", i + 1))
                         .size(th.typography.label_medium)
                         .color(th.on_surface_variant),
@@ -3658,16 +3673,16 @@ fn stroke_dash_section(
     let Some(dash) = dash else {
         children.push(
             Row(Modifier::new()
-                .height(36.0)
+                .height(Dp(36.0))
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 12.0,
-                    right: 8.0,
-                    top: 0.0,
-                    bottom: 0.0,
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(0.0),
                 })
                 .align_items(AlignItems::CENTER)
-                .gap(8.0))
+                .gap(Dp(8.0)))
             .child((
                 CompactIconAction(Symbols::add, "Enable dashes", {
                     let session = session.clone();
@@ -3738,16 +3753,16 @@ fn stroke_dash_section(
     // Structural controls.
     children.push(
         Row(Modifier::new()
-            .height(36.0)
+            .height(Dp(36.0))
             .fill_max_width()
             .padding_values(PaddingValues {
-                left: 12.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
+                left: Dp(12.0),
+                right: Dp(8.0),
+                top: Dp(0.0),
+                bottom: Dp(0.0),
             })
             .align_items(AlignItems::CENTER)
-            .gap(8.0))
+            .gap(Dp(8.0)))
         .child((
             CompactIconAction(Symbols::add, "Add dash/gap pair", {
                 let session = session.clone();
@@ -3769,7 +3784,7 @@ fn stroke_dash_section(
                     }
                 })
             } else {
-                Box(Modifier::new().width(40.0))
+                Box(Modifier::new().width(Dp(40.0)))
             },
             CompactIconAction(Symbols::delete, "Disable dashes", {
                 let session = session.clone();
@@ -3824,16 +3839,16 @@ fn dash_scalar_row(
     };
 
     Row(Modifier::new()
-        .height(36.0)
+        .height(Dp(36.0))
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 12.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
         })
         .align_items(AlignItems::CENTER)
-        .gap(8.0))
+        .gap(Dp(8.0)))
     .child((
         diamond_button(
             session.clone(),
@@ -3846,7 +3861,7 @@ fn dash_scalar_row(
         Text(label)
             .size(theme().typography.body_medium)
             .color(theme().on_surface)
-            .modifier(Modifier::new().width(96.0)),
+            .modifier(Modifier::new().width(Dp(96.0))),
         Box(Modifier::new().flex_grow(1.0)).child(scrub_f64_w(
             session,
             vec![id],
