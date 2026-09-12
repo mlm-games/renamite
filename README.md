@@ -1,6 +1,6 @@
 # renamite
 
-A motion / vector animation editor built on repose, using tesellation via lyon, and kurbo.
+A motion / vector animation editor built on repose, with tessellation via lyon, and kurbo.
 
 The editor supports creating vector primitives, importing image/font assets, editing
 layer and property values (with undo), renaming and reordering layers, scrubbing and
