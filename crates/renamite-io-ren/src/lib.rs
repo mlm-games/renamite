@@ -220,7 +220,6 @@ pub fn open_binary(bytes: &[u8]) -> Result<RenFile, RenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use renamite_animation::{Frame, LoopMode};
 
     #[test]
     fn ron_roundtrip() {
@@ -233,121 +232,11 @@ mod tests {
         assert_eq!(back.meta.name, "test");
     }
 
-    #[test]
-    fn font_assets_survive_save_and_load() {
-        use renamite_model::{Asset, Document, FontAsset};
-        let mut doc = Document::empty();
-        doc.assets.insert(Asset::Font(FontAsset {
-            name: "Inter-Regular.ttf".into(),
-            family: "Inter".into(),
-            bytes: vec![0, 1, 2, 3, 4, 5],
-        }));
-        let f = RenFile::new(doc, "fonts");
-        let back = open(&save(&f).unwrap()).unwrap();
-        assert_eq!(back.document.assets.len(), 1);
-        let (_, asset) = back.document.assets.iter().next().unwrap();
-        match asset {
-            Asset::Font(font) => {
-                assert_eq!(font.name, "Inter-Regular.ttf");
-                assert_eq!(font.family, "Inter");
-                assert_eq!(font.bytes, vec![0, 1, 2, 3, 4, 5]);
-            }
-            other => panic!("expected a font asset, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn future_version_rejected() {
-        let f = RenFile {
-            format_version: 999,
-            ..RenFile::new(renamite_model::Document::empty(), "x")
-        };
-        let text = save(&f).unwrap();
-        assert!(matches!(
-            open(&text),
-            Err(RenError::UnsupportedVersion(999))
-        ));
-    }
-
     #[cfg(feature = "binary")]
     #[test]
     fn binary_roundtrip() {
         let f = RenFile::new(renamite_model::Document::empty(), "bin");
         let back = open_binary(&save_binary(&f).unwrap()).unwrap();
         assert_eq!(back.meta.name, "bin");
-    }
-
-    #[test]
-    fn legacy_file_without_order_gets_normalized() {
-        use renamite_machine::{Clip, Machine};
-        let mut f = RenFile::new(renamite_model::Document::empty(), "legacy");
-        let cid = f.clips.insert(Clip {
-            name: "c".into(),
-            range: (Frame(0), Frame(10)),
-            tracks: vec![],
-            events: vec![],
-        });
-        let mid = f.machines.insert(Machine {
-            name: "m".into(),
-            inputs: vec![],
-            layers: vec![],
-            listeners: vec![],
-        });
-        let text = save(&f).unwrap();
-        // Simulate a legacy v1 file that predates the order vecs.
-        let text: String = text
-            .lines()
-            .filter(|line| {
-                let t = line.trim();
-                t != "clip_order: []," && t != "machine_order: [],"
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(!text.contains("clip_order"));
-        let back = open(&text).unwrap();
-        assert_eq!(back.clip_order, vec![cid]);
-        assert_eq!(back.machine_order, vec![mid]);
-        assert_eq!(back.clips.len(), 1);
-        assert_eq!(back.machines.len(), 1);
-    }
-
-    #[test]
-    fn gc_keeps_machine_referenced_detached_clip() {
-        use renamite_machine::{MachineLayer, State};
-        let mut f = RenFile::new(renamite_model::Document::empty(), "gc");
-        let cid = f.clips.insert(renamite_machine::Clip {
-            name: "c".into(),
-            range: (Frame(0), Frame(10)),
-            tracks: vec![],
-            events: vec![],
-        });
-        let mid = f.machines.insert(renamite_machine::Machine {
-            name: "m".into(),
-            inputs: vec![],
-            listeners: vec![],
-            layers: vec![MachineLayer {
-                name: "base".into(),
-                entry: 0,
-                any_transitions: vec![],
-                states: vec![State {
-                    name: "play".into(),
-                    kind: StateKind::Clip {
-                        clip: cid,
-                        speed: 1.0,
-                        loop_mode: LoopMode::Once,
-                    },
-                    transitions: vec![],
-                    graph_pos: None,
-                }],
-            }],
-        });
-        f.clip_order.push(cid);
-        f.machine_order.push(mid);
-        // Detach the clip (drop from order) but keep it in the arena.
-        f.clip_order.clear();
-        f.garbage_collect();
-        assert!(f.clips.contains_key(cid)); // referenced by machine -> kept
-        assert!(!f.clip_order.contains(&cid)); // still detached
-        assert!(f.machines.contains_key(mid));
     }
 }

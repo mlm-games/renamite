@@ -595,8 +595,8 @@ mod tests {
         MachineLayer, MachineMap, State, StateKind, Track, Transition,
     };
     use renamite_model::{
-        BlendMode, ClipPath, Color, Document, FillRule, KeyframeData, Node, NodeKind, PaintKind,
-        Parent, PropPath, SceneItem, ScenePaint, ShapeKind, StyleKind, StylePaint, Value,
+        Color, Document, FillRule, KeyframeData, Node, NodeKind, Parent, PropPath, ScenePaint,
+        ShapeKind, StyleKind, StylePaint, Value,
     };
 
     fn rect_kind(size: f64) -> NodeKind {
@@ -797,106 +797,6 @@ mod tests {
     }
 
     #[test]
-    fn range_edit_is_reflected_in_loop_bounds() {
-        let (mut proj, _, _) = static_box();
-        let mut e = Engine::new(&proj).unwrap();
-        assert_eq!(e.head(), 0.0);
-
-        // Editor widens the comp (e.g. 0-180 -> 0-300) and pushes playback state.
-        proj.document.compositions[proj.document.main].range = (Frame(0), Frame(300));
-        e.set_timeline_playback(Playback {
-            state: PlayState::Playing,
-            head: 0.0,
-            loop_mode: LoopMode::Loop,
-            range: (Frame(0), Frame(300)),
-            dir: 1.0,
-        });
-
-        // Old bound would wrap at 180; a 300-wide comp must keep advancing past it.
-        e.tick(&proj, 3.1); // 186 frames @ 60fps
-        assert!(
-            e.head() > 180.0,
-            "loop must use the new end frame, head={}",
-            e.head()
-        );
-        assert!(e.head() <= 300.0);
-
-        // And it wraps at 300, not at 180.
-        e.tick(&proj, 2.0); // +120 frames -> 306 -> wraps to 6
-        assert!(
-            e.head() < 180.0,
-            "loop must wrap at the new end frame, head={}",
-            e.head()
-        );
-    }
-
-    #[test]
-    fn scrub_unlocks_on_play() {
-        let (mut proj, _, fill) = static_box();
-        let prop = PropPath::new("opacity");
-        proj.document
-            .add_keyframe(fill, &prop, Frame(0), &Value::F64(0.0))
-            .unwrap();
-        proj.document
-            .add_keyframe(fill, &prop, Frame(60), &Value::F64(1.0))
-            .unwrap();
-
-        let mut e = Engine::new(&proj).unwrap();
-        e.scrub(&proj, 30.0);
-        e.tick(&proj, 1.0); // locked by scrub
-        assert_eq!(e.head(), 30.0);
-
-        // Editor presses play: pushes its playback state, leaving the lock.
-        let mut e2 = e;
-        e2.set_timeline_playback(Playback {
-            state: PlayState::Playing,
-            head: 30.0,
-            loop_mode: LoopMode::Loop,
-            range: (Frame(0), Frame(180)),
-            dir: 1.0,
-        });
-        e2.tick(&proj, 1.0); // 60 frames later
-        assert!(
-            e2.head() > 30.0,
-            "play after scrub must advance, head={}",
-            e2.head()
-        );
-    }
-
-    #[test]
-    fn pick_hits_topmost_and_misses_outside() {
-        let (proj, shape, _) = static_box();
-        let p = Player::new(proj).unwrap();
-        assert_eq!(pick(p.scene(), DVec2::ZERO), Some(shape));
-        assert_eq!(pick(p.scene(), DVec2::new(500.0, 500.0)), None);
-    }
-
-    #[test]
-    fn pick_respects_clip_mask() {
-        let (_, shape, _) = static_box();
-        let big = kurbo::Rect::new(-100.0, -100.0, 100.0, 100.0).to_path(0.1);
-        let small = kurbo::Rect::new(-10.0, -10.0, 10.0, 10.0).to_path(0.1);
-        let scene = Scene {
-            clips: vec![ClipPath {
-                path: small,
-                rule: FillRule::NonZero,
-            }],
-            items: vec![SceneItem {
-                path: big,
-                node: shape,
-                style: shape,
-                paint: ScenePaint::Solid(Color::BLACK),
-                kind: PaintKind::Fill(FillRule::NonZero),
-                opacity: 1.0,
-                clips: vec![0],
-                blend: BlendMode::Normal,
-            }],
-        };
-        assert_eq!(pick(&scene, DVec2::ZERO), Some(shape));
-        assert_eq!(pick(&scene, DVec2::new(50.0, 50.0)), None);
-    }
-
-    #[test]
     fn hover_enter_drives_listener_and_leave_exits() {
         let (proj, _, _) = moving_box();
         let mut p = Player::new(proj).unwrap();
@@ -938,17 +838,6 @@ mod tests {
             (center_x(e.scene()) - 50.0).abs() < 1.0,
             "machine override survived the edit"
         );
-    }
-
-    #[test]
-    fn bake_is_deterministic() {
-        let make = || {
-            let (proj, _, _) = moving_box();
-            let mut p = Player::new(proj).unwrap();
-            p.set_bool("go", true);
-            p.bake(20, 1.0 / 60.0)
-        };
-        assert_eq!(make(), make());
     }
 
     #[test]

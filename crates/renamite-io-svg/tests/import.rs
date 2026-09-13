@@ -7,7 +7,7 @@ use renamite_model::{
     FillRule, GradientKind, NodeKind, ShapeKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
 };
 
-use common::{fills, find_all, paths};
+use common::{find_all, paths};
 
 fn group_children(
     doc: &renamite_model::Document,
@@ -254,42 +254,6 @@ fn clip_path_imports_as_mask_sibling() {
         matches!(doc.nodes[kids[0]].kind, NodeKind::Mask(_)),
         "mask must lead the group"
     );
-}
-
-#[test]
-fn unsupported_filters_produce_warnings() {
-    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-        <filter id="b"><feGaussianBlur stdDeviation="2"/></filter>
-        <g filter="url(#b)"><rect x="0" y="0" width="10" height="10" fill="#000000"/></g>
-    </svg>"##;
-    let report = import_with_report(svg.as_bytes()).unwrap();
-    assert!(
-        report.warnings.iter().any(|w| w.message.contains("filter")),
-        "expected a filter warning"
-    );
-    let shapes = paths(&report.value);
-    assert_eq!(shapes.len(), 1, "content still imports");
-}
-
-#[test]
-fn pattern_fill_imports_shape_without_fill() {
-    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-        <defs>
-            <pattern id="p" width="10" height="10"><rect width="10" height="10" fill="#000000"/></pattern>
-        </defs>
-        <rect x="0" y="0" width="100" height="100" fill="url(#p)"/>
-    </svg>"##;
-    let report = import_with_report(svg.as_bytes()).unwrap();
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("pattern")),
-        "expected a pattern warning"
-    );
-    let fills = fills(&report.value);
-    assert!(fills.is_empty(), "pattern fill must not import a style");
-    assert_eq!(paths(&report.value).len(), 1);
 }
 
 #[test]

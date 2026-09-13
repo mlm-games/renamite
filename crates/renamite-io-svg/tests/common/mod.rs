@@ -24,7 +24,3 @@ pub fn find_all(doc: &Document, pred: impl Fn(&Node) -> bool) -> Vec<NodeId> {
 pub fn paths(doc: &Document) -> Vec<NodeId> {
     find_all(doc, |n| matches!(n.kind, NodeKind::Shape(_)))
 }
-
-pub fn fills(doc: &Document) -> Vec<NodeId> {
-    find_all(doc, |n| matches!(&n.kind, NodeKind::Style(_)))
-}
