@@ -2093,9 +2093,9 @@ impl Session {
         }
         let previous = self.mode;
         self.mode = mode;
+        self.record = Self::record_for_mode(mode);
         match mode {
             EditorMode::Design => {
-                self.record = false;
                 self.stop_timeline_playback();
                 self.disable_machine_preview();
                 if matches!(self.active_page, PanelPage::Timeline | PanelPage::Interact) {
@@ -2103,12 +2103,10 @@ impl Session {
                 }
             }
             EditorMode::Animate => {
-                self.record = true;
                 self.disable_machine_preview();
                 self.active_page = PanelPage::Timeline;
             }
             EditorMode::Interact => {
-                self.record = false;
                 self.stop_timeline_playback();
                 self.active_page = PanelPage::Interact;
                 if self.active_machine.is_some() {
@@ -2128,6 +2126,18 @@ impl Session {
             self.playing = false;
             self.playback.state = PlayState::Stopped;
         }
+    }
+
+    /// Record flag implied by the mode. Single source of truth so Design can
+    /// never keyframe even if `record` was stuck from Animate.
+    fn record_for_mode(mode: EditorMode) -> bool {
+        matches!(mode, EditorMode::Animate)
+    }
+
+    /// Effective record flag for property writes: Design (and Interact) always
+    /// produce static edits.
+    pub fn record_for_writes(&self) -> bool {
+        self.record && Self::record_for_mode(self.mode)
     }
 
     pub fn disable_machine_preview(&mut self) {
@@ -2695,7 +2705,7 @@ impl Session {
             &path,
             Value::Color(color),
             frame,
-            self.record,
+            self.record_for_writes(),
         );
         self.history_apply(cmd);
     }
@@ -2727,7 +2737,7 @@ impl Session {
             &PropPath::new("grad.stops"),
             Value::Stops(stops),
             frame,
-            self.record,
+            self.record_for_writes(),
         );
         self.history_apply(cmd);
     }
@@ -3755,6 +3765,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             active_tool,
             record,
             current_paint,
+            mode,
             ..
         } = s;
         let snap_grid = if viewport.show_grid && viewport.snapping_enabled {
@@ -3768,7 +3779,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             comp: file.document.main,
             selection,
             playhead: Frame(playback.head.round() as i64),
-            record: *record,
+            record: *record && matches!(*mode, EditorMode::Animate),
             view: viewport.view,
             snap: SnapConfig {
                 grid: snap_grid,

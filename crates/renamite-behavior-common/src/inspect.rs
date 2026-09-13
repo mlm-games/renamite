@@ -7,8 +7,43 @@
 use renamite_animation::Frame;
 use renamite_history::{EditorCommand, resolve_property_edit};
 use renamite_model::{
-    Document, ModifierKind, NodeId, NodeKind, PropPath, ShapeKind, StyleKind, Value,
+    BlendMode, Document, ModifierKind, NodeId, NodeKind, PropPath, ShapeKind, StyleKind, Value,
 };
+
+/// Shared blend-mode table: single source of truth for index ↔ mode ↔ label.
+/// Indices 0..15 match AE/Friction ordering used in `layer.blend`.
+pub const BLEND_MODES: &[(BlendMode, &str)] = &[
+    (BlendMode::Normal, "Normal"),
+    (BlendMode::Multiply, "Multiply"),
+    (BlendMode::Screen, "Screen"),
+    (BlendMode::Overlay, "Overlay"),
+    (BlendMode::Darken, "Darken"),
+    (BlendMode::Lighten, "Lighten"),
+    (BlendMode::ColorDodge, "ColorDodge"),
+    (BlendMode::ColorBurn, "ColorBurn"),
+    (BlendMode::HardLight, "HardLight"),
+    (BlendMode::SoftLight, "SoftLight"),
+    (BlendMode::Difference, "Difference"),
+    (BlendMode::Exclusion, "Exclusion"),
+    (BlendMode::Hue, "Hue"),
+    (BlendMode::Saturation, "Saturation"),
+    (BlendMode::Color, "Color"),
+    (BlendMode::Luminosity, "Luminosity"),
+];
+
+pub fn blend_to_index(b: BlendMode) -> usize {
+    BLEND_MODES
+        .iter()
+        .position(|(m, _)| *m == b)
+        .unwrap_or(0)
+}
+
+pub fn blend_from_index(i: i64) -> BlendMode {
+    BLEND_MODES
+        .get(i as usize)
+        .map(|(m, _)| *m)
+        .unwrap_or(BlendMode::Normal)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropKind {
@@ -57,6 +92,7 @@ pub struct PropRow {
     pub value: Value,
     pub diamond: DiamondState,
     pub animated: bool,
+    pub mixed: bool,
 }
 
 /// Properties shown for a single selected node (empty if missing).
@@ -102,6 +138,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     value: Value::I64(mode as i64),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "mask.inverted" {
@@ -114,6 +151,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     value: Value::Bool(inverted),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "zigzag.smooth" {
@@ -126,6 +164,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     value: Value::Bool(smooth),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "star.kind" {
@@ -145,6 +184,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     }),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "fill.rule" {
@@ -160,6 +200,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     }),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "stroke.cap" {
@@ -176,6 +217,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     }),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "stroke.join" {
@@ -192,6 +234,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     }),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             if desc.path.as_str() == "text.align" {
@@ -208,6 +251,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     }),
                     diamond: DiamondState::Empty,
                     animated: false,
+                    mixed: false,
                 });
             }
             let value = doc.value_at(id, &desc.path, playhead.0 as f64).ok()?;
@@ -218,6 +262,7 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                 value,
                 diamond,
                 animated,
+                mixed: false,
             })
         })
         .collect()
@@ -747,7 +792,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
             // precomp_section in properties.rs.
         }
         NodeKind::Image(_) => {
-            d.push(pd("Image", "Tint", "image.tint()", PropKind::Color));
+            d.push(pd("Image", "Tint", "image.tint", PropKind::Color));
         }
         NodeKind::Group => {}
     }
@@ -932,24 +977,7 @@ pub fn cmd_set_discrete(
                 in_frame: None,
                 out_frame: None,
                 time_stretch: None,
-                blend: Some(match index_or_bool {
-                    1 => BlendMode::Multiply,
-                    2 => BlendMode::Screen,
-                    3 => BlendMode::Overlay,
-                    4 => BlendMode::Darken,
-                    5 => BlendMode::Lighten,
-                    6 => BlendMode::ColorDodge,
-                    7 => BlendMode::ColorBurn,
-                    8 => BlendMode::HardLight,
-                    9 => BlendMode::SoftLight,
-                    10 => BlendMode::Difference,
-                    11 => BlendMode::Exclusion,
-                    12 => BlendMode::Hue,
-                    13 => BlendMode::Saturation,
-                    14 => BlendMode::Color,
-                    15 => BlendMode::Luminosity,
-                    _ => BlendMode::Normal,
-                }),
+                blend: Some(blend_from_index(index_or_bool)),
             })
         }
         _ => None,
@@ -957,19 +985,41 @@ pub fn cmd_set_discrete(
 }
 
 /// Multi-selection: only show props common to all ids (same path set intersection).
+/// Values come from the first node; `mixed` is set when other nodes differ.
 pub fn props_for_selection(doc: &Document, ids: &[NodeId], playhead: Frame) -> Vec<PropRow> {
     match ids {
         [] => vec![],
         [id] => props_for_node(doc, *id, playhead),
         ids => {
             let mut iter = ids.iter().copied();
-            let mut common = props_for_node(doc, iter.next().unwrap(), playhead);
+            let first = iter.next().unwrap();
+            let mut common = props_for_node(doc, first, playhead);
             for id in iter {
                 let paths: std::collections::HashSet<_> = props_for_node(doc, id, playhead)
                     .into_iter()
                     .map(|r| r.desc.path.as_str().to_string())
                     .collect();
                 common.retain(|r| paths.contains(r.desc.path.as_str()));
+            }
+            for row in &mut common {
+                let v0 = row.value.clone();
+                let mut mixed = false;
+                for &id in &ids[1..] {
+                    // Discrete enum/bool rows are synthesized per-node; compare
+                    // via a fresh single-node lookup for correctness.
+                    let other = props_for_node(doc, id, playhead)
+                        .into_iter()
+                        .find(|r| r.desc.path.as_str() == row.desc.path.as_str())
+                        .map(|r| r.value);
+                    if other.as_ref() != Some(&v0) {
+                        mixed = true;
+                        break;
+                    }
+                }
+                if mixed {
+                    row.mixed = true;
+                    row.diamond = DiamondState::Empty;
+                }
             }
             common
         }

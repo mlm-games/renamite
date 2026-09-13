@@ -401,7 +401,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         comp: s.file.document.main,
                         selection: &s.selection,
                         playhead: renamite_animation::Frame(s.playback.head.round() as i64),
-                        record: s.record,
+                        record: s.record_for_writes(),
                         view,
                         snap: SnapConfig {
                             grid: (s.viewport.show_grid && s.viewport.snapping_enabled)

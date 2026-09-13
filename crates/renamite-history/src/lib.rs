@@ -1475,8 +1475,8 @@ fn apply_document_command(
                 if m.from == m.to {
                     continue;
                 }
-                let from_key = (m.id, m.prop.0.clone(), m.from.0);
-                let to_key = (m.id, m.prop.0.clone(), m.to.0);
+                let from_key = (m.id, m.prop.as_string(), m.from.0);
+                let to_key = (m.id, m.prop.as_string(), m.to.0);
                 if !seen_to.insert(to_key.clone()) {
                     return Err(ModelError::KeyframeExists(m.to.0).into());
                 }
@@ -1490,7 +1490,7 @@ fn apply_document_command(
                     return Err(ModelError::NoKeyframe(m.from.0).into());
                 }
                 let to_occupied = doc.keyframe_data(m.id, &m.prop, m.to).is_some()
-                    && !seen_from.contains(&(m.id, m.prop.0.clone(), m.to.0));
+                    && !seen_from.contains(&(m.id, m.prop.as_string(), m.to.0));
                 if to_occupied {
                     return Err(ModelError::KeyframeExists(m.to.0).into());
                 }

@@ -2580,15 +2580,30 @@ impl Document {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PropPath(pub String);
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct PropPath(String);
+
+impl<'de> Deserialize<'de> for PropPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::new(s))
+    }
+}
 
 impl PropPath {
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        let s = s.into();
+        Self(canonical_prop_str(&s).to_owned())
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+    /// Owned canonical string (e.g. for undo-map keys).
+    pub fn as_string(&self) -> String {
+        self.0.clone()
     }
 }
 
@@ -3793,14 +3808,14 @@ impl Document {
             .get_mut(id)
             .ok_or(ModelError::MissingNode)?
             .prop_mut(prop)
-            .ok_or_else(|| ModelError::MissingProp(prop.0.clone()))
+            .ok_or_else(|| ModelError::MissingProp(prop.as_string()))
     }
     fn pr<'a>(&'a self, id: NodeId, prop: &PropPath) -> Result<PropRef<'a>, ModelError> {
         self.nodes
             .get(id)
             .ok_or(ModelError::MissingNode)?
             .prop_ref(prop)
-            .ok_or_else(|| ModelError::MissingProp(prop.0.clone()))
+            .ok_or_else(|| ModelError::MissingProp(prop.as_string()))
     }
 
     /// Set the base value; returns previous base (for undo).
@@ -3810,7 +3825,7 @@ impl Document {
         prop: &PropPath,
         v: &Value,
     ) -> Result<Value, ModelError> {
-        let name = prop.0.clone();
+        let name = prop.as_string();
         visit_prop(self.pm(id, prop)?, SetStaticOp(v, &name))
     }
     /// Insert/update key at frame; returns replaced key if any (for undo).
@@ -3821,7 +3836,7 @@ impl Document {
         frame: Frame,
         v: &Value,
     ) -> Result<Option<KeyframeData>, ModelError> {
-        let name = prop.0.clone();
+        let name = prop.as_string();
         visit_prop(
             self.pm(id, prop)?,
             AddKeyOp {
@@ -3845,7 +3860,7 @@ impl Document {
         prop: &PropPath,
         key: &KeyframeData,
     ) -> Result<(), ModelError> {
-        let name = prop.0.clone();
+        let name = prop.as_string();
         visit_prop(self.pm(id, prop)?, RestoreKeyOp(key, &name))
     }
     pub fn move_keyframe(

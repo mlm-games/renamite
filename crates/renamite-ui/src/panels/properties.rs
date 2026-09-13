@@ -52,20 +52,16 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         let s = session.borrow();
         let ids = s.selection.nodes.clone();
         let playhead = Frame(s.playback.head.round() as i64);
+        let diamond_quiet = s.mode == EditorMode::Design;
+        // Design mode never keyframes: central `record_for_writes` gate.
+        let record = s.record_for_writes();
         let inspect_ids: Vec<NodeId> = if ids.len() == 1 {
             vec![effective_inspect_id(&s.file.document, ids[0])]
         } else {
             ids.clone()
         };
         let rows = props_for_selection(&s.file.document, &inspect_ids, playhead);
-        (
-            rows,
-            playhead,
-            s.record,
-            ids,
-            inspect_ids,
-            s.mode == EditorMode::Design,
-        )
+        (rows, playhead, record, ids, inspect_ids, diamond_quiet)
     };
 
     if ids.is_empty() {
@@ -668,6 +664,12 @@ fn PropRowView(
 ) -> View {
     let th = theme();
     let path = row.desc.path.clone();
+    let mixed = row.mixed;
+    let label = if mixed {
+        format!("{} · Mixed", row.desc.label)
+    } else {
+        row.desc.label.to_string()
+    };
 
     // Enum fields aren't Animated<T>: render a dedicated toggle row
     // instead of the generic scrub + diamond layout.
@@ -724,7 +726,7 @@ fn PropRowView(
             playhead,
             diamond_quiet,
         ),
-        Text(row.desc.label)
+        Text(label)
             .size(th.typography.body_medium)
             .color(th.on_surface)
             .modifier(Modifier::new().width(Dp(96.0))),
@@ -744,9 +746,16 @@ fn PropRowView(
             (PropKind::Color, Value::Color(c)) => {
                 color_row(session, ids, path, *c, playhead, record)
             }
-            _ => Text("-")
-                .size(th.typography.body_medium)
-                .color(th.on_surface_variant),
+            (kind, value) => {
+                #[cfg(debug_assertions)]
+                log::warn!(
+                    "PropRowView mismatch: {kind:?} vs {value:?} path={}",
+                    path.as_str()
+                );
+                Text("—")
+                    .size(th.typography.body_medium)
+                    .color(th.error)
+            }
         }),
     ))
 }
@@ -765,7 +774,8 @@ fn diamond_button(
     playhead: Frame,
     diamond_quiet: bool,
 ) -> View {
-    if diamond_quiet && state == DiamondState::Empty {
+    // Design mode never keyframes: inert spacer regardless of key state.
+    if diamond_quiet {
         return Box(Modifier::new().width(Dp(32.0)));
     }
 
@@ -776,11 +786,10 @@ fn diamond_button(
     };
     let key = format!("diamond_{}", path.as_str());
     let tooltip_state = remember_with_key(key, TooltipState::new);
-    let alpha = if diamond_quiet { 128 } else { 255 };
     let color = if state == DiamondState::AtPlayhead {
-        theme().primary.with_alpha(alpha)
+        theme().primary
     } else {
-        theme().on_surface_variant.with_alpha(alpha)
+        theme().on_surface_variant
     };
 
     TooltipBox(
@@ -1969,8 +1978,8 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
     let (size_align_rows, playhead, record, diamond_quiet) = {
         let s = session.borrow();
         let ph = Frame(s.playback.head.round() as i64);
-        let rec = s.record;
         let quiet = s.mode == EditorMode::Design;
+        let rec = s.record_for_writes();
         let rows = props_for_node(&s.file.document, text_id, ph)
             .into_iter()
             .filter(|r| r.desc.section == "Text")
@@ -2058,7 +2067,7 @@ fn primary_content_in_group(doc: &renamite_model::Document, id: NodeId) -> Optio
     let mut content = node.children.iter().copied().filter(|&cid| {
         matches!(
             doc.nodes.get(cid).map(|n| &n.kind),
-            Some(NodeKind::Shape(_) | NodeKind::Text(_))
+            Some(NodeKind::Shape(_) | NodeKind::Text(_) | NodeKind::Image(_))
         )
     });
     let first = content.next()?;
@@ -2073,15 +2082,19 @@ fn effective_inspect_id(doc: &renamite_model::Document, id: NodeId) -> NodeId {
 }
 
 fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
-    let name = {
+    let (name, kind_label, visible, locked) = {
         let s = session.borrow();
-        s.file.document.nodes.get(id)?.name.clone()
+        let n = s.file.document.nodes.get(id)?;
+        (n.name.clone(), kind_label(&n.kind), n.visible, n.locked)
     };
     let th = theme();
     Some(crate::components::CollapsibleSection(
         format!("identity_{id:?}"),
-        "Layer",
-        vec![],
+        kind_label,
+        vec![
+            visibility_toggle(session.clone(), id, visible),
+            lock_toggle(session.clone(), id, locked),
+        ],
         Column(Modifier::new().fill_max_width()).child(
             Row(Modifier::new()
                 .fill_max_width()
@@ -2135,6 +2148,68 @@ fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
             )),
         ),
     ))
+}
+
+fn kind_label(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Group => "Group",
+        NodeKind::Layer(_) => "Layer",
+        NodeKind::Shape(_) => "Shape",
+        NodeKind::Style(_) => "Style",
+        NodeKind::Modifier(_) => "Modifier",
+        NodeKind::Text(_) => "Text",
+        NodeKind::Image(_) => "Image",
+        NodeKind::Precomp { .. } => "Precomp",
+        NodeKind::Mask(_) => "Mask",
+    }
+}
+
+fn visibility_toggle(session: SessionRef, id: NodeId, visible: bool) -> View {
+    CompactIconAction(
+        if visible {
+            Symbols::visibility
+        } else {
+            Symbols::visibility_off
+        },
+        "Toggle visibility",
+        {
+            let session = session.clone();
+            move || {
+                let mut s = session.borrow_mut();
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Toggle visibility".into()),
+                    ToolOutput::Commands(smallvec![
+                        renamite_behavior_common::layers::cmd_toggle_visible(id, visible)
+                    ]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        },
+    )
+}
+
+fn lock_toggle(session: SessionRef, id: NodeId, locked: bool) -> View {
+    CompactIconAction(
+        if locked {
+            Symbols::lock
+        } else {
+            Symbols::lock_open
+        },
+        "Toggle lock",
+        {
+            let session = session.clone();
+            move || {
+                let mut s = session.borrow_mut();
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Toggle lock".into()),
+                    ToolOutput::Commands(smallvec![
+                        renamite_behavior_common::layers::cmd_toggle_locked(id, locked)
+                    ]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        },
+    )
 }
 
 /// One selectable font-family chip in the text properties section.
@@ -3313,13 +3388,14 @@ fn paint_section_for_style(
                                 return;
                             };
                             insert_gradient_stop(&mut stops);
+                            let record = s.record_for_writes();
                             let cmd = resolve_property_edit(
                                 &s.file.document,
                                 style_id,
                                 &PropPath::new("grad.stops"),
                                 Value::Stops(stops),
                                 Frame(frame.round() as i64),
-                                s.record,
+                                record,
                             );
                             s.apply_outputs(smallvec![
                                 ToolOutput::BeginTransaction("Add stop".into()),
@@ -3588,13 +3664,14 @@ fn stop_rows(
                             return;
                         }
                         stops.0.remove(i);
+                        let record = s.record_for_writes();
                         let cmd = resolve_property_edit(
                             &s.file.document,
                             style_id,
                             &PropPath::new("grad.stops"),
                             Value::Stops(stops),
                             Frame(frame.round() as i64),
-                            s.record,
+                            record,
                         );
                         s.apply_outputs(smallvec![
                             ToolOutput::BeginTransaction("Remove stop".into()),
