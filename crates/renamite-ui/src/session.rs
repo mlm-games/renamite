@@ -11,7 +11,9 @@ use kurbo::Point;
 use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
 use renamite_behavior_common::machine::{MachineSelection, remove_state, remove_transition};
-use renamite_behavior_common::{Modifiers, Selection, SnapConfig, ToolContext, ViewTransform};
+use renamite_behavior_common::{
+    FitState, Modifiers, Selection, SnapConfig, ToolContext, ViewTransform,
+};
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
     TimelineScrubBehavior, TimelineTarget,
@@ -2436,7 +2438,7 @@ impl Session {
         self.machine_drag = None;
         self.machine_graph_gesture = None;
         self.listener_draft = ListenerDraft::default();
-        self.viewport.fit_pending = true;
+        self.viewport.request_fit();
         self.viewport.pan_last = None;
         self.viewport.last_pointer = DVec2::ZERO;
         self.dirty = false;
@@ -3319,8 +3321,7 @@ impl Session {
 #[derive(Clone, Debug)]
 pub struct ViewportState {
     pub view: ViewTransform,
-    pub surface_size: DVec2,
-    pub fit_pending: bool,
+    fit: FitState,
     pub pan_last: Option<DVec2>,
     pub space_held: bool,
     pub pointer_down: bool,
@@ -3357,8 +3358,7 @@ impl Default for ViewportState {
     fn default() -> Self {
         Self {
             view: ViewTransform::identity(),
-            surface_size: DVec2::ZERO,
-            fit_pending: true,
+            fit: FitState::new(),
             pan_last: None,
             space_held: false,
             pointer_down: false,
@@ -3376,55 +3376,40 @@ impl Default for ViewportState {
 }
 
 impl ViewportState {
-    pub fn ensure_fit(&mut self, surface: DVec2, artboard: DVec2) {
-        let resized = (surface - self.surface_size).abs().max_element() > 0.5;
-        let first_layout = self.surface_size == DVec2::ZERO && surface != DVec2::ZERO;
-        self.surface_size = surface;
+    /// Last fitted surface size (zero before first layout).
+    pub fn surface_size(&self) -> DVec2 {
+        self.fit.surface_size()
+    }
 
+    /// Request a margin refit on the next [`ViewportState::ensure_fit`].
+    pub fn request_fit(&mut self) {
+        self.fit.request();
+    }
+
+    pub fn ensure_fit(&mut self, surface: DVec2, artboard: DVec2) {
         if self.pan_last.is_some() {
             return;
         }
 
-        if self.fit_pending || first_layout {
-            self.fit(artboard);
-        } else if resized {
-            self.fit_pending = false;
-        }
+        // Editor policy: keep the user's zoom on window resize; refit on
+        // first layout, artboard change, or explicit `request_fit`.
+        self.fit.ensure(&mut self.view, surface, artboard, false);
     }
 
     pub fn fit(&mut self, artboard: DVec2) {
-        if self.surface_size.x <= 1.0
-            || self.surface_size.y <= 1.0
-            || artboard.x <= 0.0
-            || artboard.y <= 0.0
-        {
-            return;
+        let surface = self.fit.surface_size();
+        self.fit.request();
+        if surface.x > 1.0 && surface.y > 1.0 {
+            self.fit.ensure(&mut self.view, surface, artboard, false);
         }
-
-        let margin = 56.0;
-        let available = (self.surface_size - DVec2::splat(margin * 2.0)).max(DVec2::splat(1.0));
-
-        let scale = (available.x / artboard.x)
-            .min(available.y / artboard.y)
-            .clamp(0.05, 32.0);
-
-        self.view.scale = scale;
-        self.view.offset = (self.surface_size - artboard * scale) * 0.5;
-        self.fit_pending = false;
     }
 
     pub fn zoom_centered(&mut self, factor: f64) {
-        if self.surface_size == DVec2::ZERO {
-            return;
-        }
-        self.zoom_at(self.surface_size * 0.5, factor);
+        self.fit.zoom_centered(&mut self.view, factor);
     }
 
     pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64) {
-        if self.surface_size == DVec2::ZERO {
-            return;
-        }
-        self.view.zoom_at(screen_pos, factor, 0.05, 64.0);
+        self.fit.zoom_at(&mut self.view, screen_pos, factor);
     }
 
     pub fn begin_pan(&mut self, position: DVec2) {

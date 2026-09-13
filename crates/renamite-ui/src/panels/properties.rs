@@ -752,9 +752,7 @@ fn PropRowView(
                     "PropRowView mismatch: {kind:?} vs {value:?} path={}",
                     path.as_str()
                 );
-                Text("—")
-                    .size(th.typography.body_medium)
-                    .color(th.error)
+                Text("-").size(th.typography.body_medium).color(th.error)
             }
         }),
     ))

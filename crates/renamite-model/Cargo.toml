@@ -15,3 +15,6 @@ thiserror.workspace = true
 renamite-animation.workspace = true
 renamite-geometry.workspace = true
 renamite-text.workspace = true
+
+[dev-dependencies]
+ron.workspace = true

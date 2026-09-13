@@ -163,7 +163,7 @@ fn TimelineInfoBar(
         RangeEditor(session, range),
         if record {
             StatusChip(
-                "● REC — edits add keys".to_string(),
+                "● REC - edits add keys".to_string(),
                 theme().error_container,
                 theme().on_error_container,
             )

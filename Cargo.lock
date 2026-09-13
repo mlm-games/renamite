@@ -3326,6 +3326,7 @@ dependencies = [
  "renamite-animation",
  "renamite-geometry",
  "renamite-text",
+ "ron",
  "serde",
  "serde_json",
  "slotmap",

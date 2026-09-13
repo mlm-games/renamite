@@ -72,6 +72,128 @@ impl ViewTransform {
     pub fn pan_by(&mut self, delta: DVec2) {
         self.offset += delta;
     }
+
+    /// Fit `artboard` inside `surface` with a margin, centering it.
+    /// Degenerate inputs are no-ops so an empty surface or composition
+    /// can never collapse the zoom.
+    pub fn fit(&mut self, surface: DVec2, artboard: DVec2) {
+        fit_view(self, surface, artboard);
+    }
+}
+
+/// Margin-fit shared by the editor viewport and the player embed:
+/// `artboard` inside `surface` with a 56 px margin, centered.
+/// No-op on degenerate inputs.
+pub fn fit_view(view: &mut ViewTransform, surface: DVec2, artboard: DVec2) {
+    if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
+        return;
+    }
+    let margin = 56.0;
+    let available = (surface - DVec2::splat(margin * 2.0)).max(DVec2::splat(1.0));
+    let scale = (available.x / artboard.x)
+        .min(available.y / artboard.y)
+        .clamp(0.05, 32.0);
+    view.scale = scale;
+    view.offset = (surface - artboard * scale) * 0.5;
+}
+
+/// Exact-fit shared by presentational embeds: `artboard` fills `surface`
+/// with no margin, letterboxing inside the surface when aspects differ.
+/// No-op on degenerate inputs.
+pub fn fit_exact_view(view: &mut ViewTransform, surface: DVec2, artboard: DVec2) {
+    if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
+        return;
+    }
+    let scale = (surface.x / artboard.x)
+        .min(surface.y / artboard.y)
+        .clamp(0.05, 64.0);
+    view.scale = scale;
+    view.offset = (surface - artboard * scale) * 0.5;
+}
+
+/// Fit-state tracker shared by the editor viewport and the player embed:
+/// remembers the last fitted surface (+ artboard) and only refits on
+/// resize or explicit invalidation, so interactive zoom survives redraws.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FitState {
+    surface: DVec2,
+    artboard: DVec2,
+    pub pending: bool,
+}
+
+impl FitState {
+    pub fn new() -> Self {
+        Self {
+            surface: DVec2::ZERO,
+            artboard: DVec2::ZERO,
+            pending: true,
+        }
+    }
+
+    /// Pre-seed the surface record (e.g. after an explicit `fit` call) so
+    /// zoom anchors work even when the artboard was degenerate.
+    pub fn with_surface(surface: DVec2) -> Self {
+        Self {
+            surface,
+            artboard: DVec2::ZERO,
+            pending: false,
+        }
+    }
+
+    /// Refit `view` when the surface/artboard changed beyond 0.5 px or a
+    /// fit was requested via [`FitState::request`]. Returns true when a
+    /// refit ran. Pan gestures opt out by skipping this call.
+    ///
+    /// `refit_on_resize`: the player embed refits on window resize
+    /// (`true`); the editor viewport keeps the user's zoom on resize
+    /// (`false`) and only refits on first layout, artboard change, or
+    /// explicit request.
+    pub fn ensure(
+        &mut self,
+        view: &mut ViewTransform,
+        surface: DVec2,
+        artboard: DVec2,
+        refit_on_resize: bool,
+    ) -> bool {
+        let resized = (surface - self.surface).abs().max_element() > 0.5;
+        let art_changed = (artboard - self.artboard).abs().max_element() > 0.5;
+        let first_layout = self.surface == DVec2::ZERO && surface != DVec2::ZERO;
+        self.surface = surface;
+        if self.pending || first_layout || art_changed || (refit_on_resize && resized) {
+            view.fit(surface, artboard);
+            self.artboard = artboard;
+            self.pending = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Request a refit on the next [`FitState::ensure`] call
+    /// (e.g. after a zoom-to-fit shortcut).
+    pub fn request(&mut self) {
+        self.pending = true;
+    }
+
+    pub fn surface_size(&self) -> DVec2 {
+        self.surface
+    }
+
+    /// Zoom about the surface center; no-op before the first layout.
+    pub fn zoom_centered(&self, view: &mut ViewTransform, factor: f64) {
+        if self.surface == DVec2::ZERO {
+            return;
+        }
+        self.zoom_at(view, self.surface * 0.5, factor);
+    }
+
+    /// Zoom about `screen_pos`; no-op before the first layout.
+    pub fn zoom_at(&self, view: &mut ViewTransform, screen_pos: DVec2, factor: f64) {
+        if self.surface == DVec2::ZERO {
+            return;
+        }
+        view.zoom_at(screen_pos, factor, 0.05, 64.0);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

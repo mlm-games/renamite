@@ -465,6 +465,92 @@ impl SceneRenderer {
         self.paint_prepared(&prepared, scope);
     }
 
+    /// Checkerboard backplate + border behind `artboard` (editor chrome).
+    /// Reads as transparency upstream of the rig paint; uses the active
+    /// theme so it follows light/dark. Shared by the editor viewport and
+    /// the player embed so both paint the same chrome.
+    pub fn paint_artboard_chrome(
+        scope: &mut DrawScope,
+        artboard: glam::DVec2,
+        view: &ViewTransform,
+    ) {
+        use repose_core::geometry::Rect;
+        use repose_core::{Color, Px, theme};
+
+        let th = theme();
+        let origin = view.world_to_screen(glam::DVec2::ZERO);
+        let width = artboard.x * view.scale;
+        let height = artboard.y * view.scale;
+
+        scope.draw_rect(
+            Rect {
+                x: origin.x as f32 - 4.0,
+                y: origin.y as f32 - 4.0,
+                w: width as f32 + 8.0,
+                h: height as f32 + 8.0,
+            },
+            Color(0, 0, 0, 48),
+            Px(3.0),
+        );
+
+        let tile_world = 32.0;
+        let cols = (artboard.x / tile_world).ceil() as usize;
+        let rows = (artboard.y / tile_world).ceil() as usize;
+        for y in 0..rows {
+            for x in 0..cols {
+                let p = view.world_to_screen(glam::DVec2::new(
+                    x as f64 * tile_world,
+                    y as f64 * tile_world,
+                ));
+                let color = if (x + y) % 2 == 0 {
+                    th.surface
+                } else {
+                    th.surface_container_high
+                };
+                scope.draw_rect(
+                    Rect {
+                        x: p.x as f32,
+                        y: p.y as f32,
+                        w: (tile_world * view.scale).ceil() as f32,
+                        h: (tile_world * view.scale).ceil() as f32,
+                    },
+                    color,
+                    Px(0.0),
+                );
+            }
+        }
+
+        let border = th.outline_variant;
+        let (x, y, w, h) = (
+            origin.x as f32,
+            origin.y as f32,
+            width as f32,
+            height as f32,
+        );
+        scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, Px(0.0));
+        scope.draw_rect(
+            Rect {
+                x,
+                y: y + h - 1.0,
+                w,
+                h: 1.0,
+            },
+            border,
+            Px(0.0),
+        );
+        scope.draw_rect(Rect { x, y, w: 1.0, h }, border, Px(0.0));
+        scope.draw_rect(
+            Rect {
+                x: x + w - 1.0,
+                y,
+                w: 1.0,
+                h,
+            },
+            border,
+            Px(0.0),
+        );
+    }
+
     fn mesh_for(&mut self, item: &SceneItem, tol: f32) -> Option<Arc<VectorMeshData>> {
         let key = mesh_key(item, tol);
         if let Some(m) = self.cache.get(&key) {
@@ -735,7 +821,8 @@ fn map_blend(b: ModelBlendMode) -> BlendMode {
         // implements a real screen blend. (Add is also unimplemented upstream.)
         ModelBlendMode::Screen => BlendMode::Alpha,
         ModelBlendMode::Overlay => BlendMode::Overlay,
-        // Advanced modes not yet implemented in repose renderer — fall back to alpha
+        // TODO: advanced modes not yet implemented in ../repose renderer,
+        // HACK: fall back to alpha
         // but preserve model value for round-tripping and future renderer upgrades.
         ModelBlendMode::Darken
         | ModelBlendMode::Lighten

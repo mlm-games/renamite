@@ -32,10 +32,7 @@ pub const BLEND_MODES: &[(BlendMode, &str)] = &[
 ];
 
 pub fn blend_to_index(b: BlendMode) -> usize {
-    BLEND_MODES
-        .iter()
-        .position(|(m, _)| *m == b)
-        .unwrap_or(0)
+    BLEND_MODES.iter().position(|(m, _)| *m == b).unwrap_or(0)
 }
 
 pub fn blend_from_index(i: i64) -> BlendMode {

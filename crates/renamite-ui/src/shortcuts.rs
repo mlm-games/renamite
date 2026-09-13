@@ -364,7 +364,7 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
                 return true;
             }
             Key::Character('5' | 'f') => {
-                s.viewport.fit_pending = true;
+                s.viewport.request_fit();
                 request_frame();
                 return true;
             }

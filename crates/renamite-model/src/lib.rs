@@ -2588,8 +2588,10 @@ impl<'de> Deserialize<'de> for PropPath {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self::new(s))
+        #[derive(Deserialize)]
+        struct PropPath(String);
+        let raw = PropPath::deserialize(deserializer)?;
+        Ok(Self::new(raw.0))
     }
 }
 
@@ -3906,5 +3908,32 @@ impl Document {
         self.pr(id, prop)
             .map(|p| read_prop(p, KeyFramesOp))
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod prop_path_compat_tests {
+    use super::PropPath;
+
+    #[test]
+    fn legacy_tuple_struct_form_parses() {
+        let p: PropPath =
+            ron::from_str(r#"PropPath("transform.position")"#).expect("legacy form must parse");
+        assert_eq!(p.as_str(), "transform.position");
+    }
+
+    #[test]
+    fn current_paren_form_parses() {
+        let ser = ron::to_string(&PropPath::new("transform.position")).unwrap();
+        let p: PropPath = ron::from_str(&ser).expect("current form must roundtrip");
+        assert_eq!(p.as_str(), "transform.position");
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let p = PropPath::new("opacity");
+        let s = serde_json::to_string(&p).unwrap();
+        let back: PropPath = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, p);
     }
 }

@@ -55,7 +55,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     }
                     let center_in_viewport = {
                         let s = session.borrow();
-                        s.viewport.surface_size * 0.5
+                        s.viewport.surface_size() * 0.5
                     };
                     {
                         let mut s = session.borrow_mut();
@@ -80,7 +80,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         if let Some(rect) = s.viewport.screen_rect {
                             DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
                         } else {
-                            s.viewport.surface_size * 0.5
+                            s.viewport.surface_size() * 0.5
                         }
                     };
                     {
@@ -131,7 +131,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             let anchor = if s.viewport.has_pointer {
                                 s.viewport.last_pointer
                             } else {
-                                s.viewport.surface_size * 0.5
+                                s.viewport.surface_size() * 0.5
                             };
                             let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
                             s.viewport.zoom_at(anchor, factor);
@@ -249,9 +249,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             x: window_pos.x - pos.x as f32,
                             y: window_pos.y - pos.y as f32,
                         };
+                        let fit_surface = s.viewport.surface_size();
                         let size = repose_core::Vec2 {
-                            x: s.viewport.surface_size.x as f32,
-                            y: s.viewport.surface_size.y as f32,
+                            x: fit_surface.x as f32,
+                            y: fit_surface.y as f32,
                         };
                         if size.x > 0.0 && size.y > 0.0 {
                             s.viewport.screen_rect = Some(repose_core::geometry::Rect {
@@ -753,76 +754,10 @@ fn TemplateCard(
 }
 
 fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransform) {
-    let th = theme();
-    let origin = view.world_to_screen(DVec2::ZERO);
-    let width = comp.size.0 as f64 * view.scale;
-    let height = comp.size.1 as f64 * view.scale;
-
-    scope.draw_rect(
-        Rect {
-            x: origin.x as f32 - 4.0,
-            y: origin.y as f32 - 4.0,
-            w: width as f32 + 8.0,
-            h: height as f32 + 8.0,
-        },
-        Color(0, 0, 0, 48),
-        Px(3.0),
-    );
-
-    let tile_world = 32.0;
-    let cols = (comp.size.0 as f64 / tile_world).ceil() as usize;
-    let rows = (comp.size.1 as f64 / tile_world).ceil() as usize;
-
-    for y in 0..rows {
-        for x in 0..cols {
-            let p = view.world_to_screen(DVec2::new(x as f64 * tile_world, y as f64 * tile_world));
-
-            let color = if (x + y) % 2 == 0 {
-                th.surface
-            } else {
-                th.surface_container_high
-            };
-
-            scope.draw_rect(
-                Rect {
-                    x: p.x as f32,
-                    y: p.y as f32,
-                    w: (tile_world * view.scale).ceil() as f32,
-                    h: (tile_world * view.scale).ceil() as f32,
-                },
-                color,
-                Px(0.0),
-            );
-        }
-    }
-
-    let border = th.outline_variant;
-    let x = origin.x as f32;
-    let y = origin.y as f32;
-    let w = width as f32;
-    let h = height as f32;
-
-    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, Px(0.0));
-    scope.draw_rect(
-        Rect {
-            x,
-            y: y + h - 1.0,
-            w,
-            h: 1.0,
-        },
-        border,
-        Px(0.0),
-    );
-    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, Px(0.0));
-    scope.draw_rect(
-        Rect {
-            x: x + w - 1.0,
-            y,
-            w: 1.0,
-            h,
-        },
-        border,
-        Px(0.0),
+    renamite_render_bridge::SceneRenderer::paint_artboard_chrome(
+        scope,
+        DVec2::new(comp.size.0 as f64, comp.size.1 as f64),
+        view,
     );
 }
 
@@ -944,7 +879,7 @@ fn ViewportControls(session: SessionRef) -> View {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();
-                    s.viewport.fit_pending = true;
+                    s.viewport.request_fit();
                     request_frame();
                 }
             }),

@@ -28,17 +28,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::DVec2;
-use renamite_behavior_common::ViewTransform;
+use renamite_behavior_common::fit_exact_view;
 use renamite_player::{Player, PlayerError};
 use renamite_render_bridge::SceneRenderer;
 use repose_canvas::{Canvas, DrawScope};
-use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
-use repose_core::{Color, Modifier, Px, RenderContext, Vec2, View, request_frame, theme};
+use repose_core::{Modifier, RenderContext, Vec2, View, request_frame, theme};
 use web_time::Instant;
 
 /// Shared host handle: the embed owner builds it and passes it to the widget.
 pub type PlayerHostRef = Rc<RefCell<PlayerHost>>;
+
+/// Re-exported for embedders that paint chrome or read the view transform
+/// without depending on `renamite-behavior-common` directly.
+pub use renamite_behavior_common::{FitState, ViewTransform};
 
 /// Per-surface state for one embedded player: the engine, the tessellator
 /// (`SceneRenderer`), the viewport fit/zoom mapping, and playback control.
@@ -55,8 +58,10 @@ pub struct PlayerHost {
     pub dirty_images: bool,
     /// Most recent pointer position in surface px (wheel-zoom anchor).
     pub last_pointer: DVec2,
-    surface_size: DVec2,
-    fit_pending: bool,
+    /// Fit-state tracker: remembers the last fitted surface (+ artboard)
+    /// and only refits on resize or explicit invalidation, so interactive
+    /// zoom survives redraws.
+    pub fit: FitState,
 }
 
 impl PlayerHost {
@@ -69,8 +74,7 @@ impl PlayerHost {
             last_tick: Instant::now(),
             dirty_images: true,
             last_pointer: DVec2::ZERO,
-            surface_size: DVec2::ZERO,
-            fit_pending: true,
+            fit: FitState::new(),
         }
     }
 
@@ -130,50 +134,60 @@ impl PlayerHost {
         true
     }
 
-    fn ensure_fit(&mut self, surface: DVec2) {
-        let resized = (surface - self.surface_size).abs().max_element() > 0.5;
-        self.surface_size = surface;
-        if self.fit_pending || resized {
-            self.fit(surface);
+    /// Advance playback by a fixed `dt_secs`, for sim-driven embeds where
+    /// pause must freeze playback (no wall clock, no 50 ms clamp).
+    /// Returns true while playing so callers can keep requesting frames.
+    /// Zero-cost whenever paused.
+    pub fn tick_playback_fixed(&mut self, dt_secs: f64) -> bool {
+        if !self.playing {
+            return false;
         }
+        let dt = dt_secs.max(0.0);
+        self.last_tick = Instant::now();
+        let _ = self.player.tick(dt);
+        true
+    }
+
+    /// Refit on resize via the shared [`FitState`] tracker, so interactive
+    /// zoom survives redraws. Pan gestures opt out by skipping this call.
+    fn ensure_fit(&mut self, surface: DVec2) {
+        let artboard = self.artboard();
+        self.fit.ensure(&mut self.view, surface, artboard, true);
     }
 
     /// Fit the artboard inside `surface` with a margin, centering it.
     /// Records `surface` so [`zoom_at`](Self::zoom_at) /
     /// [`zoom_centered`](Self::zoom_centered) work after an explicit fit.
     pub fn fit(&mut self, surface: DVec2) {
-        if surface.x > 1.0 && surface.y > 1.0 {
-            self.surface_size = surface;
-        }
         let artboard = self.artboard();
-        if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
-            return;
+        self.fit.request();
+        if surface.x > 1.0 && surface.y > 1.0 {
+            self.fit.ensure(&mut self.view, surface, artboard, true);
         }
-        let margin = 56.0;
-        let available = (surface - DVec2::splat(margin * 2.0)).max(DVec2::splat(1.0));
-        let scale = (available.x / artboard.x)
-            .min(available.y / artboard.y)
-            .clamp(0.05, 32.0);
-        self.view.scale = scale;
-        self.view.offset = (surface - artboard * scale) * 0.5;
-        self.fit_pending = false;
+    }
+
+    /// Exact-fit the artboard with no margin (presentational embeds):
+    /// records `surface` and centers, letterboxing on aspect mismatch.
+    pub fn fit_exact(&mut self, surface: DVec2) {
+        let artboard = self.artboard();
+        if surface.x > 1.0 && surface.y > 1.0 {
+            self.fit = FitState::with_surface(surface);
+            fit_exact_view(&mut self.view, surface, artboard);
+        }
     }
 
     pub fn zoom_centered(&mut self, factor: f64) {
-        if self.surface_size == DVec2::ZERO {
-            return;
-        }
-        self.zoom_at(self.surface_size * 0.5, factor);
+        self.fit.zoom_centered(&mut self.view, factor);
     }
 
     /// Zoom by `factor` keeping the world point under `screen_pos` anchored.
     pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64) {
-        if self.surface_size == DVec2::ZERO {
-            return;
-        }
-        let world = self.view.screen_to_world(screen_pos);
-        self.view.scale = (self.view.scale * factor).clamp(0.05, 64.0);
-        self.view.offset = screen_pos - world * self.view.scale;
+        self.fit.zoom_at(&mut self.view, screen_pos, factor);
+    }
+
+    /// Last fitted surface size (zero before first layout).
+    pub fn surface_size(&self) -> DVec2 {
+        self.fit.surface_size()
     }
 }
 
@@ -267,78 +281,8 @@ pub fn RenamitePlayer(host: PlayerHostRef, render_context: RenderContext) -> Vie
     )
 }
 
-/// Artboard backplate: soft shadow, checkerboard, and a one-pixel border.
+/// Artboard backplate shared with the editor viewport
+/// (see `SceneRenderer::paint_artboard_chrome`).
 fn paint_artboard(scope: &mut DrawScope, artboard: DVec2, view: &ViewTransform) {
-    let th = theme();
-    let origin = view.world_to_screen(DVec2::ZERO);
-    let width = artboard.x * view.scale;
-    let height = artboard.y * view.scale;
-
-    // Shadow/backplate.
-    scope.draw_rect(
-        Rect {
-            x: origin.x as f32 - 4.0,
-            y: origin.y as f32 - 4.0,
-            w: width as f32 + 8.0,
-            h: height as f32 + 8.0,
-        },
-        Color(0, 0, 0, 48),
-        Px(3.0),
-    );
-
-    // Checkerboard (transparent pixels read as a neutral grid).
-    let tile_world = 32.0;
-    let cols = (artboard.x / tile_world).ceil() as usize;
-    let rows = (artboard.y / tile_world).ceil() as usize;
-    for y in 0..rows {
-        for x in 0..cols {
-            let p = view.world_to_screen(DVec2::new(x as f64 * tile_world, y as f64 * tile_world));
-            let color = if (x + y) % 2 == 0 {
-                th.surface
-            } else {
-                th.surface_container_high
-            };
-            scope.draw_rect(
-                Rect {
-                    x: p.x as f32,
-                    y: p.y as f32,
-                    w: (tile_world * view.scale).ceil() as f32,
-                    h: (tile_world * view.scale).ceil() as f32,
-                },
-                color,
-                Px(0.0),
-            );
-        }
-    }
-
-    // One-pixel border.
-    let border = th.outline_variant;
-    let (x, y, w, h) = (
-        origin.x as f32,
-        origin.y as f32,
-        width as f32,
-        height as f32,
-    );
-    scope.draw_rect(Rect { x, y, w, h: 1.0 }, border, Px(0.0));
-    scope.draw_rect(
-        Rect {
-            x,
-            y: y + h - 1.0,
-            w,
-            h: 1.0,
-        },
-        border,
-        Px(0.0),
-    );
-    scope.draw_rect(Rect { x, y, w: 1.0, h }, border, Px(0.0));
-    scope.draw_rect(
-        Rect {
-            x: x + w - 1.0,
-            y,
-            w: 1.0,
-            h,
-        },
-        border,
-        Px(0.0),
-    );
+    SceneRenderer::paint_artboard_chrome(scope, artboard, view);
 }

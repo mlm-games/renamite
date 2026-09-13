@@ -108,7 +108,7 @@ fn PreviewStatusBar(session: SessionRef) -> View {
         (s.machine_preview_enabled, states, name)
     };
     if !enabled {
-        return Text("Preview off — press play to drive the machine")
+        return Text("Preview off - press play to drive the machine")
             .size(th.typography.label_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -161,7 +161,7 @@ fn EmptyMachineState(session: SessionRef) -> View {
             .size(th.typography.body_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding(Dp(16.0))),
-        Text("State machines drive clips from inputs and pointer listeners — like Rive Interact.")
+        Text("State machines drive clips from inputs and pointer listeners (Rive-Interact-like.")
             .size(th.typography.body_small)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding_values(PaddingValues {
@@ -439,7 +439,7 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
 
     if inputs.is_empty() {
         rows.push(
-            Text("No inputs — add Bool / Number / Trigger to drive transitions")
+            Text("No inputs - add Bool / Number / Trigger to drive transitions")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
                 .modifier(Modifier::new().padding(Dp(12.0))),
@@ -2025,7 +2025,7 @@ fn clip_dropdown_for_blend(
         .iter()
         .find(|(id, _)| *id == current)
         .map(|(_, n)| n.clone())
-        .unwrap_or_else(|| "—".into());
+        .unwrap_or_else(|| "-".into());
     let items = names
         .into_iter()
         .map(|(id, name)| {
@@ -2752,7 +2752,7 @@ fn clip_names(session: &SessionRef) -> Vec<(ClipId, String)> {
                 .clips
                 .get(id)
                 .map(|c| c.name.clone())
-                .unwrap_or_else(|| "—".into());
+                .unwrap_or_else(|| "-".into());
             (id, name)
         })
         .collect()
@@ -2818,7 +2818,7 @@ fn blend_input_dropdown(
     let current_name = inputs
         .get(current)
         .map(|i| i.name.clone())
-        .unwrap_or_else(|| "—".into());
+        .unwrap_or_else(|| "-".into());
     let items = inputs
         .iter()
         .enumerate()
@@ -2866,7 +2866,7 @@ fn transition_row(
         .states
         .get(target)
         .map(|st| st.name.clone())
-        .unwrap_or_else(|| "—".into());
+        .unwrap_or_else(|| "-".into());
     let cond_label = if conditions.is_empty() {
         "no conditions".into()
     } else {
@@ -2993,7 +2993,7 @@ fn retarget_dropdown(
         .states
         .get(current)
         .map(|st| st.name.clone())
-        .unwrap_or_else(|| "—".into());
+        .unwrap_or_else(|| "-".into());
     let items = (0..state_count)
         .map(|target| {
             let target_name = session.borrow().file.machines[machine_id].layers[layer]
