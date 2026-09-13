@@ -8,7 +8,7 @@
 //! - Rectangle, ellipse, path, star, and polygon shapes
 //! - Solid and gradient fills/strokes
 //! - Stroke dashes
-//! - Trim Path, Round Corners, Offset Path, and Repeater
+//! - Trim Path, Round Corners, Offset Path, Repeater, Zig Zag, and Pucker & Bloat
 //! - Static and keyframed scalar/vector/color/path/gradient properties
 //! - Hold, linear, and cubic-bezier interpolation
 //!

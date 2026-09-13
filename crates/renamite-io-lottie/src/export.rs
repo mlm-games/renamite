@@ -117,7 +117,7 @@ impl Exporter<'_> {
                         output.len() as u32 + 1,
                     )?);
                 }
-                NodeKind::Shape(_) | NodeKind::Style(_) | NodeKind::Modifier(_) => {
+                NodeKind::Shape(_) | NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Text(_) => {
                     bare_run.push(node_id);
                 }
                 _ => {
@@ -150,10 +150,12 @@ impl Exporter<'_> {
             .iter()
             .copied()
             .filter(|id| {
-                self.document
-                    .nodes
-                    .get(*id)
-                    .is_some_and(|node| matches!(node.kind, NodeKind::Shape(_)))
+                self.document.nodes.get(*id).is_some_and(|node| {
+                    matches!(
+                        node.kind,
+                        NodeKind::Shape(_) | NodeKind::Text(_)
+                    )
+                })
             })
             .collect();
         let (transform, opacity, transform_owner) = if shape_ids.len() == 1 {
@@ -661,6 +663,30 @@ impl Exporter<'_> {
         }
         match &node.kind {
             NodeKind::Group | NodeKind::Layer(_) => {
+                let has_effect = node.children.iter().any(|child| {
+                    self.document.nodes.get(*child).is_some_and(|n| {
+                        matches!(n.kind, NodeKind::Modifier(_) | NodeKind::Style(_))
+                    })
+                });
+                if has_effect {
+                    for child in &node.children {
+                        if let Some(child_node) = self.document.nodes.get(*child) {
+                            let is_shape_text =
+                                matches!(child_node.kind, NodeKind::Shape(_) | NodeKind::Text(_));
+                            if is_shape_text
+                                && !transform_is_identity(
+                                    &child_node.transform,
+                                    &child_node.opacity,
+                                )
+                            {
+                                self.warnings.push(LottieWarning::new(
+                                    format!("node/{child:?}"),
+                                    "transformed shape/text wraps in its own group and may escape sibling modifiers/styles on Lottie export; bake the transform or hoist the effect",
+                                ));
+                            }
+                        }
+                    }
+                }
                 let mut items = node
                     .children
                     .iter()
@@ -773,6 +799,9 @@ impl Exporter<'_> {
                     }
                     NodeKind::Mask(_) => {
                         " (hoist the mask to a top-level Layer/Group child to export it)"
+                    }
+                    NodeKind::Precomp { .. } => {
+                        " (hoist the precomposition to a top-level child to export it)"
                     }
                     _ => "",
                 };

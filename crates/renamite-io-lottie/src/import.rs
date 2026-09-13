@@ -326,7 +326,16 @@ impl Importer {
             node.opacity =
                 import_scalar(transform.get("o").unwrap_or(&Value::Null), 1.0 / 100.0, 1.0);
         }
-        let _ = path;
+        if layer
+            .get("masksProperties")
+            .and_then(Value::as_array)
+            .is_some_and(|masks| !masks.is_empty())
+        {
+            self.warnings.push(LottieWarning::new(
+                path.to_owned(),
+                "masks on precomposition layers are not supported and were dropped",
+            ));
+        }
         Ok(ImportTree::leaf(node))
     }
 

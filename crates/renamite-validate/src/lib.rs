@@ -1020,11 +1020,25 @@ impl<'a> Validator<'a> {
 
         for (id, node) in &doc.nodes {
             match &node.kind {
-                NodeKind::Text(_) => {
+                NodeKind::Text(text) => {
                     self.warn(
                         format!("node/{id:?}/text"),
                         "Lottie export bakes text to vector outlines",
                     );
+                    if !text.size.keyframes.is_empty() {
+                        self.warn(
+                            format!("node/{id:?}/text"),
+                            "animated `text.size` bakes to its base value on Lottie export",
+                        );
+                    }
+                    if !text.tracking.keyframes.is_empty()
+                        || !text.leading.keyframes.is_empty()
+                    {
+                        self.warn(
+                            format!("node/{id:?}/text"),
+                            "animated `text.tracking`/`text.leading` bake to base on Lottie export",
+                        );
+                    }
                 }
                 NodeKind::Mask(_) => {
                     self.warn(
@@ -1066,7 +1080,7 @@ impl<'a> Validator<'a> {
                 NodeKind::Precomp { .. } if !direct.contains(&id) => {
                     self.warn(
                         format!("node/{id:?}/precomp"),
-                        "nested precomp is skipped by Lottie export",
+                        "nested precomp is skipped by Lottie export (hoist to a top-level child)",
                     );
                 }
                 _ => {}
