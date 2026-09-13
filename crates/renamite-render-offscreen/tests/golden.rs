@@ -76,9 +76,10 @@ fn tiny_test_png() -> Vec<u8> {
     cursor.into_inner()
 }
 
-/// A 2x2 image, anchored at its center, scaled 10,000x around the composition
-/// center. All four pixels meet at the anchor, so the fit view shows the
-/// four-color quadrant seam.
+/// A 2x2 image, anchored at its center, scaled 16,000x around the composition
+/// center (320x320 world, x96-416/y96-416). All four pixels meet at the
+/// anchor, so the fit view shows the four-color quadrant seam; the extent
+/// overflows the 272-wide masked-image mask so clipping is exercised.
 fn fixture_image_layer() -> Document {
     let mut document = Document::empty();
     let comp = document.main;
@@ -101,7 +102,7 @@ fn fixture_image_layer() -> Document {
 
     node.transform.anchor = Animated::new(DVec2::new(1.0, 1.0));
     node.transform.position = Animated::new(DVec2::new(256.0, 256.0));
-    node.transform.scale = Animated::new(DVec2::splat(10_000.0));
+    node.transform.scale = Animated::new(DVec2::splat(16_000.0));
 
     let image = document.create_node(node);
     document.attach(image, Parent::Comp(comp), 0).unwrap();

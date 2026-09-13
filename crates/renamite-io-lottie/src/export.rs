@@ -77,20 +77,22 @@ impl Exporter<'_> {
                     self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
                     match &node.kind {
                         NodeKind::Layer(props) => {
-                            output.push(self.export_layer_node(
+                            let base = output.len() as u32 + 1;
+                            output.extend(self.export_layer_node(
                                 node_id,
                                 &node,
                                 props,
                                 &composition,
-                                output.len() as u32 + 1,
+                                base,
                             ));
                         }
                         NodeKind::Group => {
-                            output.push(self.export_group_layer(
+                            let base = output.len() as u32 + 1;
+                            output.extend(self.export_group_layer(
                                 node_id,
                                 &node,
                                 &composition,
-                                output.len() as u32 + 1,
+                                base,
                             ));
                         }
                         NodeKind::Precomp { comp, time_map } => {
@@ -190,7 +192,7 @@ impl Exporter<'_> {
         props: &LayerProps,
         _composition: &Composition,
         index: u32,
-    ) -> Value {
+    ) -> Vec<Value> {
         let (shapes, images, masks) = self.split_layer_children(node);
         if let Some(image_layer) = self.masked_image_layer(node, &images, &shapes, masks.clone()) {
             let mut layer = image_layer;
@@ -199,9 +201,35 @@ impl Exporter<'_> {
             layer["st"] = json!(props.in_frame.0 as f64);
             layer["bm"] = json!(blend_to_lottie(props.blend));
             layer["ind"] = json!(index);
-            layer["hd"] = json!(!node.visible);
             let _ = id;
-            return layer;
+            return vec![layer];
+        }
+        let mut out = Vec::new();
+        if !images.is_empty() {
+            self.warnings.push(LottieWarning::new(
+                node.name.clone(),
+                format!(
+                    "layer contains {} shape item(s) and {} image(s); exporting as separate Lottie layers with duplicated masks",
+                    shapes.len(),
+                    images.len()
+                ),
+            ));
+            let mut offset = 1u32;
+            for image_id in &images {
+                if let Some(mut img_layer) = self.standalone_image_layer(
+                    *image_id,
+                    masks.clone(),
+                    props.in_frame.0 as f64,
+                    props.out_frame.0 as f64,
+                    props.in_frame.0 as f64,
+                    blend_to_lottie(props.blend),
+                    node.visible,
+                ) {
+                    img_layer["ind"] = json!(index + offset);
+                    offset += 1;
+                    out.push(img_layer);
+                }
+            }
         }
         let mut layer = self.shape_layer(
             node.name.clone(),
@@ -219,7 +247,15 @@ impl Exporter<'_> {
         layer["ind"] = json!(index);
         layer["hd"] = json!(!node.visible);
         let _ = id;
-        layer
+        let shapes_empty = layer
+            .get("shapes")
+            .and_then(|s| s.as_array())
+            .is_some_and(|s| s.is_empty());
+        let no_images = out.is_empty();
+        if !shapes_empty || no_images {
+            out.insert(0, layer);
+        }
+        out
     }
 
     fn export_group_layer(
@@ -228,14 +264,42 @@ impl Exporter<'_> {
         node: &Node,
         composition: &Composition,
         index: u32,
-    ) -> Value {
+    ) -> Vec<Value> {
         let (shapes, images, masks) = self.split_layer_children(node);
-        if let Some(mut image_layer) = self.masked_image_layer(node, &images, &shapes, masks) {
+        if let Some(mut image_layer) =
+            self.masked_image_layer(node, &images, &shapes, masks.clone())
+        {
             image_layer["ind"] = json!(index);
-            image_layer["hd"] = json!(!node.visible);
             image_layer["ip"] = json!(composition.range.0.0 as f64);
             image_layer["op"] = json!(composition.range.1.0 as f64);
-            return image_layer;
+            return vec![image_layer];
+        }
+        let mut out = Vec::new();
+        if !images.is_empty() {
+            self.warnings.push(LottieWarning::new(
+                node.name.clone(),
+                format!(
+                    "group contains {} shape item(s) and {} image(s); exporting as separate Lottie layers with duplicated masks",
+                    shapes.len(),
+                    images.len()
+                ),
+            ));
+            let mut offset = 1u32;
+            for image_id in &images {
+                if let Some(mut img_layer) = self.standalone_image_layer(
+                    *image_id,
+                    masks.clone(),
+                    composition.range.0.0 as f64,
+                    composition.range.1.0 as f64,
+                    0.0,
+                    0,
+                    node.visible,
+                ) {
+                    img_layer["ind"] = json!(index + offset);
+                    offset += 1;
+                    out.push(img_layer);
+                }
+            }
         }
         let mut layer = self.shape_layer(
             node.name.clone(),
@@ -252,7 +316,15 @@ impl Exporter<'_> {
         }
         layer["ind"] = json!(index);
         layer["hd"] = json!(!node.visible);
-        layer
+        let shapes_empty = layer
+            .get("shapes")
+            .and_then(|s| s.as_array())
+            .is_some_and(|s| s.is_empty());
+        let no_images = out.is_empty();
+        if !shapes_empty || no_images {
+            out.insert(0, layer);
+        }
+        out
     }
 
     fn split_layer_children(&mut self, node: &Node) -> (Vec<Value>, Vec<NodeId>, Vec<Value>) {
@@ -308,9 +380,10 @@ impl Exporter<'_> {
         if !transform_is_identity(&host.transform, &host.opacity) {
             self.warnings.push(LottieWarning::new(
                 host.name.clone(),
-                "group/layer transform is dropped on masked image export; bake it into the image node",
+                "group/layer transform/opacity is dropped on masked image export; bake it into the image node",
             ));
         }
+        self.warn_tint_if_needed(image_id, img);
         let mut layer = json!({
             "ddd": 0,
             "ind": 0,
@@ -324,13 +397,74 @@ impl Exporter<'_> {
             "op": 0,
             "st": 0,
             "bm": 0,
-            "hd": !image_node.visible,
+            "hd": !(host.visible && image_node.visible),
             "renamiteNode": format!("{image_id:?}")
         });
         if !masks.is_empty() {
             layer["masksProperties"] = Value::Array(masks);
         }
         Some(layer)
+    }
+
+    /// One `ty: 2` layer for a single image child when the masked-image fast
+    /// path does not apply (e.g. shapes + images coexist). Shares the host
+    /// timing/blend/visibility and duplicates masks so clipping is preserved.
+    fn standalone_image_layer(
+        &mut self,
+        image_id: NodeId,
+        masks: Vec<Value>,
+        ip: f64,
+        op: f64,
+        st: f64,
+        bm: u8,
+        host_visible: bool,
+    ) -> Option<Value> {
+        let image_node = self.document.nodes.get(image_id)?.clone();
+        let NodeKind::Image(ref img) = image_node.kind else {
+            return None;
+        };
+        let reference = match self.ensure_image_asset(img.asset()) {
+            Ok(r) => r,
+            Err(e) => {
+                self.warnings.push(LottieWarning::new(
+                    format!("node/{image_id:?}"),
+                    format!("image asset could not be exported: {e}"),
+                ));
+                return None;
+            }
+        };
+        let mut layer = json!({
+            "ddd": 0,
+            "ind": 0,
+            "ty": 2,
+            "nm": image_node.name,
+            "refId": reference,
+            "sr": 1,
+            "ks": transform_json(&image_node.transform, &image_node.opacity),
+            "ao": 0,
+            "ip": ip,
+            "op": op,
+            "st": st,
+            "bm": bm,
+            "hd": !(host_visible && image_node.visible),
+            "renamiteNode": format!("{image_id:?}")
+        });
+        if !masks.is_empty() {
+            layer["masksProperties"] = Value::Array(masks);
+        }
+        self.warn_tint_if_needed(image_id, img);
+        Some(layer)
+    }
+
+    /// Lottie `ty: 2` layers carry no per-image tint: warn instead of
+    /// silently baking to white (SVG already warns on the same drop).
+    fn warn_tint_if_needed(&mut self, image_id: NodeId, img: &renamite_model::ImageNode) {
+        if img.tint().base != renamite_model::Color::WHITE || !img.tint().keyframes.is_empty() {
+            self.warnings.push(LottieWarning::new(
+                format!("node/{image_id:?}"),
+                "image tint is not representable in Lottie and was dropped",
+            ));
+        }
     }
 
     fn export_mask(&mut self, id: NodeId, node: &Node, mask: &MaskProps) -> Value {
@@ -410,6 +544,8 @@ impl Exporter<'_> {
         };
 
         let reference = self.ensure_image_asset(img.asset())?;
+
+        self.warn_tint_if_needed(id, img);
 
         Ok(json!({
             "ddd": 0,
@@ -631,9 +767,21 @@ impl Exporter<'_> {
                 }
             }
             other => {
+                let hint = match other {
+                    NodeKind::Image(_) => {
+                        " (hoist the image to a top-level Layer/Group child to export it)"
+                    }
+                    NodeKind::Mask(_) => {
+                        " (hoist the mask to a top-level Layer/Group child to export it)"
+                    }
+                    _ => "",
+                };
                 self.warnings.push(LottieWarning::new(
                     format!("node/{id:?}"),
-                    format!("nested node kind `{}` was skipped", node_kind_name(other)),
+                    format!(
+                        "nested node kind `{}` was skipped{hint}",
+                        node_kind_name(other)
+                    ),
                 ));
                 Vec::new()
             }

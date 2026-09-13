@@ -1004,14 +1004,19 @@ impl<'a> Validator<'a> {
     fn validate_export_readiness(&mut self) {
         let doc = &self.file.document;
 
-        // Nodes attached directly to a composition are Lottie layers; anything
-        // nested inside a group/layer is a shape item and only some kinds make
-        // it through that path.
         let direct: HashSet<NodeId> = doc
             .compositions
             .values()
             .flat_map(|c| c.children.iter().copied())
             .collect();
+        let mut image_exportable = direct.clone();
+        for id in &direct {
+            if let Some(node) = doc.nodes.get(*id)
+                && matches!(node.kind, NodeKind::Group | NodeKind::Layer(_))
+            {
+                image_exportable.extend(node.children.iter().copied());
+            }
+        }
 
         for (id, node) in &doc.nodes {
             match &node.kind {
@@ -1034,10 +1039,27 @@ impl<'a> Validator<'a> {
                             "image layer references missing image asset",
                         );
                     }
-                    if !direct.contains(&id) {
+                    if !image_exportable.contains(&id) {
                         self.warn(
                             format!("node/{id:?}/image"),
-                            "nested image layer is skipped by Lottie export",
+                            "deeply nested image layer is skipped by Lottie export (hoist to a top-level Layer/Group child)",
+                        );
+                    }
+                    if img.tint().base != Color::WHITE || !img.tint().keyframes.is_empty() {
+                        self.warn(
+                            format!("node/{id:?}/image"),
+                            "image tint is dropped by Lottie/SVG export",
+                        );
+                    }
+                    let crop = img.crop();
+                    if (crop.x.abs() > 1e-9
+                        || crop.y.abs() > 1e-9
+                        || (crop.z - 1.0).abs() > 1e-6
+                        || (crop.w - 1.0).abs() > 1e-6)
+                    {
+                        self.warn(
+                            format!("node/{id:?}/image"),
+                            "image crop is approximated by GPU/SVG/Lottie sinks (full texture fitted into cropped rect)",
                         );
                     }
                 }
