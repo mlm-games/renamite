@@ -476,12 +476,7 @@ fn delta_valid(ctx: &TimelineCtx, origins: &[KeyRef], applied: i64, delta: i64) 
 /// Walk from `want` toward 0 until a valid delta is found, so a drag that
 /// would collide with a stationary key "sticks" at the last valid offset
 /// (standard editor feel) instead of emitting a conflicting command.
-fn snap_valid_delta(
-    ctx: &TimelineCtx,
-    origins: &[KeyRef],
-    applied: i64,
-    want: i64,
-) -> i64 {
+fn snap_valid_delta(ctx: &TimelineCtx, origins: &[KeyRef], applied: i64, want: i64) -> i64 {
     if delta_valid(ctx, origins, applied, want) {
         return want;
     }

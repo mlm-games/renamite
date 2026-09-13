@@ -684,7 +684,12 @@ fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
 
 fn cmd_export_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
     let file = load_file(&input)?;
-    let report = renamite_io_lottie::export_with_report(&file.document)?;
+    let report = renamite_io_lottie::export_project_with_report(
+        &file.document,
+        file.clip_order.len(),
+        file.machine_order.len(),
+        file.start_machine.is_some(),
+    )?;
     if strict && !report.warnings.is_empty() {
         for warning in &report.warnings {
             eprintln!("warning at {}: {}", warning.path, warning.message);
@@ -732,7 +737,14 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
 
 fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> Result<()> {
     let file = load_file(&input)?;
-    let report = renamite_io_svg::export_with_report(&file.document, file.document.main, frame)?;
+    let report = renamite_io_svg::export_project_with_report(
+        &file.document,
+        file.document.main,
+        frame,
+        file.clip_order.len(),
+        file.machine_order.len(),
+        file.start_machine.is_some(),
+    )?;
     if strict && !report.warnings.is_empty() {
         for warning in &report.warnings {
             eprintln!("warning at {}: {}", warning.path, warning.message);
@@ -1006,15 +1018,19 @@ mod tests {
         }
     }
 
+    fn is_no_gpu_err(e: &anyhow::Error) -> bool {
+        let s = format!("{e:?}").to_lowercase();
+        s.contains("adapter") || s.contains("wgpu") || s.contains("gpu")
+    }
+
     #[test]
-    #[ignore]
     fn render_single_frame_writes_valid_png() {
         let dir = tempfile::tempdir().unwrap();
         let ren = dir.path().join("scene.ren");
         cmd_new(ren.clone(), "ellipse".into()).unwrap();
 
         let png = dir.path().join("out.png");
-        cmd_render(
+        let res = cmd_render(
             ren,
             Some(0),
             None,
@@ -1025,8 +1041,14 @@ mod tests {
             None,
             "frame".into(),
             "white".into(),
-        )
-        .unwrap();
+        );
+        if let Err(e) = res {
+            if is_no_gpu_err(&e) {
+                eprintln!("SKIP render_single_frame: no GPU adapter ({e:#})");
+                return;
+            }
+            panic!("render failed: {e:?}");
+        }
 
         let bytes = std::fs::read(&png).unwrap();
         assert_eq!(
@@ -1036,14 +1058,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn render_sequence_writes_numbered_files() {
         let dir = tempfile::tempdir().unwrap();
         let ren = dir.path().join("scene.ren");
         cmd_new(ren.clone(), "ellipse".into()).unwrap();
 
         let out_dir = dir.path().join("frames");
-        cmd_render(
+        let res = cmd_render(
             ren,
             None,
             Some(3),
@@ -1054,8 +1075,14 @@ mod tests {
             Some(out_dir.clone()),
             "f".into(),
             "transparent".into(),
-        )
-        .unwrap();
+        );
+        if let Err(e) = res {
+            if is_no_gpu_err(&e) {
+                eprintln!("SKIP render_sequence: no GPU adapter ({e:#})");
+                return;
+            }
+            panic!("render failed: {e:?}");
+        }
 
         for i in 0..3 {
             assert!(out_dir.join(format!("f_{i:05}.png")).exists());

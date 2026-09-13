@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use renamite_animation::{Animated, AnimatedTransform};
 use renamite_model::{
-    BlendMode, CompId, Composition, Document, FillRule, GradientKind, ImageNode, LayerProps,
-    MaskProps, ModifierKind, Node, NodeId, NodeKind, Overrides, ShapeKind, StarKind, StrokeCap,
-    StrokeJoin, StyleKind, StylePaint, TimeMap, TrimMode,
+    BlendMode, CompId, Composition, Document, FillRule, GradientKind, LayerProps, MaskProps,
+    ModifierKind, Node, NodeId, NodeKind, Overrides, ShapeKind, StarKind, StrokeCap, StrokeJoin,
+    StyleKind, StylePaint, TimeMap, TrimMode,
 };
 use serde_json::{Value, json};
 
@@ -1033,7 +1033,7 @@ fn push_curve(
 mod tests {
     use super::*;
     use kurbo::BezPath;
-    use renamite_model::Parent;
+    use renamite_model::{ImageNode, Parent};
 
     fn pts<'a>(v: &'a Value, key: &str) -> &'a Vec<Value> {
         v.get(key).unwrap().as_array().unwrap()

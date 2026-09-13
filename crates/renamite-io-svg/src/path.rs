@@ -84,7 +84,7 @@ pub fn affine_to_animated_transform(affine: Affine) -> Option<AnimatedTransform>
     }
     let theta = b.atan2(a);
     let (sin_t, cos_t) = theta.sin_cos();
-    let mut sy = cos_t * d - sin_t * c;
+    let sy = cos_t * d - sin_t * c;
     if sy.abs() < 1e-9 {
         return None;
     }

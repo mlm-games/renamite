@@ -16,8 +16,64 @@ pub fn scene_to_json(scene: &Scene) -> serde_json::Value {
 }
 
 /// Assert two documents are semantically equal (structural JSON diff).
-pub fn assert_doc_eq(_a: &Document, _b: &Document) {
-    // TODO: panic with a JSON diff on mismatch.
+pub fn assert_doc_eq(a: &Document, b: &Document) {
+    let ja = serde_json::to_value(a).expect("doc a serializes");
+    let jb = serde_json::to_value(b).expect("doc b serializes");
+    if ja == jb {
+        return;
+    }
+    let mut diffs = Vec::new();
+    json_diff(&ja, &jb, "$", &mut diffs);
+    let mut msg = format!("documents differ ({} hunks):", diffs.len());
+    for d in diffs.iter().take(20) {
+        msg.push_str("\n  ");
+        msg.push_str(d);
+    }
+    if diffs.len() > 20 {
+        msg.push_str(&format!("\n  ... and {} more", diffs.len() - 20));
+    }
+    panic!("{msg}");
+}
+
+fn json_diff(a: &serde_json::Value, b: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+    use serde_json::Value as V;
+    match (a, b) {
+        (V::Object(ma), V::Object(mb)) => {
+            for k in ma.keys().chain(mb.keys()) {
+                let p = format!("{path}.{k}");
+                match (ma.get(k), mb.get(k)) {
+                    (Some(x), Some(y)) => json_diff(x, y, &p, out),
+                    (Some(x), None) => out.push(format!("{p}: left={x} right=<missing>")),
+                    (None, Some(y)) => out.push(format!("{p}: left=<missing> right={y}")),
+                    (None, None) => {}
+                }
+            }
+        }
+        (V::Array(va), V::Array(vb)) => {
+            if va.len() != vb.len() {
+                out.push(format!("{path}: array len {} != {}", va.len(), vb.len()));
+            }
+            for (i, (x, y)) in va.iter().zip(vb.iter()).enumerate() {
+                json_diff(x, y, &format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {
+            if a != b {
+                let sa = json_abbr(a);
+                let sb = json_abbr(b);
+                out.push(format!("{path}: {sa} != {sb}"));
+            }
+        }
+    }
+}
+
+fn json_abbr(v: &serde_json::Value) -> String {
+    let s = v.to_string();
+    if s.len() > 160 {
+        format!("{}…", &s[..160])
+    } else {
+        s
+    }
 }
 
 #[macro_export]

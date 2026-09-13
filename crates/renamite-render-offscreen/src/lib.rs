@@ -397,7 +397,6 @@ mod tests {
     use renamite_render_bridge::SceneRenderer;
 
     #[test]
-    #[ignore]
     fn offscreen_png_export() -> anyhow::Result<()> {
         let mut bridge = SceneRenderer::new();
         let model = ModelScene {
@@ -426,7 +425,17 @@ mod tests {
         let mut repose = Scene::default();
         bridge.append_repose_scene(&prepared, &mut repose);
 
-        let mut gpu = pollster::block_on(OffscreenRenderer::new(64, 64, 4))?;
+        let mut gpu = match pollster::block_on(OffscreenRenderer::new(64, 64, 4)) {
+            Ok(g) => g,
+            Err(e) => {
+                let s = format!("{e:?}").to_lowercase();
+                if s.contains("adapter") || s.contains("wgpu") || s.contains("gpu") {
+                    eprintln!("SKIP offscreen_png_export: no GPU adapter ({e:#})");
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        };
         let rgba = gpu.render_rgba(&repose, Some([1.0, 1.0, 1.0, 1.0]))?;
         assert_eq!(rgba.len(), 64 * 64 * 4);
 

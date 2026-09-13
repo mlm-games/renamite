@@ -140,8 +140,8 @@ impl Engine {
     }
 
     fn apply_host_overrides(&mut self) {
-        for ((id, prop), value) in self.host_ov.values.iter() {
-            self.ov.set(*id, prop.clone(), value.clone());
+        for (id, prop, value) in self.host_ov.iter() {
+            self.ov.set_str(id, prop, value.clone());
         }
     }
 

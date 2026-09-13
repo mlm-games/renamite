@@ -2,7 +2,7 @@ mod common;
 
 use renamite_animation::{Animated, Frame};
 use renamite_geometry::KurboShape;
-use renamite_io_svg::{export_frame, export_with_report, import};
+use renamite_io_svg::{export_frame, export_project_with_report, export_with_report, import};
 use renamite_model::{
     Color, Document, FillRule, Node, NodeId, NodeKind, Parent, StyleKind, StylePaint,
 };
@@ -211,4 +211,14 @@ fn export_with_report_returns_warnings() {
     let doc = import(svg.as_bytes()).unwrap();
     let report = export_with_report(&doc, doc.main, 0.0).unwrap();
     assert!(report.value.contains("<svg"));
+}
+
+#[test]
+fn project_export_warns_on_clips_and_machines() {
+    let doc = Document::empty();
+    let clean = export_project_with_report(&doc, doc.main, 0.0, 0, 0, false).unwrap();
+    assert!(clean.warnings.is_empty());
+    let lossy = export_project_with_report(&doc, doc.main, 0.0, 1, 1, true).unwrap();
+    assert!(lossy.warnings.iter().any(|w| w.path == "clips"));
+    assert!(lossy.warnings.iter().any(|w| w.path == "machines"));
 }

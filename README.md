@@ -5,7 +5,9 @@ A motion / vector animation editor built on repose, with tessellation via lyon, 
 The editor supports creating vector primitives, importing image/font assets, editing
 layer and property values (with undo), renaming and reordering layers, scrubbing and
 basic animation, and exporting frames as PNG/SVG and animation as Lottie. The timeline
-is still early (opacity rows only), and there are other rough edges that (might) have to
+shows a row per animated property (plus selection fallback), with keyframe add/drag,
+easing cycle, box-select, and curve clamping; clip/machine lanes are previewed via
+the player. There are other rough edges that (might) have to
 be handled in repose for completion. kurbo is the path math type. The document/animation
 models are independent and can be embedded in other apps (ex: games).
 

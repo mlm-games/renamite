@@ -14,6 +14,9 @@
 //!
 //! Unsupported Lottie objects are skipped in best-effort mode and returned as
 //! warnings by [`import_with_report`] / [`export_with_report`].
+//! Project-level state with no Lottie representation (named clips, state
+//! machines) is reported by [`export_project_with_report`] and fails under
+//! the CLI `--strict` flag.
 
 mod export;
 mod import;
@@ -77,6 +80,34 @@ pub fn import(json: &Value) -> Result<Document, LottieError> {
 /// Export a Renamite document to Lottie JSON, discarding non-fatal warnings.
 pub fn export(doc: &Document) -> Result<Value, LottieError> {
     Ok(export_with_report(doc)?.value)
+}
+
+/// Project-aware export: like [`export_with_report`], plus lossy-export
+/// warnings for project-level state Lottie cannot represent (named clips,
+/// state machines, auto-start). Timeline keyframes on the main composition
+/// are exported; only the machine/clip layer is dropped.
+pub fn export_project_with_report(
+    doc: &Document,
+    clip_count: usize,
+    machine_count: usize,
+    has_start_machine: bool,
+) -> Result<LottieReport<Value>, LottieError> {
+    let mut report = export_with_report(doc)?;
+    if clip_count > 0 {
+        report.warnings.push(LottieWarning::new(
+            "clips",
+            format!(
+                "{clip_count} named clip(s) are not representable in Lottie and were dropped (main timeline only)"
+            ),
+        ));
+    }
+    if machine_count > 0 || has_start_machine {
+        report.warnings.push(LottieWarning::new(
+            "machines",
+            "state machines are not representable in Lottie and were dropped (bake frames or drive via host instead)",
+        ));
+    }
+    Ok(report)
 }
 
 /// Export as compact JSON text.
@@ -836,6 +867,31 @@ mod tests {
                 )
             }),
             "inverted mask must import as Mask with inverted=true"
+        );
+    }
+
+    #[test]
+    fn project_export_warns_on_clips_and_machines() {
+        let doc = Document::empty();
+        let clean = export_project_with_report(&doc, 0, 0, false).unwrap();
+        assert!(
+            clean
+                .warnings
+                .iter()
+                .all(|w| w.path != "clips" && w.path != "machines"),
+            "empty project must not warn: {:?}",
+            clean.warnings
+        );
+        let lossy = export_project_with_report(&doc, 2, 1, true).unwrap();
+        assert!(
+            lossy.warnings.iter().any(|w| w.path == "clips"),
+            "clips must warn: {:?}",
+            lossy.warnings
+        );
+        assert!(
+            lossy.warnings.iter().any(|w| w.path == "machines"),
+            "machines must warn: {:?}",
+            lossy.warnings
         );
     }
 }

@@ -72,3 +72,35 @@ pub fn export_with_report(
 ) -> Result<SvgReport<String>, SvgError> {
     export::export_with_report(document, composition, frame)
 }
+
+/// Project-aware snapshot export: like [`export_with_report`], plus warnings
+/// for project-level state a static SVG frame cannot represent (named clips,
+/// state machines, auto-start). Timeline animation is intentionally baked at
+/// `frame`; only the machine/clip layer is reported as dropped.
+pub fn export_project_with_report(
+    document: &Document,
+    composition: CompId,
+    frame: f64,
+    clip_count: usize,
+    machine_count: usize,
+    has_start_machine: bool,
+) -> Result<SvgReport<String>, SvgError> {
+    let mut report = export::export_with_report(document, composition, frame)?;
+    if clip_count > 0 {
+        report.warnings.push(SvgWarning {
+            path: "clips".into(),
+            message: format!(
+                "{clip_count} named clip(s) are not representable in a static SVG snapshot and were dropped"
+            ),
+        });
+    }
+    if machine_count > 0 || has_start_machine {
+        report.warnings.push(SvgWarning {
+            path: "machines".into(),
+            message:
+                "state machines are not representable in a static SVG snapshot and were dropped"
+                    .into(),
+        });
+    }
+    Ok(report)
+}

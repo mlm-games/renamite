@@ -10,8 +10,8 @@ use image::GenericImageView;
 use kurbo::Affine;
 use renamite_animation::{Animated, Frame};
 use renamite_model::{
-    Asset, BlendMode, Color, Document, ImageAsset, ImageNode, LayerProps, MaskProps, Node,
-    NodeKind, Parent, ShapeKind,
+    Asset, BlendMode, Document, ImageAsset, ImageNode, LayerProps, MaskProps, Node, NodeKind,
+    Parent, ShapeKind,
 };
 use usvg::ImageKind;
 use usvg::Node as SvgNode;

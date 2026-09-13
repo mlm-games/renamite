@@ -1242,19 +1242,36 @@ pub struct ClipPath {
 
 /// Per-frame property patch. Produced by clip/state-machine playback,
 /// consumed by `evaluate_with`. Never touches the document.
+///
+/// Internally `values` is keyed `NodeId -> prop-name -> value` so
+/// [`Overrides::get`] borrows `&str` with no per-lookup allocation.
+/// `PropPath` stays the canonical `String` newtype on disk for a stable
+/// `.ren` format; only the hot lookup path avoids allocating.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overrides {
-    pub values: std::collections::HashMap<(NodeId, PropPath), Value>,
+    values: std::collections::HashMap<NodeId, std::collections::HashMap<Box<str>, Value>>,
 }
 
 impl Overrides {
     pub fn set(&mut self, id: NodeId, prop: PropPath, v: Value) {
-        self.values.insert((id, canonical_prop(prop)), v);
+        let key: Box<str> = canonical_prop(prop).0.into_boxed_str();
+        self.values.entry(id).or_default().insert(key, v);
     }
-    /// TODO(perf): intern PropPath (u16 ids) to kill this per-lookup alloc.
+    /// Borrowed insert used when the caller already has `&str`
+    /// (e.g. replaying host overrides without rebuilding a `PropPath`).
+    pub fn set_str(&mut self, id: NodeId, prop: &str, v: Value) {
+        let key: Box<str> = Box::from(canonical_prop_str(prop));
+        self.values.entry(id).or_default().insert(key, v);
+    }
+    /// Allocation-free lookup: `Box<str>` borrows as `str`.
     pub fn get(&self, id: NodeId, prop: &str) -> Option<&Value> {
+        self.values.get(&id)?.get(canonical_prop_str(prop))
+    }
+    /// Iterate `(node, prop-name, value)` without allocating `PropPath`s.
+    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &str, &Value)> {
         self.values
-            .get(&(id, PropPath::new(canonical_prop_str(prop))))
+            .iter()
+            .flat_map(|(id, inner)| inner.iter().map(move |(prop, v)| (*id, prop.as_ref(), v)))
     }
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
