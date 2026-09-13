@@ -183,11 +183,18 @@ pub mod dialogs {
         {
             let opts = save_options(title, &suggested_name, extensions);
             wasm_bindgen_futures::spawn_local(async move {
-                let ok = rlobkit_dialogs::RlobKit::save_bytes(opts, &data)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some();
+                let result = rlobkit_dialogs::RlobKit::save_bytes(opts, &data).await;
+                let ok = match result {
+                    Ok(Some(_)) => true,
+                    Ok(None) => {
+                        log::warn!("save_bytes returned None (picker dismissed?)");
+                        false
+                    }
+                    Err(e) => {
+                        log::error!("save_bytes failed: {e:?}");
+                        false
+                    }
+                };
                 on_done(SaveOutcome { ok, path: None });
             });
         }
