@@ -115,6 +115,9 @@ pub struct Session {
     pub machine_graph_gesture: Option<MachineGraphGesture>,
     pub listener_draft: ListenerDraft,
     pub timeline_zoom: f64,
+    /// Horizontal scroll offset (px) for the timeline key area.
+    /// `origin_x = -timeline_offset_x`; zoom keeps the left edge stable.
+    pub timeline_offset_x: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -204,7 +207,8 @@ pub enum PendingFileOp {
 pub struct InspectorDrag {
     pub path: PropPath,
     pub channel: usize,
-    pub origin_value: Value,
+    pub ids: Vec<renamite_model::NodeId>,
+    pub origins: Vec<Value>,
     pub press_x: f32,
     pub txn: bool,
 }
@@ -215,6 +219,12 @@ pub struct LayerDragState {
     pub hover_row: usize,
     pub before: bool,
     pub as_child: bool,
+    /// Window Y (px) at press, for index math that survives scrolling.
+    pub press_window_y: f32,
+    /// Index of the dragged row at press.
+    pub press_index: usize,
+    /// Y within the pressed row at press (px, row-local).
+    pub grab_offset_y: f32,
 }
 
 #[derive(Clone)]
@@ -329,6 +339,7 @@ impl Session {
             machine_graph_gesture: None,
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
+            timeline_offset_x: 0.0,
         }
     }
 
@@ -2134,7 +2145,23 @@ impl Session {
     pub fn zoom_timeline(&mut self, factor: f64) {
         let old = self.timeline_zoom.max(0.5);
         self.timeline_zoom = (old * factor).clamp(0.5, 48.0);
+        self.clamp_timeline_offset();
         self.repaint();
+    }
+
+    pub fn pan_timeline(&mut self, delta_px: f64) {
+        self.timeline_offset_x += delta_px;
+        self.clamp_timeline_offset();
+        self.repaint();
+    }
+
+    fn clamp_timeline_offset(&mut self) {
+        let range = self.file.document.compositions[self.file.document.main].range;
+        let frames = (range.1.0 - range.0.0).max(1) as f64;
+        let content_w = frames * self.timeline_zoom.max(0.5);
+        self.timeline_offset_x = self
+            .timeline_offset_x
+            .clamp(0.0, (content_w + 48.0).max(0.0));
     }
 
     pub fn set_composition_range(&mut self, start: Option<Frame>, end: Option<Frame>) {
@@ -3077,6 +3104,7 @@ impl Session {
 
     pub fn engine_pointer_move(&mut self, world: DVec2) {
         self.engine.pointer_move(&self.file, world);
+        let _ = self.engine.tick(&self.file, 0.0);
         self.sync_preview_inputs_from_engine();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
@@ -3286,7 +3314,14 @@ pub struct ViewportState {
     pub pan_last: Option<DVec2>,
     pub space_held: bool,
     pub pointer_down: bool,
+    /// Latched at pointer-down while Interact/machine-preview is on:
+    /// `Some(true)` = route to engine, `Some(false)` = route to canvas tools.
+    /// Prevents mid-drag Alt toggling from tearing the gesture.
+    pub pointer_route: Option<bool>,
     pub last_pointer: DVec2,
+    /// Whether `last_pointer` has been set by a real pointer event yet.
+    /// Guards wheel-zoom anchoring before the first pointer move.
+    pub has_pointer: bool,
     pub screen_rect: Option<Rect>,
 
     pub show_grid: bool,
@@ -3317,7 +3352,9 @@ impl Default for ViewportState {
             pan_last: None,
             space_held: false,
             pointer_down: false,
+            pointer_route: None,
             last_pointer: DVec2::ZERO,
+            has_pointer: false,
             screen_rect: None,
             show_grid: false,
             snapping_enabled: true,
@@ -3331,14 +3368,17 @@ impl Default for ViewportState {
 impl ViewportState {
     pub fn ensure_fit(&mut self, surface: DVec2, artboard: DVec2) {
         let resized = (surface - self.surface_size).abs().max_element() > 0.5;
+        let first_layout = self.surface_size == DVec2::ZERO && surface != DVec2::ZERO;
         self.surface_size = surface;
 
         if self.pan_last.is_some() {
             return;
         }
 
-        if self.fit_pending || resized {
+        if self.fit_pending || first_layout {
             self.fit(artboard);
+        } else if resized {
+            self.fit_pending = false;
         }
     }
 
@@ -3404,13 +3444,25 @@ pub fn timeline_ctx<'a>(
     playhead: f64,
     px_per_frame: f64,
 ) -> TimelineCtx<'a> {
+    timeline_ctx_with_offset(doc, clips, rows, range, playhead, px_per_frame, 0.0)
+}
+
+pub fn timeline_ctx_with_offset<'a>(
+    doc: &'a renamite_model::Document,
+    clips: &'a renamite_machine::ClipMap,
+    rows: &'a [TimelineRow],
+    range: (Frame, Frame),
+    playhead: f64,
+    px_per_frame: f64,
+    offset_x: f64,
+) -> TimelineCtx<'a> {
     TimelineCtx {
         doc,
         clips,
         target: TimelineTarget::Doc,
         rows,
         layout: TimelineLayout {
-            origin_x: 0.0,
+            origin_x: -offset_x.max(0.0),
             px_per_frame: px_per_frame.clamp(0.5, 48.0),
             row_top: 24.0,
             row_height: 22.0,
@@ -3429,7 +3481,16 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     let (head, comp) = (s.playback.head, s.file.document.main);
     let range = s.file.document.compositions[comp].range;
     let zoom = s.timeline_zoom;
-    let ctx = timeline_ctx(&s.file.document, &s.file.clips, &rows, range, head, zoom);
+    let offset_x = s.timeline_offset_x;
+    let ctx = timeline_ctx_with_offset(
+        &s.file.document,
+        &s.file.clips,
+        &rows,
+        range,
+        head,
+        zoom,
+        offset_x,
+    );
 
     s.keys.retain_valid(&ctx);
 
@@ -3438,7 +3499,13 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
         | TimelineEvent::Move { pos, .. }
         | TimelineEvent::Release { pos, .. }
         | TimelineEvent::DoubleClick { pos, .. } => {
-            pos.y < ctx.layout.row_top || s.scrub.is_dragging()
+            if s.scrub.is_dragging() {
+                true
+            } else if s.keys.is_active() {
+                false
+            } else {
+                pos.y < ctx.layout.row_top
+            }
         }
         _ => false,
     };
@@ -3467,7 +3534,6 @@ fn append_timeline_rows_for_node(
     out: &mut Vec<TimelineRow>,
 ) {
     let doc = &s.file.document;
-    let mut added_any = false;
 
     for row in renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0)) {
         if doc.property_is_animated(id, &row.desc.path) {
@@ -3475,15 +3541,7 @@ fn append_timeline_rows_for_node(
                 node: id,
                 prop: row.desc.path,
             });
-            added_any = true;
         }
-    }
-
-    if !added_any && s.selection.nodes.contains(&id) {
-        out.push(TimelineRow {
-            node: id,
-            prop: timeline_row_prop(doc, id),
-        });
     }
 
     if s.expanded_layers.contains(&id)
@@ -3493,14 +3551,6 @@ fn append_timeline_rows_for_node(
             append_timeline_rows_for_node(s, child, out);
         }
     }
-}
-
-fn timeline_row_prop(doc: &renamite_model::Document, id: renamite_model::NodeId) -> PropPath {
-    renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0))
-        .into_iter()
-        .find(|row| row.desc.section == "Transform")
-        .map(|row| row.desc.path)
-        .unwrap_or_else(|| PropPath::new("opacity"))
 }
 
 fn pm_from(file: &mut RenFile) -> ProjectMut<'_> {
@@ -3588,6 +3638,7 @@ pub fn undo_cmd(s: &mut Session) {
             .nodes
             .retain(|&id| node_is_attached(&s.file.document, id));
         validate_machine_selection(s);
+        retain_valid_keys(s);
     }
     sync_playback_range(s);
 }
@@ -3602,8 +3653,38 @@ pub fn redo_cmd(s: &mut Session) {
             .nodes
             .retain(|&id| node_is_attached(&s.file.document, id));
         validate_machine_selection(s);
+        retain_valid_keys(s);
     }
     sync_playback_range(s);
+}
+
+/// Drop key selections whose keyframes no longer exist (undo/redo can delete
+/// keys or whole nodes). The behavior documents this as the host's job.
+fn retain_valid_keys(s: &mut Session) {
+    let rows = timeline_rows(s);
+    let comp = s.file.document.main;
+    let range = s.file.document.compositions[comp].range;
+    let ctx = timeline_ctx_with_offset(
+        &s.file.document,
+        &s.file.clips,
+        &rows,
+        range,
+        s.playback.head,
+        s.timeline_zoom,
+        s.timeline_offset_x,
+    );
+    s.keys.retain_valid(&ctx);
+}
+
+/// Abort any in-progress timeline gesture, committing nothing. Used for
+/// pointer-cancel/leave so scrub/key-drag state can never stick.
+pub fn cancel_timeline(s: &mut Session) {
+    let key_outs = s.keys.cancel();
+    s.scrub.cancel();
+    if !key_outs.is_empty() {
+        s.apply_outputs(key_outs);
+    }
+    s.repaint();
 }
 
 /// Attached = node exists and is reachable: has a parent node, or is a
@@ -3686,7 +3767,7 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             scene: engine.scene(),
             comp: file.document.main,
             selection,
-            playhead: Frame(playback.head as i64),
+            playhead: Frame(playback.head.round() as i64),
             record: *record,
             view: viewport.view,
             snap: SnapConfig {

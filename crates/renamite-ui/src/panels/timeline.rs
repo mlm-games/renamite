@@ -4,7 +4,7 @@ use renamite_behavior_timeline::{
 };
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::{Key, KeyEvent, PointerEvent};
+use repose_core::input::{Key, KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
     AlignItems, Color, Dp, JustifyContent, Modifier, Px, TextFieldLineLimits, Vec2, View,
     remember_with_key, theme,
@@ -345,8 +345,9 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
 
 fn TimelineCanvas(session: SessionRef) -> View {
     let sess_draw = session.clone();
-    // Simple double-click detector (repose has no on_double_click on Modifier yet).
-    let last_click = Rc::new(RefCell::new(None::<(DVec2, web_time::Instant)>));
+    let last_click: Rc<RefCell<Option<(DVec2, web_time::Instant)>>> = Rc::new(RefCell::new(None));
+    let press_moved: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let down_pos: Rc<RefCell<DVec2>> = Rc::new(RefCell::new(DVec2::ZERO));
 
     Canvas(
         Modifier::new()
@@ -355,29 +356,52 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 move |delta: repose_core::Vec2| {
                     let mut s = session.borrow_mut();
-                    let factor = (1.0 + (delta.y as f64) * 0.002).clamp(0.5, 2.0);
-                    s.zoom_timeline(factor);
+                    if delta.y.abs() < delta.x.abs() {
+                        s.pan_timeline(delta.x as f64);
+                    } else if delta.x.abs() > 0.5 && delta.y.abs() > 0.5 {
+                        s.pan_timeline(delta.x as f64);
+                    } else {
+                        let factor = (1.0 + (delta.y as f64) * 0.002).clamp(0.5, 2.0);
+                        s.zoom_timeline(factor);
+                    }
                     repose_core::Vec2::ZERO
                 }
             })
             .on_pointer_down({
                 let session = session.clone();
                 let last_click = last_click.clone();
+                let press_moved = press_moved.clone();
+                let down_pos = down_pos.clone();
                 move |pe: PointerEvent| {
+                    if !matches!(pe.event, PointerEventKind::Down(_)) {
+                        return;
+                    }
+                    if let PointerEventKind::Down(b) = pe.event {
+                        use repose_core::input::PointerButton as RB;
+                        if !matches!(b, RB::Primary) {
+                            return;
+                        }
+                    }
                     let pos = pe_pos(&pe);
                     let mods = map_modifiers(&pe);
                     let now = web_time::Instant::now();
-                    let is_double = {
-                        let mut lc = last_click.borrow_mut();
-                        let dbl = lc
-                            .map(|(p, t)| (now - t).as_millis() < 350 && (p - pos).length() < 6.0)
-                            .unwrap_or(false);
-                        *lc = Some((pos, now));
-                        dbl
+                    *down_pos.borrow_mut() = pos;
+                    *press_moved.borrow_mut() = false;
+                    let gesture_active = {
+                        let s = session.borrow();
+                        s.scrub.is_dragging() || s.keys.is_active()
+                    };
+                    let is_double = if gesture_active {
+                        false
+                    } else {
+                        let lc = last_click.borrow();
+                        lc.map(|(p, t)| (now - t).as_millis() < 350 && (p - pos).length() < 6.0)
+                            .unwrap_or(false)
                     };
 
                     let mut s = session.borrow_mut();
                     if is_double {
+                        *last_click.borrow_mut() = None;
                         dispatch_timeline(
                             &mut s,
                             TimelineEvent::DoubleClick {
@@ -398,12 +422,18 @@ fn TimelineCanvas(session: SessionRef) -> View {
             })
             .on_pointer_move({
                 let session = session.clone();
+                let press_moved = press_moved.clone();
+                let down_pos = down_pos.clone();
                 move |pe: PointerEvent| {
+                    let pos = pe_pos(&pe);
+                    if (*down_pos.borrow() - pos).length() >= 3.0 {
+                        *press_moved.borrow_mut() = true;
+                    }
                     let mut s = session.borrow_mut();
                     dispatch_timeline(
                         &mut s,
                         TimelineEvent::Move {
-                            pos: pe_pos(&pe),
+                            pos,
                             modifiers: map_modifiers(&pe),
                         },
                     );
@@ -411,7 +441,21 @@ fn TimelineCanvas(session: SessionRef) -> View {
             })
             .on_pointer_up({
                 let session = session.clone();
+                let last_click = last_click.clone();
+                let press_moved = press_moved.clone();
                 move |pe: PointerEvent| {
+                    if let PointerEventKind::Up(b) = pe.event {
+                        use repose_core::input::PointerButton as RB;
+                        if !matches!(b, RB::Primary) {
+                            return;
+                        }
+                    }
+                    if !*press_moved.borrow() {
+                        *last_click.borrow_mut() = Some((pe_pos(&pe), web_time::Instant::now()));
+                    } else {
+                        *last_click.borrow_mut() = None;
+                    }
+                    *press_moved.borrow_mut() = false;
                     let mut s = session.borrow_mut();
                     dispatch_timeline(
                         &mut s,
@@ -421,13 +465,34 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         },
                     );
                 }
+            })
+            .on_pointer_cancel({
+                let session = session.clone();
+                let last_click = last_click.clone();
+                let press_moved = press_moved.clone();
+                move |pe: PointerEvent| {
+                    pe.consume();
+                    *last_click.borrow_mut() = None;
+                    *press_moved.borrow_mut() = false;
+                    let mut s = session.borrow_mut();
+                    crate::session::cancel_timeline(&mut s);
+                }
+            })
+            .on_pointer_leave({
+                let session = session.clone();
+                move |_pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    if s.scrub.is_dragging() || s.keys.is_active() {
+                        crate::session::cancel_timeline(&mut s);
+                    }
+                }
             }),
         move |scope| {
             let s = sess_draw.borrow();
             let th = theme();
             let rows = crate::session::timeline_rows(&s);
             let layout = TimelineLayout {
-                origin_x: 0.0,
+                origin_x: -s.timeline_offset_x.max(0.0),
                 px_per_frame: s.timeline_zoom,
                 row_top: 24.0,
                 row_height: 22.0,
@@ -469,10 +534,24 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 );
             }
 
-            // Ruler ticks + frame labels on majors.
-            for frame in range.0.0..=range.1.0 {
+            let tick_step = if layout.px_per_frame >= 8.0 {
+                1
+            } else if layout.px_per_frame >= 3.0 {
+                5
+            } else if layout.px_per_frame >= 1.0 {
+                10
+            } else {
+                30
+            };
+            let label_step = (10 / tick_step.max(1)).max(1) * tick_step;
+            let vis0 = (layout.x_to_frame(0.0).floor() as i64).clamp(range.0.0, range.1.0);
+            let vis1 = (layout.x_to_frame(scope.size.width as f64).ceil() as i64)
+                .clamp(range.0.0, range.1.0);
+            let step = tick_step.max(1) as i64;
+            let mut frame = range.0.0.max(vis0 - (vis0 - range.0.0).rem_euclid(step));
+            while frame <= range.1.0.min(vis1) {
                 let x = layout.frame_to_x(frame as f64) as f32;
-                let major = frame % 10 == 0;
+                let major = frame % (label_step as i64) == 0;
                 let tick_h = if major { layout.row_top as f32 } else { 8.0 };
                 scope.draw_rect(
                     Rect {
@@ -496,9 +575,9 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         Px(10.0),
                     );
                 }
+                frame += step;
             }
 
-            // Keyframe diamonds.
             for (row_i, row) in rows.iter().enumerate() {
                 let cy = layout.row_center_y(row_i) as f32;
                 let frames = s.file.document.key_frames(row.node, &row.prop);

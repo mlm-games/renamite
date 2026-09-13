@@ -202,6 +202,22 @@ impl TimelineKeyframeBehavior {
         }
     }
 
+    /// True while a drag/box-select gesture is in progress (host uses this to
+    /// tell a double-click apart from a drag re-press, and to route cancel).
+    pub fn is_active(&self) -> bool {
+        !matches!(self.state, KeyState::Idle)
+    }
+
+    /// Abort any in-progress gesture. Emits `CancelTransaction` when a key
+    /// drag already opened a transaction, so pointer-cancel never leaks it
+    /// into the next `begin()` (which would auto-commit a partial drag).
+    pub fn cancel(&mut self) -> OutputVec {
+        match std::mem::replace(&mut self.state, KeyState::Idle) {
+            KeyState::Dragging { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            _ => smallvec![],
+        }
+    }
+
     pub fn handle(&mut self, ctx: &TimelineCtx, ev: TimelineEvent) -> OutputVec {
         match ev {
             TimelineEvent::Press { pos, modifiers } => self.on_press(ctx, pos, modifiers),
@@ -213,6 +229,12 @@ impl TimelineKeyframeBehavior {
     }
 
     fn on_press(&mut self, ctx: &TimelineCtx, pos: DVec2, m: Modifiers) -> OutputVec {
+        if let Some(row_i) = ctx.layout.y_to_row(pos.y)
+            && row_i >= ctx.rows.len()
+            && pos.y >= ctx.layout.row_top
+        {
+            return smallvec![];
+        }
         match hit_key(ctx, pos) {
             Some(key) => {
                 if m.alt {
@@ -629,6 +651,13 @@ pub struct TimelineScrubBehavior {
 impl TimelineScrubBehavior {
     pub fn is_dragging(&self) -> bool {
         self.dragging
+    }
+
+    /// Abort a scrub gesture (no transaction is ever opened by scrubbing, so
+    /// this just resets the flag and prevents a stuck scrub state).
+    pub fn cancel(&mut self) -> OutputVec {
+        self.dragging = false;
+        smallvec![]
     }
 
     pub fn handle(&mut self, ctx: &TimelineCtx, ev: TimelineEvent) -> OutputVec {

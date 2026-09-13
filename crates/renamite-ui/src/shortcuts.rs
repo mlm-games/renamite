@@ -16,6 +16,14 @@ use crate::session::{
 
 /// Handle one viewport key event. Returns true when the event was consumed.
 pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
+    let renaming = session.borrow().renaming.is_some();
+    if renaming && event.event_type == KeyEventType::Down {
+        if matches!(event.key, Key::Escape) {
+            session.borrow_mut().cancel_rename();
+            return true;
+        }
+        return false;
+    }
     // Space tracks the temporary-pan gesture on both edges.
     if matches!(event.key, Key::Space) {
         let mut s = session.borrow_mut();

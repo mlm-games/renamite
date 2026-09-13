@@ -215,9 +215,33 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                         s.commit_rename();
                     }
                     s.renaming = None;
-                    if pe.modifiers.shift || pe.modifiers.ctrl {
+                    if pe.modifiers.ctrl {
                         s.apply_outputs(smallvec![ToolOutput::RequestSelection(
                             toggle_in_selection(row.id)
+                        )]);
+                    } else if pe.modifiers.shift {
+                        let rows = flatten_layers(
+                            &s.file.document,
+                            s.file.document.main,
+                            &s.expanded_layers,
+                        );
+                        let anchor = s
+                            .selection
+                            .nodes
+                            .last()
+                            .and_then(|a| rows.iter().position(|r| &r.id == a))
+                            .unwrap_or(index);
+                        let (lo, hi) = if anchor <= index {
+                            (anchor, index)
+                        } else {
+                            (index, anchor)
+                        };
+                        let ids = rows[lo..=hi.min(rows.len().saturating_sub(1))]
+                            .iter()
+                            .map(|r| r.id)
+                            .collect::<Vec<_>>();
+                        s.apply_outputs(smallvec![ToolOutput::RequestSelection(
+                            renamite_history::SelectionChange::Set(ids)
                         )]);
                     } else {
                         s.apply_outputs(smallvec![ToolOutput::RequestSelection(select_only(
@@ -229,6 +253,9 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                         hover_row: index,
                         before: true,
                         as_child: false,
+                        press_window_y: pe.position_in_window().y,
+                        press_index: index,
+                        grab_offset_y: pe.position.y.clamp(0.0, ROW_HEIGHT),
                     });
                     s.revision = s.revision.wrapping_add(1);
                     request_frame();
@@ -257,20 +284,27 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             let session = session.clone();
             move |pe: PointerEvent| {
                 let mut s = session.borrow_mut();
-                if s.layer_drag.is_none() {
+                let Some(drag) = s.layer_drag.as_ref() else {
                     return;
-                }
+                };
                 let step = ROW_HEIGHT + ROW_GAP;
-                let content_y = index as f32 * step + pe.position.y;
-                let slot = (content_y / step).floor().max(0.0) as usize;
+                let press_index = drag.press_index;
+                let press_window_y = drag.press_window_y;
+                let grab_offset_y = drag.grab_offset_y;
+                let cur_window_y = pe.position_in_window().y;
+                let content_y =
+                    press_index as f32 * step + grab_offset_y + (cur_window_y - press_window_y);
                 let rows =
                     flatten_layers(&s.file.document, s.file.document.main, &s.expanded_layers);
+                let slot = (content_y / step)
+                    .floor()
+                    .clamp(0.0, rows.len().max(1) as f32 - 1.0) as usize;
                 let Some(row) = rows.get(slot) else {
                     pe.consume();
                     s.repaint();
                     return;
                 };
-                let y_in_row = content_y - slot as f32 * step;
+                let y_in_row = (content_y - slot as f32 * step).clamp(0.0, step);
                 let middle = (ROW_HEIGHT * 0.30..=ROW_HEIGHT * 0.70).contains(&y_in_row);
                 let indent = 8.0 + row.depth as f32 * 16.0;
                 let wants_child = (row.kind == LayerKind::Group || row.kind == LayerKind::Shape)
@@ -292,8 +326,13 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
         .on_pointer_up({
             let session = session.clone();
             move |pe: PointerEvent| {
-                pe.consume();
-                session.borrow_mut().finish_layer_drag();
+                if !matches!(pe.event, PointerEventKind::Up(PointerButton::Primary)) {
+                    return;
+                }
+                if session.borrow().layer_drag.is_some() {
+                    pe.consume();
+                    session.borrow_mut().finish_layer_drag();
+                }
             }
         })
         .on_pointer_cancel({

@@ -8,7 +8,7 @@ use renamite_model::Color as ModelColor;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
-use repose_core::{AlignItems, Color, Dp, Modifier, Px, View, theme};
+use repose_core::{AlignItems, Color, Dp, Modifier, Px, Vec2, View, theme};
 use repose_material::material3::{Button, ButtonConfig, TextField, TextFieldConfig};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use std::cell::RefCell;
@@ -57,9 +57,8 @@ impl PickerState {
     }
 
     fn set_color(&mut self, c: ModelColor) {
-        let alpha = self.alpha;
         self.hsv = rgb_to_hsv(c);
-        self.alpha = alpha;
+        self.alpha = c.a;
         self.sync_hex();
     }
 }
@@ -103,12 +102,21 @@ fn sv_square(
     on_change: Rc<dyn Fn(ModelColor)>,
     on_commit: Rc<dyn Fn(ModelColor)>,
 ) -> View {
+    use std::cell::Cell;
+    let size_px = Rc::new(Cell::new(Vec2 {
+        x: repose_core::dp_to_px(Dp(SV_SIZE)).0,
+        y: repose_core::dp_to_px(Dp(SV_SIZE)).0,
+    }));
     let update = {
         let state = state.clone();
         let on_change = on_change.clone();
+        let size_px = size_px.clone();
         move |pe: &PointerEvent| {
-            let x = (pe.position.x / SV_SIZE).clamp(0.0, 1.0) as f64;
-            let y = (1.0 - pe.position.y / SV_SIZE).clamp(0.0, 1.0) as f64;
+            let sz = size_px.get();
+            let w = sz.x.max(1.0);
+            let h = sz.y.max(1.0);
+            let x = (pe.position.x / w).clamp(0.0, 1.0) as f64;
+            let y = (1.0 - pe.position.y / h).clamp(0.0, 1.0) as f64;
             let mut s = state.borrow_mut();
             s.hsv.s = x;
             s.hsv.v = y;
@@ -122,6 +130,14 @@ fn sv_square(
             .width(Dp(SV_SIZE))
             .height(Dp(SV_SIZE))
             .clip_rounded(Dp(8.0))
+            .on_size_changed({
+                let size_px = size_px.clone();
+                move |size: Vec2| {
+                    if size.x > 0.0 && size.y > 0.0 {
+                        size_px.set(size);
+                    }
+                }
+            })
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -148,13 +164,28 @@ fn sv_square(
                         on_commit(state.borrow().color());
                     }
                 }
+            })
+            .on_pointer_cancel({
+                let state = state.clone();
+                move |pe: PointerEvent| {
+                    pe.consume();
+                    state.borrow_mut().dragging_sv = false;
+                }
+            })
+            .on_pointer_leave({
+                let state = state.clone();
+                move |_pe: PointerEvent| {
+                    state.borrow_mut().dragging_sv = false;
+                }
             }),
         move |scope| {
             let hue = state.borrow().hsv.h;
             paint_sv_square(scope, hue);
             let s = state.borrow();
-            let px = (s.hsv.s as f32) * SV_SIZE;
-            let py = (1.0 - s.hsv.v as f32) * SV_SIZE;
+            let w = scope.size.width.max(1.0);
+            let h = scope.size.height.max(1.0);
+            let px = (s.hsv.s as f32) * w;
+            let py = (1.0 - s.hsv.v as f32) * h;
             let r = 5.0;
             scope.draw_rect_stroke(
                 Rect {
@@ -183,10 +214,13 @@ fn sv_square(
 }
 
 /// Bake the saturation/value gradient as a small grid of solid rects (cheap,
-/// no shader needed). 24x24 cells is smooth enough at 180px.
+// no shader needed). Sized to the actual scope so HiDPI stays covered.
 fn paint_sv_square(scope: &mut DrawScope, hue: f64) {
     const CELLS: i32 = 24;
-    let cell = SV_SIZE / CELLS as f32;
+    let w = scope.size.width.max(1.0);
+    let h = scope.size.height.max(1.0);
+    let cell_w = w / CELLS as f32;
+    let cell_h = h / CELLS as f32;
     for gy in 0..CELLS {
         for gx in 0..CELLS {
             let s = gx as f64 / (CELLS - 1) as f64;
@@ -194,10 +228,10 @@ fn paint_sv_square(scope: &mut DrawScope, hue: f64) {
             let c = hsv_to_rgb(Hsv { h: hue, s, v }, 1.0);
             scope.draw_rect(
                 Rect {
-                    x: gx as f32 * cell,
-                    y: gy as f32 * cell,
-                    w: cell + 0.5,
-                    h: cell + 0.5,
+                    x: gx as f32 * cell_w,
+                    y: gy as f32 * cell_h,
+                    w: cell_w + 0.5,
+                    h: cell_h + 0.5,
                 },
                 Color::from_rgba(
                     (c.r * 255.0) as u8,
@@ -216,11 +250,15 @@ fn hue_strip(
     on_change: Rc<dyn Fn(ModelColor)>,
     on_commit: Rc<dyn Fn(ModelColor)>,
 ) -> View {
+    use std::cell::Cell;
+    let width_px = Rc::new(Cell::new(repose_core::dp_to_px(Dp(SV_SIZE)).0));
     let update = {
         let state = state.clone();
         let on_change = on_change.clone();
+        let width_px = width_px.clone();
         move |pe: &PointerEvent| {
-            let h = (pe.position.x / SV_SIZE).clamp(0.0, 1.0) as f64 * 359.999;
+            let w = width_px.get().max(1.0);
+            let h = (pe.position.x / w).clamp(0.0, 1.0) as f64 * 359.999;
             let mut s = state.borrow_mut();
             s.hsv.h = h;
             s.sync_hex();
@@ -233,6 +271,14 @@ fn hue_strip(
             .width(Dp(SV_SIZE))
             .height(Dp(STRIP_H))
             .clip_rounded(Dp(6.0))
+            .on_size_changed({
+                let width_px = width_px.clone();
+                move |size: Vec2| {
+                    if size.x > 0.0 {
+                        width_px.set(size.x);
+                    }
+                }
+            })
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -259,10 +305,25 @@ fn hue_strip(
                         on_commit(state.borrow().color());
                     }
                 }
+            })
+            .on_pointer_cancel({
+                let state = state.clone();
+                move |pe: PointerEvent| {
+                    pe.consume();
+                    state.borrow_mut().dragging_hue = false;
+                }
+            })
+            .on_pointer_leave({
+                let state = state.clone();
+                move |_pe: PointerEvent| {
+                    state.borrow_mut().dragging_hue = false;
+                }
             }),
         move |scope| {
             const CELLS: i32 = 36;
-            let cell_w = SV_SIZE / CELLS as f32;
+            let w = scope.size.width.max(1.0);
+            let h = scope.size.height.max(1.0);
+            let cell_w = w / CELLS as f32;
             for i in 0..CELLS {
                 let hue = i as f64 / (CELLS - 1) as f64 * 360.0;
                 let c = hsv_to_rgb(
@@ -278,7 +339,7 @@ fn hue_strip(
                         x: i as f32 * cell_w,
                         y: 0.0,
                         w: cell_w + 0.5,
-                        h: STRIP_H,
+                        h,
                     },
                     Color::from_rgba(
                         (c.r * 255.0) as u8,
@@ -290,8 +351,8 @@ fn hue_strip(
                 );
             }
             let hue = state.borrow().hsv.h;
-            let x = (hue / 360.0) as f32 * SV_SIZE;
-            draw_strip_cursor(scope, x, STRIP_H);
+            let x = (hue / 360.0) as f32 * w;
+            draw_strip_cursor(scope, x, h);
         },
     )
 }
@@ -301,11 +362,15 @@ fn alpha_strip(
     on_change: Rc<dyn Fn(ModelColor)>,
     on_commit: Rc<dyn Fn(ModelColor)>,
 ) -> View {
+    use std::cell::Cell;
+    let width_px = Rc::new(Cell::new(repose_core::dp_to_px(Dp(SV_SIZE)).0));
     let update = {
         let state = state.clone();
         let on_change = on_change.clone();
+        let width_px = width_px.clone();
         move |pe: &PointerEvent| {
-            let a = (pe.position.x / SV_SIZE).clamp(0.0, 1.0) as f64;
+            let w = width_px.get().max(1.0);
+            let a = (pe.position.x / w).clamp(0.0, 1.0) as f64;
             let mut s = state.borrow_mut();
             s.alpha = a;
             on_change(s.color());
@@ -317,6 +382,14 @@ fn alpha_strip(
             .width(Dp(SV_SIZE))
             .height(Dp(STRIP_H))
             .clip_rounded(Dp(6.0))
+            .on_size_changed({
+                let width_px = width_px.clone();
+                move |size: Vec2| {
+                    if size.x > 0.0 {
+                        width_px.set(size.x);
+                    }
+                }
+            })
             .on_pointer_down({
                 let state = state.clone();
                 let update = update.clone();
@@ -343,12 +416,26 @@ fn alpha_strip(
                         on_commit(state.borrow().color());
                     }
                 }
+            })
+            .on_pointer_cancel({
+                let state = state.clone();
+                move |pe: PointerEvent| {
+                    pe.consume();
+                    state.borrow_mut().dragging_alpha = false;
+                }
+            })
+            .on_pointer_leave({
+                let state = state.clone();
+                move |_pe: PointerEvent| {
+                    state.borrow_mut().dragging_alpha = false;
+                }
             }),
         move |scope| {
-            // Checkerboard backdrop so alpha=0 is visually distinguishable.
             let th = theme();
+            let w = scope.size.width.max(1.0);
+            let h = scope.size.height.max(1.0);
             const CELL: f32 = 8.0;
-            let cols = (SV_SIZE / CELL).ceil() as i32;
+            let cols = (w / CELL).ceil() as i32;
             for i in 0..cols {
                 let bg = if i % 2 == 0 {
                     th.surface
@@ -360,7 +447,7 @@ fn alpha_strip(
                         x: i as f32 * CELL,
                         y: 0.0,
                         w: CELL,
-                        h: STRIP_H,
+                        h,
                     },
                     bg,
                     Px(0.0),
@@ -369,7 +456,7 @@ fn alpha_strip(
 
             let base = state.borrow().color();
             const CELLS: i32 = 36;
-            let cell_w = SV_SIZE / CELLS as f32;
+            let cell_w = w / CELLS as f32;
             for i in 0..CELLS {
                 let a = i as f64 / (CELLS - 1) as f64;
                 let c = Color::from_rgba(
@@ -383,14 +470,14 @@ fn alpha_strip(
                         x: i as f32 * cell_w,
                         y: 0.0,
                         w: cell_w + 0.5,
-                        h: STRIP_H,
+                        h,
                     },
                     c,
                     Px(0.0),
                 );
             }
-            let x = state.borrow().alpha as f32 * SV_SIZE;
-            draw_strip_cursor(scope, x, STRIP_H);
+            let x = state.borrow().alpha as f32 * w;
+            draw_strip_cursor(scope, x, h);
         },
     )
 }

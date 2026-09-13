@@ -215,7 +215,7 @@ impl ToolSet {
         }
     }
 
-    pub fn cancel(&mut self, id: ToolId) {
+    pub fn cancel(&mut self, id: ToolId) -> OutputVec {
         match id {
             ToolId::Select | ToolId::Transform => self.select.cancel(),
             ToolId::Rect => self.rect.cancel(),
@@ -224,7 +224,7 @@ impl ToolSet {
             ToolId::Pen => self.pen.cancel(),
             ToolId::PathEdit => self.path_edit.cancel(),
             ToolId::Gradient => self.gradient.cancel(),
-            _ => {}
+            _ => smallvec![],
         }
     }
 }
@@ -345,8 +345,14 @@ impl SelectTool {
         )
     }
 
-    pub fn cancel(&mut self) {
-        self.state = Some(SelState::Idle);
+    pub fn cancel(&mut self) -> OutputVec {
+        match std::mem::replace(self.st(), SelState::Idle) {
+            SelState::DragMove { txn: true, .. }
+            | SelState::DragRotate { txn: true, .. }
+            | SelState::DragScale { txn: true, .. }
+            | SelState::DragPivot { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            _ => smallvec![],
+        }
     }
 
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
@@ -872,8 +878,11 @@ impl GradientTool {
         matches!(self.state, GradState::Drag { dragging: true, .. })
     }
 
-    pub fn cancel(&mut self) {
-        self.state = GradState::Idle;
+    pub fn cancel(&mut self) -> OutputVec {
+        match std::mem::replace(&mut self.state, GradState::Idle) {
+            GradState::Drag { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
+            _ => smallvec![],
+        }
     }
 
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
@@ -1358,8 +1367,9 @@ impl ShapeTool {
         self.drag.is_some()
     }
 
-    pub fn cancel(&mut self) {
+    pub fn cancel(&mut self) -> OutputVec {
         self.drag = None;
+        smallvec![]
     }
 
     pub fn handle(&mut self, ctx: &ToolContext, ev: CanvasEvent) -> OutputVec {
@@ -1517,10 +1527,11 @@ impl PenTool {
         matches!(self.state, PenState::DraggingTangent { .. })
     }
 
-    pub fn cancel(&mut self) {
+    pub fn cancel(&mut self) -> OutputVec {
         if matches!(self.state, PenState::DraggingTangent { .. }) {
             self.state = PenState::Idle;
         }
+        smallvec![]
     }
 
     pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
@@ -1852,8 +1863,15 @@ impl PathEditTool {
         !matches!(self.state, PathEditState::Idle)
     }
 
-    pub fn cancel(&mut self) {
-        self.state = PathEditState::Idle;
+    pub fn cancel(&mut self) -> OutputVec {
+        match std::mem::replace(&mut self.state, PathEditState::Idle) {
+            PathEditState::DragAnchor { txn: true, .. }
+            | PathEditState::DragTanIn { txn: true, .. }
+            | PathEditState::DragTanOut { txn: true, .. } => {
+                smallvec![ToolOutput::CancelTransaction]
+            }
+            _ => smallvec![],
+        }
     }
 
     pub fn overlay(&self, ctx: &ToolContext) -> ToolOverlay {

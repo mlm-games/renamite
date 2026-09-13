@@ -80,7 +80,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         if let Some(rect) = s.viewport.screen_rect {
                             DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
                         } else {
-                            DVec2::new(center.x as f64, center.y as f64)
+                            s.viewport.surface_size * 0.5
                         }
                     };
                     {
@@ -118,7 +118,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |delta: repose_core::Vec2| {
                         let is_tool_drag = {
                             let s = session.borrow();
-                            s.viewport.pan_last.is_some() || s.tool.is_active(s.active_tool)
+                            s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool)
                         };
                         if is_tool_drag {
                             return repose_core::Vec2::ZERO;
@@ -128,7 +128,11 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             // Horizontal wheel: pan the canvas along X.
                             s.viewport.view.offset += DVec2::new(delta.x as f64, 0.0);
                         } else {
-                            let anchor = s.viewport.last_pointer;
+                            let anchor = if s.viewport.has_pointer {
+                                s.viewport.last_pointer
+                            } else {
+                                s.viewport.surface_size * 0.5
+                            };
                             let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
                             s.viewport.zoom_at(anchor, factor);
                         }
@@ -146,9 +150,9 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
+                        s.viewport.has_pointer = true;
 
                         if map_button(&pe) == PointerButton::Secondary {
-                            // Right-click: pick/select under cursor, then menu.
                             focus.request_focus();
                             let world = s.viewport.view.screen_to_world(pos);
                             let scene = s.engine.scene().clone();
@@ -197,11 +201,16 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 
                         focus.request_focus();
                         s.viewport.pointer_down = true;
+                        if s.renaming.is_some() {
+                            s.commit_rename();
+                            s.renaming = None;
+                        }
                         let world = s.viewport.view.screen_to_world(pos);
                         if s.mode == crate::session::EditorMode::Interact
                             || s.machine_preview_enabled
                         {
-                            // Still allow selection with Alt for listener authoring.
+                            let to_engine = !pe.modifiers.alt;
+                            s.viewport.pointer_route = Some(to_engine);
                             if pe.modifiers.alt {
                                 dispatch_canvas(
                                     &mut s,
@@ -216,6 +225,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             }
                             return;
                         }
+                        s.viewport.pointer_route = Some(false);
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerDown {
@@ -232,6 +242,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
+                        s.viewport.has_pointer = true;
 
                         let window_pos = pe.position_in_window();
                         let origin = repose_core::Vec2 {
@@ -258,9 +269,17 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
 
                         let world = s.viewport.view.screen_to_world(pos);
-                        if (s.mode == crate::session::EditorMode::Interact
-                            || s.machine_preview_enabled)
-                            && !pe.modifiers.alt
+                        let to_engine = match s.viewport.pointer_route {
+                            Some(v) => v,
+                            None => {
+                                (s.mode == crate::session::EditorMode::Interact
+                                    || s.machine_preview_enabled)
+                                    && !pe.modifiers.alt
+                            }
+                        };
+                        if to_engine
+                            && (s.mode == crate::session::EditorMode::Interact
+                                || s.machine_preview_enabled)
                         {
                             s.engine_pointer_move(world);
                             return;
@@ -279,16 +298,27 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         s.viewport.pointer_down = false;
 
                         if s.viewport.pan_last.is_some() {
-                            pe.consume();
-                            s.viewport.end_pan();
-                            request_frame();
+                            if map_button(&pe) != PointerButton::Secondary {
+                                pe.consume();
+                                s.viewport.end_pan();
+                                request_frame();
+                            }
+                            s.viewport.pointer_route = None;
                             return;
                         }
 
                         let world = s.viewport.view.screen_to_world(pe_pos(&pe));
-                        if (s.mode == crate::session::EditorMode::Interact
-                            || s.machine_preview_enabled)
-                            && !pe.modifiers.alt
+                        let to_engine = match s.viewport.pointer_route.take() {
+                            Some(v) => v,
+                            None => {
+                                (s.mode == crate::session::EditorMode::Interact
+                                    || s.machine_preview_enabled)
+                                    && !pe.modifiers.alt
+                            }
+                        };
+                        if to_engine
+                            && (s.mode == crate::session::EditorMode::Interact
+                                || s.machine_preview_enabled)
                         {
                             s.engine_pointer_up(world);
                             return;
@@ -309,8 +339,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         pe.consume();
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
+                        s.viewport.pointer_route = None;
                         let tool = s.active_tool;
-                        s.tool.cancel(tool);
+                        let outs = s.tool.cancel(tool);
+                        s.apply_outputs(outs);
                         if s.machine_preview_enabled
                             || s.mode == crate::session::EditorMode::Interact
                         {
@@ -368,7 +400,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         scene: &scene,
                         comp: s.file.document.main,
                         selection: &s.selection,
-                        playhead: renamite_animation::Frame(s.playback.head as i64),
+                        playhead: renamite_animation::Frame(s.playback.head.round() as i64),
                         record: s.record,
                         view,
                         snap: SnapConfig {
@@ -510,7 +542,7 @@ fn ViewportHint(session: SessionRef) -> View {
     let text = if is_interact {
         "Alt+click to select, click fires"
     } else {
-        "Middle or Space drag to pan, Wheel or +/- zoom, F fits, S/V select, B/P pen, N nodes, R/E shapes, T text"
+        "Middle or Space drag to pan, Wheel or +/- zoom, F fits, S/V select, N path edit, B/P pen, R/E shapes, * star, T text, G gradient, U fill, D pick"
     };
     Box(Modifier::new()
         .absolute()

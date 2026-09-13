@@ -71,6 +71,10 @@ pub enum PreparedDraw {
         tint: repose_core::Color,
         fit: repose_core::ImageFit,
         clips: Vec<u32>,
+        /// Model blend, preserved for round-tripping and future renderer
+        /// upgrades. Repose `DrawCommand::Image` / `SceneNode::Image` carry no
+        /// blend field yet, so this is intentionally unused by the paint sinks.
+        blend: BlendMode,
     },
 }
 
@@ -206,6 +210,7 @@ impl SceneRenderer {
                         tint: Self::model_color_to_repose(*tint, item.opacity),
                         fit: repose_core::ImageFit::Contain,
                         clips: item.clips.clone(),
+                        blend: map_blend(item.blend),
                     });
                 }
 
@@ -352,6 +357,7 @@ impl SceneRenderer {
                     tint,
                     fit,
                     clips,
+                    blend: _,
                 } => {
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
@@ -421,6 +427,7 @@ impl SceneRenderer {
                     tint,
                     fit,
                     clips,
+                    blend: _,
                 } => {
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
@@ -724,7 +731,9 @@ fn map_blend(b: ModelBlendMode) -> BlendMode {
     match b {
         ModelBlendMode::Normal => BlendMode::Alpha,
         ModelBlendMode::Multiply => BlendMode::Multiply,
-        ModelBlendMode::Screen => BlendMode::Add,
+        // Screen is NOT additive: fall back to alpha until the Repose renderer
+        // implements a real screen blend. (Add is also unimplemented upstream.)
+        ModelBlendMode::Screen => BlendMode::Alpha,
         ModelBlendMode::Overlay => BlendMode::Overlay,
         // Advanced modes not yet implemented in repose renderer — fall back to alpha
         // but preserve model value for round-tripping and future renderer upgrades.

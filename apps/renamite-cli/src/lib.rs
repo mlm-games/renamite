@@ -28,8 +28,9 @@ pub enum Commands {
         input: PathBuf,
         #[arg(short, long, default_value = "60")]
         frames: usize,
-        #[arg(short, long, default_value = "0.016666667")]
-        dt: f64,
+        /// Seconds per baked frame. Defaults to 1 / composition rate.
+        #[arg(short, long)]
+        dt: Option<f64>,
         #[arg(short, long, default_value = "scenes.json")]
         output: PathBuf,
     },
@@ -42,8 +43,9 @@ pub enum Commands {
         frame: Option<i64>,
         #[arg(long, conflicts_with = "frame")]
         frames: Option<usize>,
-        #[arg(long, default_value = "0.016666667")]
-        dt: f64,
+        /// Seconds per baked frame. Defaults to 1 / composition rate.
+        #[arg(long)]
+        dt: Option<f64>,
         #[arg(long, default_value = "512")]
         width: u32,
         #[arg(long, default_value = "512")]
@@ -253,10 +255,11 @@ fn dispatch(command: Commands) -> Result<()> {
     }
 }
 
-fn cmd_bake(input: PathBuf, frames: usize, dt: f64, output: PathBuf) -> Result<()> {
+fn cmd_bake(input: PathBuf, frames: usize, dt: Option<f64>, output: PathBuf) -> Result<()> {
     let file = load_file(&input).with_context(|| format!("failed to load {}", input.display()))?;
     let mut player = Player::new(file)
         .with_context(|| format!("failed to open player for {}", input.display()))?;
+    let dt = dt.unwrap_or_else(|| default_dt_for(&player));
     let scenes = player.bake(frames, dt);
     let json = serde_json::to_string_pretty(&scenes)?;
     atomic_write(&output, json.as_bytes())?;
@@ -269,7 +272,7 @@ fn cmd_render(
     input: PathBuf,
     frame: Option<i64>,
     frames: Option<usize>,
-    dt: f64,
+    dt: Option<f64>,
     width: u32,
     height: u32,
     out: Option<PathBuf>,
@@ -311,6 +314,7 @@ fn cmd_render(
         (None, Some(n)) => {
             let out_dir = out_dir.ok_or_else(|| anyhow!("--out-dir is required with --frames"))?;
             std::fs::create_dir_all(&out_dir)?;
+            let dt = dt.unwrap_or_else(|| default_dt_for(&player));
             let scenes = player.bake(n, dt);
             for (i, scene) in scenes.iter().enumerate() {
                 let png = rasterize_png(&mut bridge, &mut gpu, scene, &view, bg_clear)?;
@@ -667,9 +671,20 @@ fn name_from_path(p: &Path) -> String {
         .to_string()
 }
 
+/// Seconds per frame derived from the composition rate.
+/// Falls back to 1/60 when the rate is zero, non-finite, or unavailable.
+fn default_dt_for(player: &Player) -> f64 {
+    let fps = player.rate().fps();
+    if fps > 0.0 && fps.is_finite() {
+        1.0 / fps
+    } else {
+        1.0 / 60.0
+    }
+}
+
 fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
     let mut player = Player::new(load_file(&input)?)?;
-    let dt = 1.0 / 60.0;
+    let dt = default_dt_for(&player);
     let ticks = (duration / dt) as usize;
 
     println!("Playing {} for {duration:.1}s...", input.display());
