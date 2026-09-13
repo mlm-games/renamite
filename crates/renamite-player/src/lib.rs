@@ -103,9 +103,23 @@ impl Engine {
     }
 
     /// Advance by `dt_secs`, re-evaluate, return events fired this tick.
+    ///
+    /// While paused, positive-dt ticks are no-ops (the scene is left as-is).
     pub fn tick(&mut self, project: &RenFile, dt_secs: f64) -> &[String] {
         self.events.clear();
         if self.paused {
+            if dt_secs == 0.0 {
+                self.ov.clear();
+                if let PlayMode::Machine { id, instance, .. } = &mut self.mode
+                    && let Some(m) = project.machines.get(*id)
+                {
+                    let out = instance.tick(m, &project.clips, 0.0, &mut self.ov);
+                    self.events.extend(out.events);
+                }
+                self.apply_host_overrides();
+                let head = self.head();
+                self.scene = evaluate_with(&project.document, self.comp, head, &self.ov);
+            }
             return &self.events;
         }
         if let Some(c) = project.document.compositions.get(self.comp) {
@@ -935,5 +949,43 @@ mod tests {
             p.bake(20, 1.0 / 60.0)
         };
         assert_eq!(make(), make());
+    }
+
+    #[test]
+    fn zero_dt_tick_applies_host_override_while_paused() {
+        let (proj, shape, _) = static_box();
+        let mut p = Player::new(proj).unwrap();
+        p.pause();
+        assert!(center_x(p.scene()).abs() < 1e-6);
+
+        p.engine.set_host_override(
+            shape,
+            PropPath::new("transform.position"),
+            Value::DVec2(DVec2::new(120.0, 0.0)),
+        );
+        p.tick(0.0);
+        assert!(
+            (center_x(p.scene()) - 120.0).abs() < 1e-6,
+            "paused zero-dt tick must re-evaluate, x={}",
+            center_x(p.scene())
+        );
+
+        p.tick(0.5);
+        assert!((center_x(p.scene()) - 120.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pointer_transition_applies_while_paused() {
+        let (proj, _, _) = moving_box();
+        let mut p = Player::new(proj).unwrap();
+        p.pause();
+        assert_eq!(p.active_machine_states(), Some(vec![0]));
+
+        p.pointer_move(DVec2::ZERO);
+        assert_eq!(
+            p.active_machine_states(),
+            Some(vec![1]),
+            "transition must apply while paused"
+        );
     }
 }

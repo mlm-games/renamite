@@ -178,7 +178,23 @@ fn normalized_stops(stops: &GradientStops, count: usize) -> GradientStops {
 
 fn packed_stops(stops: &GradientStops, count: usize) -> Vec<f64> {
     let stops = normalized_stops(stops, count);
-    let mut output = Vec::with_capacity(count * 6);
+    pack_exact(&stops)
+}
+
+/// Pack stops verbatim (offsets preserved). Used when the stop list already
+/// has the target length, so static (and uniformly-keyed animated) gradients
+/// round-trip their offsets exactly instead of being resampled to uniform
+/// positions. Falls back to uniform resampling for empty lists.
+fn packed_stops_aligned(stops: &GradientStops, count: usize) -> Vec<f64> {
+    if !stops.0.is_empty() && stops.0.len() == count {
+        pack_exact(stops)
+    } else {
+        packed_stops(stops, count)
+    }
+}
+
+fn pack_exact(stops: &GradientStops) -> Vec<f64> {
+    let mut output = Vec::with_capacity(stops.0.len() * 6);
     for stop in &stops.0 {
         output.extend_from_slice(&[stop.offset, stop.color.r, stop.color.g, stop.color.b]);
     }
@@ -189,6 +205,11 @@ fn packed_stops(stops: &GradientStops, count: usize) -> Vec<f64> {
 }
 
 /// Returns `(color_stop_count, Lottie animated gradient property)`.
+///
+/// When every keyframe (and the base value) already holds `count` stops, each
+/// list is packed verbatim so offsets survive the round-trip. Lists of a
+/// different length are resampled to uniform positions, since a single Lottie
+/// gradient track cannot carry differing per-keyframe topologies.
 pub(crate) fn export_gradient(animated: &Animated<GradientStops>) -> (usize, Value) {
     let count = animated
         .keyframes
@@ -203,7 +224,7 @@ pub(crate) fn export_gradient(animated: &Animated<GradientStops>) -> (usize, Val
             count,
             json!({
                 "a": 0,
-                "k": packed_stops(&animated.base, count)
+                "k": packed_stops_aligned(&animated.base, count)
             }),
         );
     }
@@ -211,9 +232,9 @@ pub(crate) fn export_gradient(animated: &Animated<GradientStops>) -> (usize, Val
     for (index, key) in animated.keyframes.iter().enumerate() {
         let mut object = Map::new();
         object.insert("t".into(), json!(key.frame.0));
-        object.insert("s".into(), json!(packed_stops(&key.value, count)));
+        object.insert("s".into(), json!(packed_stops_aligned(&key.value, count)));
         if let Some(next) = animated.keyframes.get(index + 1) {
-            object.insert("e".into(), json!(packed_stops(&next.value, count)));
+            object.insert("e".into(), json!(packed_stops_aligned(&next.value, count)));
         }
         easing_fields(key, &mut object);
         keys.push(Value::Object(object));

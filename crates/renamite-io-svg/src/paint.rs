@@ -133,6 +133,15 @@ pub fn import_paint(
                     ),
                 });
             }
+            if (gradient.fx() - gradient.cx()).abs() > 1e-6
+                || (gradient.fy() - gradient.cy()).abs() > 1e-6
+                || gradient.fr().get() > 1e-6
+            {
+                warnings.push(SvgWarning {
+                    path: context.path.to_string(),
+                    message: "radial gradient focal point (fx/fy/fr) is not supported; Renamite centers the gradient".into(),
+                });
+            }
             let affine = context.paint_affine(gradient.transform());
             let center = affine * Point::new(gradient.cx() as f64, gradient.cy() as f64);
             let edge = affine

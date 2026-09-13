@@ -551,8 +551,10 @@ fn cycle_easing_cmd(ctx: &TimelineCtx, r: &KeyRef) -> Option<EditorCommand> {
 }
 
 /// Double-click value sourcing: Doc samples the evaluated property at the
-/// frame (so the new key is visually a no-op). Clip samples the track's
-/// nearest key, falling back to the document value.
+/// frame (so the new key is visually a no-op). Clip samples the track through
+/// the same [`Track::value_at`](renamite_machine::Track::value_at) the player
+/// samples at runtime (so the new key is visually a no-op there too),
+/// falling back to the document value when the track has no keys yet.
 fn add_key_cmd(ctx: &TimelineCtx, row: &TimelineRow, frame: Frame) -> Option<EditorCommand> {
     match ctx.target {
         TimelineTarget::Doc => {
@@ -595,10 +597,7 @@ fn nearest_clip_value(
         .tracks
         .iter()
         .find(|t| t.node == row.node && t.prop == row.prop)?;
-    t.keys
-        .iter()
-        .min_by_key(|k| (k.frame.0 - frame.0).abs())
-        .map(|k| k.value.clone())
+    t.value_at(frame.0 as f64)
 }
 
 fn box_pick(ctx: &TimelineCtx, min: DVec2, max: DVec2) -> Vec<KeyRef> {
@@ -1297,6 +1296,42 @@ mod tests {
             .keyframe_data(node, &PropPath::new("opacity"), Frame(5))
             .unwrap()
             .value;
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn double_click_clip_key_is_visual_noop() {
+        let mut hrn = Harness::new();
+        let node = hrn.w.node();
+        let cid = hrn.w.clip(node, vec![(0, 0.0), (10, 10.0)]);
+        let mut b = TimelineKeyframeBehavior::default();
+        let expect = hrn.w.clips[cid]
+            .tracks
+            .iter()
+            .find(|t| t.node == node)
+            .unwrap()
+            .value_at(5.0)
+            .unwrap();
+        assert_eq!(expect, Value::F64(5.0));
+        hrn.run(
+            &mut b,
+            TimelineTarget::Clip(cid),
+            TimelineEvent::DoubleClick {
+                pos: DVec2::new(50.0, 10.0),
+                modifiers: Modifiers::none(),
+            },
+        );
+        let got = hrn.w.clips[cid]
+            .tracks
+            .iter()
+            .find(|t| t.node == node)
+            .unwrap()
+            .keys
+            .iter()
+            .find(|k| k.frame == Frame(5))
+            .unwrap()
+            .value
+            .clone();
         assert_eq!(got, expect);
     }
 

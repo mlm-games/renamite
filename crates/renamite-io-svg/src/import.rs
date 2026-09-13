@@ -342,6 +342,16 @@ impl Importer {
             match child {
                 SvgNode::Path(p) => {
                     if p.is_visible() {
+                        if p.fill()
+                            .is_some_and(|fill| fill.rule() == usvg::FillRule::EvenOdd)
+                        {
+                            self.warnings.push(SvgWarning {
+                                path: format!("{path}/{index}"),
+                                message:
+                                    "SVG clip path with evenodd rule is approximated as nonzero"
+                                        .into(),
+                            });
+                        }
                         let affine = *bias * usvg_transform_to_kurbo(p.abs_transform());
                         combined.extend(affine * tiny_path_to_kurbo(p.data()));
                     }

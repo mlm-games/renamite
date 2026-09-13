@@ -326,3 +326,74 @@ fn parse_errors_are_reported() {
     let err = import(b"<svg><rect").err().unwrap();
     assert!(!err.to_string().is_empty());
 }
+
+#[test]
+fn radial_gradient_focal_produces_warning() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <defs>
+            <radialGradient id="r" cx="0.5" cy="0.5" r="0.5" fx="0.2" fy="0.3">
+                <stop offset="0" stop-color="#ffffff"/>
+                <stop offset="1" stop-color="#000000"/>
+            </radialGradient>
+        </defs>
+        <rect x="0" y="0" width="100" height="100" fill="url(#r)"/>
+    </svg>"##;
+    let report = import_with_report(svg.as_bytes()).unwrap();
+    assert!(
+        report.warnings.iter().any(|w| w.message.contains("focal")),
+        "off-center focal point must warn, got {:?}",
+        report.warnings
+    );
+    let gradient_fills = find_all(&report.value, |n| {
+        matches!(
+            &n.kind,
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::Gradient(_),
+                ..
+            })
+        )
+    });
+    assert_eq!(gradient_fills.len(), 1, "content still imports");
+}
+
+#[test]
+fn radial_gradient_centered_has_no_focal_warning() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <defs>
+            <radialGradient id="r" cx="0.5" cy="0.5" r="0.5">
+                <stop offset="0" stop-color="#ffffff"/>
+                <stop offset="1" stop-color="#000000"/>
+            </radialGradient>
+        </defs>
+        <rect x="0" y="0" width="100" height="100" fill="url(#r)"/>
+    </svg>"##;
+    let report = import_with_report(svg.as_bytes()).unwrap();
+    assert!(
+        report.warnings.iter().all(|w| !w.message.contains("focal")),
+        "centered gradient must not warn about focal, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn clip_path_evenodd_rule_produces_warning() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <defs>
+            <clipPath id="c"><rect x="0" y="0" width="50" height="50" clip-rule="evenodd"/></clipPath>
+        </defs>
+        <g clip-path="url(#c)">
+            <rect x="0" y="0" width="100" height="100" fill="#000000"/>
+        </g>
+    </svg>"##;
+    let report = import_with_report(svg.as_bytes()).unwrap();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("evenodd")),
+        "evenodd clip rule must warn, got {:?}",
+        report.warnings
+    );
+    let masks = find_all(&report.value, |n| matches!(n.kind, NodeKind::Mask(_)));
+    assert_eq!(masks.len(), 1, "content still imports");
+}

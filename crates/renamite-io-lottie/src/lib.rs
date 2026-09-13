@@ -894,4 +894,208 @@ mod tests {
             lossy.warnings
         );
     }
+
+    fn gradient_doc(offsets: &[f64]) -> Document {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Gradient Group", NodeKind::Group));
+        let rect = doc.create_node(Node::new(
+            "Rect",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::new(50.0, 50.0)),
+                size: Animated::new(DVec2::new(100.0, 100.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ));
+        let stops = GradientStops(
+            offsets
+                .iter()
+                .enumerate()
+                .map(|(i, o)| GradientStop {
+                    offset: *o,
+                    color: Color::rgba(i as f64 * 0.4, 0.2, 1.0 - i as f64 * 0.4, 1.0),
+                })
+                .collect(),
+        );
+        let fill = doc.create_node(Node::new(
+            "Gradient Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::linear(DVec2::new(0.0, 0.0), DVec2::new(100.0, 0.0), stops),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(rect, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+        doc
+    }
+
+    fn imported_gradient_offsets(doc: &Document) -> Vec<f64> {
+        let mut found = Vec::new();
+        for node in doc.nodes.values() {
+            if let NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::Gradient(g),
+                ..
+            }) = &node.kind
+            {
+                found = g.stops.base.0.iter().map(|s| s.offset).collect();
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn static_gradient_offsets_survive_roundtrip() {
+        let doc = gradient_doc(&[0.0, 0.2, 1.0]);
+        let exported = export(&doc).unwrap();
+        let text = serde_json::to_string(&exported).unwrap();
+        assert!(
+            text.contains("0.2"),
+            "non-uniform offsets must be packed verbatim, got {text}"
+        );
+        let imported = import(&exported).unwrap();
+        let offsets = imported_gradient_offsets(&imported);
+        assert_eq!(offsets, vec![0.0, 0.2, 1.0]);
+    }
+
+    fn count_shapes(value: &serde_json::Value, ty: &str) -> usize {
+        let mut count = 0;
+        if value.get("ty").and_then(|t| t.as_str()) == Some(ty) {
+            count += 1;
+        }
+        if let Some(items) = value.get("it").and_then(|it| it.as_array()) {
+            count += items
+                .iter()
+                .map(|item| count_shapes(item, ty))
+                .sum::<usize>();
+        }
+        if let Some(shapes) = value.get("shapes").and_then(|s| s.as_array()) {
+            count += shapes
+                .iter()
+                .map(|item| count_shapes(item, ty))
+                .sum::<usize>();
+        }
+        if let Some(layers) = value.get("layers").and_then(|l| l.as_array()) {
+            count += layers
+                .iter()
+                .map(|item| count_shapes(item, ty))
+                .sum::<usize>();
+        }
+        count
+    }
+
+    fn count_flat_shapes(value: &serde_json::Value) -> usize {
+        let mut count = 0;
+        if value.get("ty").and_then(|t| t.as_str()) == Some("sh") {
+            assert!(
+                value.pointer("/ks/k/c").and_then(|c| c.as_bool()).is_some(),
+                "baked `sh` must use the flat single-contour form, got {}",
+                value.pointer("/ks/k/c").unwrap_or(&serde_json::Value::Null)
+            );
+            count += 1;
+        }
+        if let Some(items) = value.get("it").and_then(|it| it.as_array()) {
+            count += items.iter().map(count_flat_shapes).sum::<usize>();
+        }
+        if let Some(shapes) = value.get("shapes").and_then(|s| s.as_array()) {
+            count += shapes.iter().map(count_flat_shapes).sum::<usize>();
+        }
+        if let Some(layers) = value.get("layers").and_then(|l| l.as_array()) {
+            count += layers.iter().map(count_flat_shapes).sum::<usize>();
+        }
+        count
+    }
+
+    fn count_imported_paths(doc: &Document) -> usize {
+        doc.nodes
+            .values()
+            .filter(|node| matches!(&node.kind, NodeKind::Shape(ShapeKind::Path(_))))
+            .count()
+    }
+
+    #[test]
+    fn text_contours_survive_export_import() {
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Text Group", NodeKind::Group));
+        let text = doc.create_node(Node::new(
+            "Text",
+            NodeKind::Text(TextNode {
+                text: "O".into(),
+                size: Animated::new(48.0),
+                align: TextAlign::Left,
+                font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
+            }),
+        ));
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(text, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let exported = export(&doc).unwrap();
+        let flat = count_flat_shapes(&exported);
+        assert!(
+            flat > 1,
+            "`O` outline must split into per-contour `sh` items (outer + hole), got {flat}"
+        );
+        let imported = import(&exported).unwrap();
+        assert_eq!(
+            count_imported_paths(&imported),
+            flat,
+            "every baked contour must re-import (holes were dropped by the nested form)"
+        );
+    }
+
+    #[test]
+    fn static_compound_warns_and_splits_to_paths() {
+        use kurbo::Shape as _;
+        let contour = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            Animated::new(renamite_geometry::VectorPath::from_bez_path(
+                &kurbo::Rect::new(x0, y0, x1, y1).to_path(0.1),
+            ))
+        };
+        let mut doc = Document::empty();
+        let comp = doc.main;
+        let group = doc.create_node(Node::new("Compound Group", NodeKind::Group));
+        let shape = doc.create_node(Node::new(
+            "Compound",
+            NodeKind::Shape(ShapeKind::CompoundPath(renamite_model::CompoundPath {
+                contours: vec![
+                    contour(0.0, 0.0, 10.0, 10.0),
+                    contour(20.0, 20.0, 30.0, 30.0),
+                ],
+            })),
+        ));
+        let fill = doc.create_node(Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ));
+        doc.attach(shape, Parent::Node(group), 0).unwrap();
+        doc.attach(fill, Parent::Node(group), 1).unwrap();
+        doc.attach(group, Parent::Comp(comp), 0).unwrap();
+
+        let report = export_with_report(&doc).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("one `sh` item per contour")),
+            "static compounds must warn about the lossy split, got {:?}",
+            report.warnings
+        );
+        assert_eq!(count_shapes(&report.value, "sh"), 2);
+        let imported = import(&report.value).unwrap();
+        assert_eq!(count_imported_paths(&imported), 2);
+    }
 }

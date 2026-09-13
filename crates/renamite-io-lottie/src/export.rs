@@ -537,27 +537,18 @@ impl Exporter<'_> {
                         leading,
                     )
                 };
-                let item = json!({
-                    "ty": "sh",
-                    "nm": node.name,
-                    "d": 1,
-                    "ks": { "a": 0, "k": bezpath_to_lottie_path(&outline) }
-                });
+                let items = bezpath_to_lottie_shapes(&node.name, &outline);
                 if transform_owner == Some(id)
                     || transform_is_identity(&node.transform, &node.opacity)
                 {
-                    vec![item]
+                    items
                 } else {
+                    let mut it = items;
+                    it.push(group_transform_json(&node.transform, &node.opacity));
                     vec![json!({
                         "ty": "gr",
                         "nm": node.name,
-                        "it": [
-                            item,
-                            group_transform_json(
-                                &node.transform,
-                                &node.opacity
-                            )
-                        ]
+                        "it": it
                     })]
                 }
             }
@@ -571,14 +562,22 @@ impl Exporter<'_> {
         }
     }
 
-    /// One Lottie `sh` item per compound-path contour. Animated contours bake
-    /// to their base value (frame 0) and surface a lossy-export warning, since
-    /// a single `sh` track cannot carry differing per-contour topologies.
+    /// One Lottie `sh` item per compound-path contour. Contours bake to
+    /// their base value (frame 0) and surface a lossy-export warning: a
+    /// single `sh` track cannot carry differing per-contour topologies, and a
+    /// re-import reads the items back as separate `Path` siblings rather than
+    /// one `CompoundPath`.
     fn compound_shape_items(
         &mut self,
         name: &str,
         compound: &renamite_model::CompoundPath,
     ) -> Vec<Value> {
+        if compound.contours.len() > 1 {
+            self.warnings.push(LottieWarning::new(
+                name.to_string(),
+                "compound path bakes to one `sh` item per contour on Lottie export (re-imports as separate paths)",
+            ));
+        }
         let mut out = Vec::new();
         for (index, contour) in compound.contours.iter().enumerate() {
             if !contour.keyframes.is_empty() {
@@ -587,12 +586,7 @@ impl Exporter<'_> {
                     "animated contour bakes to its base value on Lottie export",
                 ));
             }
-            out.push(json!({
-                "ty": "sh",
-                "nm": name,
-                "d": 1,
-                "ks": { "a": 0, "k": bezpath_to_lottie_path(&contour.base.to_bez_path()) }
-            }));
+            out.extend(bezpath_to_lottie_shapes(name, &contour.base.to_bez_path()));
         }
         out
     }
@@ -939,11 +933,31 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
     }
 }
 
-fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
-    let mut closed: Vec<bool> = Vec::new();
-    let mut vertices: Vec<Vec<[f64; 2]>> = Vec::new();
-    let mut ins: Vec<Vec<[f64; 2]>> = Vec::new();
-    let mut outs: Vec<Vec<[f64; 2]>> = Vec::new();
+/// Baked text as standard single-contour Lottie `sh` items (one per contour).
+///
+/// `ShapeKind::Path` exports through [`export_path`], whose `ks.k` is the
+/// flat single-contour form (`"c": bool`, `"v": [...]`) that `import_path`
+/// parses back. Text used to emit a non-standard nested multi-contour `sh`
+/// (`"c": [...]`, `"v": [[...], ...]`), whose re-import kept only the first
+/// contour and silently dropped holes. Emitting one flat `sh` per contour
+/// keeps text round-tripping through the same code path as plain paths.
+fn bezpath_to_lottie_shapes(name: &str, path: &kurbo::BezPath) -> Vec<Value> {
+    fn flat_item(
+        name: &str,
+        closed: bool,
+        v: Vec<[f64; 2]>,
+        i: Vec<[f64; 2]>,
+        o: Vec<[f64; 2]>,
+    ) -> Value {
+        json!({
+            "ty": "sh",
+            "nm": name,
+            "d": 1,
+            "ks": { "a": 0, "k": { "c": closed, "v": v, "i": i, "o": o } }
+        })
+    }
+
+    let mut items = Vec::new();
     let mut v: Vec<[f64; 2]> = Vec::new();
     let mut i: Vec<[f64; 2]> = Vec::new();
     let mut o: Vec<[f64; 2]> = Vec::new();
@@ -954,10 +968,13 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
         match el {
             kurbo::PathEl::MoveTo(p) => {
                 if in_contour {
-                    closed.push(contour_closed);
-                    vertices.push(std::mem::take(&mut v));
-                    ins.push(std::mem::take(&mut i));
-                    outs.push(std::mem::take(&mut o));
+                    items.push(flat_item(
+                        name,
+                        contour_closed,
+                        std::mem::take(&mut v),
+                        std::mem::take(&mut i),
+                        std::mem::take(&mut o),
+                    ));
                 }
                 v.push([p.x, p.y]);
                 i.push([0.0, 0.0]);
@@ -967,13 +984,20 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
                 in_contour = true;
             }
             kurbo::PathEl::LineTo(p) => {
+                if !in_contour {
+                    in_contour = true;
+                    contour_closed = false;
+                }
                 v.push([p.x, p.y]);
                 i.push([0.0, 0.0]);
                 o.push([0.0, 0.0]);
                 prev = [p.x, p.y];
             }
             kurbo::PathEl::QuadTo(c, p) => {
-                // Elevate to an equivalent cubic (k = 2/3 along each segment).
+                if !in_contour {
+                    in_contour = true;
+                    contour_closed = false;
+                }
                 let c1 = [
                     prev[0] + 2.0 / 3.0 * (c.x - prev[0]),
                     prev[1] + 2.0 / 3.0 * (c.y - prev[1]),
@@ -982,6 +1006,10 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
                 push_curve(&mut v, &mut i, &mut o, &mut prev, c1, c2, [p.x, p.y]);
             }
             kurbo::PathEl::CurveTo(c1, c2, p) => {
+                if !in_contour {
+                    in_contour = true;
+                    contour_closed = false;
+                }
                 push_curve(
                     &mut v,
                     &mut i,
@@ -998,17 +1026,18 @@ fn bezpath_to_lottie_path(path: &kurbo::BezPath) -> Value {
         }
     }
     if in_contour {
-        closed.push(contour_closed);
-        vertices.push(std::mem::take(&mut v));
-        ins.push(std::mem::take(&mut i));
-        outs.push(std::mem::take(&mut o));
+        items.push(flat_item(
+            name,
+            contour_closed,
+            std::mem::take(&mut v),
+            std::mem::take(&mut i),
+            std::mem::take(&mut o),
+        ));
     }
-    json!({
-        "c": closed,
-        "v": vertices,
-        "i": ins,
-        "o": outs
-    })
+    if items.is_empty() {
+        items.push(flat_item(name, false, Vec::new(), Vec::new(), Vec::new()));
+    }
+    items
 }
 
 fn push_curve(
@@ -1054,39 +1083,43 @@ mod tests {
         path.curve_to((10.0, 5.0), (20.0, 20.0), (30.0, 0.0));
         path.line_to((30.0, 40.0));
         path.close_path();
-        let v = bezpath_to_lottie_path(&path);
+        let shapes = bezpath_to_lottie_shapes("TEXT", &path);
+        assert_eq!(shapes.len(), 1);
+        let v = &shapes[0]["ks"]["k"];
 
-        assert_eq!(v["c"], json!([true]));
-        assert_eq!(v["v"], json!([[[0.0, 0.0], [30.0, 0.0], [30.0, 40.0]]]));
-        // Out tangent of vertex 0 = c1 - prev = (10,5) - (0,0).
-        assert_eq!(pts(&v, "o")[0][0], json!([10.0, 5.0]));
-        // In tangent of vertex 1 = c2 - p = (20,20) - (30,0).
-        assert_eq!(pts(&v, "i")[0][1], json!([-10.0, 20.0]));
-        // The trailing line segment carries zero tangents on both ends.
-        assert_eq!(pts(&v, "i")[0][0], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "o")[0][1], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "i")[0][2], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "o")[0][2], json!([0.0, 0.0]));
+        assert_eq!(v["c"], json!(true));
+        assert_eq!(v["v"], json!([[0.0, 0.0], [30.0, 0.0], [30.0, 40.0]]));
+        assert_eq!(pts(&v, "o")[0], json!([10.0, 5.0]));
+        assert_eq!(pts(&v, "i")[1], json!([-10.0, 20.0]));
+        assert_eq!(pts(&v, "i")[0], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "o")[1], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "i")[2], json!([0.0, 0.0]));
+        assert_eq!(pts(&v, "o")[2], json!([0.0, 0.0]));
     }
 
     #[test]
-    fn multiple_contours_emit_flat_open_contour() {
+    fn multiple_contours_emit_one_shape_per_contour() {
         let mut path = BezPath::new();
         path.move_to((0.0, 0.0));
         path.line_to((10.0, 0.0));
         path.move_to((20.0, 0.0));
         path.quad_to((25.0, 10.0), (30.0, 0.0));
-        let v = bezpath_to_lottie_path(&path);
+        let shapes = bezpath_to_lottie_shapes("TEXT", &path);
+        assert_eq!(shapes.len(), 2);
 
-        assert_eq!(v["c"], json!([false, false]));
-        assert_eq!(
-            v["v"],
-            json!([[[0.0, 0.0], [10.0, 0.0]], [[20.0, 0.0], [30.0, 0.0]]])
-        );
+        for shape in &shapes {
+            assert_eq!(shape["ty"], json!("sh"));
+            assert!(shape["ks"]["k"]["c"].is_boolean());
+        }
+        assert_eq!(shapes[0]["ks"]["k"]["c"], json!(false));
+        assert_eq!(shapes[0]["ks"]["k"]["v"], json!([[0.0, 0.0], [10.0, 0.0]]));
+        assert_eq!(shapes[1]["ks"]["k"]["c"], json!(false));
+        assert_eq!(shapes[1]["ks"]["k"]["v"], json!([[20.0, 0.0], [30.0, 0.0]]));
         // Elevated quadratic: c1 = prev + 2/3*(c - prev) = (20+10/3, 0+20/3);
         // tangents are the offsets, so o = 2/3*(c - prev), i = 2/3*(c - p).
-        approx_pt(&pts(&v, "o")[1][0], 2.0 / 3.0 * 5.0, 2.0 / 3.0 * 10.0);
-        approx_pt(&pts(&v, "i")[1][1], 2.0 / 3.0 * -5.0, 2.0 / 3.0 * 10.0);
+        let second = &shapes[1]["ks"]["k"];
+        approx_pt(&pts(second, "o")[0], 2.0 / 3.0 * 5.0, 2.0 / 3.0 * 10.0);
+        approx_pt(&pts(second, "i")[1], 2.0 / 3.0 * -5.0, 2.0 / 3.0 * 10.0);
     }
 
     #[test]
@@ -1117,25 +1150,23 @@ mod tests {
         doc.attach(group, Parent::Comp(comp), 0).unwrap();
 
         let value = crate::export(&doc).unwrap();
-        let path_json = value
-            .pointer("/layers/0/shapes/0/ks/k")
-            .expect("baked text path present");
-        assert!(!path_json["c"].as_array().unwrap().is_empty());
-        assert_eq!(
-            path_json["v"].as_array().unwrap().len(),
-            path_json["c"].as_array().unwrap().len(),
-            "one vertex contour per closed-flag contour"
+        let shapes = value["layers"][0]["shapes"].as_array().unwrap();
+        let outlines: Vec<&Value> = shapes.iter().filter(|s| s["ty"] == json!("sh")).collect();
+        assert!(
+            !outlines.is_empty(),
+            "baked text must emit at least one `sh` item"
         );
-        // Every vertex carries a matching pair of tangent offsets.
-        for ((vs, ins), outs) in path_json["v"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(path_json["i"].as_array().unwrap().iter())
-            .zip(path_json["o"].as_array().unwrap().iter())
-        {
-            assert_eq!(vs.as_array().unwrap().len(), ins.as_array().unwrap().len());
-            assert_eq!(vs.as_array().unwrap().len(), outs.as_array().unwrap().len());
+        for outline in &outlines {
+            let path_json = &outline["ks"]["k"];
+            assert!(
+                path_json["c"].is_boolean(),
+                "contour flag must be flat, got {}",
+                path_json["c"]
+            );
+            let vs = path_json["v"].as_array().unwrap();
+            assert!(!vs.is_empty());
+            assert_eq!(vs.len(), path_json["i"].as_array().unwrap().len());
+            assert_eq!(vs.len(), path_json["o"].as_array().unwrap().len());
         }
     }
 
