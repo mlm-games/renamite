@@ -198,18 +198,23 @@ impl Importer {
             node.opacity = import_scalar(transform.get("o").unwrap_or(&Value::Null), 0.01, 1.0);
         }
 
-        let mut children = Vec::new();
-        if let Some(masks) = layer.get("masksProperties").and_then(Value::as_array) {
-            for (index, mask) in masks.iter().enumerate() {
+        let mut masks = Vec::new();
+        if let Some(masks_json) = layer.get("masksProperties").and_then(Value::as_array) {
+            for (index, mask) in masks_json.iter().enumerate() {
                 if let Some(tree) = self.import_mask(mask, &format!("{path}/masks/{index}")) {
-                    children.push(tree);
+                    masks.push(tree);
                 }
             }
         }
-        if children.is_empty() {
+        if masks.is_empty() {
             Ok(ImportTree::leaf(node))
         } else {
-            Ok(ImportTree { node, children })
+            let name = node.name.clone();
+            masks.push(ImportTree::leaf(node));
+            Ok(ImportTree {
+                node: Node::new(name, NodeKind::Group),
+                children: masks,
+            })
         }
     }
 

@@ -332,7 +332,7 @@ fn photo_card() -> RenFile {
     let mut image = Node::new("Image", NodeKind::Image(ImageNode::new(asset)));
     image.transform.anchor = Animated::new(DVec2::new(1.0, 1.0));
     image.transform.position = Animated::new(DVec2::new(256.0, 256.0));
-    image.transform.scale = Animated::new(DVec2::splat(10_000.0));
+    image.transform.scale = Animated::new(DVec2::splat(16_000.0));
 
     let image = doc.create_node(image);
 

@@ -191,7 +191,18 @@ impl Exporter<'_> {
         _composition: &Composition,
         index: u32,
     ) -> Value {
-        let (shapes, masks) = self.split_layer_children(node);
+        let (shapes, images, masks) = self.split_layer_children(node);
+        if let Some(image_layer) = self.masked_image_layer(node, &images, &shapes, masks.clone()) {
+            let mut layer = image_layer;
+            layer["ip"] = json!(props.in_frame.0 as f64);
+            layer["op"] = json!(props.out_frame.0 as f64);
+            layer["st"] = json!(props.in_frame.0 as f64);
+            layer["bm"] = json!(blend_to_lottie(props.blend));
+            layer["ind"] = json!(index);
+            layer["hd"] = json!(!node.visible);
+            let _ = id;
+            return layer;
+        }
         let mut layer = self.shape_layer(
             node.name.clone(),
             transform_json(&node.transform, &node.opacity),
@@ -218,7 +229,14 @@ impl Exporter<'_> {
         composition: &Composition,
         index: u32,
     ) -> Value {
-        let (shapes, masks) = self.split_layer_children(node);
+        let (shapes, images, masks) = self.split_layer_children(node);
+        if let Some(mut image_layer) = self.masked_image_layer(node, &images, &shapes, masks) {
+            image_layer["ind"] = json!(index);
+            image_layer["hd"] = json!(!node.visible);
+            image_layer["ip"] = json!(composition.range.0.0 as f64);
+            image_layer["op"] = json!(composition.range.1.0 as f64);
+            return image_layer;
+        }
         let mut layer = self.shape_layer(
             node.name.clone(),
             transform_json(&node.transform, &node.opacity),
@@ -237,8 +255,9 @@ impl Exporter<'_> {
         layer
     }
 
-    fn split_layer_children(&mut self, node: &Node) -> (Vec<Value>, Vec<Value>) {
+    fn split_layer_children(&mut self, node: &Node) -> (Vec<Value>, Vec<NodeId>, Vec<Value>) {
         let mut shapes = Vec::new();
+        let mut images = Vec::new();
         let mut masks = Vec::new();
         for &child in &node.children {
             if let Some(child_node) = self.document.nodes.get(child) {
@@ -246,13 +265,72 @@ impl Exporter<'_> {
                     NodeKind::Mask(mask) => {
                         masks.push(self.export_mask(child, child_node, mask));
                     }
+                    NodeKind::Image(_) => {
+                        images.push(child);
+                    }
                     _ => {
                         shapes.extend(self.export_node_item(child, None));
                     }
                 }
             }
         }
-        (shapes, masks)
+        (shapes, images, masks)
+    }
+
+    /// Single image + masks inside a Group/Layer exports as an image layer
+    /// (`ty: 2`) with `masksProperties`, so e.g. Photo Card keeps both.
+    /// Returns `None` when this fast path does not apply.
+    fn masked_image_layer(
+        &mut self,
+        host: &Node,
+        images: &[NodeId],
+        shapes: &[Value],
+        masks: Vec<Value>,
+    ) -> Option<Value> {
+        if images.len() != 1 || !shapes.is_empty() {
+            return None;
+        }
+        let image_id = images[0];
+        let image_node = self.document.nodes.get(image_id)?.clone();
+        let NodeKind::Image(ref img) = image_node.kind else {
+            return None;
+        };
+        let reference = match self.ensure_image_asset(img.asset()) {
+            Ok(r) => r,
+            Err(e) => {
+                self.warnings.push(LottieWarning::new(
+                    format!("node/{image_id:?}"),
+                    format!("image asset could not be exported: {e}"),
+                ));
+                return None;
+            }
+        };
+        if !transform_is_identity(&host.transform, &host.opacity) {
+            self.warnings.push(LottieWarning::new(
+                host.name.clone(),
+                "group/layer transform is dropped on masked image export; bake it into the image node",
+            ));
+        }
+        let mut layer = json!({
+            "ddd": 0,
+            "ind": 0,
+            "ty": 2,
+            "nm": image_node.name,
+            "refId": reference,
+            "sr": 1,
+            "ks": transform_json(&image_node.transform, &image_node.opacity),
+            "ao": 0,
+            "ip": 0,
+            "op": 0,
+            "st": 0,
+            "bm": 0,
+            "hd": !image_node.visible,
+            "renamiteNode": format!("{image_id:?}")
+        });
+        if !masks.is_empty() {
+            layer["masksProperties"] = Value::Array(masks);
+        }
+        Some(layer)
     }
 
     fn export_mask(&mut self, id: NodeId, node: &Node, mask: &MaskProps) -> Value {
