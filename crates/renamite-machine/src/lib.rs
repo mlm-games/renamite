@@ -370,11 +370,22 @@ impl MachineInstance {
                 .iter()
                 .chain(state.transitions.iter())
                 .find(|tr| transition_ready(tr, &self.inputs, norm));
-            if let Some(tr) = fired.cloned() {
+            let fired = fired.cloned().filter(|tr| {
+                let to = tr.to.min(layer.states.len() - 1);
+                if to != rt.current {
+                    return true;
+                }
+                tr.conditions
+                    .iter()
+                    .any(|c| matches!(c, Condition::Triggered { .. }))
+            });
+            let mut transitioned_from: Option<(usize, f64, f64)> = None;
+            if let Some(tr) = fired {
                 consume_triggers(&tr, &mut self.inputs);
+                transitioned_from = Some((rt.current, prev_time, rt.time));
                 rt.fade = (tr.duration > 0.0).then_some(Fade {
                     from: rt.current,
-                    from_time: rt.time,
+                    from_time: prev_time,
                     t: 0.0,
                     duration: tr.duration,
                 });
@@ -385,26 +396,48 @@ impl MachineInstance {
             // sample
             let mut b = HashMap::new();
             let mut evs = Vec::new();
+            if let Some((from_idx, from_prev, from_cur)) = transitioned_from {
+                let mut old_evs = Vec::new();
+                let mut old_vals = HashMap::new();
+                sample_state(
+                    &layer.states[from_idx],
+                    clips,
+                    &self.inputs,
+                    from_prev,
+                    from_cur,
+                    &mut old_vals,
+                    &mut old_evs,
+                );
+                evs.append(&mut old_evs);
+            }
+            let sample_prev = if transitioned_from.is_some() {
+                rt.time
+            } else {
+                prev_if_same(prev_time, rt.time)
+            };
             sample_state(
                 &layer.states[rt.current],
                 clips,
                 &self.inputs,
-                prev_if_same(prev_time, rt.time),
+                sample_prev,
                 rt.time,
                 &mut b,
                 &mut evs,
             );
             if let Some(f) = &rt.fade {
                 let mut a = HashMap::new();
+                let mut fade_evs = Vec::new();
+                let fade_prev = (f.from_time - dt_frames).max(0.0);
                 sample_state(
                     &layer.states[f.from],
                     clips,
                     &self.inputs,
-                    f.from_time,
+                    fade_prev,
                     f.from_time,
                     &mut a,
-                    &mut Vec::new(),
+                    &mut fade_evs,
                 );
+                evs.append(&mut fade_evs);
                 for (k, va) in a {
                     let merged = match b.get(&k) {
                         Some(vb) => value_tween(&va, vb, f.t),
@@ -591,6 +624,8 @@ fn emit_events(c: &Clip, prev: f64, cur: f64, loop_mode: LoopMode, out: &mut Vec
     } else if loop_mode == LoopMode::Loop {
         hit(prev, c.range.1.0 as f64, out);
         hit(c.range.0.0 as f64 - 1.0, cur, out);
+    } else if loop_mode == LoopMode::PingPong {
+        hit(cur, prev, out);
     }
 }
 

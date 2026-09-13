@@ -536,7 +536,8 @@ impl SceneRenderer {
                 let opts = StrokeOptions::tolerance(tol)
                     .with_line_width(s.width as f32)
                     .with_line_cap(map_cap(s.cap))
-                    .with_line_join(map_join(s.join));
+                    .with_line_join(map_join(s.join))
+                    .with_miter_limit(s.miter_limit.max(1.0) as f32);
                 let mut b = BuffersBuilder::new(&mut buffers, ctor);
                 self.stroke_tess.tessellate_path(path, &opts, &mut b).ok()?;
             }
@@ -594,13 +595,36 @@ fn radial_fan_mesh(
     opacity: f64,
     tol: f32,
 ) -> Option<VectorMeshData> {
-    let mut outline: Vec<[f32; 2]> = Vec::new();
-    kurbo::flatten(path.elements().iter().copied(), tol as f64, |el| {
-        if let kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) = el {
-            outline.push([p.x as f32, p.y as f32]);
+    let mut contours: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut cur: Vec<[f32; 2]> = Vec::new();
+    kurbo::flatten(path.elements().iter().copied(), tol as f64, |el| match el {
+        kurbo::PathEl::MoveTo(p) => {
+            if !cur.is_empty() {
+                contours.push(std::mem::take(&mut cur));
+            }
+            cur.push([p.x as f32, p.y as f32]);
         }
+        kurbo::PathEl::LineTo(p) => {
+            cur.push([p.x as f32, p.y as f32]);
+        }
+        kurbo::PathEl::ClosePath => {
+            if !cur.is_empty() {
+                contours.push(std::mem::take(&mut cur));
+            }
+        }
+        _ => {}
     });
-    if outline.len() < 3 || !point_in_polygon(center, &outline) {
+    if !cur.is_empty() {
+        contours.push(cur);
+    }
+    if contours.len() != 1 {
+        return None;
+    }
+    let outline = &contours[0];
+    if outline.len() < 3 || !point_in_polygon(center, outline) {
+        return None;
+    }
+    if !is_convex(outline) {
         return None;
     }
 
@@ -634,6 +658,30 @@ fn radial_fan_mesh(
 }
 
 /// Ray-casting point-in-polygon test over an x-y ring of outline points.
+fn is_convex(outline: &[[f32; 2]]) -> bool {
+    let n = outline.len();
+    if n < 3 {
+        return false;
+    }
+    let mut sign = 0.0f64;
+    for i in 0..n {
+        let a = outline[i];
+        let b = outline[(i + 1) % n];
+        let c = outline[(i + 2) % n];
+        let cross = ((b[0] - a[0]) as f64) * ((c[1] - b[1]) as f64)
+            - ((b[1] - a[1]) as f64) * ((c[0] - b[0]) as f64);
+        if cross.abs() < 1e-9 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross;
+        } else if sign * cross < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 fn point_in_polygon(p: glam::DVec2, outline: &[[f32; 2]]) -> bool {
     let n = outline.len();
     let (mut j, mut i) = (n - 1, 0usize);
@@ -798,6 +846,7 @@ fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
             stroke.width.to_bits().hash(&mut h);
             std::mem::discriminant(&stroke.cap).hash(&mut h);
             std::mem::discriminant(&stroke.join).hash(&mut h);
+            stroke.miter_limit.to_bits().hash(&mut h);
 
             match &stroke.dash {
                 None => {

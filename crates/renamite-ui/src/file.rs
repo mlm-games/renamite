@@ -85,20 +85,22 @@ fn parse_ren(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile
     }
 }
 
-fn import_lottie_bytes(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile> {
+fn import_lottie_bytes(
+    name: &str,
+    data: &[u8],
+) -> anyhow::Result<(renamite_io_ren::RenFile, Vec<String>)> {
     let json: serde_json::Value = serde_json::from_slice(data)?;
     let report = renamite_io_lottie::import_with_report(&json)?;
-    if !report.warnings.is_empty() {
-        eprintln!(
-            "Lottie import completed with {} warning(s)",
-            report.warnings.len()
-        );
-    }
+    let warnings: Vec<String> = report
+        .warnings
+        .iter()
+        .map(|w| format!("{}: {}", w.path, w.message))
+        .collect();
     let stem = Path::new(name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Imported".into());
-    Ok(renamite_io_ren::RenFile::new(report.value, stem))
+    Ok((renamite_io_ren::RenFile::new(report.value, stem), warnings))
 }
 
 /// Export the current document to Lottie JSON via the OS save picker
@@ -117,9 +119,20 @@ pub fn export_lottie(session: &SessionRef) {
         }
     };
     if !report.warnings.is_empty() {
-        eprintln!(
-            "Lottie export completed with {} warning(s)",
-            report.warnings.len()
+        let shown: Vec<String> = report
+            .warnings
+            .iter()
+            .take(3)
+            .map(|w| format!("{}: {}", w.path, w.message))
+            .collect();
+        set_status(
+            session,
+            format!(
+                "Lottie export ({} warning{}: {})",
+                report.warnings.len(),
+                if report.warnings.len() == 1 { "" } else { "s" },
+                shown.join("; ")
+            ),
         );
     }
     let bytes = match serde_json::to_vec_pretty(&report.value) {
@@ -238,7 +251,8 @@ fn open_document_inner(session: &SessionRef) {
                     Ok(file) => Some(PendingFileOp::OpenDone {
                         file: Box::new(file),
                         path: Some(p),
-                        message: "Opened",
+                        message: "Opened".to_string(),
+                        warnings: Vec::new(),
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
                         message: format!("Open failed: {e}"),
@@ -248,7 +262,8 @@ fn open_document_inner(session: &SessionRef) {
                     Ok(file) => Some(PendingFileOp::OpenDone {
                         file: Box::new(file),
                         path: None,
-                        message: "Opened",
+                        message: "Opened".to_string(),
+                        warnings: Vec::new(),
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
                         message: format!("Open failed: {e}"),
@@ -344,10 +359,11 @@ fn import_lottie_inner(session: &SessionRef) {
                         Err(e) => Err(e.into()),
                     };
                     match result {
-                        Ok(file) => Some(PendingFileOp::OpenDone {
+                        Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
                             file: Box::new(file),
                             path: None,
-                            message: "Imported Lottie",
+                            message: "Imported Lottie".to_string(),
+                            warnings,
                         }),
                         Err(e) => Some(PendingFileOp::Failed {
                             message: format!("Import failed: {e}"),
@@ -355,10 +371,11 @@ fn import_lottie_inner(session: &SessionRef) {
                     }
                 }
                 Some(PickedFile::Bytes { name, data }) => match import_lottie_bytes(&name, &data) {
-                    Ok(file) => Some(PendingFileOp::OpenDone {
+                    Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
                         file: Box::new(file),
                         path: None,
-                        message: "Imported Lottie",
+                        message: "Imported Lottie".to_string(),
+                        warnings,
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
                         message: format!("Import failed: {e}"),
@@ -373,19 +390,21 @@ fn import_lottie_inner(session: &SessionRef) {
     );
 }
 
-fn import_svg_bytes(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile> {
+fn import_svg_bytes(
+    name: &str,
+    data: &[u8],
+) -> anyhow::Result<(renamite_io_ren::RenFile, Vec<String>)> {
     let report = renamite_io_svg::import_with_report(data)?;
-    if !report.warnings.is_empty() {
-        eprintln!(
-            "SVG import completed with {} warning(s)",
-            report.warnings.len()
-        );
-    }
+    let warnings: Vec<String> = report
+        .warnings
+        .iter()
+        .map(|w| format!("{}: {}", w.path, w.message))
+        .collect();
     let stem = Path::new(name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Imported".into());
-    Ok(renamite_io_ren::RenFile::new(report.value, stem))
+    Ok((renamite_io_ren::RenFile::new(report.value, stem), warnings))
 }
 
 /// Import an SVG file via an async picker (after an unsaved guard).
@@ -414,10 +433,11 @@ fn import_svg_inner(session: &SessionRef) {
                         Err(e) => Err(e.into()),
                     };
                     match result {
-                        Ok(file) => Some(PendingFileOp::OpenDone {
+                        Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
                             file: Box::new(file),
                             path: None,
-                            message: "Imported SVG",
+                            message: "Imported SVG".to_string(),
+                            warnings,
                         }),
                         Err(e) => Some(PendingFileOp::Failed {
                             message: format!("Import failed: {e}"),
@@ -425,10 +445,11 @@ fn import_svg_inner(session: &SessionRef) {
                     }
                 }
                 Some(PickedFile::Bytes { name, data }) => match import_svg_bytes(&name, &data) {
-                    Ok(file) => Some(PendingFileOp::OpenDone {
+                    Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
                         file: Box::new(file),
                         path: None,
-                        message: "Imported SVG",
+                        message: "Imported SVG".to_string(),
+                        warnings,
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
                         message: format!("Import failed: {e}"),
@@ -462,9 +483,20 @@ pub fn export_svg(session: &SessionRef) {
     let svg = match report {
         Ok(report) => {
             if !report.warnings.is_empty() {
-                eprintln!(
-                    "SVG export completed with {} warning(s)",
-                    report.warnings.len()
+                let shown: Vec<String> = report
+                    .warnings
+                    .iter()
+                    .take(3)
+                    .map(|w| format!("{}: {}", w.path, w.message))
+                    .collect();
+                set_status(
+                    session,
+                    format!(
+                        "SVG export ({} warning{}: {})",
+                        report.warnings.len(),
+                        if report.warnings.len() == 1 { "" } else { "s" },
+                        shown.join("; ")
+                    ),
                 );
             }
             report.value
@@ -474,8 +506,18 @@ pub fn export_svg(session: &SessionRef) {
             return;
         }
     };
-    match fs::write(&path, svg) {
-        Ok(()) => set_status(session, format!("Exported {}", path.display())),
+    match atomic_fs_write(&path, svg.as_bytes()) {
+        Ok(()) => {
+            if session
+                .borrow()
+                .status
+                .as_ref()
+                .is_some_and(|s| s.starts_with("SVG export ("))
+            {
+            } else {
+                set_status(session, format!("Exported {}", path.display()));
+            }
+        }
         Err(e) => report_error(session, e),
     }
 }
@@ -625,6 +667,7 @@ pub fn import_image(session: &SessionRef) {
 }
 
 /// Serialize + write the document to `path`, honoring `.ren` vs `.renb`.
+/// Atomic (temp + rename) so a crash can't leave a truncated project.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_ren(session: &SessionRef, path: &Path) -> bool {
     let bytes = if is_binary(path.to_string_lossy().as_ref()) {
@@ -633,7 +676,7 @@ fn write_ren(session: &SessionRef, path: &Path) -> bool {
         session.borrow().save_snapshot()
     };
     match bytes {
-        Ok(bytes) => match fs::write(path, bytes) {
+        Ok(bytes) => match atomic_fs_write(path, &bytes) {
             Ok(()) => {
                 session.borrow_mut().mark_saved(Some(path.to_path_buf()));
                 set_status(session, "Saved");
@@ -649,6 +692,29 @@ fn write_ren(session: &SessionRef, path: &Path) -> bool {
             false
         }
     }
+}
+
+/// Atomic file write for desktop targets (temp in same dir + rename).
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+fn atomic_fs_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_extension(format!(
+        "{}.tmp-{}",
+        path.extension().and_then(|s| s.to_str()).unwrap_or("tmp"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, bytes)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.into())
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+fn atomic_fs_write(_path: &Path, _bytes: &[u8]) -> anyhow::Result<()> {
+    anyhow::bail!("atomic_fs_write is desktop-only")
 }
 
 fn read_ren(path: &Path) -> anyhow::Result<renamite_io_ren::RenFile> {

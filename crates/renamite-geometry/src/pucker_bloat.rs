@@ -3,7 +3,12 @@
 
 use kurbo::{BezPath, PathEl, Point};
 
-/// `amount` in percent. Positive = bloat (vertices out), negative = pucker.
+/// `amount` in percent.
+///
+/// Positive = pucker: vertices move toward the centroid, handles move away
+/// (so straight polygons shrink at the corners but curves bulge).
+/// Negative = bloat: vertices move away, handles move toward the center.
+/// This vertex-toward-center convention matches AE `pb` and lottie-web.
 pub fn pucker_bloat_path(path: &BezPath, amount_pct: f64) -> BezPath {
     if !amount_pct.is_finite() || amount_pct.abs() < 1e-9 {
         return path.clone();

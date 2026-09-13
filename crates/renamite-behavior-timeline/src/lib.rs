@@ -285,7 +285,7 @@ impl TimelineKeyframeBehavior {
             } => {
                 let raw = ((pos.x - press.x) / ctx.layout.px_per_frame).round() as i64;
                 let clamped = clamp_delta(ctx, origins, raw);
-                let want = snap_valid_delta(ctx, origins, clamped);
+                let want = snap_valid_delta(ctx, origins, *delta, clamped);
                 if want == *delta {
                     return smallvec![]; // stick at last valid delta
                 }
@@ -440,9 +440,19 @@ fn clamp_delta(ctx: &TimelineCtx, origins: &[KeyRef], want: i64) -> i64 {
 
 /// Valid iff no destination collides with a STATIONARY key (uniform delta
 /// preserves intra-set distinctness, so only stationary keys can collide).
-fn delta_valid(ctx: &TimelineCtx, origins: &[KeyRef], delta: i64) -> bool {
+/// `applied` is the delta already reflected in `ctx` (current doc positions
+/// are `origin + applied`); the exclusion set must use those, not the
+/// drag-start frames.
+fn delta_valid(ctx: &TimelineCtx, origins: &[KeyRef], applied: i64, delta: i64) -> bool {
     use std::collections::HashSet;
-    let moving: HashSet<&KeyRef> = origins.iter().collect();
+    let moving: HashSet<KeyRef> = origins
+        .iter()
+        .map(|r| KeyRef {
+            node: r.node,
+            prop: r.prop.clone(),
+            frame: Frame(r.frame.0 + applied),
+        })
+        .collect();
     for r in origins {
         let dest = Frame(r.frame.0 + delta);
         let row = TimelineRow {
@@ -466,15 +476,20 @@ fn delta_valid(ctx: &TimelineCtx, origins: &[KeyRef], delta: i64) -> bool {
 /// Walk from `want` toward 0 until a valid delta is found, so a drag that
 /// would collide with a stationary key "sticks" at the last valid offset
 /// (standard editor feel) instead of emitting a conflicting command.
-fn snap_valid_delta(ctx: &TimelineCtx, origins: &[KeyRef], want: i64) -> i64 {
-    if delta_valid(ctx, origins, want) {
+fn snap_valid_delta(
+    ctx: &TimelineCtx,
+    origins: &[KeyRef],
+    applied: i64,
+    want: i64,
+) -> i64 {
+    if delta_valid(ctx, origins, applied, want) {
         return want;
     }
     let step = if want > 0 { -1 } else { 1 };
     let mut d = want;
     while d != 0 {
         d += step;
-        if delta_valid(ctx, origins, d) {
+        if delta_valid(ctx, origins, applied, d) {
             return d;
         }
     }

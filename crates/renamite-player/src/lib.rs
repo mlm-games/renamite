@@ -108,6 +108,9 @@ impl Engine {
         if self.paused {
             return &self.events;
         }
+        if let Some(c) = project.document.compositions.get(self.comp) {
+            self.rate = c.rate;
+        }
         self.ov.clear();
         let dt_frames = dt_secs * self.rate.fps();
 
@@ -145,6 +148,22 @@ impl Engine {
     /// Re-evaluate at the current head without advancing time. Call after any
     /// editor mutation of the document (History apply/undo/redo).
     pub fn reevaluate(&mut self, project: &RenFile) {
+        if let Some(c) = project.document.compositions.get(self.comp) {
+            self.rate = c.rate;
+        }
+        match &mut self.mode {
+            PlayMode::Machine { id, instance, .. } => {
+                self.ov.clear();
+                if let Some(m) = project.machines.get(*id) {
+                    let out = instance.tick(m, &project.clips, 0.0, &mut self.ov);
+                    let _ = out.events.len();
+                    self.events.clear();
+                }
+            }
+            PlayMode::Timeline { .. } | PlayMode::Scrub { .. } => {
+                self.ov.clear();
+            }
+        }
         self.apply_host_overrides();
         self.scene = evaluate_with(&project.document, self.comp, self.head(), &self.ov);
     }
@@ -187,9 +206,25 @@ impl Engine {
     }
 
     pub fn play_timeline(&mut self, project: &RenFile, loop_mode: LoopMode) {
-        let mut playback = self.playing_playback(project);
-        playback.loop_mode = loop_mode;
-        self.mode = PlayMode::Timeline { playback };
+        let range = project.document.compositions[self.comp].range;
+        let head = match &self.mode {
+            PlayMode::Timeline { playback } if playback.range == range => playback
+                .head
+                .clamp(range.0.0 as f64, (range.1.0 as f64).max(range.0.0 as f64)),
+            PlayMode::Machine { background, .. } if background.range == range => background
+                .head
+                .clamp(range.0.0 as f64, (range.1.0 as f64).max(range.0.0 as f64)),
+            _ => range.0.0 as f64,
+        };
+        self.mode = PlayMode::Timeline {
+            playback: Playback {
+                state: PlayState::Playing,
+                head,
+                loop_mode,
+                range,
+                dir: 1.0,
+            },
+        };
     }
 
     pub fn set_timeline_playback(&mut self, pb: Playback) {
@@ -230,9 +265,16 @@ impl Engine {
 
     fn playing_playback(&self, project: &RenFile) -> Playback {
         let range = project.document.compositions[self.comp].range;
+        let head = match &self.mode {
+            PlayMode::Timeline { playback } if playback.range == range => playback.head,
+            PlayMode::Machine { background, .. } if background.range == range => background.head,
+            PlayMode::Scrub { frame } => *frame,
+            _ => range.0.0 as f64,
+        };
+        let head = head.clamp(range.0.0 as f64, (range.1.0 as f64).max(range.0.0 as f64));
         Playback {
             state: PlayState::Playing,
-            head: range.0.0 as f64,
+            head,
             loop_mode: LoopMode::Loop,
             range,
             dir: 1.0,
@@ -344,21 +386,29 @@ impl Engine {
     }
 
     pub fn pointer_up(&mut self, project: &RenFile, pt: DVec2) {
-        if let Some(n) = pick(&self.scene, pt) {
-            self.route(project, n, PointerEventKind::Up);
-            if self.pressed == Some(n) {
-                self.route(project, n, PointerEventKind::Click);
+        let release_hit = pick(&self.scene, pt);
+        if let Some(pressed) = self.pressed {
+            self.route(project, pressed, PointerEventKind::Up);
+            if release_hit == Some(pressed) {
+                self.route(project, pressed, PointerEventKind::Click);
             }
+        } else if let Some(n) = release_hit {
+            let _ = n;
         }
         self.pressed = None;
     }
 
     /// Pointer left the surface: synthesize Exit, clear press state.
+    /// A captured press still gets Up (drag released off-surface).
     pub fn pointer_leave(&mut self, project: &RenFile) {
         if let Some(prev) = self.hover.take() {
             self.route(project, prev, PointerEventKind::Exit);
         }
-        self.pressed = None;
+        if let Some(pressed) = self.pressed.take() {
+            self.route(project, pressed, PointerEventKind::Up);
+        } else {
+            self.pressed = None;
+        }
     }
 
     fn route(&mut self, project: &RenFile, node: NodeId, kind: PointerEventKind) {

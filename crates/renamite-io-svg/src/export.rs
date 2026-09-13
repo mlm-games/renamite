@@ -215,6 +215,12 @@ impl Exporter<'_> {
                 attrs.push_str(&format!(" stroke-dashoffset=\"{}\"", fmt(dash.offset)));
             }
         }
+        if (stroke.miter_limit - 4.0).abs() > 1e-9 {
+            attrs.push_str(&format!(
+                " stroke-miterlimit=\"{}\"",
+                fmt(stroke.miter_limit)
+            ));
+        }
         if opacity < 1.0 {
             attrs.push_str(&format!(" opacity=\"{}\"", fmt(opacity)));
         }

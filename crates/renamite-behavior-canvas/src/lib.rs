@@ -1996,7 +1996,9 @@ impl PathEditTool {
                             frame: edit_frame,
                             edits: vec![AnchorEdit::SetMode {
                                 index: i,
-                                mode: new_mode
+                                mode: new_mode,
+                                tan_in: None,
+                                tan_out: None,
                             }],
                         }
                     ]));
@@ -2346,7 +2348,7 @@ impl PathEditTool {
     }
 
     /// Arrows: move the selected anchor. Alt = 1 screen px, Shift = 20px,
-    /// default = 2px (world units).
+    /// default = 2px (screen px, i.e. divided by zoom).
     fn nudge_selected_anchor(&mut self, ctx: &ToolContext, dir: DVec2) -> OutputVec {
         let Some(index) = self.selected_anchor else {
             return smallvec![];
@@ -2362,9 +2364,9 @@ impl PathEditTool {
         let amount = if ctx.modifiers.alt {
             1.0 / ctx.view.scale
         } else if ctx.modifiers.shift {
-            20.0
+            20.0 / ctx.view.scale
         } else {
-            2.0
+            2.0 / ctx.view.scale
         };
 
         let (edit_frame, seed) = self.edit_target(ctx, id);
@@ -2406,7 +2408,12 @@ impl PathEditTool {
             EditorCommand::EditAnchors {
                 id,
                 frame: edit_frame,
-                edits: vec![AnchorEdit::SetMode { index, mode }],
+                edits: vec![AnchorEdit::SetMode {
+                    index,
+                    mode,
+                    tan_in: None,
+                    tan_out: None,
+                }],
             }
         ]));
         out.push(ToolOutput::CommitTransaction);
@@ -2561,7 +2568,7 @@ impl PathEditTool {
                 .collect();
             let mut start = rotated[0];
             start.tan_in = DVec2::ZERO;
-            let mut end = start;
+            let mut end = rotated[0];
             end.tan_out = DVec2::ZERO;
             let mut anchors = Vec::with_capacity(n + 1);
             anchors.push(start);

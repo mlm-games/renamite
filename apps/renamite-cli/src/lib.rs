@@ -259,7 +259,7 @@ fn cmd_bake(input: PathBuf, frames: usize, dt: f64, output: PathBuf) -> Result<(
         .with_context(|| format!("failed to open player for {}", input.display()))?;
     let scenes = player.bake(frames, dt);
     let json = serde_json::to_string_pretty(&scenes)?;
-    std::fs::write(&output, json)?;
+    atomic_write(&output, json.as_bytes())?;
     println!("Baked {frames} frames -> {}", output.display());
     Ok(())
 }
@@ -304,7 +304,7 @@ fn cmd_render(
             player.scrub(f as f64);
             let png = rasterize_png(&mut bridge, &mut gpu, player.scene(), &view, bg_clear)?;
             let out = out.ok_or_else(|| anyhow!("--out is required with --frame"))?;
-            std::fs::write(&out, png)?;
+            atomic_write(&out, &png)?;
             println!("Rendered frame {f} -> {}", out.display());
             Ok(())
         }
@@ -315,7 +315,7 @@ fn cmd_render(
             for (i, scene) in scenes.iter().enumerate() {
                 let png = rasterize_png(&mut bridge, &mut gpu, scene, &view, bg_clear)?;
                 let path = out_dir.join(format!("{prefix}_{i:05}.png"));
-                std::fs::write(&path, png)?;
+                atomic_write(&path, &png)?;
             }
             println!("Rendered {n} frames -> {}", out_dir.display());
             Ok(())
@@ -386,7 +386,7 @@ fn cmd_pack(input: PathBuf, output: PathBuf) -> Result<()> {
     let text = std::fs::read_to_string(&input)?;
     let mut file: RenFile = renamite_io_ren::open(&text)?;
     file.normalize();
-    std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?;
+    atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
     println!("Packed {} -> {}", input.display(), output.display());
     Ok(())
 }
@@ -395,7 +395,7 @@ fn cmd_unpack(input: PathBuf, output: PathBuf) -> Result<()> {
     let bytes = std::fs::read(&input)?;
     let mut file: RenFile = renamite_io_ren::open_binary(&bytes)?;
     file.normalize();
-    std::fs::write(&output, renamite_io_ren::save(&file)?)?;
+    atomic_write(&output, renamite_io_ren::save(&file)?.as_bytes())?;
     println!("Unpacked {} -> {}", input.display(), output.display());
     Ok(())
 }
@@ -513,7 +513,8 @@ fn cmd_validate(
     }
 
     if fix {
-        std::fs::write(&input, renamite_io_ren::save_binary(&file)?)?;
+        let bytes = save_for_output(&file, &input)?;
+        atomic_write(&input, &bytes)?;
         println!("Normalized and saved {}", input.display());
     } else if serde_json::to_string(&file)? == before_json {
         println!("{} is valid", input.display());
@@ -608,11 +609,8 @@ fn cmd_new(output: PathBuf, template: String) -> Result<()> {
     };
     file.meta.name = name;
 
-    let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("ren");
-    match ext {
-        "renb" => std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?,
-        _ => std::fs::write(&output, renamite_io_ren::save(&file)?)?,
-    }
+    let bytes = save_for_output(&file, &output)?;
+    atomic_write(&output, &bytes)?;
     println!("Created {}", output.display());
     Ok(())
 }
@@ -699,7 +697,7 @@ fn cmd_export_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
     for warning in &report.warnings {
         eprintln!("warning at {}: {}", warning.path, warning.message);
     }
-    std::fs::write(&output, serde_json::to_vec_pretty(&report.value)?)?;
+    atomic_write(&output, &serde_json::to_vec_pretty(&report.value)?)?;
     println!("Exported {} -> {}", input.display(), output.display());
     Ok(())
 }
@@ -722,10 +720,10 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
     let file = RenFile::new(report.value, name_from_path(&input));
     match output.extension().and_then(|extension| extension.to_str()) {
         Some("renb") => {
-            std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?;
+            atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
         }
         _ => {
-            std::fs::write(&output, renamite_io_ren::save(&file)?)?;
+            atomic_write(&output, renamite_io_ren::save(&file)?.as_bytes())?;
         }
     }
     println!("Imported {} -> {}", input.display(), output.display());
@@ -747,7 +745,7 @@ fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> 
     for warning in &report.warnings {
         eprintln!("warning at {}: {}", warning.path, warning.message);
     }
-    std::fs::write(&output, report.value)?;
+    atomic_write(&output, report.value.as_bytes())?;
     println!(
         "Exported {} frame {frame} -> {}",
         input.display(),
@@ -774,10 +772,10 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
     let file = RenFile::new(report.value, name_from_path(&input));
     match output.extension().and_then(|extension| extension.to_str()) {
         Some("renb") => {
-            std::fs::write(&output, renamite_io_ren::save_binary(&file)?)?;
+            atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
         }
         _ => {
-            std::fs::write(&output, renamite_io_ren::save(&file)?)?;
+            atomic_write(&output, renamite_io_ren::save(&file)?.as_bytes())?;
         }
     }
     println!("Imported {} -> {}", input.display(), output.display());
@@ -796,6 +794,49 @@ fn load_file(path: &Path) -> Result<RenFile> {
     let text = std::str::from_utf8(&bytes)
         .with_context(|| format!("{} is neither valid UTF-8 .ren nor .renb", path.display()))?;
     Ok(renamite_io_ren::open(text)?)
+}
+
+/// Atomic file write: temp + rename so a crash/power loss can't leave a
+/// truncated corrupt project (previously direct truncate+write).
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let tmp = match parent {
+        Some(dir) => {
+            let name = format!(
+                ".{}.tmp-{}",
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("renamite"),
+                std::process::id()
+            );
+            dir.join(name)
+        }
+        None => std::env::temp_dir().join(format!(
+            ".{}.tmp-{}",
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("renamite"),
+            std::process::id()
+        )),
+    };
+    std::fs::write(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| {
+        let _ = std::fs::remove_file(&tmp);
+        format!(
+            "failed to replace {} (temp {})",
+            path.display(),
+            tmp.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Serialize a project matching the output extension (.renb = binary).
+fn save_for_output(file: &RenFile, output: &Path) -> Result<Vec<u8>> {
+    match output.extension().and_then(|s| s.to_str()) {
+        Some("renb") => Ok(renamite_io_ren::save_binary(file)?),
+        _ => Ok(renamite_io_ren::save(file)?.into_bytes()),
+    }
 }
 
 #[cfg(test)]

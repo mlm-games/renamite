@@ -17,13 +17,20 @@ pub struct FrameRate {
 
 impl FrameRate {
     pub fn fps(self) -> f64 {
+        if self.num == 0 {
+            return 0.0;
+        }
         self.num as f64 / self.den.max(1) as f64
     }
     pub fn secs_to_frames(self, secs: f64) -> f64 {
         secs * self.fps()
     }
     pub fn frames_to_secs(self, frames: f64) -> f64 {
-        frames / self.fps()
+        let fps = self.fps();
+        if fps <= 0.0 || !fps.is_finite() {
+            return 0.0;
+        }
+        frames / fps
     }
 }
 
@@ -439,19 +446,33 @@ impl Playback {
         if self.state != PlayState::Playing {
             return false;
         }
+        if !dt_secs.is_finite() {
+            return false;
+        }
         let (s, e) = (self.range.0.0 as f64, self.range.1.0 as f64);
         if e <= s {
             return false;
         }
-        self.head += self.dir * dt_secs * rate.fps();
+        let fps = rate.fps();
+        if fps <= 0.0 || !fps.is_finite() {
+            return false;
+        }
+        if self.loop_mode == LoopMode::Once {
+            self.dir = 1.0;
+        } else if self.dir >= 0.0 {
+            self.dir = 1.0;
+        } else {
+            self.dir = -1.0;
+        }
+        self.head += self.dir * dt_secs * fps;
         match self.loop_mode {
             LoopMode::Once => {
                 if self.head >= e {
                     self.head = e;
                     self.state = PlayState::Stopped;
-                }
-                if self.head < s {
+                } else if self.head <= s {
                     self.head = s;
+                    self.state = PlayState::Stopped;
                 }
             }
             LoopMode::Loop => {
@@ -470,6 +491,7 @@ impl Playback {
                     }
                     guard += 1;
                 }
+                self.head = self.head.clamp(s, e);
             }
         }
         true

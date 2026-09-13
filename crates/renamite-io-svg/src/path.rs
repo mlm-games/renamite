@@ -88,18 +88,13 @@ pub fn affine_to_animated_transform(affine: Affine) -> Option<AnimatedTransform>
     if sy.abs() < 1e-9 {
         return None;
     }
-    // Negative scale.y is folded into a 180° rotation so both scale factors
-    // stay positive (Reflections are still rejected below).
-    let mut rotation_deg = theta.to_degrees();
     if sy < 0.0 {
-        sy = -sy;
-        rotation_deg += 180.0;
+        return None;
     }
+    let rotation_deg = theta.to_degrees();
     let tan_phi = (cos_t * c + sin_t * d) / sy;
 
-    // A reflection (negative determinant) cannot be expressed with positive
-    // scales. Detect it by reconstructing and comparing.
-    let rotation = Affine::rotate(theta);
+    let rotation = Affine::rotate(rotation_deg.to_radians());
     let skew = Affine::skew(tan_phi, 0.0);
     let scale = Affine::scale_non_uniform(sx, sy);
     let linear = rotation * skew * scale;

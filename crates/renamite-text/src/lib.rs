@@ -250,12 +250,23 @@ pub fn shape_text(
 ) -> BezPath {
     let face = font.face();
     let upem = face.units_per_em() as f64;
+    let size = if size.is_finite() { size.max(0.0) } else { 0.0 };
+    if size <= 1e-9 {
+        return BezPath::new();
+    }
+    let tracking = if tracking.is_finite() { tracking } else { 0.0 };
+    let leading = if leading.is_finite() { leading } else { 0.0 };
     let scale = size / upem.max(1.0);
-    let line_height = (face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64)
+    let line_height = ((face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64)
         * scale
-        + leading;
+        + leading)
+        .max(size * 0.2);
     let mut out = BezPath::new();
-    for (line_idx, line) in text.split('\n').enumerate() {
+    for (line_idx, line) in text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .enumerate()
+    {
         let baseline = line_idx as f64 * line_height;
         let width = line_advance(&face, line) * scale
             + tracking * line.chars().count().saturating_sub(1) as f64;

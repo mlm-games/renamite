@@ -43,6 +43,7 @@ pub struct OffscreenRenderer {
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
+    uploaded_images: std::collections::HashSet<renamite_model::AssetId>,
 }
 
 impl OffscreenRenderer {
@@ -93,6 +94,7 @@ impl OffscreenRenderer {
             width: width.max(1),
             height: height.max(1),
             padded_bytes_per_row,
+            uploaded_images: std::collections::HashSet::new(),
         })
     }
 
@@ -161,6 +163,8 @@ impl OffscreenRenderer {
 
         let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa);
 
+        let width = width.max(1);
+        let height = height.max(1);
         let (texture, view, readback, padded_bytes_per_row) =
             Self::create_target(&renderer.device, width, height);
 
@@ -172,6 +176,7 @@ impl OffscreenRenderer {
             width,
             height,
             padded_bytes_per_row,
+            uploaded_images: std::collections::HashSet::new(),
         })
     }
 
@@ -338,10 +343,13 @@ impl OffscreenRenderer {
         &mut self,
         document: &renamite_model::Document,
     ) -> anyhow::Result<()> {
+        use std::collections::HashSet;
+        let mut live: HashSet<renamite_model::AssetId> = HashSet::new();
         for &id in &document.asset_order {
             let Some(image) = document.image_asset(id) else {
                 continue;
             };
+            live.insert(id);
 
             self.set_image_encoded(
                 renamite_render_bridge::image_handle(id),
@@ -349,6 +357,19 @@ impl OffscreenRenderer {
                 image.srgb,
             )?;
         }
+
+        let stale: Vec<_> = self
+            .uploaded_images
+            .iter()
+            .copied()
+            .filter(|id| !live.contains(id))
+            .collect();
+        for id in stale {
+            self.renderer
+                .remove_image(renamite_render_bridge::image_handle(id));
+            self.uploaded_images.remove(&id);
+        }
+        self.uploaded_images = live;
 
         Ok(())
     }

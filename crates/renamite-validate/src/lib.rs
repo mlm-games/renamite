@@ -1137,7 +1137,7 @@ fn shape_kind_is_empty(shape: &ShapeKind) -> bool {
         ShapeKind::Path(path) => path.base.anchors.is_empty(),
         ShapeKind::CompoundPath(compound) => compound.contours.is_empty(),
         ShapeKind::Rect { size, .. } | ShapeKind::Ellipse { size, .. } => {
-            size.base.x == 0.0 && size.base.y == 0.0
+            size.base.x == 0.0 || size.base.y == 0.0
         }
         ShapeKind::Star { outer_r, .. } | ShapeKind::Polygon { outer_r, .. } => outer_r.base <= 0.0,
     }

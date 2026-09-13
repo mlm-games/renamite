@@ -112,13 +112,38 @@ pub enum BooleanOp {
 /// One anchor edit. `Insert` exists so `Delete` has an exact inverse.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AnchorEdit {
-    SetPos { index: usize, pos: DVec2 },
-    SetTanIn { index: usize, tan: DVec2 },
-    SetTanOut { index: usize, tan: DVec2 },
-    SetMode { index: usize, mode: TangentMode },
-    Delete { index: usize },
-    Insert { index: usize, anchor: Anchor },
-    SetClosed { closed: bool },
+    SetPos {
+        index: usize,
+        pos: DVec2,
+    },
+    SetTanIn {
+        index: usize,
+        tan: DVec2,
+    },
+    SetTanOut {
+        index: usize,
+        tan: DVec2,
+    },
+    SetMode {
+        index: usize,
+        mode: TangentMode,
+        /// Exact tangents to restore. `None` = legacy files: use old
+        /// synthesize-if-zero behavior. New code always writes `Some`.
+        #[serde(default)]
+        tan_in: Option<DVec2>,
+        #[serde(default)]
+        tan_out: Option<DVec2>,
+    },
+    Delete {
+        index: usize,
+    },
+    Insert {
+        index: usize,
+        anchor: Anchor,
+    },
+    SetClosed {
+        closed: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +158,8 @@ pub enum GeometryError {
     SegmentOutOfRange(usize),
     #[error("anchor index {0} out of range")]
     AnchorOutOfRange(usize),
+    #[error("split parameter {0} is not finite or outside [0,1]")]
+    InvalidSplitParam(f64),
 }
 
 fn pt(v: DVec2) -> Point {
@@ -276,6 +303,9 @@ impl VectorPath {
         if seg >= self.segment_count() {
             return Err(GeometryError::SegmentOutOfRange(seg));
         }
+        if !t.is_finite() || t < 0.0 || t > 1.0 {
+            return Err(GeometryError::InvalidSplitParam(t));
+        }
         let n = self.anchors.len();
         let (i, j) = (seg, (seg + 1) % n);
         let a = self.anchors[i];
@@ -415,14 +445,26 @@ impl VectorPath {
                 }
                 Some(inv)
             }
-            SetMode { index, mode } => {
+            SetMode {
+                index,
+                mode,
+                tan_in,
+                tan_out,
+            } => {
                 let a = self.anchors.get_mut(*index)?;
                 let inv = SetMode {
                     index: *index,
                     mode: a.mode,
+                    tan_in: Some(a.tan_in),
+                    tan_out: Some(a.tan_out),
                 };
+                if let (Some(ti), Some(to)) = (*tan_in, *tan_out) {
+                    a.mode = *mode;
+                    a.tan_in = ti;
+                    a.tan_out = to;
+                    return Some(inv);
+                }
                 a.mode = *mode;
-                // Corner->Smooth synthesizes tangents if zero (Glaxnimate 0.6).
                 if *mode != TangentMode::Corner
                     && a.tan_in.length_squared() < 1e-12
                     && a.tan_out.length_squared() < 1e-12
@@ -652,7 +694,9 @@ pub fn offset_bez_path(path: &BezPath, amount: f64, tolerance: f64) -> Option<Be
     let mut out = BezPath::new();
 
     for contour in contours {
-        let offset = offset_contour(&contour.points, contour.closed, amount)?;
+        let Some(offset) = offset_contour(&contour.points, contour.closed, amount) else {
+            continue;
+        };
 
         if offset.len() < 2 {
             continue;

@@ -263,17 +263,44 @@ fn parse_path_value(value: &Value) -> Option<VectorPath> {
     } else {
         value
     };
-    let vertices = object.get("v")?.as_array()?;
-    let incoming = object
-        .get("i")
+    let vertices_raw = object.get("v")?.as_array()?;
+    let nested = vertices_raw
+        .first()
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let outgoing = object
-        .get("o")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .is_some_and(|inner| inner.first().is_some_and(Value::is_array));
+    let vertices: Vec<Value> = if nested {
+        vertices_raw.first()?.as_array()?.iter().cloned().collect()
+    } else {
+        vertices_raw.clone()
+    };
+    let pick_nested = |key: &str| -> Vec<Value> {
+        let arr = object
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if nested {
+            arr.first()
+                .and_then(Value::as_array)
+                .map(|inner| inner.clone())
+                .unwrap_or_default()
+        } else {
+            arr
+        }
+    };
+    let incoming = pick_nested("i");
+    let outgoing = pick_nested("o");
+    let closed = if nested {
+        object
+            .get("c")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.first())
+            .and_then(Value::as_bool)
+            .or_else(|| object.get("c").and_then(Value::as_bool))
+            .unwrap_or(false)
+    } else {
+        object.get("c").and_then(Value::as_bool).unwrap_or(false)
+    };
     let mut anchors = Vec::with_capacity(vertices.len());
     for (index, vertex) in vertices.iter().enumerate() {
         let pos = parse_vec2_value(vertex)?;
@@ -297,10 +324,7 @@ fn parse_path_value(value: &Value) -> Option<VectorPath> {
             mode,
         });
     }
-    Some(VectorPath {
-        anchors,
-        closed: object.get("c").and_then(Value::as_bool).unwrap_or(false),
-    })
+    Some(VectorPath { anchors, closed })
 }
 
 fn handle_component(value: &Value) -> Option<f64> {

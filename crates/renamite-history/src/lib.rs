@@ -1451,28 +1451,67 @@ fn apply_document_command(
             ))
         }
         RestoreKeyframe { id, prop, key } => {
+            let replaced = doc.keyframe_data(*id, prop, key.frame);
             doc.restore_keyframe(*id, prop, key)?;
-            Ok((
-                None,
-                vec![RemoveKeyframe {
+            let inv = match replaced {
+                Some(k) => vec![RestoreKeyframe {
+                    id: *id,
+                    prop: prop.clone(),
+                    key: k,
+                }],
+                None => vec![RemoveKeyframe {
                     id: *id,
                     prop: prop.clone(),
                     frame: key.frame,
                 }],
-            ))
+            };
+            Ok((None, inv))
         }
         MoveKeyframes { moves } => {
+            use std::collections::HashSet;
+            let mut seen_to: HashSet<(NodeId, String, i64)> = HashSet::new();
+            let mut seen_from: HashSet<(NodeId, String, i64)> = HashSet::new();
+            for m in moves.iter() {
+                if m.from == m.to {
+                    continue;
+                }
+                let from_key = (m.id, m.prop.0.clone(), m.from.0);
+                let to_key = (m.id, m.prop.0.clone(), m.to.0);
+                if !seen_to.insert(to_key.clone()) {
+                    return Err(ModelError::KeyframeExists(m.to.0).into());
+                }
+                seen_from.insert(from_key);
+            }
+            for m in moves.iter() {
+                if m.from == m.to {
+                    continue;
+                }
+                if doc.keyframe_data(m.id, &m.prop, m.from).is_none() {
+                    return Err(ModelError::NoKeyframe(m.from.0).into());
+                }
+                let to_occupied = doc.keyframe_data(m.id, &m.prop, m.to).is_some()
+                    && !seen_from.contains(&(m.id, m.prop.0.clone(), m.to.0));
+                if to_occupied {
+                    return Err(ModelError::KeyframeExists(m.to.0).into());
+                }
+            }
+            let mut applied: Vec<&KeyframeMove> = Vec::new();
+            for m in moves.iter() {
+                if let Err(e) = doc.move_keyframe(m.id, &m.prop, m.from, m.to) {
+                    for done in applied.iter().rev() {
+                        let _ = doc.move_keyframe(done.id, &done.prop, done.to, done.from);
+                    }
+                    return Err(e.into());
+                }
+                applied.push(m);
+            }
             let inv = moves
                 .iter()
-                .map(|m| {
-                    doc.move_keyframe(m.id, &m.prop, m.from, m.to)
-                        .expect("move validated");
-                    KeyframeMove {
-                        id: m.id,
-                        prop: m.prop.clone(),
-                        from: m.to,
-                        to: m.from,
-                    }
+                .map(|m| KeyframeMove {
+                    id: m.id,
+                    prop: m.prop.clone(),
+                    from: m.to,
+                    to: m.from,
                 })
                 .collect();
             Ok((None, vec![MoveKeyframes { moves: inv }]))

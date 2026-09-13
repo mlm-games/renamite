@@ -170,7 +170,11 @@ pub enum PendingFileOp {
     OpenDone {
         file: Box<RenFile>,
         path: Option<PathBuf>,
-        message: &'static str,
+        message: String,
+        /// Import compatibility warnings to surface in the status line
+        /// (previously eprintln-only and discarded).
+        #[allow(dead_code)]
+        warnings: Vec<String>,
     },
     SaveOutcome {
         ok: bool,
@@ -2375,6 +2379,9 @@ impl Session {
             .expect("empty document must produce a valid engine")
         });
         self.selection.nodes.clear();
+        self.open_picker = None;
+        self.context_menu = None;
+        self.clipboard = None;
         self.keys = Default::default();
         self.scrub = Default::default();
         self.record = false;
@@ -2418,11 +2425,24 @@ impl Session {
                     file,
                     path,
                     message,
+                    warnings,
                 } => {
                     self.replace_file(*file);
                     self.welcome = false;
                     self.current_path = path;
-                    self.status = Some(message.to_string());
+                    if warnings.is_empty() {
+                        self.status = Some(message);
+                    } else {
+                        let shown: Vec<&str> =
+                            warnings.iter().take(3).map(|s| s.as_str()).collect();
+                        self.status = Some(format!(
+                            "{} ({} warning{}: {})",
+                            message,
+                            warnings.len(),
+                            if warnings.len() == 1 { "" } else { "s" },
+                            shown.join("; ")
+                        ));
+                    }
                 }
                 PendingFileOp::SaveOutcome { ok: true, path } => {
                     self.mark_saved(path);
@@ -3564,20 +3584,9 @@ pub fn undo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.undo(&mut pm).is_ok() {
         s.dirty = true;
-        s.selection.nodes.retain(|&id| {
-            s.file
-                .document
-                .nodes
-                .get(id)
-                .and_then(|n| n.parent)
-                .is_some()
-                || s.file
-                    .document
-                    .compositions
-                    .get(s.file.document.main)
-                    .map(|c| c.children.contains(&id))
-                    .unwrap_or(false)
-        });
+        s.selection
+            .nodes
+            .retain(|&id| node_is_attached(&s.file.document, id));
         validate_machine_selection(s);
     }
     sync_playback_range(s);
@@ -3589,23 +3598,25 @@ pub fn redo_cmd(s: &mut Session) {
     let mut pm = pm_from(file);
     if his.redo(&mut pm).is_ok() {
         s.dirty = true;
-        s.selection.nodes.retain(|&id| {
-            s.file
-                .document
-                .nodes
-                .get(id)
-                .and_then(|n| n.parent)
-                .is_some()
-                || s.file
-                    .document
-                    .compositions
-                    .get(s.file.document.main)
-                    .map(|c| c.children.contains(&id))
-                    .unwrap_or(false)
-        });
+        s.selection
+            .nodes
+            .retain(|&id| node_is_attached(&s.file.document, id));
         validate_machine_selection(s);
     }
     sync_playback_range(s);
+}
+
+/// Attached = node exists and is reachable: has a parent node, or is a
+/// direct child of ANY composition (attach() sets parent=None for
+/// Parent::Comp, so checking only `main` dropped valid non-main selections).
+fn node_is_attached(doc: &renamite_model::Document, id: renamite_model::NodeId) -> bool {
+    let Some(n) = doc.nodes.get(id) else {
+        return false;
+    };
+    if n.parent.is_some() {
+        return true;
+    }
+    doc.compositions.values().any(|c| c.children.contains(&id))
 }
 
 fn sync_playback_range(s: &mut Session) {

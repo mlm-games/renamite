@@ -447,6 +447,9 @@ impl Tween for StylePaint {
                 }
             }
             (StylePaint::Gradient(ga), StylePaint::Gradient(gb)) => {
+                if ga.kind != gb.kind {
+                    return if t < 1.0 { a.clone() } else { b.clone() };
+                }
                 StylePaint::Gradient(Gradient {
                     kind: ga.kind,
                     start: Animated::new(Tween::tween(&ga.start.base, &gb.start.base, t)),
@@ -568,7 +571,6 @@ impl<'de> Deserialize<'de> for StyleKind {
                     where
                         A: serde::de::MapAccess<'de>,
                     {
-                        use serde::de::Error as _;
                         let mut content = StyleCompatContent::default();
                         while let Some(key) = map.next_key::<String>()? {
                             match key.as_str() {
@@ -583,19 +585,8 @@ impl<'de> Deserialize<'de> for StyleKind {
                                 }
                                 "rule" => content.rule = Some(map.next_value()?),
                                 other => {
-                                    return Err(A::Error::unknown_field(
-                                        other,
-                                        &[
-                                            "paint",
-                                            "color",
-                                            "width",
-                                            "cap",
-                                            "join",
-                                            "dash",
-                                            "miter_limit",
-                                            "rule",
-                                        ],
-                                    ));
+                                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                                    let _ = other;
                                 }
                             }
                         }
@@ -727,7 +718,8 @@ pub enum ModifierKind {
         smooth: bool,
     },
     PuckerBloat {
-        /// Percent. Positive = bloat, negative = pucker.
+        /// Percent. Positive = pucker (vertices toward centroid,
+        /// handles away); negative = bloat (vertices away).
         amount: Animated<f64>,
     },
 }
@@ -1257,11 +1249,12 @@ pub struct Overrides {
 
 impl Overrides {
     pub fn set(&mut self, id: NodeId, prop: PropPath, v: Value) {
-        self.values.insert((id, prop), v);
+        self.values.insert((id, canonical_prop(prop)), v);
     }
     /// TODO(perf): intern PropPath (u16 ids) to kill this per-lookup alloc.
     pub fn get(&self, id: NodeId, prop: &str) -> Option<&Value> {
-        self.values.get(&(id, PropPath::new(prop)))
+        self.values
+            .get(&(id, PropPath::new(canonical_prop_str(prop))))
     }
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
@@ -1269,6 +1262,20 @@ impl Overrides {
     pub fn clear(&mut self) {
         self.values.clear();
     }
+}
+
+/// Long-term prop naming: `image.tint()` (with parens) shipped by mistake.
+/// Canonical name is `image.tint`; accept the legacy spelling.
+fn canonical_prop_str(prop: &str) -> &str {
+    if prop == "image.tint()" {
+        "image.tint"
+    } else {
+        prop
+    }
+}
+
+fn canonical_prop(prop: PropPath) -> PropPath {
+    PropPath::new(canonical_prop_str(prop.as_str()))
 }
 
 fn ov_f64(ov: &Overrides, id: NodeId, prop: &str, dflt: f64) -> f64 {
@@ -1318,6 +1325,7 @@ fn sample_transform(
 /// The topmost fill style that paints `shape`: the last Fill style sibling
 /// in the closest ancestor scope that has one. Used by the inspector to edit
 /// a shape's fill (the tool instead tracks the exact style via `SceneItem`).
+/// Children are z-ordered with index 0 = top, so the first Fill wins.
 pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
     let mut scope = doc.locate(shape).map(|(p, _)| p)?;
     loop {
@@ -1325,7 +1333,7 @@ pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
             Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
             Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
         };
-        if let Some(fill) = children.iter().rev().find(|id| {
+        if let Some(fill) = children.iter().find(|id| {
             matches!(
                 doc.nodes.get(**id).map(|n| &n.kind),
                 Some(NodeKind::Style(StyleKind::Fill { .. }))
@@ -1341,6 +1349,7 @@ pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
 }
 
 /// Topmost stroke style in the closest ancestor scope that has one.
+/// Children are z-ordered with index 0 = top, so the first Stroke wins.
 pub fn stroke_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
     let mut scope = doc.locate(shape).map(|(p, _)| p)?;
     loop {
@@ -1348,7 +1357,7 @@ pub fn stroke_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
             Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
             Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
         };
-        if let Some(stroke) = children.iter().rev().find(|id| {
+        if let Some(stroke) = children.iter().find(|id| {
             matches!(
                 doc.nodes.get(**id).map(|n| &n.kind),
                 Some(NodeKind::Style(StyleKind::Stroke { .. }))
@@ -1527,12 +1536,9 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             roundness,
             kind,
         } => {
-            let pts = ov_f64(ov, id, "shape.points", points.value_at(frame))
-                .round()
-                .max(3.0) as usize;
+            let pts = clamp_shape_points(ov_f64(ov, id, "shape.points", points.value_at(frame)));
             let outer = ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame));
             let inner = match kind {
-                // Burst ≈ polygon on the star node: outer ring only (Lottie sy=2).
                 StarKind::Burst => None,
                 StarKind::Star => Some(ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame))),
             };
@@ -1551,9 +1557,7 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             roundness,
         } => star_path(
             ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
-            ov_f64(ov, id, "shape.points", points.value_at(frame))
-                .round()
-                .max(3.0) as usize,
+            clamp_shape_points(ov_f64(ov, id, "shape.points", points.value_at(frame))),
             None,
             ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
             ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
@@ -1564,6 +1568,13 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
 
 /// Star/polygon outline. `roundness` is corner radius in local units (0 = sharp).
 /// Matches RoundCorners modifier semantics (not Lottie % outer-roundness).
+fn clamp_shape_points(v: f64) -> usize {
+    if !v.is_finite() {
+        return 3;
+    }
+    (v.round().max(3.0).min(256.0)) as usize
+}
+
 fn star_path(
     center: glam::DVec2,
     points: usize,
@@ -1791,7 +1802,7 @@ fn eval_group(
                 let node_transform = affine_of(&sample_transform(n, id, frame, ov));
                 let full_transform = tf * node_transform;
 
-                let tint = ov_color(ov, id, "image.tint()", image_node.tint().value_at(frame));
+                let tint = ov_color(ov, id, "image.tint", image_node.tint().value_at(frame));
                 let crop = image_node.crop();
                 let local_rect = {
                     let (cx, cy, cw, ch) = (crop.x, crop.y, crop.z, crop.w);
@@ -1994,16 +2005,27 @@ fn apply_modifier(
                     if total <= 1e-9 {
                         return;
                     }
+                    let s_g = s + o;
+                    let e_g = e + o;
                     let mut cursor = 0.0;
                     for (entry, len) in originals.into_iter().zip(lengths) {
                         let frac = len / total;
                         if frac > 1e-12 {
-                            let ps = ((s - cursor) / frac).clamp(0.0, 1.0);
-                            let pe = ((e - cursor) / frac).clamp(0.0, 1.0);
-                            if pe > ps + 1e-9
-                                && let Some(t) = trim_path(&entry.path, ps, pe, o)
-                            {
-                                paths.push(ShapeEntry { path: t, ..entry });
+                            let lo = cursor;
+                            let hi = cursor + frac;
+                            let mut ranges: Vec<(f64, f64)> = Vec::new();
+                            for shift in [0.0, 1.0] {
+                                let a = (s_g.max(lo + shift) - (lo + shift)) / frac;
+                                let b = (e_g.min(hi + shift) - (lo + shift)) / frac;
+                                let (a, b) = (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
+                                if b > a + 1e-9 {
+                                    ranges.push((a, b));
+                                }
+                            }
+                            for (ps, pe) in ranges {
+                                if let Some(t) = trim_path(&entry.path, ps, pe, 0.0) {
+                                    paths.push(ShapeEntry { path: t, ..entry });
+                                }
                             }
                         }
                         cursor += frac;
@@ -2223,9 +2245,21 @@ fn emit_style(
                         miter_limit.value_at(frame),
                     )
                     .clamp(1.0, 10.0),
-                    dash: dash.as_ref().map(|d| DashSample {
-                        dashes: d.dashes.iter().map(|x| x.value_at(frame)).collect(),
-                        offset: d.offset.value_at(frame),
+                    dash: dash.as_ref().map(|d| {
+                        let mut dashes: Vec<f64> = d
+                            .dashes
+                            .iter()
+                            .map(|x| {
+                                let v = x.value_at(frame);
+                                if !v.is_finite() || v < 0.0 { 0.0 } else { v }
+                            })
+                            .collect();
+                        let offset = d.offset.value_at(frame);
+                        let offset = if offset.is_finite() { offset } else { 0.0 };
+                        if renamite_geometry::normalize_dash_pattern(&dashes).is_none() {
+                            dashes.clear();
+                        }
+                        DashSample { dashes, offset }
                     }),
                 }),
                 true,
@@ -2727,17 +2761,28 @@ fn nearest_dist(path: &BezPath, q: Point) -> f64 {
 }
 
 /// Nodes whose geometry is FULLY CONTAINED in the box (rubber-band semantics).
+/// `min`/`max` are normalized so drags in any direction work.
 pub fn pick_box(scene: &Scene, min: glam::DVec2, max: glam::DVec2) -> Vec<NodeId> {
+    let (min_x, max_x) = if min.x <= max.x {
+        (min.x, max.x)
+    } else {
+        (max.x, min.x)
+    };
+    let (min_y, max_y) = if min.y <= max.y {
+        (min.y, max.y)
+    } else {
+        (max.y, min.y)
+    };
     let mut out = Vec::new();
     for item in &scene.items {
         if item.opacity <= 0.0 {
             continue;
         }
         let bb = item.path.bounding_box();
-        if bb.x0 >= min.x
-            && bb.x1 <= max.x
-            && bb.y0 >= min.y
-            && bb.y1 <= max.y
+        if bb.x0 >= min_x
+            && bb.x1 <= max_x
+            && bb.y0 >= min_y
+            && bb.y1 <= max_y
             && !out.contains(&item.node)
         {
             out.push(item.node);
@@ -3195,7 +3240,7 @@ impl Node {
             ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
                 Some(F64(miter_limit))
             }
-            ("image.tint()", NodeKind::Image(img)) => {
+            ("image.tint" | "image.tint()", NodeKind::Image(img)) => {
                 let tint = img.tint_mut()?;
                 Some(Color(tint))
             }
@@ -3461,7 +3506,7 @@ impl Node {
             ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
                 Some(F64(miter_limit))
             }
-            ("image.tint()", NodeKind::Image(img)) => Some(Color(img.tint())),
+            ("image.tint" | "image.tint()", NodeKind::Image(img)) => Some(Color(img.tint())),
             (
                 "grad.start",
                 NodeKind::Style(StyleKind::Fill {
