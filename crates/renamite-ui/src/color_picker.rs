@@ -492,7 +492,9 @@ fn hex_row(
 
     Row(Modifier::new().gap(Dp(8.0)).align_items(AlignItems::CENTER)).child((
         TextField(
-            Modifier::new().width(Dp(120.0)),
+            Modifier::new()
+                .width(Dp(120.0))
+                .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused)),
             draft,
             {
                 let state = state.clone();

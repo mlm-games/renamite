@@ -295,7 +295,8 @@ pub fn AppTextField(
                 bottom: Dp(6.0),
             })
             .background(th.surface_container_highest)
-            .clip_rounded(Dp(8.0)),
+            .clip_rounded(Dp(8.0))
+            .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused)),
         hint,
         TextFieldConfig {
             line_limits: if single_line {
@@ -365,6 +366,7 @@ pub fn name_field(
             })
             .background(th.surface_container_highest)
             .clip_rounded(Dp(8.0))
+            .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
             .on_key_event(move |ek: KeyEvent| {
                 if matches!(ek.key, Key::Escape) {
                     focused.set(false);

@@ -238,6 +238,7 @@ fn RangeEditor(
             Modifier::new()
                 .width(Dp(48.0))
                 .height(Dp(28.0))
+                .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
                 .on_key_event({
                     let committed = committed.clone();
                     let start_state = start_state.clone();

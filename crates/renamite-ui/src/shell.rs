@@ -1,6 +1,7 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::{
-    Dp, JustifyContent, Modifier, PaddingValues, UnitExt, View, remember_with_key, theme,
+    Dp, FocusRequester, JustifyContent, Modifier, PaddingValues, Role, Semantics, UnitExt, View,
+    remember_with_key, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
@@ -8,7 +9,7 @@ use repose_material::material3::{
 };
 use repose_ui::overlay::{OverlayHandle, SnackbarController, SnackbarRequest};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use repose_docking::{
@@ -92,11 +93,28 @@ pub fn EditorShell(session: SessionRef) -> View {
     let picker = color_picker_overlay(session.clone());
     let menu = context_menu_overlay(session.clone());
 
-    // App-level key fallback: repose delivers keys to the focused widget
-    // but we want them to be global, so forward unconsumed keys to the viewport
+    // App-level key fallback. Repose only delivers `on_key_event` to the
+    // focused element (and its semantics ancestors), so a bare `on_key_event`
+    // on the overlay host never fires.
     let session_keys = session.clone();
-    let shell_keys = Modifier::new()
+    let global_focus = remember_with_key("shell_global_focus", FocusRequester::new);
+    let global_focus_seen = remember_with_key("shell_global_focus_seen", || Cell::new(false));
+    if !global_focus_seen.get() {
+        global_focus.request_focus();
+    }
+    let global_keys = Modifier::new()
         .fill_max_size()
+        .focusable(true)
+        .focus_requester((*global_focus).clone())
+        .semantics(Semantics::new(Role::Container))
+        .on_focus_changed({
+            let global_focus_seen = global_focus_seen.clone();
+            move |focused| {
+                if focused {
+                    global_focus_seen.set(true);
+                }
+            }
+        })
         .on_key_event(move |ke: KeyEvent| {
             if matches!(ke.key, Key::Space | Key::Enter) {
                 // Never steal activation, but don't leave a stuck pan modifier
@@ -110,8 +128,8 @@ pub fn EditorShell(session: SessionRef) -> View {
         });
 
     overlay.host(
-        shell_keys,
-        ZStack(Modifier::new().fill_max_size()).child((scaffold, picker, menu, confirm)),
+        Modifier::new().fill_max_size(),
+        ZStack(global_keys).child((scaffold, picker, menu, confirm)),
     )
 }
 

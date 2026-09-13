@@ -14,8 +14,47 @@ use crate::session::{
     EditorMode, SelectionBoolean, SessionRef, dispatch_canvas, redo_cmd, undo_cmd,
 };
 
+use std::cell::Cell;
+
+thread_local! {
+    static TEXT_FOCUS_COUNT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Record text-input focus changes (wired via `on_focus_changed` on every
+/// text field). Global shortcuts yield while a text field is focused so
+/// typing, Delete/Backspace and arrows edit text instead of the canvas.
+pub fn note_text_focus(gained: bool) {
+    TEXT_FOCUS_COUNT.with(|c| {
+        if gained {
+            c.set(c.get().saturating_add(1));
+        } else {
+            c.set(c.get().saturating_sub(1));
+        }
+    });
+}
+
+pub fn text_input_focused() -> bool {
+    TEXT_FOCUS_COUNT.with(|c| c.get() > 0)
+}
+
 /// Handle one viewport key event. Returns true when the event was consumed.
 pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
+    // Text fields own their keys: only Escape (overlay dismissal) is allowed
+    // through, everything else must reach the focused field, not the canvas.
+    if text_input_focused() {
+        if event.event_type == KeyEventType::Down && matches!(event.key, Key::Escape) {
+            let mut s = session.borrow_mut();
+            if s.context_menu.is_some() {
+                s.close_context_menu();
+                return true;
+            }
+            if s.open_picker.is_some() {
+                s.close_color_picker();
+                return true;
+            }
+        }
+        return false;
+    }
     let renaming = session.borrow().renaming.is_some();
     if renaming && event.event_type == KeyEventType::Down {
         if matches!(event.key, Key::Escape) {

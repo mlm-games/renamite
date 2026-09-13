@@ -905,6 +905,7 @@ fn scrub_f64_w(
             View::new(0, ViewKind::Box).modifier(
                 Modifier::new()
                     .focus_requester(focus_requester.as_ref().clone())
+                    .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
                     .text_input(TextInputConfig {
                         hint: String::new(),
                         multiline: false,
