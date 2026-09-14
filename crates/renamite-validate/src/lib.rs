@@ -1031,9 +1031,7 @@ impl<'a> Validator<'a> {
                             "animated `text.size` bakes to its base value on Lottie export",
                         );
                     }
-                    if !text.tracking.keyframes.is_empty()
-                        || !text.leading.keyframes.is_empty()
-                    {
+                    if !text.tracking.keyframes.is_empty() || !text.leading.keyframes.is_empty() {
                         self.warn(
                             format!("node/{id:?}/text"),
                             "animated `text.tracking`/`text.leading` bake to base on Lottie export",

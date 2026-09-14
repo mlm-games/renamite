@@ -117,7 +117,10 @@ impl Exporter<'_> {
                         output.len() as u32 + 1,
                     )?);
                 }
-                NodeKind::Shape(_) | NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Text(_) => {
+                NodeKind::Shape(_)
+                | NodeKind::Style(_)
+                | NodeKind::Modifier(_)
+                | NodeKind::Text(_) => {
                     bare_run.push(node_id);
                 }
                 _ => {
@@ -146,18 +149,15 @@ impl Exporter<'_> {
             return Ok(());
         }
         let ids = std::mem::take(run);
-        let shape_ids: Vec<NodeId> = ids
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.document.nodes.get(*id).is_some_and(|node| {
-                    matches!(
-                        node.kind,
-                        NodeKind::Shape(_) | NodeKind::Text(_)
-                    )
+        let shape_ids: Vec<NodeId> =
+            ids.iter()
+                .copied()
+                .filter(|id| {
+                    self.document.nodes.get(*id).is_some_and(|node| {
+                        matches!(node.kind, NodeKind::Shape(_) | NodeKind::Text(_))
+                    })
                 })
-            })
-            .collect();
+                .collect();
         let (transform, opacity, transform_owner) = if shape_ids.len() == 1 {
             let node = &self.document.nodes[shape_ids[0]];
             (
