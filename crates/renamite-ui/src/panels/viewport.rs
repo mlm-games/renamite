@@ -916,7 +916,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
         ToolOverlay::None => {}
         ToolOverlay::RubberBand { min, max } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
+            scope.draw_rect_stroke(r, primary.with_alpha(110), Px(0.0), Px(1.0));
         }
         ToolOverlay::Selection {
             min,
@@ -926,7 +926,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
             pivot,
         } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
+            scope.draw_rect_stroke(r, primary.with_alpha(110), Px(0.0), Px(1.0));
             for point in [rotate, scale] {
                 draw_selection_handle(scope, view.world_to_screen(*point), primary, th.on_primary);
             }
@@ -936,9 +936,9 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
         }
         ToolOverlay::ShapePreview { min, max, kind } => {
             let r = to_screen_rect(*min, *max, view);
-            scope.draw_rect_stroke(r, primary.with_alpha(180), Px(0.0), Px(1.0));
+            scope.draw_rect_stroke(r, primary.with_alpha(110), Px(0.0), Px(1.0));
             let pts = star_preview_pts(*min, *max, *kind, view);
-            draw_polyline_overlay(scope, &pts, primary.with_alpha(180));
+            draw_polyline_overlay(scope, &pts, primary.with_alpha(110));
         }
         ToolOverlay::PenPreview { anchors, hover, .. } => {
             for a in anchors {
@@ -960,7 +960,7 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                     w: 6.0,
                     h: 6.0,
                 };
-                scope.draw_rect(rect, primary.with_alpha(180), Px(3.0));
+                scope.draw_rect(rect, primary.with_alpha(110), Px(3.0));
             }
         }
         ToolOverlay::PathHandles {
