@@ -47,6 +47,33 @@ fn graph_view(machine_id: MachineId) -> Rc<RefCell<ViewTransform>> {
     })
 }
 
+fn graph_screen_rect(machine_id: MachineId) -> Rc<RefCell<Option<Rect>>> {
+    remember_with_key(format!("machine_graph_rect_{machine_id:?}"), || {
+        RefCell::new(None::<Rect>)
+    })
+}
+
+fn graph_touch_pos(machine_id: MachineId) -> Rc<RefCell<Option<Vec2>>> {
+    remember_with_key(format!("machine_graph_touch_{machine_id:?}"), || {
+        RefCell::new(None::<Vec2>)
+    })
+}
+
+fn graph_contains(rect: &Rc<RefCell<Option<Rect>>>, p: Vec2) -> bool {
+    rect.borrow().is_some_and(|r| r.contains(p))
+}
+
+fn graph_center(rect: &Rc<RefCell<Option<Rect>>>) -> Option<DVec2> {
+    rect.borrow()
+        .map(|r| DVec2::new((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64))
+}
+
+fn graph_local_origin(rect: &Rc<RefCell<Option<Rect>>>) -> DVec2 {
+    rect.borrow()
+        .map(|r| DVec2::new(r.x as f64, r.y as f64))
+        .unwrap_or(DVec2::ZERO)
+}
+
 pub fn InteractivityPanel(session: SessionRef) -> View {
     let active = session.borrow().active_machine;
     let overlay = remember_with_key("interact_overlay", OverlayHandle::new);
@@ -646,10 +673,61 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
             RefCell::new(None::<(DVec2, Instant)>)
         });
     let view = graph_view(machine_id);
+    let graph_rect = graph_screen_rect(machine_id);
+    let touch_pos = graph_touch_pos(machine_id);
     let last_pointer: Rc<RefCell<DVec2>> =
         remember_with_key(format!("machine_graph_last_ptr_{machine_id:?}"), || {
             RefCell::new(DVec2::ZERO)
         });
+
+    let graph_action_handler: repose_core::shortcuts::Handler = {
+        let rect = graph_rect.clone();
+        let touch = touch_pos.clone();
+        let view = view.clone();
+        std::rc::Rc::new(move |action| {
+            use repose_core::shortcuts::{Action, Gesture};
+            match action {
+                Action::Gesture(Gesture::Pan { delta }) => {
+                    let Some(pos) = *touch.borrow() else {
+                        return false;
+                    };
+                    if !graph_contains(&rect, pos) {
+                        return false;
+                    }
+                    view.borrow_mut()
+                        .pan_by(DVec2::new(delta.x as f64, delta.y as f64));
+                    request_frame();
+                    true
+                }
+                Action::Gesture(Gesture::PinchWithCenter {
+                    delta_scale,
+                    center,
+                }) => {
+                    if !graph_contains(&rect, center) {
+                        return false;
+                    }
+                    let origin = graph_local_origin(&rect);
+                    let local =
+                        DVec2::new((center.x as f64) - origin.x, (center.y as f64) - origin.y);
+                    view.borrow_mut()
+                        .zoom_at(local, delta_scale as f64, 0.5, 2.0);
+                    request_frame();
+                    true
+                }
+                Action::Gesture(Gesture::Pinch { delta_scale }) => {
+                    if let Some(center) = graph_center(&rect) {
+                        view.borrow_mut()
+                            .zoom_at(center, delta_scale as f64, 0.5, 2.0);
+                        request_frame();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        })
+    };
 
     Column(Modifier::new().fill_max_width()).child((
         Text("Shift+drag state to wire")
@@ -666,6 +744,11 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 .fill_max_width()
                 .height(Dp(320.0))
                 .background(theme().surface_container_lowest)
+                .focusable(true)
+                .on_action({
+                    let graph_action_handler = graph_action_handler.clone();
+                    move |action| graph_action_handler(action)
+                })
                 .on_scroll({
                     let view = view.clone();
                     let last_pointer = last_pointer.clone();
@@ -687,14 +770,22 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                         Vec2::ZERO
                     }
                 })
+                .on_globally_positioned({
+                    let graph_rect = graph_rect.clone();
+                    move |r: Rect| {
+                        *graph_rect.borrow_mut() = Some(r);
+                    }
+                })
                 .on_pointer_down({
                     let session = session.clone();
                     let last_click = last_click.clone();
                     let view = view.clone();
                     let last_pointer = last_pointer.clone();
+                    let touch_pos = touch_pos.clone();
                     move |event: PointerEvent| {
                         let pos = DVec2::new(event.position.x as f64, event.position.y as f64);
                         *last_pointer.borrow_mut() = pos;
+                        *touch_pos.borrow_mut() = Some(event.position_in_window());
                         handle_graph_down(&session, machine_id, &view, &event, &last_click);
                     }
                 })
@@ -702,9 +793,11 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     let session = session.clone();
                     let view = view.clone();
                     let last_pointer = last_pointer.clone();
+                    let touch_pos = touch_pos.clone();
                     move |event: PointerEvent| {
                         let position = DVec2::new(event.position.x as f64, event.position.y as f64);
                         *last_pointer.borrow_mut() = position;
+                        *touch_pos.borrow_mut() = Some(event.position_in_window());
                         let mut s = session.borrow_mut();
                         let mut view_mut = view.borrow_mut();
                         match s.machine_graph_gesture.clone() {
