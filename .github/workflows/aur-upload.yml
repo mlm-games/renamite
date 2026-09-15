@@ -1,0 +1,32 @@
+name: AUR upload (renamite-bin)
+
+# Thin dispatcher: rust-app-release dispatches here with version_name,
+# we delegate to the shared reusable (desktop entry + icon included).
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Release version (e.g. 0.1.0)"
+        required: true
+
+jobs:
+  aur-upload:
+    uses: mlm-games/ci/.github/workflows/aur-upload.yml@v1
+    with:
+      pkgname: renamite-bin
+      pkgdesc: "Vector animation editor built on the Repose GUI framework"
+      binary-name: renamite-${{ inputs.version_name }}-x86_64-unknown-linux-gnu.tar.gz
+      binary-name-aarch64: renamite-${{ inputs.version_name }}-aarch64-unknown-linux-gnu.tar.gz
+      app-name: "Renamite"
+      license: "MPL-2.0"
+      provides: "renamite"
+      conflicts: "renamite"
+      desktop-categories: "Graphics;2DGraphics;VectorGraphics;"
+      desktop-mime-type: "application/x-renamite;application/json;"
+      desktop-args: "%F"
+      icon-url: "https://raw.githubusercontent.com/mlm-games/renamite/main/others/packaging/icon.svg"
+      version: ${{ inputs.version_name }}
+      maintainer-name: "MLM Games"
+      maintainer-email: "dev@mlm.games"
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
