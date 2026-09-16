@@ -384,19 +384,22 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             s.flip_selection(true);
             return true;
         }
-        let tool = match key {
-            Key::Character('s' | 'v') => Some(ToolId::Select),
-            Key::Character('m') => Some(ToolId::Transform),
-            Key::Character('n') => Some(ToolId::PathEdit),
-            Key::Character('b' | 'p') => Some(ToolId::Pen),
-            Key::Character('r') => Some(ToolId::Rect),
-            Key::Character('e') => Some(ToolId::Ellipse),
-            Key::Character('*') => Some(ToolId::Star),
-            Key::Character('t') => Some(ToolId::Text),
-            Key::Character('g') => Some(ToolId::Gradient),
-            Key::Character('u') => Some(ToolId::Fill),
-            Key::Character('d') | Key::F(7) => Some(ToolId::Dropper),
-            _ => None,
+        let tool = match tool_key(&key, event.physical.as_deref()) {
+            Some(t) => Some(t),
+            None => match key {
+                Key::Character('s' | 'v') => Some(ToolId::Select),
+                Key::Character('m') => Some(ToolId::Transform),
+                Key::Character('n') => Some(ToolId::PathEdit),
+                Key::Character('b' | 'p') => Some(ToolId::Pen),
+                Key::Character('r') => Some(ToolId::Rect),
+                Key::Character('e') => Some(ToolId::Ellipse),
+                Key::Character('*') => Some(ToolId::Star),
+                Key::Character('t') => Some(ToolId::Text),
+                Key::Character('g') => Some(ToolId::Gradient),
+                Key::Character('u') => Some(ToolId::Fill),
+                Key::Character('d') | Key::F(7) => Some(ToolId::Dropper),
+                _ => None,
+            },
         };
         if let Some(tool) = tool {
             s.active_tool = tool;
@@ -526,5 +529,34 @@ fn set_zoom(s: &mut crate::session::Session, target: f64) {
     if current > f64::EPSILON {
         s.viewport.zoom_centered(target / current);
         request_frame();
+    }
+}
+
+/// Tool shortcut by physical key position (`KeyV`, `KeyB`, ... — winit
+/// `KeyCode` debug names from `KeyEvent::physical`). Letters always resolve
+/// lowercase like repose's own `map_key`; Shift is not a semantic modifier
+/// here, so AZERTY/QWERTZ users get the same tool on the same key position.
+/// Returns `None` when `physical` is absent (synthetic events) or unmapped —
+/// callers fall back to the logical-character match.
+fn tool_key(key: &Key, physical: Option<&str>) -> Option<ToolId> {
+    let pos = match physical {
+        // Already resolved to a tool by the logical match below (e.g. '*' on
+        // any layout, F7); don't override it.
+        _ if matches!(key, Key::Character('*') | Key::F(_)) => return None,
+        Some(p) => p,
+        None => return None,
+    };
+    match pos {
+        "KeyV" => Some(ToolId::Select),
+        "KeyM" => Some(ToolId::Transform),
+        "KeyN" => Some(ToolId::PathEdit),
+        "KeyB" | "KeyP" => Some(ToolId::Pen),
+        "KeyR" => Some(ToolId::Rect),
+        "KeyE" => Some(ToolId::Ellipse),
+        "KeyT" => Some(ToolId::Text),
+        "KeyG" => Some(ToolId::Gradient),
+        "KeyU" => Some(ToolId::Fill),
+        "KeyD" => Some(ToolId::Dropper),
+        _ => None,
     }
 }
