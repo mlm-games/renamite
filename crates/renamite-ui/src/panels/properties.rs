@@ -56,7 +56,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         // Design mode never keyframes: central `record_for_writes` gate.
         let record = s.record_for_writes();
         let inspect_ids: Vec<NodeId> = if ids.len() == 1 {
-            vec![effective_inspect_id(&s.file.document, ids[0])]
+            let raw = ids[0];
+            let id = painted_shape_for_style(&s, raw)
+                .or_else(|| {
+                    let unwrapped = effective_inspect_id(&s.file.document, raw);
+                    painted_shape_for_style(&s, unwrapped).or(Some(unwrapped))
+                })
+                .unwrap_or(raw);
+            vec![id]
         } else {
             ids.clone()
         };
@@ -444,9 +451,6 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             appearance_for(&s, inspect_id)
         };
         if let Some(app) = app_opt {
-            let selected_is_fill = app.fill == Some(inspect_id);
-            let selected_is_stroke = app.stroke == Some(inspect_id);
-            let is_shape_like = !selected_is_fill && !selected_is_stroke;
             if let Some(fill_id) = app.fill {
                 if let Some(v) = paint_section_for_style(
                     session.clone(),
@@ -496,54 +500,49 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     children.push(v);
                 }
             }
-            if is_shape_like {
-                let mut chips: Vec<View> = Vec::new();
-                match app.fill {
-                    None => chips.push(style_action_chip(
-                        session.clone(),
-                        inspect_id,
-                        StyleAction::Add(StyleAdd::Fill),
-                    )),
-                    Some(_) => chips.push(style_action_chip(
-                        session.clone(),
-                        inspect_id,
-                        StyleAction::Remove(StyleAdd::Fill),
-                    )),
-                }
-                match app.stroke {
-                    None => chips.push(style_action_chip(
-                        session.clone(),
-                        inspect_id,
-                        StyleAction::Add(StyleAdd::Stroke),
-                    )),
-                    Some(_) => chips.push(style_action_chip(
-                        session.clone(),
-                        inspect_id,
-                        StyleAction::Remove(StyleAdd::Stroke),
-                    )),
-                }
-                children.push(crate::components::CollapsibleSection(
-                    "add_style_section",
-                    "Appearance",
-                    vec![],
-                    FlowRow(
-                        Modifier::new()
-                            .fill_max_width()
-                            .padding_values(PaddingValues {
-                                left: Dp(12.0),
-                                right: Dp(12.0),
-                                top: Dp(8.0),
-                                bottom: Dp(8.0),
-                            })
-                            .gap(Dp(8.0)),
-                        FlowRowConfig::default(),
-                    )
-                    .child(chips),
-                ));
+            let mut chips: Vec<View> = Vec::new();
+            match app.fill {
+                None => chips.push(style_action_chip(
+                    session.clone(),
+                    app.shape_for_axis,
+                    StyleAction::Add(StyleAdd::Fill),
+                )),
+                Some(_) => chips.push(style_action_chip(
+                    session.clone(),
+                    app.shape_for_axis,
+                    StyleAction::Remove(StyleAdd::Fill),
+                )),
             }
-            // When selection itself is a style node and appearance returned only one side,
-            // the other side's dash is handled above. For shape-like selection where dash
-            // is missing (no stroke), nothing to show.
+            match app.stroke {
+                None => chips.push(style_action_chip(
+                    session.clone(),
+                    app.shape_for_axis,
+                    StyleAction::Add(StyleAdd::Stroke),
+                )),
+                Some(_) => chips.push(style_action_chip(
+                    session.clone(),
+                    app.shape_for_axis,
+                    StyleAction::Remove(StyleAdd::Stroke),
+                )),
+            }
+            children.push(crate::components::CollapsibleSection(
+                "add_style_section",
+                "Appearance",
+                vec![],
+                FlowRow(
+                    Modifier::new()
+                        .fill_max_width()
+                        .padding_values(PaddingValues {
+                            left: Dp(12.0),
+                            right: Dp(12.0),
+                            top: Dp(8.0),
+                            bottom: Dp(8.0),
+                        })
+                        .gap(Dp(8.0)),
+                    FlowRowConfig::default(),
+                )
+                .child(chips),
+            ));
         } else if let Some(v) = paint_section(session.clone(), &[inspect_id], playhead, record) {
             children.push(v);
             if let Some(section) =
@@ -1146,7 +1145,9 @@ fn color_row(
     );
     let alpha_pct = (c.a * 100.0).round() as i64;
 
-    // When a single style node is selected, the swatch opens the color picker.
+    // When a single node is selected, the swatch opens the color picker.
+    // Style nodes target their own color; any other Color prop (image tint,
+    // etc.) targets the generic prop so the picker can write it.
     let picker_target = if ids.len() == 1 {
         match &session
             .borrow()
@@ -1160,7 +1161,11 @@ fn color_row(
             | Some(NodeKind::Style(StyleKind::Stroke { .. })) => {
                 Some(PickerTarget::StyleColor { style_id: ids[0] })
             }
-            _ => None,
+            Some(_) => Some(PickerTarget::Prop {
+                id: ids[0],
+                path: path.clone(),
+            }),
+            None => None,
         }
     } else {
         None
@@ -1180,8 +1185,9 @@ fn color_row(
         .on_pointer_down({
             let session = session.clone();
             let color = c;
+            let picker_target = picker_target.clone();
             move |pe: PointerEvent| {
-                if let Some(target) = picker_target {
+                if let Some(target) = picker_target.clone() {
                     let anchor = overlay_anchor(&pe);
                     session
                         .borrow_mut()
@@ -2210,6 +2216,14 @@ fn lock_toggle(session: SessionRef, id: NodeId, locked: bool) -> View {
     )
 }
 
+fn normalize_image_crop(mut c: glam::DVec4) -> glam::DVec4 {
+    c.z = c.z.clamp(0.05, 1.0);
+    c.w = c.w.clamp(0.05, 1.0);
+    c.x = c.x.clamp(0.0, 1.0 - c.z);
+    c.y = c.y.clamp(0.0, 1.0 - c.w);
+    c
+}
+
 /// One selectable font-family chip in the text properties section.
 fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
     let (name, width, height, mime) = {
@@ -2303,7 +2317,8 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                                     return;
                                 };
                                 let mut new_crop = img.crop();
-                                new_crop.x = v.clamp(0.0, 1.0);
+                                new_crop.x = v;
+                                let new_crop = normalize_image_crop(new_crop);
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set image crop".into()),
                                     ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
@@ -2336,7 +2351,8 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                                     return;
                                 };
                                 let mut new_crop = img.crop();
-                                new_crop.y = v.clamp(0.0, 1.0);
+                                new_crop.y = v;
+                                let new_crop = normalize_image_crop(new_crop);
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set image crop".into()),
                                     ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
@@ -2382,7 +2398,8 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                                     return;
                                 };
                                 let mut new_crop = img.crop();
-                                new_crop.z = v.clamp(0.05, 1.0);
+                                new_crop.z = v;
+                                let new_crop = normalize_image_crop(new_crop);
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set image crop".into()),
                                     ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
@@ -2415,7 +2432,8 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
                                     return;
                                 };
                                 let mut new_crop = img.crop();
-                                new_crop.w = v.clamp(0.05, 1.0);
+                                new_crop.w = v;
+                                let new_crop = normalize_image_crop(new_crop);
                                 s.apply_outputs(smallvec![
                                     ToolOutput::BeginTransaction("Set image crop".into()),
                                     ToolOutput::Commands(smallvec![EditorCommand::SetImageCrop {
@@ -3129,63 +3147,79 @@ fn appearance_for(session: &Session, selected: NodeId) -> Option<AppearanceTarge
     let doc = &session.file.document;
     let node = doc.nodes.get(selected)?;
     match &node.kind {
-        NodeKind::Style(StyleKind::Fill { .. }) => {
-            let shape_for_axis = find_shape_painted_by(session, selected).unwrap_or(selected);
-            Some(AppearanceTarget {
-                shape_for_axis,
-                fill: Some(selected),
-                stroke: None,
-            })
+        NodeKind::Style(StyleKind::Fill { .. } | StyleKind::Stroke { .. }) => {
+            let shape = painted_shape_for_style(session, selected).unwrap_or(selected);
+            appearance_for_shape(session, shape)
         }
-        NodeKind::Style(StyleKind::Stroke { .. }) => {
-            let shape_for_axis = find_shape_painted_by(session, selected).unwrap_or(selected);
-            Some(AppearanceTarget {
-                shape_for_axis,
-                fill: None,
-                stroke: Some(selected),
-            })
-        }
-        NodeKind::Shape(_) | NodeKind::Text(_) => {
-            let fill =
-                renamite_behavior_common::fill::fill_style_for_shape(doc, selected).or_else(|| {
-                    session
-                        .engine
-                        .scene()
-                        .items
-                        .iter()
-                        .rev()
-                        .find(|it| {
-                            it.node == selected
-                                && matches!(it.kind, renamite_model::PaintKind::Fill(_))
-                        })
-                        .map(|it| it.style)
-                });
-            let stroke = renamite_behavior_common::stroke::stroke_style_for_shape(doc, selected)
-                .or_else(|| {
-                    session
-                        .engine
-                        .scene()
-                        .items
-                        .iter()
-                        .rev()
-                        .find(|it| {
-                            it.node == selected
-                                && matches!(it.kind, renamite_model::PaintKind::Stroke(_))
-                        })
-                        .map(|it| it.style)
-                });
-            Some(AppearanceTarget {
-                shape_for_axis: selected,
-                fill,
-                stroke,
-            })
-        }
+        NodeKind::Shape(_) | NodeKind::Text(_) => appearance_for_shape(session, selected),
+        // Images paint via their own tint/meta, not sibling Fill/Stroke styles.
+        NodeKind::Image(_) => None,
         NodeKind::Group | NodeKind::Layer(_) => {
             let content = primary_content_in_group(doc, selected)?;
             appearance_for(session, content)
         }
         _ => None,
     }
+}
+
+fn appearance_for_shape(session: &Session, shape: NodeId) -> Option<AppearanceTarget> {
+    let doc = &session.file.document;
+    match doc.nodes.get(shape).map(|n| &n.kind) {
+        Some(NodeKind::Shape(_) | NodeKind::Text(_)) => {}
+        _ => return None,
+    }
+    let fill = renamite_behavior_common::fill::fill_style_for_shape(doc, shape).or_else(|| {
+        session
+            .engine
+            .scene()
+            .items
+            .iter()
+            .rev()
+            .find(|it| it.node == shape && matches!(it.kind, renamite_model::PaintKind::Fill(_)))
+            .map(|it| it.style)
+    });
+    let stroke =
+        renamite_behavior_common::stroke::stroke_style_for_shape(doc, shape).or_else(|| {
+            session
+                .engine
+                .scene()
+                .items
+                .iter()
+                .rev()
+                .find(|it| {
+                    it.node == shape && matches!(it.kind, renamite_model::PaintKind::Stroke(_))
+                })
+                .map(|it| it.style)
+        });
+    Some(AppearanceTarget {
+        shape_for_axis: shape,
+        fill,
+        stroke,
+    })
+}
+
+fn painted_shape_for_style(session: &Session, id: NodeId) -> Option<NodeId> {
+    let doc = &session.file.document;
+    let node = doc.nodes.get(id)?;
+    if !matches!(node.kind, NodeKind::Style(_)) {
+        return None;
+    }
+    if let Some(shape) = find_shape_painted_by(session, id) {
+        return Some(shape);
+    }
+    let (parent, idx) = doc.locate(id)?;
+    let siblings: Vec<NodeId> = match parent {
+        renamite_model::Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
+        renamite_model::Parent::Node(n) => doc.nodes.get(n)?.children.clone(),
+    };
+    for &sid in siblings[..idx].iter().rev() {
+        match doc.nodes.get(sid).map(|n| &n.kind) {
+            Some(NodeKind::Shape(_) | NodeKind::Text(_) | NodeKind::Image(_)) => return Some(sid),
+            Some(NodeKind::Style(_) | NodeKind::Modifier(_)) => continue,
+            _ => break,
+        }
+    }
+    None
 }
 
 fn style_prop_rows(

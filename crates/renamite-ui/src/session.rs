@@ -241,7 +241,7 @@ pub struct OpenPicker {
     pub cancel_current_paint: Option<renamite_model::StylePaint>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerTarget {
     CurrentPaint,
     StyleColor {
@@ -250,6 +250,10 @@ pub enum PickerTarget {
     GradientStop {
         style_id: renamite_model::NodeId,
         index: usize,
+    },
+    Prop {
+        id: renamite_model::NodeId,
+        path: renamite_model::PropPath,
     },
 }
 
@@ -2636,7 +2640,7 @@ impl Session {
     }
 
     pub fn apply_picker_change(&mut self, color: renamite_model::Color) {
-        let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
+        let Some(target) = self.open_picker.as_ref().map(|open| open.target.clone()) else {
             return;
         };
 
@@ -2658,6 +2662,14 @@ impl Session {
                     return;
                 }
                 self.write_gradient_stop_color(style_id, index, color);
+                self.engine.reevaluate(&self.file);
+            }
+
+            PickerTarget::Prop { id, path } => {
+                if !self.ensure_picker_transaction() {
+                    return;
+                }
+                self.write_prop_color(id, path, color);
                 self.engine.reevaluate(&self.file);
             }
         }
@@ -2744,8 +2756,27 @@ impl Session {
         self.history_apply(cmd);
     }
 
+    fn write_prop_color(
+        &mut self,
+        id: renamite_model::NodeId,
+        path: renamite_model::PropPath,
+        color: renamite_model::Color,
+    ) {
+        use renamite_model::Value;
+        let frame = renamite_animation::Frame(self.playback.head.round() as i64);
+        let cmd = renamite_history::resolve_property_edit(
+            &self.file.document,
+            id,
+            &path,
+            Value::Color(color),
+            frame,
+            self.record_for_writes(),
+        );
+        self.history_apply(cmd);
+    }
+
     pub fn commit_picker_color(&mut self, color: renamite_model::Color) {
-        let Some(target) = self.open_picker.as_ref().map(|open| open.target) else {
+        let Some(target) = self.open_picker.as_ref().map(|open| open.target.clone()) else {
             return;
         };
 
@@ -2756,7 +2787,9 @@ impl Session {
                     open.cancel_current_paint = Some(committed);
                 }
             }
-            PickerTarget::StyleColor { .. } | PickerTarget::GradientStop { .. } => {
+            PickerTarget::StyleColor { .. }
+            | PickerTarget::GradientStop { .. }
+            | PickerTarget::Prop { .. } => {
                 let owns_transaction = self
                     .open_picker
                     .as_ref()

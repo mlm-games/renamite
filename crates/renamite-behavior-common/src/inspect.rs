@@ -119,6 +119,16 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
                     _ => {}
                 }
             }
+            if desc.path.as_str() == "stroke.miter_limit" {
+                match &node.kind {
+                    NodeKind::Style(StyleKind::Stroke { join, .. })
+                        if *join != renamite_model::StrokeJoin::Miter =>
+                    {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
             true
         })
         .filter_map(|desc| {

@@ -104,3 +104,46 @@ pub fn cmd_remove_fill_for_shape(doc: &Document, shape_id: NodeId) -> Option<Edi
     }
     Some(EditorCommand::RemoveNode { id: fill })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renamite_animation::Animated;
+    use renamite_model::{Color, FillRule, ShapeKind};
+
+    fn rect(doc: &mut Document, name: &str) -> NodeId {
+        doc.create_node(Node::new(
+            name,
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(glam::DVec2::ZERO),
+                size: Animated::new(glam::DVec2::splat(10.0)),
+                rounded: Animated::new(0.0),
+            }),
+        ))
+    }
+
+    fn fill(doc: &mut Document, name: &str) -> NodeId {
+        doc.create_node(Node::new(
+            name,
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        ))
+    }
+
+    #[test]
+    fn style_stack_uses_first_fill() {
+        let mut doc = Document::empty();
+        let main = doc.main;
+        let shape = rect(&mut doc, "shape");
+        let fill_a = fill(&mut doc, "a");
+        let fill_b = fill(&mut doc, "b");
+        let other = rect(&mut doc, "other");
+        doc.attach(shape, Parent::Comp(main), 0).unwrap();
+        doc.attach(fill_a, Parent::Comp(main), 1).unwrap();
+        doc.attach(fill_b, Parent::Comp(main), 2).unwrap();
+        doc.attach(other, Parent::Comp(main), 3).unwrap();
+        assert_eq!(fill_style_for_shape(&doc, shape), Some(fill_a));
+    }
+}
