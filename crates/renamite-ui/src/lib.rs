@@ -58,18 +58,33 @@ pub fn init_wasm() {
 fn EditorModeSwitch(session: SessionRef) -> View {
     let mode = session.borrow().mode;
     Row(Modifier::new().gap(Dp(6.0))).child((
-        crate::components::PillButton("Design", mode == EditorMode::Design, {
-            let session = session.clone();
-            move || session.borrow_mut().set_mode(EditorMode::Design)
-        }),
-        crate::components::PillButton("Animate", mode == EditorMode::Animate, {
-            let session = session.clone();
-            move || session.borrow_mut().set_mode(EditorMode::Animate)
-        }),
-        crate::components::PillButton("Interact", mode == EditorMode::Interact, {
-            let session = session.clone();
-            move || session.borrow_mut().set_mode(EditorMode::Interact)
-        }),
+        crate::components::PillIconButton(
+            Some(Symbols::draw),
+            "Design",
+            mode == EditorMode::Design,
+            {
+                let session = session.clone();
+                move || session.borrow_mut().set_mode(EditorMode::Design)
+            },
+        ),
+        crate::components::PillIconButton(
+            Some(Symbols::animation),
+            "Animate",
+            mode == EditorMode::Animate,
+            {
+                let session = session.clone();
+                move || session.borrow_mut().set_mode(EditorMode::Animate)
+            },
+        ),
+        crate::components::PillIconButton(
+            Some(Symbols::touch_app),
+            "Interact",
+            mode == EditorMode::Interact,
+            {
+                let session = session.clone();
+                move || session.borrow_mut().set_mode(EditorMode::Interact)
+            },
+        ),
     ))
 }
 

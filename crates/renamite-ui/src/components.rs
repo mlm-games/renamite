@@ -233,6 +233,17 @@ pub fn StatusChip(
 
 /// Segmented-mode / tab pill that reports its selected state visually.
 pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'static) -> View {
+    PillIconButton(None, label, selected, on_click)
+}
+
+/// Segmented pill with a leading Material Symbol; the label doubles as the
+/// accessibility text, so icon-only consumers pass `None` as the symbol.
+pub fn PillIconButton(
+    symbol: Option<Symbol>,
+    label: &'static str,
+    selected: bool,
+    on_click: impl Fn() + 'static,
+) -> View {
     let th = theme();
     let bg = if selected {
         th.secondary_container
@@ -255,7 +266,14 @@ pub fn PillButton(label: &'static str, selected: bool, on_click: impl Fn() + 'st
         .background(bg)
         .clip_rounded(Dp(999.0))
         .on_pointer_down(move |_| on_click()))
-    .child(Text(label).size(th.typography.label_medium).color(fg))
+    .child({
+        let mut children: Vec<View> = Vec::new();
+        if let Some(s) = symbol {
+            children.push(AppIcon(s, 18.0).color(fg));
+        }
+        children.push(Text(label).size(th.typography.label_medium).color(fg));
+        Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child(children)
+    })
 }
 
 /// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).

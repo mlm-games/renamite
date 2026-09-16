@@ -45,6 +45,7 @@ repose_material::material_symbols! {
     tune:                '\u{e429}',
     view_timeline:       '\u{eb85}',
     touch_app:           '\u{e913}',
+    animation:           '\u{e71c}',
 
     visibility:          '\u{e8f4}',
     visibility_off:      '\u{e8f5}',
@@ -52,8 +53,8 @@ repose_material::material_symbols! {
     lock_open:           '\u{e898}',
     expand_more:         '\u{e5cf}',
     expand_less:         '\u{e5ce}',
-    unfold_more:         '\u{e7b2}',
-    unfold_less:         '\u{e7b3}',
+    unfold_more:         '\u{e5d7}',
+    unfold_less:         '\u{e5d6}',
     chevron_right:       '\u{e5cc}',
     drag_indicator:      '\u{e945}',
 
