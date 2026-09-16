@@ -19,12 +19,12 @@ use renamite_animation::PlayState;
 use renamite_history::ToolId;
 use repose_core::{Color, Dp, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
 use repose_material::material3::{
-    DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem, MenuState, TopAppBar,
-    TopAppBarConfig,
+    CenterAlignedTopAppBar, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
+    MenuState, TopAppBarConfig,
 };
 use repose_platform::RenderContext;
 use repose_ui::overlay::OverlayHandle;
-use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
+use repose_ui::{Box, Column, Row, ViewExt};
 use std::rc::Rc;
 use web_time::Instant;
 
@@ -89,17 +89,10 @@ fn EditorModeSwitch(session: SessionRef) -> View {
 }
 
 pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
-    let (name, dirty, mode, playing, preview_enabled) = {
+    let (dirty, mode, playing, preview_enabled) = {
         let s = session.borrow();
-        let name = s
-            .current_path
-            .as_ref()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| s.file.meta.name.clone());
-        (name, s.dirty, s.mode, s.playing, s.machine_preview_enabled)
+        (s.dirty, s.mode, s.playing, s.machine_preview_enabled)
     };
-    let title = if dirty { format!("{name} *") } else { name };
 
     let mut actions: Vec<View> = Vec::new();
     let expanded = shell::platform_shell_class() == shell::ShellClass::Expanded;
@@ -150,9 +143,9 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
         }
     }
 
-    TopAppBar(
-        Text(title).size(theme().typography.title_large),
-        Some(EditorModeSwitch(session.clone())),
+    CenterAlignedTopAppBar(
+        EditorModeSwitch(session.clone()),
+        None,
         Some(FileMenu(session.clone(), overlay)),
         actions,
         TopAppBarConfig::default(),
