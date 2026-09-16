@@ -603,7 +603,7 @@ impl Session {
         self.apply_outputs(outs);
     }
 
-    fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
+    pub(crate) fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
         let sel = &self.selection.nodes;
         sel.iter()
             .copied()
@@ -662,28 +662,42 @@ impl Session {
     fn clipboard_from_selection(&mut self, cut: bool) {
         self.finalize_open_edit();
         let roots = self.selected_roots();
-        if roots.is_empty() {
-            return;
-        }
         let mut items = Vec::with_capacity(roots.len());
+        let mut copied_ids: Vec<renamite_model::NodeId> = Vec::with_capacity(roots.len());
         for &id in &roots {
             let Some((parent, index)) = self.file.document.locate(id) else {
                 continue;
             };
+            if self
+                .file
+                .document
+                .nodes
+                .get(id)
+                .map(|n| n.locked)
+                .unwrap_or(true)
+            {
+                continue;
+            }
             let tree = self.tree_of(id);
             items.push(ClipboardItem {
                 tree,
                 source_parent: parent,
                 source_index: index,
             });
+            copied_ids.push(id);
         }
-        let style_nodes = roots
+        if items.is_empty() {
+            self.status = Some("Nothing to copy: selection is empty or locked".into());
+            self.repaint();
+            return;
+        }
+        let style_nodes = copied_ids
             .first()
             .map(|&id| self.immediate_style_kinds(id))
             .unwrap_or_default();
         self.clipboard = Some(ClipboardPayload { items, style_nodes });
         if cut {
-            let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = roots
+            let cmds: SmallVec<[renamite_history::EditorCommand; 4]> = copied_ids
                 .iter()
                 .map(|&id| renamite_history::EditorCommand::RemoveNode { id })
                 .collect();
@@ -1084,19 +1098,38 @@ impl Session {
     }
 
     pub fn duplicate_selection(&mut self) {
-        let roots = self.selected_roots();
-        if roots.is_empty() {
-            return;
-        }
-        let items: Vec<ClipboardItem> = roots
-            .iter()
-            .map(|&id| ClipboardItem {
-                tree: self.tree_of(id),
-                source_parent: renamite_model::Parent::Comp(self.file.document.main),
-                source_index: 0,
+        self.finalize_open_edit();
+        let items: Vec<(ClipboardItem, renamite_model::NodeId)> = self
+            .selected_roots()
+            .into_iter()
+            .filter_map(|id| {
+                if self
+                    .file
+                    .document
+                    .nodes
+                    .get(id)
+                    .map(|n| n.locked)
+                    .unwrap_or(true)
+                {
+                    return None;
+                }
+                Some((
+                    ClipboardItem {
+                        tree: self.tree_of(id),
+                        source_parent: renamite_model::Parent::Comp(self.file.document.main),
+                        source_index: 0,
+                    },
+                    id,
+                ))
             })
             .collect();
-        let created = self.insert_trees(items, DVec2::new(20.0, 20.0), "Duplicate");
+        if items.is_empty() {
+            self.status = Some("Nothing to duplicate: selection is empty or locked".into());
+            self.repaint();
+            return;
+        }
+        let trees: Vec<ClipboardItem> = items.into_iter().map(|(item, _)| item).collect();
+        let created = self.insert_trees(trees, DVec2::new(20.0, 20.0), "Duplicate");
         if !created.is_empty() {
             self.selection.nodes = created;
             self.ensure_selection_visible();
@@ -1840,9 +1873,6 @@ impl Session {
             if node.locked {
                 continue;
             }
-            if matches!(node.kind, renamite_model::NodeKind::Text(_)) {
-                continue;
-            }
             let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
                 continue;
             };
@@ -1873,6 +1903,132 @@ impl Session {
             ToolOutput::Commands(cmds),
             ToolOutput::CommitTransaction,
         ]);
+    }
+
+    pub fn nudge_selection(&mut self, dir: DVec2, mods: Modifiers) {
+        if self.selection.nodes.is_empty() || self.tool.is_dragging(self.active_tool) {
+            return;
+        }
+        let scale = self.viewport.view.scale.max(1e-6);
+        let step = if mods.alt {
+            1.0
+        } else if mods.shift {
+            20.0
+        } else {
+            2.0
+        } / scale;
+        let delta = dir * step;
+        if !delta.is_finite() {
+            return;
+        }
+        let frame = self.playback.head;
+        let record = self.record_for_writes();
+        let prop = PropPath::new("transform.position");
+        let roots = self.selected_roots();
+        let cmds: SmallVec<[EditorCommand; 4]> = roots
+            .into_iter()
+            .filter_map(|id| {
+                let node = self.file.document.nodes.get(id)?;
+                if node.locked {
+                    return None;
+                }
+                let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame)
+                else {
+                    return None;
+                };
+                let local =
+                    renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
+                        .unwrap_or(delta);
+                if !local.is_finite() {
+                    return None;
+                }
+                Some(renamite_history::resolve_property_edit(
+                    &self.file.document,
+                    id,
+                    &prop,
+                    Value::DVec2(current + local),
+                    Frame(frame.round() as i64),
+                    record,
+                ))
+            })
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Nudge".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    pub fn delete_selection_nodes(&mut self) {
+        if self.selection.nodes.is_empty() || self.tool.is_dragging(self.active_tool) {
+            return;
+        }
+        let cmds: SmallVec<[EditorCommand; 4]> = self
+            .selected_roots()
+            .into_iter()
+            .filter(|id| {
+                self.file
+                    .document
+                    .nodes
+                    .get(*id)
+                    .map(|n| !n.locked)
+                    .unwrap_or(false)
+            })
+            .map(|id| EditorCommand::RemoveNode { id })
+            .collect();
+        if cmds.is_empty() {
+            self.status = Some("Locked layers cannot be deleted".into());
+            self.repaint();
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Delete".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![])),
+        ]);
+    }
+
+    pub fn deselect_when_idle(&mut self) -> bool {
+        if self.tool.is_dragging(self.active_tool) || self.selection.nodes.is_empty() {
+            return false;
+        }
+        self.selection.nodes.clear();
+        self.repaint();
+        true
+    }
+
+    pub fn cycle_selection(&mut self, reverse: bool) {
+        let comp = self.file.document.main;
+        let children = self.file.document.compositions[comp].children.clone();
+        if children.is_empty() {
+            return;
+        }
+        let next = match self
+            .selection
+            .nodes
+            .first()
+            .copied()
+            .and_then(|cur| children.iter().position(|&c| c == cur))
+        {
+            Some(i) => {
+                children[(i + if reverse { children.len() - 1 } else { 1 }) % children.len()]
+            }
+            None => children[0],
+        };
+        self.selection.nodes = vec![next];
+        self.ensure_selection_visible();
+        self.repaint();
+    }
+
+    pub fn select_all_top_level(&mut self) {
+        let comp = self.file.document.main;
+        self.selection.nodes = self.file.document.compositions[comp].children.clone();
+        self.ensure_selection_visible();
+        self.repaint();
     }
 
     pub fn simplify_selection(&mut self) {

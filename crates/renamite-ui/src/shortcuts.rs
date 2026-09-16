@@ -11,7 +11,7 @@ use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::request_frame;
 
 use crate::session::{
-    EditorMode, SelectionBoolean, SessionRef, dispatch_canvas, redo_cmd, undo_cmd,
+    EditorMode, PanelPage, SelectionBoolean, SessionRef, dispatch_canvas, redo_cmd, undo_cmd,
 };
 
 use std::cell::Cell;
@@ -56,17 +56,19 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         return false;
     }
     let renaming = session.borrow().renaming.is_some();
-    if renaming && event.event_type == KeyEventType::Down {
-        if matches!(event.key, Key::Escape) {
+    if renaming {
+        if event.event_type == KeyEventType::Down && matches!(event.key, Key::Escape) {
             session.borrow_mut().cancel_rename();
             return true;
         }
         return false;
     }
-    // Space tracks the temporary-pan gesture on both edges.
     if matches!(event.key, Key::Space) {
-        let mut s = session.borrow_mut();
-        s.viewport.space_held = event.event_type == KeyEventType::Down;
+        if event.event_type == KeyEventType::Up {
+            session.borrow_mut().viewport.space_held = false;
+        } else if event.event_type == KeyEventType::Down {
+            session.borrow_mut().viewport.space_held = true;
+        }
         return true;
     }
 
@@ -76,13 +78,21 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
 
     let mut s = session.borrow_mut();
 
-    // Interact mode owns input for runtime listeners / state machines.
     if s.mode == EditorMode::Interact {
         if matches!(event.key, Key::Delete | Key::Backspace) {
             s.delete_machine_selection();
             return true;
         }
-        return false;
+        if event.modifiers.command
+            || !matches!(
+                event.key,
+                Key::Character('+' | '=' | '-' | '_' | '1' | '2' | '5' | 'f' | '#' | '%' | '|')
+            )
+        {
+            return false;
+        }
+        drop(s);
+        return handle_view_only_key(session, event);
     }
 
     let command = event.modifiers.command;
@@ -166,7 +176,14 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     }
 
     match (command, shift, alt, &key) {
-        // Clipboard / duplicate
+        (true, false, false, Key::Character('h')) => {
+            s.flip_selection(true);
+            return true;
+        }
+        (true, false, false, Key::Character('H')) => {
+            s.flip_selection(false);
+            return true;
+        }
         (true, false, false, Key::Character('c')) => {
             s.copy_selection();
             return true;
@@ -207,12 +224,12 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    // Ctrl/Cmd+A: select all top-level objects in the current composition.
-    if command && !shift && matches!(key, Key::Character('a')) {
-        let comp = s.file.document.main;
-        s.selection.nodes = s.file.document.compositions[comp].children.clone();
-        s.ensure_selection_visible();
-        s.repaint();
+    if command && !alt && matches!(key, Key::Character('a' | 'A')) {
+        if shift {
+            s.set_active_page(PanelPage::Inspect);
+            return true;
+        }
+        s.select_all_top_level();
         return true;
     }
 
@@ -229,10 +246,23 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
 
     match key {
         Key::Escape => {
+            let was_dragging = s.tool.is_dragging(s.active_tool);
             dispatch_canvas(&mut s, CanvasEvent::KeyDown(CanvasKey::Escape), mods);
+            if !was_dragging {
+                s.deselect_when_idle();
+            }
             return true;
         }
         Key::Delete | Key::Backspace => {
+            if !matches!(
+                s.active_tool,
+                ToolId::Select | ToolId::Transform | ToolId::PathEdit
+            ) && !s.selection.nodes.is_empty()
+                && !s.tool.is_dragging(s.active_tool)
+            {
+                s.delete_selection_nodes();
+                return true;
+            }
             let k = if matches!(key, Key::Delete) {
                 CanvasKey::Delete
             } else {
@@ -260,10 +290,14 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    if s.active_tool == ToolId::PathEdit && !command {
-        // Tangent-mode / segment-conversion / node-op chords. Plain letters
-        // are left to the tool-selection map below, so only Shift (+ not Alt,
-        // which stays free for 1px arrow nudging) reaches them here.
+    if s.active_tool == ToolId::PathEdit {
+        if command && !alt {
+            if dispatch_path_edit_arrows(&mut s, &key, mods) {
+                return true;
+            }
+            return false;
+        }
+
         if shift && !alt {
             let key = match key {
                 Key::Character('b') => CanvasKey::NodeBreak,
@@ -319,16 +353,54 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         }
     }
 
-    if matches!(s.active_tool, ToolId::Select | ToolId::Transform) && !command {
-        let canvas_key = match key {
-            Key::ArrowLeft => Some(CanvasKey::ArrowLeft),
-            Key::ArrowRight => Some(CanvasKey::ArrowRight),
-            Key::ArrowUp => Some(CanvasKey::ArrowUp),
-            Key::ArrowDown => Some(CanvasKey::ArrowDown),
+    if !command && !alt && matches!(key, Key::Tab) && s.active_tool != ToolId::PathEdit {
+        s.cycle_selection(shift);
+        return true;
+    }
+
+    if !command && !s.selection.nodes.is_empty() {
+        let dir = match key {
+            Key::ArrowLeft => Some(glam::DVec2::new(-1.0, 0.0)),
+            Key::ArrowRight => Some(glam::DVec2::new(1.0, 0.0)),
+            Key::ArrowUp => Some(glam::DVec2::new(0.0, -1.0)),
+            Key::ArrowDown => Some(glam::DVec2::new(0.0, 1.0)),
             _ => None,
         };
-        if let Some(canvas_key) = canvas_key {
-            dispatch_canvas(&mut s, CanvasEvent::KeyDown(canvas_key), mods);
+        if let Some(dir) = dir
+            && s.active_tool != ToolId::PathEdit
+        {
+            s.nudge_selection(dir, mods);
+            return true;
+        }
+    }
+
+    if !command && !alt && shift && matches!(key, Key::Character('H')) {
+        s.flip_selection(false);
+        return true;
+    }
+
+    if !command && !alt && !shift {
+        if matches!(key, Key::Character('h' | 'H')) {
+            s.flip_selection(true);
+            return true;
+        }
+        let tool = match key {
+            Key::Character('s' | 'v') => Some(ToolId::Select),
+            Key::Character('m') => Some(ToolId::Transform),
+            Key::Character('n') => Some(ToolId::PathEdit),
+            Key::Character('b' | 'p') => Some(ToolId::Pen),
+            Key::Character('r') => Some(ToolId::Rect),
+            Key::Character('e') => Some(ToolId::Ellipse),
+            Key::Character('*') => Some(ToolId::Star),
+            Key::Character('t') => Some(ToolId::Text),
+            Key::Character('g') => Some(ToolId::Gradient),
+            Key::Character('u') => Some(ToolId::Fill),
+            Key::Character('d') | Key::F(7) => Some(ToolId::Dropper),
+            _ => None,
+        };
+        if let Some(tool) = tool {
+            s.active_tool = tool;
+            s.repaint();
             return true;
         }
     }
@@ -386,28 +458,53 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         }
     }
 
-    if !command && !alt && !shift {
-        let tool = match key {
-            Key::Character('s' | 'v') => Some(ToolId::Select),
-            Key::Character('n') => Some(ToolId::PathEdit),
-            Key::Character('b' | 'p') => Some(ToolId::Pen),
-            Key::Character('r') => Some(ToolId::Rect),
-            Key::Character('e') => Some(ToolId::Ellipse),
-            Key::Character('*') => Some(ToolId::Star),
-            Key::Character('t') => Some(ToolId::Text),
-            Key::Character('g') => Some(ToolId::Gradient),
-            Key::Character('u') => Some(ToolId::Fill),
-            Key::Character('d') | Key::F(7) => Some(ToolId::Dropper),
-            _ => None,
-        };
-        if let Some(tool) = tool {
-            s.active_tool = tool;
-            s.repaint();
-            return true;
-        }
-    }
-
     false
+}
+
+fn handle_view_only_key(session: &SessionRef, event: KeyEvent) -> bool {
+    let key = event.key.clone();
+    let mut s = session.borrow_mut();
+    match key {
+        Key::Character('#') => {
+            s.viewport.show_grid = !s.viewport.show_grid;
+            s.repaint();
+            true
+        }
+        Key::Character('%') => {
+            s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+            s.repaint();
+            true
+        }
+        Key::Character('|') => {
+            s.viewport.show_guides = !s.viewport.show_guides;
+            s.repaint();
+            true
+        }
+        Key::Character('+' | '=') => {
+            s.viewport.zoom_centered(1.2);
+            request_frame();
+            true
+        }
+        Key::Character('-' | '_') => {
+            s.viewport.zoom_centered(1.0 / 1.2);
+            request_frame();
+            true
+        }
+        Key::Character('1') => {
+            set_zoom(&mut s, 1.0);
+            true
+        }
+        Key::Character('2') => {
+            set_zoom(&mut s, 0.5);
+            true
+        }
+        Key::Character('5' | 'f') => {
+            s.viewport.request_fit();
+            request_frame();
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Arrow forwarding inside PathEdit: arrows are delivered regardless of Alt

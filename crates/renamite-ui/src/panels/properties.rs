@@ -2108,7 +2108,7 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
     }
     let mut rows: Vec<View> = Vec::new();
     let multi = selection_len > 1;
-    {
+    if multi {
         let mut selection_chips: Vec<View> = vec![
             chip("Left", {
                 let session = session.clone();
@@ -2159,7 +2159,7 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
                 }
             }),
         ];
-        if multi {
+        if selection_len > 2 {
             selection_chips.push(chip("Distribute H", {
                 let session = session.clone();
                 move || session.borrow_mut().distribute_selection(true)
@@ -2174,6 +2174,14 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
     rows.push(align_row(
         "Page",
         vec![
+            chip("Left", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Left, AlignAnchor::Page)
+                }
+            }),
             chip("Center", {
                 let session = session.clone();
                 move || {
@@ -2182,12 +2190,36 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
                         .align_selection(AlignOp::HCenter, AlignAnchor::Page)
                 }
             }),
+            chip("Right", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Right, AlignAnchor::Page)
+                }
+            }),
+            chip("Top", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Top, AlignAnchor::Page)
+                }
+            }),
             chip("Middle", {
                 let session = session.clone();
                 move || {
                     session
                         .borrow_mut()
                         .align_selection(AlignOp::VCenter, AlignAnchor::Page)
+                }
+            }),
+            chip("Bottom", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Bottom, AlignAnchor::Page)
                 }
             }),
             chip("Center page", {
@@ -2706,32 +2738,19 @@ fn insert_gradient_stop(stops: &mut GradientStops) {
 }
 
 fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
-    let (in_f, out_f, stretch, blend) = {
+    let (in_f, out_f, stretch, blend_idx) = {
         let s = session.borrow();
         let NodeKind::Layer(lp) = &s.file.document.nodes.get(id)?.kind else {
             return None;
         };
-        (lp.in_frame.0, lp.out_frame.0, lp.time_stretch, lp.blend)
+        (
+            lp.in_frame.0,
+            lp.out_frame.0,
+            lp.time_stretch,
+            renamite_behavior_common::inspect::blend_to_index(lp.blend),
+        )
     };
     let th = theme();
-    let blend_idx = match blend {
-        renamite_model::BlendMode::Normal => 0,
-        renamite_model::BlendMode::Multiply => 1,
-        renamite_model::BlendMode::Screen => 2,
-        renamite_model::BlendMode::Overlay => 3,
-        renamite_model::BlendMode::Darken => 4,
-        renamite_model::BlendMode::Lighten => 5,
-        renamite_model::BlendMode::ColorDodge => 6,
-        renamite_model::BlendMode::ColorBurn => 7,
-        renamite_model::BlendMode::HardLight => 8,
-        renamite_model::BlendMode::SoftLight => 9,
-        renamite_model::BlendMode::Difference => 10,
-        renamite_model::BlendMode::Exclusion => 11,
-        renamite_model::BlendMode::Hue => 12,
-        renamite_model::BlendMode::Saturation => 13,
-        renamite_model::BlendMode::Color => 14,
-        renamite_model::BlendMode::Luminosity => 15,
-    };
     Some(crate::components::CollapsibleSection(
         format!("layer_props_{id:?}"),
         "Layer",
@@ -2876,32 +2895,18 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                 FlowRowConfig::default(),
             )
             .child({
-                let labels: [&str; 16] = [
-                    "Normal",
-                    "Multiply",
-                    "Screen",
-                    "Overlay",
-                    "Darken",
-                    "Lighten",
-                    "ColorDodge",
-                    "ColorBurn",
-                    "HardLight",
-                    "SoftLight",
-                    "Difference",
-                    "Exclusion",
-                    "Hue",
-                    "Saturation",
-                    "Color",
-                    "Luminosity",
-                ];
-                let mut chips: Vec<View> = Vec::with_capacity(17);
+                let mut chips: Vec<View> =
+                    Vec::with_capacity(renamite_behavior_common::inspect::BLEND_MODES.len() + 1);
                 chips.push(
                     Text("Blend")
                         .size(th.typography.body_medium)
                         .color(th.on_surface)
                         .modifier(Modifier::new().width(Dp(96.0))),
                 );
-                for (idx, label) in labels.iter().enumerate() {
+                for (idx, (_, label)) in renamite_behavior_common::inspect::BLEND_MODES
+                    .iter()
+                    .enumerate()
+                {
                     chips.push(blend_segment(session.clone(), id, blend_idx, idx, label));
                 }
                 chips
@@ -2940,24 +2945,10 @@ fn blend_segment(
                     th.surface
                 })
                 .on_pointer_down(move |_pe: PointerEvent| {
-                    let blend = match index {
-                        1 => renamite_model::BlendMode::Multiply,
-                        2 => renamite_model::BlendMode::Screen,
-                        3 => renamite_model::BlendMode::Overlay,
-                        4 => renamite_model::BlendMode::Darken,
-                        5 => renamite_model::BlendMode::Lighten,
-                        6 => renamite_model::BlendMode::ColorDodge,
-                        7 => renamite_model::BlendMode::ColorBurn,
-                        8 => renamite_model::BlendMode::HardLight,
-                        9 => renamite_model::BlendMode::SoftLight,
-                        10 => renamite_model::BlendMode::Difference,
-                        11 => renamite_model::BlendMode::Exclusion,
-                        12 => renamite_model::BlendMode::Hue,
-                        13 => renamite_model::BlendMode::Saturation,
-                        14 => renamite_model::BlendMode::Color,
-                        15 => renamite_model::BlendMode::Luminosity,
-                        _ => renamite_model::BlendMode::Normal,
-                    };
+                    if index == current {
+                        return;
+                    }
+                    let blend = renamite_behavior_common::inspect::blend_from_index(index as i64);
                     let mut s = session.borrow_mut();
                     s.apply_outputs(smallvec![
                         ToolOutput::BeginTransaction("Set blend".into()),
