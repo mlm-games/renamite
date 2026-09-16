@@ -30,10 +30,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
         repose_core::shortcuts::InstallShortcutHandler(std::rc::Rc::new(move |action| {
             use repose_core::shortcuts::{Action, Gesture};
             match action {
-                Action::Gesture(Gesture::Pan { delta }) => {
+                Action::Gesture(Gesture::Pan { delta, center }) => {
                     let is_drag = {
                         let s = session.borrow();
-                        s.tool.is_dragging(s.active_tool) || s.viewport.pan_last.is_some()
+                        s.tool.is_dragging(s.active_tool)
+                            || s.viewport.pan_last.is_some()
+                            || viewport_gesture_in_graph(&s.viewport, center)
                     };
                     if is_drag {
                         return false;
@@ -68,6 +70,13 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     delta_scale,
                     center,
                 }) => {
+                    let in_graph = {
+                        let s = session.borrow();
+                        viewport_gesture_in_graph(&s.viewport, center)
+                    };
+                    if in_graph {
+                        return false;
+                    }
                     let is_drag = {
                         let s = session.borrow();
                         s.tool.is_dragging(s.active_tool)
@@ -885,6 +894,22 @@ fn ViewportControls(session: SessionRef) -> View {
             }),
         )),
     ))
+}
+
+fn viewport_gesture_in_graph(
+    viewport: &crate::session::ViewportState,
+    center: repose_core::Vec2,
+) -> bool {
+    let scale = repose_core::locals::effective_density_scale().max(1e-6);
+    let dp = repose_core::Vec2 {
+        x: center.x / scale,
+        y: center.y / scale,
+    };
+    let Some(rect) = viewport.screen_rect else {
+        return false;
+    };
+    let local = DVec2::new((dp.x - rect.x) as f64, (dp.y - rect.y) as f64);
+    viewport.graph_rect_at(local)
 }
 
 fn map_button(pe: &PointerEvent) -> PointerButton {

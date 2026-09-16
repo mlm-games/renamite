@@ -3334,6 +3334,9 @@ pub struct ViewportState {
     /// Guards wheel-zoom anchoring before the first pointer move.
     pub has_pointer: bool,
     pub screen_rect: Option<Rect>,
+    /// Machine graph canvas rect, in main-viewport-local coordinates.
+    /// Lets two-finger gestures route to the graph instead of the canvas.
+    pub graph_rect: Option<Rect>,
 
     pub show_grid: bool,
     pub snapping_enabled: bool,
@@ -3366,6 +3369,7 @@ impl Default for ViewportState {
             last_pointer: DVec2::ZERO,
             has_pointer: false,
             screen_rect: None,
+            graph_rect: None,
             show_grid: false,
             snapping_enabled: true,
             show_guides: true,
@@ -3428,6 +3432,22 @@ impl ViewportState {
 
     pub fn end_pan(&mut self) {
         self.pan_last = None;
+    }
+
+    /// Record the graph canvas rect (main-viewport-local) for gesture routing.
+    pub fn set_graph_rect(&mut self, rect: Rect) {
+        self.graph_rect = Some(rect);
+    }
+
+    /// True when a viewport-local point falls inside the graph canvas.
+    pub fn graph_rect_at(&self, local: DVec2) -> bool {
+        self.graph_rect.is_some_and(|r| {
+            let p = repose_core::Vec2 {
+                x: local.x as f32,
+                y: local.y as f32,
+            };
+            r.contains(p)
+        })
     }
 }
 
