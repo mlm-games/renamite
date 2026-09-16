@@ -11,6 +11,7 @@ renamite-history.workspace = true
 renamite-animation.workspace = true
 renamite-machine.workspace = true
 glam.workspace = true
+kurbo.workspace = true
 serde.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true

@@ -85,8 +85,7 @@ fn walk(
 fn is_expandable(kind: LayerKind, has_children: bool) -> bool {
     match kind {
         LayerKind::Group => true,
-        LayerKind::Shape => has_children,
-        _ => false,
+        LayerKind::Shape | LayerKind::Style | LayerKind::Mask | LayerKind::Other => has_children,
     }
 }
 
@@ -198,4 +197,58 @@ pub fn select_only(id: NodeId) -> SelectionChange {
 }
 pub fn toggle_in_selection(id: NodeId) -> SelectionChange {
     SelectionChange::Toggle(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renamite_model::{Node, NodeKind};
+
+    fn group(doc: &mut Document, name: &str) -> NodeId {
+        doc.create_node(Node::new(name, NodeKind::Group))
+    }
+
+    #[test]
+    fn groups_expand_even_without_children() {
+        assert!(is_expandable(LayerKind::Group, false));
+        assert!(is_expandable(LayerKind::Group, true));
+    }
+
+    #[test]
+    fn any_node_with_children_is_expandable() {
+        for kind in [
+            LayerKind::Shape,
+            LayerKind::Style,
+            LayerKind::Mask,
+            LayerKind::Other,
+        ] {
+            assert!(!is_expandable(kind, false));
+            assert!(is_expandable(kind, true));
+        }
+    }
+
+    #[test]
+    fn flatten_shows_nested_style_children_when_expanded() {
+        let mut doc = Document::empty();
+        let main = doc.main;
+        let shape = group(&mut doc, "shape");
+        doc.attach(shape, Parent::Comp(main), 0).unwrap();
+        let style = doc
+            .create_node(Node::new(
+                "fill",
+                NodeKind::Style(renamite_model::StyleKind::Fill {
+                    paint: renamite_model::StylePaint::solid(renamite_model::Color::BLACK),
+                    rule: renamite_model::FillRule::NonZero,
+                }),
+            ))
+            .clone();
+        doc.attach(style, Parent::Node(shape), 0).unwrap();
+        let collapsed = flatten_layers(&doc, main, &std::collections::HashSet::new());
+        assert_eq!(collapsed.len(), 1);
+        let mut expanded = std::collections::HashSet::new();
+        expanded.insert(shape);
+        let rows = flatten_layers(&doc, main, &expanded);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].id, style);
+    }
 }

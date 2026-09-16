@@ -319,6 +319,20 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         }
     }
 
+    if matches!(s.active_tool, ToolId::Select | ToolId::Transform) && !command {
+        let canvas_key = match key {
+            Key::ArrowLeft => Some(CanvasKey::ArrowLeft),
+            Key::ArrowRight => Some(CanvasKey::ArrowRight),
+            Key::ArrowUp => Some(CanvasKey::ArrowUp),
+            Key::ArrowDown => Some(CanvasKey::ArrowDown),
+            _ => None,
+        };
+        if let Some(canvas_key) = canvas_key {
+            dispatch_canvas(&mut s, CanvasEvent::KeyDown(canvas_key), mods);
+            return true;
+        }
+    }
+
     if !command && !alt {
         // View toggles use the produced logical character: Shift is ignored as
         // a semantic modifier because '#', '%' and '|' require Shift on many

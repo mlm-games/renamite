@@ -439,6 +439,9 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             children.push(v);
         }
     }
+    if !ids.is_empty() {
+        children.push(align_section(session.clone(), ids.len()));
+    }
     // Use effective inspect id for shape/text appearance and modifier routing
     let inspect_id_opt = if ids.len() == 1 {
         Some(inspect_ids[0])
@@ -2083,6 +2086,192 @@ fn primary_content_in_group(doc: &renamite_model::Document, id: NodeId) -> Optio
 
 fn effective_inspect_id(doc: &renamite_model::Document, id: NodeId) -> NodeId {
     primary_content_in_group(doc, id).unwrap_or(id)
+}
+
+fn align_section(session: SessionRef, selection_len: usize) -> View {
+    use renamite_behavior_common::align::{AlignAnchor, AlignOp};
+    use renamite_behavior_common::context_menu::MenuAction;
+    fn chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
+        let th = theme();
+        Box(Modifier::new()
+            .padding_values(PaddingValues {
+                left: Dp(10.0),
+                right: Dp(10.0),
+                top: Dp(6.0),
+                bottom: Dp(6.0),
+            })
+            .background(th.surface_container_high)
+            .clip_rounded(Dp(999.0))
+            .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
+            .on_pointer_down(move |_| on_click()))
+        .child(Text(label).size(th.typography.label_medium))
+    }
+    let mut rows: Vec<View> = Vec::new();
+    let multi = selection_len > 1;
+    {
+        let mut selection_chips: Vec<View> = vec![
+            chip("Left", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Left, AlignAnchor::Selection)
+                }
+            }),
+            chip("H Center", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::HCenter, AlignAnchor::Selection)
+                }
+            }),
+            chip("Right", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Right, AlignAnchor::Selection)
+                }
+            }),
+            chip("Top", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Top, AlignAnchor::Selection)
+                }
+            }),
+            chip("V Center", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::VCenter, AlignAnchor::Selection)
+                }
+            }),
+            chip("Bottom", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Bottom, AlignAnchor::Selection)
+                }
+            }),
+        ];
+        if multi {
+            selection_chips.push(chip("Distribute H", {
+                let session = session.clone();
+                move || session.borrow_mut().distribute_selection(true)
+            }));
+            selection_chips.push(chip("Distribute V", {
+                let session = session.clone();
+                move || session.borrow_mut().distribute_selection(false)
+            }));
+        }
+        rows.push(align_row("Selection", selection_chips));
+    }
+    rows.push(align_row(
+        "Page",
+        vec![
+            chip("Center", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::HCenter, AlignAnchor::Page)
+                }
+            }),
+            chip("Middle", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::VCenter, AlignAnchor::Page)
+                }
+            }),
+            chip("Center page", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .align_selection(AlignOp::Center, AlignAnchor::Page)
+                }
+            }),
+        ],
+    ));
+    rows.push(align_row(
+        "Arrange",
+        vec![
+            chip("Front", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .run_menu_action(MenuAction::BringToFront)
+                }
+            }),
+            chip("Forward", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .run_menu_action(MenuAction::BringForward)
+                }
+            }),
+            chip("Backward", {
+                let session = session.clone();
+                move || {
+                    session
+                        .borrow_mut()
+                        .run_menu_action(MenuAction::SendBackward)
+                }
+            }),
+            chip("Back", {
+                let session = session.clone();
+                move || session.borrow_mut().run_menu_action(MenuAction::SendToBack)
+            }),
+            chip("Flip H", {
+                let session = session.clone();
+                move || session.borrow_mut().flip_selection(true)
+            }),
+            chip("Flip V", {
+                let session = session.clone();
+                move || session.borrow_mut().flip_selection(false)
+            }),
+        ],
+    ));
+    crate::components::CollapsibleSection(
+        "align_section",
+        "Align & Arrange",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(rows),
+    )
+}
+
+fn align_row(label: &'static str, chips: Vec<View>) -> View {
+    let th = theme();
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(4.0),
+            bottom: Dp(4.0),
+        })
+        .gap(Dp(8.0))
+        .align_items(AlignItems::CENTER))
+    .child((
+        Text(label)
+            .size(th.typography.body_medium)
+            .color(th.on_surface_variant)
+            .modifier(Modifier::new().width(Dp(96.0))),
+        FlowRow(
+            Modifier::new().flex_grow(1.0).gap(Dp(8.0)),
+            FlowRowConfig::default(),
+        )
+        .child(chips),
+    ))
 }
 
 fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {

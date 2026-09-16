@@ -370,6 +370,14 @@ impl SelectTool {
             CanvasEvent::KeyDown(Key::Delete) | CanvasEvent::KeyDown(Key::Backspace) => {
                 self.delete(ctx)
             }
+            CanvasEvent::KeyDown(Key::ArrowLeft) => {
+                self.nudge_selection(ctx, DVec2::new(-1.0, 0.0))
+            }
+            CanvasEvent::KeyDown(Key::ArrowRight) => {
+                self.nudge_selection(ctx, DVec2::new(1.0, 0.0))
+            }
+            CanvasEvent::KeyDown(Key::ArrowUp) => self.nudge_selection(ctx, DVec2::new(0.0, -1.0)),
+            CanvasEvent::KeyDown(Key::ArrowDown) => self.nudge_selection(ctx, DVec2::new(0.0, 1.0)),
             CanvasEvent::DoubleClick { pos } => self.double_click(ctx, pos),
             _ => smallvec![],
         }
@@ -743,6 +751,70 @@ impl SelectTool {
             ToolOutput::Commands(cmds),
             ToolOutput::CommitTransaction,
             ToolOutput::RequestSelection(SelectionChange::Set(vec![])),
+        ]
+    }
+
+    fn nudge_selection(&self, ctx: &ToolContext, dir: DVec2) -> OutputVec {
+        if ctx.selection.is_empty() {
+            return smallvec![];
+        }
+        if self.is_dragging() {
+            return smallvec![];
+        }
+        let scale = ctx.view.scale.max(1e-6);
+        let step = if ctx.modifiers.alt {
+            1.0
+        } else if ctx.modifiers.shift {
+            20.0
+        } else {
+            2.0
+        } / scale;
+        let delta = dir * step;
+        if !delta.is_finite() {
+            return smallvec![];
+        }
+        let frame = ctx.playhead.0 as f64;
+        let prop = PropPath::new("transform.position");
+        let cmds: SmallVec<[EditorCommand; 4]> = ctx
+            .selection
+            .nodes
+            .iter()
+            .copied()
+            .filter(|&id| {
+                !ctx.selection
+                    .nodes
+                    .iter()
+                    .any(|&anc| anc != id && node_is_ancestor(ctx.doc, anc, id))
+            })
+            .filter_map(|id| {
+                let node = ctx.doc.nodes.get(id)?;
+                if node.locked {
+                    return None;
+                }
+                let Ok(Value::DVec2(current)) = ctx.doc.value_at(id, &prop, frame) else {
+                    return None;
+                };
+                let local = world_delta_to_parent(ctx.doc, id, frame, delta).unwrap_or(delta);
+                if !local.is_finite() {
+                    return None;
+                }
+                Some(resolve_property_edit(
+                    ctx.doc,
+                    id,
+                    &prop,
+                    Value::DVec2(current + local),
+                    ctx.playhead,
+                    ctx.record,
+                ))
+            })
+            .collect();
+        if cmds.is_empty() {
+            return smallvec![];
+        }
+        smallvec![
+            ToolOutput::BeginTransaction("Nudge".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
         ]
     }
 

@@ -346,8 +346,8 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             }
         }))
     .child((
-        // Expand chevron (container rows with children)
-        if (kind == LayerKind::Group || kind == LayerKind::Shape) && child_count > 0 {
+        // Expand chevron: any row with children (matches `is_expandable`).
+        if child_count > 0 {
             CompactIconActionWithKey(
                 format!("layers_{:?}_expand", id),
                 if st.is_expanded {

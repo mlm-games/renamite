@@ -1684,6 +1684,197 @@ impl Session {
         ]);
     }
 
+    pub fn align_selection(
+        &mut self,
+        op: renamite_behavior_common::align::AlignOp,
+        anchor: renamite_behavior_common::align::AlignAnchor,
+    ) {
+        use renamite_behavior_common::align;
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            return;
+        }
+        let bounds = align::root_bounds(&self.file.document, &self.engine.scene().items, &roots);
+        if bounds.is_empty() {
+            self.status = Some("Nothing to align".into());
+            self.repaint();
+            return;
+        }
+        let target = match anchor {
+            align::AlignAnchor::Selection => match align::union_bounds(&bounds) {
+                Some(b) => b,
+                None => return,
+            },
+            align::AlignAnchor::Page => {
+                align::page_bounds(self.file.document.compositions[self.file.document.main].size)
+            }
+        };
+        let frame = self.playback.head;
+        let record = self.record_for_writes();
+        let prop = PropPath::new("transform.position");
+        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        for (id, delta) in align::align_deltas(&bounds, target, op) {
+            if self
+                .file
+                .document
+                .nodes
+                .get(id)
+                .map(|n| n.locked)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if !delta.is_finite() || delta.length_squared() < 1e-24 {
+                continue;
+            }
+            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
+                continue;
+            };
+            let local =
+                renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
+                    .unwrap_or(delta);
+            if !local.is_finite() {
+                continue;
+            }
+            cmds.push(renamite_history::resolve_property_edit(
+                &self.file.document,
+                id,
+                &prop,
+                Value::DVec2(current + local),
+                Frame(frame.round() as i64),
+                record,
+            ));
+        }
+        if cmds.is_empty() {
+            self.status = Some("Nothing to align".into());
+            self.repaint();
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Align".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    pub fn distribute_selection(&mut self, horizontal: bool) {
+        use renamite_behavior_common::align;
+        let roots = self.selected_roots();
+        if roots.len() < 3 {
+            self.status = Some("Select 3+ objects to distribute".into());
+            self.repaint();
+            return;
+        }
+        let bounds = align::root_bounds(&self.file.document, &self.engine.scene().items, &roots);
+        if bounds.len() < 3 {
+            self.status = Some("Select 3+ visible objects to distribute".into());
+            self.repaint();
+            return;
+        }
+        let Some(deltas) = align::distribute_deltas(&bounds, horizontal) else {
+            self.status = Some("Nothing to distribute".into());
+            self.repaint();
+            return;
+        };
+        let frame = self.playback.head;
+        let record = self.record_for_writes();
+        let prop = PropPath::new("transform.position");
+        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        for (id, delta) in deltas {
+            if self
+                .file
+                .document
+                .nodes
+                .get(id)
+                .map(|n| n.locked)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if !delta.is_finite() || delta.length_squared() < 1e-24 {
+                continue;
+            }
+            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
+                continue;
+            };
+            let local =
+                renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
+                    .unwrap_or(delta);
+            if !local.is_finite() {
+                continue;
+            }
+            cmds.push(renamite_history::resolve_property_edit(
+                &self.file.document,
+                id,
+                &prop,
+                Value::DVec2(current + local),
+                Frame(frame.round() as i64),
+                record,
+            ));
+        }
+        if cmds.is_empty() {
+            self.status = Some("Nothing to distribute".into());
+            self.repaint();
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Distribute".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
+    pub fn flip_selection(&mut self, horizontal: bool) {
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            return;
+        }
+        let frame = self.playback.head;
+        let record = self.record_for_writes();
+        let prop = PropPath::new("transform.scale");
+        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
+        for id in roots {
+            let Some(node) = self.file.document.nodes.get(id) else {
+                continue;
+            };
+            if node.locked {
+                continue;
+            }
+            if matches!(node.kind, renamite_model::NodeKind::Text(_)) {
+                continue;
+            }
+            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
+                continue;
+            };
+            let next = if horizontal {
+                DVec2::new(-current.x, current.y)
+            } else {
+                DVec2::new(current.x, -current.y)
+            };
+            if !next.is_finite() {
+                continue;
+            }
+            cmds.push(renamite_history::resolve_property_edit(
+                &self.file.document,
+                id,
+                &prop,
+                Value::DVec2(next),
+                Frame(frame.round() as i64),
+                record,
+            ));
+        }
+        if cmds.is_empty() {
+            self.status = Some("Flip does not apply to the selection".into());
+            self.repaint();
+            return;
+        }
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction("Flip".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]);
+    }
+
     pub fn simplify_selection(&mut self) {
         use renamite_model::{NodeKind, ShapeKind};
 
@@ -2000,11 +2191,8 @@ impl Session {
             out: &mut HashSet<renamite_model::NodeId>,
         ) {
             if let Some(n) = doc.nodes.get(node) {
-                match &n.kind {
-                    renamite_model::NodeKind::Group | renamite_model::NodeKind::Shape(_) => {
-                        out.insert(node);
-                    }
-                    _ => {}
+                if !n.children.is_empty() {
+                    out.insert(node);
                 }
                 for &child in &n.children {
                     collect(child, doc, out);
