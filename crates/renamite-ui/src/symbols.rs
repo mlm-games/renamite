@@ -42,6 +42,9 @@ repose_material::material_symbols! {
 
     layers:              '\u{e53b}',
     settings:            '\u{e8b8}',
+    tune:                '\u{e429}',
+    view_timeline:       '\u{eb85}',
+    touch_app:           '\u{e913}',
 
     visibility:          '\u{e8f4}',
     visibility_off:      '\u{e8f5}',

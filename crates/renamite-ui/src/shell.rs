@@ -510,6 +510,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         DockPanel {
             id: PANEL_VIEWPORT,
             title: "Canvas".into(),
+            icon: Some(Symbols::draw.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || ViewportPanel(session.clone())
@@ -518,6 +519,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         DockPanel {
             id: PANEL_LAYERS,
             title: "Layers".into(),
+            icon: Some(Symbols::layers.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || PanelSurface(LayersPanel(session.clone()))
@@ -526,6 +528,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         DockPanel {
             id: PANEL_PROPERTIES,
             title: "Properties".into(),
+            icon: Some(Symbols::tune.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || PanelSurface(PropertiesPanel(session.clone()))
@@ -536,6 +539,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         EditorMode::Design => panels.push(DockPanel {
             id: PANEL_ASSETS,
             title: "Assets".into(),
+            icon: Some(Symbols::folder_open.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || PanelSurface(AssetsPanel(session.clone()))
@@ -544,6 +548,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         EditorMode::Animate => panels.push(DockPanel {
             id: PANEL_TIMELINE,
             title: "Timeline".into(),
+            icon: Some(Symbols::view_timeline.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || PanelSurface(TimelinePanel(session.clone()))
@@ -552,6 +557,7 @@ fn dock_panels(mode: EditorMode, session: SessionRef) -> Vec<DockPanel> {
         EditorMode::Interact => panels.push(DockPanel {
             id: PANEL_INTERACT,
             title: "Interactivity".into(),
+            icon: Some(Symbols::touch_app.codepoint),
             content: Rc::new({
                 let session = session.clone();
                 move || PanelSurface(InteractivityPanel(session.clone()))
