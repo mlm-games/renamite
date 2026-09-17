@@ -395,35 +395,47 @@ fn tool(
 }
 
 pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
-    let (paint, is_open) = {
+    let (paint, base, stops_frame, is_open) = {
         let s = session.borrow();
-        (s.current_paint.clone(), s.open_picker.is_some())
+        let frame = s.playback.head;
+        let stops = match &s.current_paint {
+            renamite_model::StylePaint::Gradient(g) => g.stops.value_at(frame),
+            renamite_model::StylePaint::Solid { .. } => renamite_model::GradientStops(vec![]),
+        };
+        (
+            s.current_paint.clone(),
+            s.current_paint.base_color(),
+            stops,
+            s.open_picker.is_some(),
+        )
     };
-    let base = paint.base_color();
 
-    Box(current_paint_chrome(Modifier::new(), &paint, base, is_open)
-        .width(Dp(32.0))
-        .height(Dp(32.0))
-        .clip_rounded(Dp(8.0))
-        .on_pointer_down({
-            let session = session.clone();
-            move |pe: repose_core::input::PointerEvent| {
-                let mut s = session.borrow_mut();
-                if s.open_picker.is_some() {
-                    s.close_color_picker();
-                } else {
-                    let c = s.current_paint.base_color();
-                    let anchor = overlay_anchor(&pe);
-                    s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
+    Box(
+        current_paint_chrome(Modifier::new(), &paint, base, &stops_frame, is_open)
+            .width(Dp(32.0))
+            .height(Dp(32.0))
+            .clip_rounded(Dp(8.0))
+            .on_pointer_down({
+                let session = session.clone();
+                move |pe: repose_core::input::PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    if s.open_picker.is_some() {
+                        s.close_color_picker();
+                    } else {
+                        let c = s.current_paint.base_color();
+                        let anchor = overlay_anchor(&pe);
+                        s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
+                    }
                 }
-            }
-        }))
+            }),
+    )
 }
 
 fn current_paint_chrome(
     m: Modifier,
     paint: &renamite_model::StylePaint,
     base: renamite_model::Color,
+    stops_frame: &renamite_model::GradientStops,
     is_open: bool,
 ) -> Modifier {
     use renamite_model::{GradientKind, StylePaint};
@@ -434,12 +446,11 @@ fn current_paint_chrome(
     };
     match paint {
         StylePaint::Gradient(g) if matches!(g.kind, GradientKind::Linear) => {
-            let stops = g.stops.base.clone();
             let fill = repose_core::Brush::Linear {
                 start: repose_core::Vec2 { x: 0.0, y: 0.0 },
                 end: repose_core::Vec2 { x: 32.0, y: 32.0 },
-                start_color: ui_color(stops.sample(0.0)),
-                end_color: ui_color(stops.sample(1.0)),
+                start_color: ui_color(stops_frame.sample(0.0)),
+                end_color: ui_color(stops_frame.sample(1.0)),
             };
             let ring_brush = if is_open {
                 repose_core::Brush::Solid(ring)

@@ -1,7 +1,7 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::{
     Dp, FocusRequester, JustifyContent, Modifier, PaddingValues, Role, Semantics, UnitExt, View,
-    remember_with_key, theme,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
@@ -121,6 +121,7 @@ pub fn EditorShell(session: SessionRef) -> View {
                 // if Space was released outside the canvas.
                 if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
                     session_keys.borrow_mut().viewport.space_held = false;
+                    request_frame();
                 }
                 return false;
             }
