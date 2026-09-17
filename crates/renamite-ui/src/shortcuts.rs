@@ -69,6 +69,7 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         } else if event.event_type == KeyEventType::Down {
             session.borrow_mut().viewport.space_held = true;
         }
+        request_frame();
         return true;
     }
 

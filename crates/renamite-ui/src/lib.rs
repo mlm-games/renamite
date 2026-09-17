@@ -395,32 +395,16 @@ fn tool(
 }
 
 pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
-    let th = theme();
-    let (color, is_open) = {
+    let (paint, is_open) = {
         let s = session.borrow();
-        let color = s.current_paint.base_color();
-        (color, s.open_picker.is_some())
+        (s.current_paint.clone(), s.open_picker.is_some())
     };
+    let base = paint.base_color();
 
-    Box(Modifier::new()
+    Box(current_paint_chrome(Modifier::new(), &paint, base, is_open)
         .width(Dp(32.0))
         .height(Dp(32.0))
         .clip_rounded(Dp(8.0))
-        .border(
-            Dp(2.0),
-            if is_open {
-                th.primary
-            } else {
-                th.outline_variant
-            },
-            Dp(8.0),
-        )
-        .background(Color::from_rgba(
-            (color.r * 255.0) as u8,
-            (color.g * 255.0) as u8,
-            (color.b * 255.0) as u8,
-            (color.a * 255.0) as u8,
-        ))
         .on_pointer_down({
             let session = session.clone();
             move |pe: repose_core::input::PointerEvent| {
@@ -434,4 +418,53 @@ pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
                 }
             }
         }))
+}
+
+fn current_paint_chrome(
+    m: Modifier,
+    paint: &renamite_model::StylePaint,
+    base: renamite_model::Color,
+    is_open: bool,
+) -> Modifier {
+    use renamite_model::{GradientKind, StylePaint};
+    let ring = if is_open {
+        theme().primary
+    } else {
+        theme().outline_variant
+    };
+    match paint {
+        StylePaint::Gradient(g) if matches!(g.kind, GradientKind::Linear) => {
+            let stops = g.stops.base.clone();
+            let fill = repose_core::Brush::Linear {
+                start: repose_core::Vec2 { x: 0.0, y: 0.0 },
+                end: repose_core::Vec2 { x: 32.0, y: 32.0 },
+                start_color: ui_color(stops.sample(0.0)),
+                end_color: ui_color(stops.sample(1.0)),
+            };
+            let ring_brush = if is_open {
+                repose_core::Brush::Solid(ring)
+            } else {
+                fill
+            };
+            m.background_brush(fill)
+                .border_brush(Dp(2.0), ring_brush, Dp(8.0))
+        }
+        _ => m
+            .border(Dp(2.0), ring, Dp(8.0))
+            .background(Color::from_rgba(
+                (base.r * 255.0) as u8,
+                (base.g * 255.0) as u8,
+                (base.b * 255.0) as u8,
+                (base.a * 255.0) as u8,
+            )),
+    }
+}
+
+fn ui_color(c: renamite_model::Color) -> Color {
+    Color::from_rgba(
+        (c.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }

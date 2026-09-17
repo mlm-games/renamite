@@ -111,6 +111,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
         TemplatePicker(session.clone())
     } else {
         let panning = session.borrow().viewport.pan_last.is_some();
+        let space_armed = session.borrow().viewport.space_held;
         Canvas(
             Modifier::new()
                 .fill_max_size()
@@ -119,6 +120,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .focus_requester((*focus).clone())
                 .cursor(if panning {
                     CursorIcon::Grabbing
+                } else if space_armed {
+                    CursorIcon::Hidden
                 } else {
                     CursorIcon::Default
                 })
@@ -934,6 +937,15 @@ fn to_screen_rect(min: DVec2, max: DVec2, view: &ViewTransform) -> Rect {
     }
 }
 
+fn model_to_ui_color(c: renamite_model::Color) -> Color {
+    Color::from_rgba(
+        (c.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (c.a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
+}
+
 fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransform) {
     let th = theme();
     let primary = th.primary;
@@ -1022,38 +1034,32 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
                 }
             }
         }
-        ToolOverlay::GradientLine { start, end, radial } => {
+        ToolOverlay::GradientLine {
+            start,
+            end,
+            radial,
+            stops,
+        } => {
             let a = view.world_to_screen(*start);
             let b = view.world_to_screen(*end);
             if (a - b).length() < 1.0 {
                 return;
             }
-            let dir = b - a;
-            let len = dir.length();
-            let n = DVec2::new(-dir.y / len, dir.x / len);
-            let t = 1.25; // half thickness (px)
-            let c = [
-                th.primary.0 as f32 / 255.0,
-                th.primary.1 as f32 / 255.0,
-                th.primary.2 as f32 / 255.0,
-                1.0,
-            ];
-            let quad = [a + n * t, a - n * t, b - n * t, b + n * t];
-            let mk = |p: DVec2| repose_core::view::VectorVertex {
-                pos: [p.x as f32, p.y as f32],
-                color: c,
-                uv: [0.0, 0.0],
+            let va = repose_core::Vec2 {
+                x: a.x as f32,
+                y: a.y as f32,
             };
-            let mesh = repose_core::view::VectorMeshData {
-                vertices: std::sync::Arc::from([
-                    mk(quad[0]),
-                    mk(quad[1]),
-                    mk(quad[2]),
-                    mk(quad[3]),
-                ]),
-                indices: std::sync::Arc::from([0u32, 1, 2, 0, 2, 3]),
+            let vb = repose_core::Vec2 {
+                x: b.x as f32,
+                y: b.y as f32,
             };
-            scope.draw_vector_overlay(std::sync::Arc::from([mesh]));
+            let brush = repose_core::Brush::Linear {
+                start: va,
+                end: vb,
+                start_color: model_to_ui_color(stops.sample(0.0)),
+                end_color: model_to_ui_color(stops.sample(1.0)),
+            };
+            scope.draw_line_brush(va, vb, brush, Px(2.5), repose_core::StrokeCap::Round);
             draw_handle_dot(scope, a, th.primary.with_alpha(240));
             let end_color = if *radial { th.tertiary } else { th.primary };
             draw_handle_dot(scope, b, end_color.with_alpha(240));
@@ -1155,40 +1161,18 @@ fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
     if pts.len() < 2 {
         return;
     }
-    let t = 1.0; // half thickness (px)
-    let c = [
-        color.0 as f32 / 255.0,
-        color.1 as f32 / 255.0,
-        color.2 as f32 / 255.0,
-        color.3 as f32 / 255.0,
-    ];
-    let mut vertices = Vec::with_capacity(pts.len() * 2);
-    let mut indices = Vec::with_capacity((pts.len() - 1) * 6);
-    for pair in pts.windows(2) {
-        let a = pair[0];
-        let b = pair[1];
-        let dir = b - a;
-        let len = dir.length();
-        if len < 1e-6 {
-            continue;
-        }
-        let n = DVec2::new(-dir.y / len, dir.x / len);
-        let base = vertices.len() as u32;
-        for p in [a + n * t, a - n * t, b - n * t, b + n * t] {
-            vertices.push(repose_core::view::VectorVertex {
-                pos: [p.x as f32, p.y as f32],
-                color: c,
-                uv: [0.0, 0.0],
-            });
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    if indices.is_empty() {
-        return;
-    }
-    let mesh = repose_core::view::VectorMeshData {
-        vertices: std::sync::Arc::from(vertices),
-        indices: std::sync::Arc::from(indices),
-    };
-    scope.draw_vector_overlay(std::sync::Arc::from([mesh]));
+    let points: Vec<repose_core::Vec2> = pts
+        .iter()
+        .map(|p| repose_core::Vec2 {
+            x: p.x as f32,
+            y: p.y as f32,
+        })
+        .collect();
+    scope.draw_line_path(
+        points,
+        repose_core::Brush::Solid(color),
+        Px(2.0),
+        repose_core::StrokeCap::Round,
+        repose_core::StrokeJoin::Round,
+    );
 }

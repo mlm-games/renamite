@@ -112,10 +112,13 @@ pub enum ToolOverlay {
         active_anchor: Option<usize>,
     },
     /// Gradient axis being dragged (world space: start=end handle endpoints).
+    /// `stops` is the live edit-state: existing gradients carry their real
+    /// stops, fresh drags carry the current-paint stops being seeded.
     GradientLine {
         start: DVec2,
         end: DVec2,
         radial: bool,
+        stops: renamite_model::GradientStops,
     },
 }
 
@@ -945,6 +948,32 @@ pub struct GradientTool {
     state: GradState,
 }
 
+fn gradient_overlay_stops(
+    ctx: &ToolContext,
+    style: NodeId,
+    frame: f64,
+) -> renamite_model::GradientStops {
+    if let Some(StylePaint::Gradient(g)) = ctx.doc.nodes.get(style).and_then(|n| match &n.kind {
+        NodeKind::Style(st) => Some(st.paint().clone()),
+        _ => None,
+    }) {
+        return g.stops.value_at(frame);
+    }
+    match ctx.current_paint {
+        StylePaint::Gradient(g) => g.stops.value_at(frame),
+        StylePaint::Solid { .. } => renamite_model::GradientStops(vec![
+            renamite_model::GradientStop {
+                offset: 0.0,
+                color: ctx.current_paint.base_color(),
+            },
+            renamite_model::GradientStop {
+                offset: 1.0,
+                color: ctx.current_paint.base_color(),
+            },
+        ]),
+    }
+}
+
 impl GradientTool {
     pub fn is_dragging(&self) -> bool {
         matches!(self.state, GradState::Drag { dragging: true, .. })
@@ -957,12 +986,13 @@ impl GradientTool {
         }
     }
 
-    pub fn overlay(&self, _ctx: &ToolContext) -> ToolOverlay {
+    pub fn overlay(&self, ctx: &ToolContext) -> ToolOverlay {
         let GradState::Drag {
             l2w,
             start,
             end,
             kind,
+            style,
             dragging,
             ..
         } = &self.state
@@ -978,6 +1008,7 @@ impl GradientTool {
             start: DVec2::new(s.x, s.y),
             end: DVec2::new(e.x, e.y),
             radial: *kind == GradientKind::Radial,
+            stops: gradient_overlay_stops(ctx, *style, ctx.playhead.0 as f64),
         }
     }
 
