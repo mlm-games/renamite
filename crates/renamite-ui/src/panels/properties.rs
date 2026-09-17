@@ -439,15 +439,44 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
             children.push(v);
         }
     }
-    if !ids.is_empty() {
-        children.push(align_section(session.clone(), ids.len()));
-    }
     // Use effective inspect id for shape/text appearance and modifier routing
     let inspect_id_opt = if ids.len() == 1 {
         Some(inspect_ids[0])
     } else {
         None
     };
+    let generic_target_ids = if ids.len() == 1 {
+        inspect_ids.clone()
+    } else {
+        ids.clone()
+    };
+    let build_prop_section = |section: &str, props: &[PropRow]| -> View {
+        crate::components::CollapsibleSection(
+            format!("props_section_{section}"),
+            section,
+            vec![],
+            Column(Modifier::new().fill_max_width()).child(
+                props
+                    .iter()
+                    .map(|prop| {
+                        PropRowView(
+                            session.clone(),
+                            generic_target_ids.clone(),
+                            prop.clone(),
+                            playhead,
+                            record,
+                            diamond_quiet,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+    };
+    let mut transform_views: Vec<View> = Vec::new();
+    let mut content_views: Vec<View> = Vec::new();
+    let mut appearance_views: Vec<View> = Vec::new();
+    let mut modifier_views: Vec<View> = Vec::new();
+    let mut meta_views: Vec<View> = Vec::new();
     if let Some(inspect_id) = inspect_id_opt {
         let app_opt = {
             let s = session.borrow();
@@ -462,9 +491,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     playhead,
                     record,
                 ) {
-                    children.push(v);
+                    appearance_views.push(v);
                 }
-                // Always show fill structural props (rule), whether shape or Fill node is selected.
                 if let Some(v) = style_prop_rows(
                     session.clone(),
                     fill_id,
@@ -473,7 +501,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     diamond_quiet,
                     "Fill",
                 ) {
-                    children.push(v);
+                    appearance_views.push(v);
                 }
             }
             if let Some(stroke_id) = app.stroke {
@@ -484,9 +512,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     playhead,
                     record,
                 ) {
-                    children.push(v);
+                    appearance_views.push(v);
                 }
-                // Always show stroke structural props (width/cap/join).
                 if let Some(v) = style_prop_rows(
                     session.clone(),
                     stroke_id,
@@ -495,12 +522,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     diamond_quiet,
                     "Stroke",
                 ) {
-                    children.push(v);
+                    appearance_views.push(v);
                 }
                 if let Some(v) =
                     stroke_dash_section(session.clone(), stroke_id, playhead, record, diamond_quiet)
                 {
-                    children.push(v);
+                    appearance_views.push(v);
                 }
             }
             let mut chips: Vec<View> = Vec::new();
@@ -528,7 +555,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     StyleAction::Remove(StyleAdd::Stroke),
                 )),
             }
-            children.push(crate::components::CollapsibleSection(
+            appearance_views.push(crate::components::CollapsibleSection(
                 "add_style_section",
                 "Appearance",
                 vec![],
@@ -547,49 +574,50 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 .child(chips),
             ));
         } else if let Some(v) = paint_section(session.clone(), &[inspect_id], playhead, record) {
-            children.push(v);
+            appearance_views.push(v);
             if let Some(section) =
                 stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
             {
-                children.push(section);
+                appearance_views.push(section);
             }
         } else if let Some(section) =
             stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
         {
-            children.push(section);
+            appearance_views.push(section);
         }
     }
 
-    let showed_text_section = if let Some(inspect_id) = inspect_id_opt
-        && let Some(section) = text_section(session.clone(), inspect_id)
-    {
-        children.push(section);
-        true
+    let showed_text_section = if let Some(inspect_id) = inspect_id_opt {
+        match text_section(session.clone(), inspect_id) {
+            Some(section) => {
+                content_views.push(section);
+                true
+            }
+            None => false,
+        }
     } else {
         false
     };
 
-    // Single selected image: informational metadata (name, dimensions, MIME).
     if let Some(inspect_id) = inspect_id_opt
         && let Some(section) = image_meta_section(session.clone(), inspect_id)
     {
-        children.push(section);
+        content_views.push(section);
     }
 
     if let Some(inspect_id) = inspect_id_opt {
         if let Some(v) = layer_section(session.clone(), inspect_id) {
-            children.push(v);
+            meta_views.push(v);
         }
         if let Some(v) = precomp_section(session.clone(), inspect_id) {
-            children.push(v);
+            meta_views.push(v);
         }
-        // Also show layer/precomp for outer group id if inspect unwrapped
         if inspect_id != ids[0] {
             if let Some(v) = layer_section(session.clone(), ids[0]) {
-                children.push(v);
+                meta_views.push(v);
             }
             if let Some(v) = precomp_section(session.clone(), ids[0]) {
-                children.push(v);
+                meta_views.push(v);
             }
         }
     }
@@ -612,36 +640,38 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         if skip_duplicate {
             continue;
         }
-        let target_ids = if ids.len() == 1 {
-            inspect_ids.clone()
-        } else {
-            ids.clone()
-        };
-        children.push(crate::components::CollapsibleSection(
-            format!("props_section_{section}"),
-            section,
-            vec![],
-            Column(Modifier::new().fill_max_width()).child(
-                props
-                    .iter()
-                    .map(|prop| {
-                        PropRowView(
-                            session.clone(),
-                            target_ids.clone(),
-                            prop.clone(),
-                            playhead,
-                            record,
-                            diamond_quiet,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        ));
+        let view = build_prop_section(section, &props);
+        match section {
+            "Transform" => transform_views.push(view),
+            "Shape" | "Text" | "Image" | "Mask" => content_views.push(view),
+            "Fill" | "Stroke" => appearance_views.push(view),
+            _ => modifier_views.push(view),
+        }
+    }
+    for v in transform_views {
+        children.push(v);
+    }
+    for v in content_views {
+        children.push(v);
+    }
+    for v in appearance_views {
+        children.push(v);
+    }
+    for v in modifier_views {
+        children.push(v);
     }
 
     if let Some(inspect_id) = inspect_id_opt
         && let Some(v) = add_modifier_row(session.clone(), inspect_id)
     {
+        children.push(v);
+    }
+
+    if !ids.is_empty() {
+        children.push(align_section(session.clone(), ids.len()));
+    }
+
+    for v in meta_views {
         children.push(v);
     }
 
