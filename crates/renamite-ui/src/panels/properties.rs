@@ -3409,6 +3409,13 @@ fn appearance_for_shape(session: &Session, shape: NodeId) -> Option<AppearanceTa
 }
 
 fn painted_shape_for_style(session: &Session, id: NodeId) -> Option<NodeId> {
+    painted_shape_for_session(session, id)
+}
+
+/// Document + scene lookup shared with `Session::geometric_target`: the
+/// shape a style node paints, so geometric tools can retarget dead style
+/// transforms onto live geometry.
+pub(crate) fn painted_shape_for_session(session: &Session, id: NodeId) -> Option<NodeId> {
     let doc = &session.file.document;
     let node = doc.nodes.get(id)?;
     if !matches!(node.kind, NodeKind::Style(_)) {

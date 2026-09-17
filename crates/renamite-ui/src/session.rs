@@ -622,6 +622,33 @@ impl Session {
             .collect()
     }
 
+    /// Roots that can carry a geometric edit (align/distribute/flip/nudge):
+    /// style and modifier nodes have no honored transform (see
+    /// `node_supports_transform`), so resolve them to the shape they paint
+    /// or affect instead of writing dead values. Returns `None` when the
+    /// node is geometric already or no carrier exists.
+    pub(crate) fn geometric_target(&self, id: renamite_model::NodeId) -> Option<renamite_model::NodeId> {
+        let node = self.file.document.nodes.get(id)?;
+        if renamite_model::node_supports_transform(&node.kind) {
+            return Some(id);
+        }
+        match &node.kind {
+            renamite_model::NodeKind::Style(_) => {
+                crate::panels::properties::painted_shape_for_session(self, id)
+            }
+            renamite_model::NodeKind::Modifier(_) => {
+                let parent = node.parent?;
+                let parent_node = self.file.document.nodes.get(parent)?;
+                if renamite_model::node_supports_transform(&parent_node.kind) {
+                    Some(parent)
+                } else {
+                    self.geometric_target(parent)
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn tree_of(&self, id: renamite_model::NodeId) -> renamite_history::NodeTree {
         let children: Vec<renamite_model::NodeId> = self
             .file
@@ -1747,6 +1774,9 @@ impl Session {
         let prop = PropPath::new("transform.position");
         let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
         for (id, delta) in align::align_deltas(&bounds, target, op) {
+            let Some(id) = self.geometric_target(id) else {
+                continue;
+            };
             if self
                 .file
                 .document
@@ -1814,6 +1844,9 @@ impl Session {
         let prop = PropPath::new("transform.position");
         let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
         for (id, delta) in deltas {
+            let Some(id) = self.geometric_target(id) else {
+                continue;
+            };
             if self
                 .file
                 .document
@@ -1867,6 +1900,9 @@ impl Session {
         let prop = PropPath::new("transform.scale");
         let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
         for id in roots {
+            let Some(id) = self.geometric_target(id) else {
+                continue;
+            };
             let Some(node) = self.file.document.nodes.get(id) else {
                 continue;
             };
@@ -1925,7 +1961,11 @@ impl Session {
         let record = self.record_for_writes();
         let prop = PropPath::new("transform.position");
         let roots = self.selected_roots();
-        let cmds: SmallVec<[EditorCommand; 4]> = roots
+        let targets: Vec<renamite_model::NodeId> = roots
+            .into_iter()
+            .filter_map(|id| self.geometric_target(id))
+            .collect();
+        let cmds: SmallVec<[EditorCommand; 4]> = targets
             .into_iter()
             .filter_map(|id| {
                 let node = self.file.document.nodes.get(id)?;

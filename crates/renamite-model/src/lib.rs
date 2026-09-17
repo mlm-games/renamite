@@ -1767,8 +1767,11 @@ fn eval_group(
         if !n.visible {
             continue;
         }
-        let node_op =
-            opacity * ov_f64(ov, id, "opacity", n.opacity.value_at(frame)).clamp(0.0, 1.0);
+        let node_op = if node_supports_opacity(&n.kind) {
+            opacity * ov_f64(ov, id, "opacity", n.opacity.value_at(frame)).clamp(0.0, 1.0)
+        } else {
+            opacity
+        };
         let clips = &active[i];
         match &n.kind {
             NodeKind::Mask(_) => {}
@@ -1886,6 +1889,24 @@ fn eval_group(
             }
             NodeKind::Style(st) => {
                 emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene)
+            }
+            // Modifiers apply in pass 1; pass 3 only propagates their own
+            // opacity to nested children, if any.
+            NodeKind::Modifier(_) if !n.children.is_empty() => {
+                eval_group(
+                    doc,
+                    &n.children,
+                    frame,
+                    tf,
+                    node_op,
+                    blend,
+                    scene,
+                    depth + 1,
+                    ov,
+                    scope_rect,
+                    clips,
+                    &[],
+                );
             }
             NodeKind::Shape(_) | NodeKind::Text(_) if !n.children.is_empty() => {
                 let seeds: Vec<ShapeEntry> =
@@ -2896,6 +2917,249 @@ pub fn node_is_ancestor(doc: &Document, ancestor: NodeId, mut node: NodeId) -> b
     false
 }
 
+/// Single source of truth for which props a node kind honors at render,
+/// keyed by section (not path string): one `match` instead of three parallel
+/// tables. `prop_mut`/`prop_ref` consult this, so unsupported edits fail
+/// loudly instead of writing dead values. Keep the arms in sync with
+/// `eval_group`/`emit_style`/`apply_modifier`.
+pub fn node_supports_transform(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Group
+            | NodeKind::Layer(_)
+            | NodeKind::Shape(_)
+            | NodeKind::Text(_)
+            | NodeKind::Image(_)
+            | NodeKind::Precomp { .. }
+            | NodeKind::Mask(_)
+    )
+}
+
+/// Opacity multiplies into emission for every kind except masks, which only
+/// contribute a clip path and never emit paint. Modifier opacity applies to
+/// nested children (pass 3); it does not attenuate the pass-1 path effect.
+pub fn node_supports_opacity(kind: &NodeKind) -> bool {
+    !matches!(kind, NodeKind::Mask(_))
+}
+
+/// Sections of `PropPath`s a node kind supports, mirroring the section
+/// strings in `renamite_behavior_common::inspect` descriptors. `None` means
+/// the path belongs to no known section and is always rejected.
+pub fn prop_section_of(prop: &str) -> Option<&'static str> {
+    let section = prop.split('.').next()?;
+    match section {
+        "transform" | "opacity" => Some("Transform"),
+        "shape" => Some("Shape"),
+        "text" => Some("Text"),
+        "image" => Some("Image"),
+        "fill" | "grad" => Some("Fill"),
+        "stroke" => Some("Stroke"),
+        "mask" => Some("Mask"),
+        "trim" => Some("Trim"),
+        "round" => Some("Round Corners"),
+        "repeater" => Some("Repeater"),
+        "offset" => Some("Offset Path"),
+        "zigzag" => Some("Zig Zag"),
+        "pucker" => Some("Pucker & Bloat"),
+        "star" => Some("Shape"),
+        "layer" => Some("Layer"),
+        _ => None,
+    }
+}
+
+/// Whether `kind` honors anything in `section`. Sections group paths, so one
+/// arm covers a whole feature; per-path granularity (star Burst inner radius,
+/// solid-vs-gradient color, dash presence) stays in the descriptor filter and
+/// the `prop_mut`/`prop_ref` match arms.
+pub fn node_supports_section(kind: &NodeKind, section: &str) -> bool {
+    match section {
+        "Transform" => node_supports_transform(kind) || node_supports_opacity(kind),
+        "Shape" => matches!(
+            kind,
+            NodeKind::Shape(_) | NodeKind::Mask(_) | NodeKind::Modifier(_)
+        ),
+        "Text" => matches!(kind, NodeKind::Text(_)),
+        "Image" => matches!(kind, NodeKind::Image(_)),
+        "Fill" => matches!(kind, NodeKind::Style(StyleKind::Fill { .. })),
+        "Stroke" => matches!(kind, NodeKind::Style(StyleKind::Stroke { .. })),
+        "Mask" => matches!(kind, NodeKind::Mask(_)),
+        "Trim" => matches!(kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })),
+        "Round Corners" => matches!(
+            kind,
+            NodeKind::Modifier(ModifierKind::RoundCorners { .. })
+        ),
+        "Repeater" => matches!(kind, NodeKind::Modifier(ModifierKind::Repeater { .. })),
+        "Offset Path" => matches!(
+            kind,
+            NodeKind::Modifier(ModifierKind::OffsetPath { .. })
+        ),
+        "Zig Zag" => matches!(kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })),
+        "Pucker & Bloat" => matches!(
+            kind,
+            NodeKind::Modifier(ModifierKind::PuckerBloat { .. })
+        ),
+        "Layer" => matches!(kind, NodeKind::Layer(_)),
+        _ => false,
+    }
+}
+
+/// Full per-prop support: section gate above, then path granularity.
+/// Anything returning false here is rejected by `prop_mut`/`prop_ref`.
+pub fn node_supports_prop(kind: &NodeKind, prop: &str) -> bool {
+    let Some(section) = prop_section_of(prop) else {
+        return false;
+    };
+    if !node_supports_section(kind, section) {
+        return false;
+    }
+    if prop == "opacity" {
+        return node_supports_opacity(kind);
+    }
+    if prop.starts_with("transform.") {
+        return node_supports_transform(kind);
+    }
+    if prop.starts_with("shape.") {
+        let shape = match kind {
+            NodeKind::Shape(s) => Some(s),
+            NodeKind::Mask(m) => Some(&m.shape),
+            _ => None,
+        };
+        let Some(shape) = shape else {
+            return false;
+        };
+        return match prop {
+            "shape.path" => matches!(shape, ShapeKind::Path(_)),
+            "shape.pos" => matches!(
+                shape,
+                ShapeKind::Rect { .. }
+                    | ShapeKind::Ellipse { .. }
+                    | ShapeKind::Star { .. }
+                    | ShapeKind::Polygon { .. }
+            ),
+            "shape.size" => matches!(shape, ShapeKind::Rect { .. } | ShapeKind::Ellipse { .. }),
+            "shape.rounded" => matches!(shape, ShapeKind::Rect { .. }),
+            "shape.points" => matches!(
+                shape,
+                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
+            ),
+            "shape.inner_r" => matches!(shape, ShapeKind::Star { .. }),
+            "shape.outer_r" => matches!(
+                shape,
+                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
+            ),
+            "shape.roundness" => matches!(
+                shape,
+                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
+            ),
+            _ => false,
+        };
+    }
+    if prop.starts_with("text.") {
+        if !matches!(kind, NodeKind::Text(_)) {
+            return false;
+        }
+        return matches!(
+            prop,
+            "text.size" | "text.tracking" | "text.leading" | "text.align"
+        );
+    }
+    if prop.starts_with("image.") {
+        return matches!(kind, NodeKind::Image(_)) && matches!(prop, "image.tint" | "image.tint()");
+    }
+    if prop == "fill.color" {
+        return matches!(
+            kind,
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::Solid { .. },
+                ..
+            })
+        );
+    }
+    if prop.starts_with("stroke.") {
+        let NodeKind::Style(StyleKind::Stroke { paint, dash, .. }) = kind else {
+            return false;
+        };
+        if prop == "stroke.dash.offset" || dash_index(prop).is_some() {
+            return dash.is_some();
+        }
+        if prop == "stroke.color" {
+            return matches!(paint, StylePaint::Solid { .. });
+        }
+        return matches!(
+            prop,
+            "stroke.width" | "stroke.miter_limit" | "stroke.cap" | "stroke.join"
+        );
+    }
+    if prop == "stroke.color" {
+        return false;
+    }
+    if prop.starts_with("grad.") {
+        let (NodeKind::Style(StyleKind::Fill { paint, .. })
+        | NodeKind::Style(StyleKind::Stroke { paint, .. })) = kind
+        else {
+            return false;
+        };
+        if !matches!(paint, StylePaint::Gradient(_)) {
+            return false;
+        }
+        return matches!(prop, "grad.start" | "grad.end" | "grad.stops");
+    }
+    if prop.starts_with("trim.") {
+        return matches!(kind, NodeKind::Modifier(ModifierKind::TrimPath { .. }))
+            && matches!(prop, "trim.start" | "trim.end" | "trim.offset");
+    }
+    if prop.starts_with("repeater.") {
+        if !matches!(kind, NodeKind::Modifier(ModifierKind::Repeater { .. })) {
+            return false;
+        }
+        return matches!(
+            prop,
+            "repeater.copies"
+                | "repeater.offset"
+                | "repeater.start_opacity"
+                | "repeater.end_opacity"
+                | "repeater.transform.position"
+                | "repeater.transform.scale"
+                | "repeater.transform.rotation"
+                | "repeater.transform.anchor"
+                | "repeater.transform.skew"
+                | "repeater.transform.skew_axis"
+        );
+    }
+    if prop.starts_with("round.") {
+        return matches!(
+            kind,
+            NodeKind::Modifier(ModifierKind::RoundCorners { .. })
+        ) && prop == "round.radius";
+    }
+    if prop.starts_with("offset.") {
+        return matches!(kind, NodeKind::Modifier(ModifierKind::OffsetPath { .. }))
+            && prop == "offset.amount";
+    }
+    if prop.starts_with("zigzag.") {
+        return matches!(kind, NodeKind::Modifier(ModifierKind::ZigZag { .. }))
+            && matches!(prop, "zigzag.amplitude" | "zigzag.frequency");
+    }
+    if prop.starts_with("pucker.") {
+        return matches!(
+            kind,
+            NodeKind::Modifier(ModifierKind::PuckerBloat { .. })
+        ) && prop == "pucker.amount";
+    }
+    if prop.starts_with("star.") {
+        let is_star = matches!(kind, NodeKind::Shape(ShapeKind::Star { .. }))
+            || matches!(kind, NodeKind::Mask(m) if matches!(&m.shape, ShapeKind::Star { .. }));
+        return is_star && prop == "star.kind";
+    }
+    if prop.starts_with("mask.") {
+        return matches!(kind, NodeKind::Mask(_)) && prop == "mask.inverted";
+    }
+    if prop.starts_with("layer.") {
+        return matches!(kind, NodeKind::Layer(_)) && prop == "layer.blend";
+    }
+    false
+}
+
 /// If `picked` belongs to an already-selected group/layer, return that selected
 /// ancestor instead of replacing it with the leaf shape.
 pub fn selected_ancestor_for_pick(
@@ -3121,6 +3385,9 @@ impl Node {
     pub fn prop_mut(&mut self, prop: &PropPath) -> Option<PropMut<'_>> {
         use PropMut::*;
         let s = prop.as_str();
+        if !node_supports_prop(&self.kind, s) {
+            return None;
+        }
         if s == "stroke.dash.offset" || dash_index(s).is_some() {
             if let NodeKind::Style(StyleKind::Stroke {
                 dash: Some(dash), ..
@@ -3387,6 +3654,9 @@ impl Node {
     pub fn prop_ref(&self, prop: &PropPath) -> Option<PropRef<'_>> {
         use PropRef::*;
         let s = prop.as_str();
+        if !node_supports_prop(&self.kind, s) {
+            return None;
+        }
         if s == "stroke.dash.offset" || dash_index(s).is_some() {
             if let NodeKind::Style(StyleKind::Stroke {
                 dash: Some(dash), ..
@@ -3908,6 +4178,126 @@ impl Document {
         self.pr(id, prop)
             .map(|p| read_prop(p, KeyFramesOp))
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod prop_support_tests {
+    use super::{
+        Animated, Color, Document, FillRule, ModifierKind, Node, NodeKind, ShapeKind, StyleKind,
+        StylePaint, node_supports_opacity, node_supports_prop, node_supports_transform,
+    };
+    use glam::DVec2;
+
+    fn shape_node() -> Node {
+        Node::new(
+            "Rect",
+            NodeKind::Shape(ShapeKind::Rect {
+                pos: Animated::new(DVec2::ZERO),
+                size: Animated::new(DVec2::new(10.0, 10.0)),
+                rounded: Animated::new(0.0),
+            }),
+        )
+    }
+
+    fn fill_node() -> Node {
+        Node::new(
+            "Fill",
+            NodeKind::Style(StyleKind::Fill {
+                paint: StylePaint::solid(Color::WHITE),
+                rule: FillRule::NonZero,
+            }),
+        )
+    }
+
+    fn trim_node() -> Node {
+        Node::new(
+            "Trim",
+            NodeKind::Modifier(ModifierKind::TrimPath {
+                start: Animated::new(0.0),
+                end: Animated::new(1.0),
+                offset: Animated::new(0.0),
+                mode: super::TrimMode::Individually,
+            }),
+        )
+    }
+
+    #[test]
+    fn style_nodes_reject_transform_but_keep_opacity() {
+        let fill = fill_node();
+        assert!(!node_supports_transform(&fill.kind));
+        assert!(node_supports_opacity(&fill.kind));
+        assert!(!node_supports_prop(&fill.kind, "transform.position"));
+        assert!(node_supports_prop(&fill.kind, "opacity"));
+        assert!(fill.prop_ref(&super::PropPath::new("transform.position")).is_none());
+    }
+
+    #[test]
+    fn modifier_nodes_reject_transform_but_keep_opacity() {
+        let trim = trim_node();
+        assert!(!node_supports_transform(&trim.kind));
+        assert!(node_supports_prop(&trim.kind, "trim.start"));
+        assert!(!node_supports_prop(&trim.kind, "transform.position"));
+        // Opacity propagates to nested children via pass 3.
+        assert!(node_supports_opacity(&trim.kind));
+        assert!(node_supports_prop(&trim.kind, "opacity"));
+    }
+
+    #[test]
+    fn geometric_nodes_keep_transform() {
+        let text = Node::new(
+            "T",
+            NodeKind::Text(super::TextNode {
+                text: "T".into(),
+                size: Animated::new(48.0),
+                align: super::TextAlign::Left,
+                font: None,
+                tracking: Animated::new(0.0),
+                leading: Animated::new(0.0),
+            }),
+        );
+        for mut node in [shape_node(), Node::new("G", NodeKind::Group), text] {
+            assert!(node_supports_transform(&node.kind), "{}", node.name);
+            assert!(
+                node.prop_mut(&super::PropPath::new("transform.position"))
+                    .is_some(),
+                "{}",
+                node.name
+            );
+        }
+    }
+
+    #[test]
+    fn mask_rejects_opacity_but_keeps_transform() {
+        let mask = Node::new(
+            "Mask",
+            NodeKind::Mask(super::MaskProps {
+                shape: ShapeKind::Rect {
+                    pos: Animated::new(DVec2::ZERO),
+                    size: Animated::new(DVec2::new(10.0, 10.0)),
+                    rounded: Animated::new(0.0),
+                },
+                inverted: false,
+            }),
+        );
+        assert!(node_supports_transform(&mask.kind));
+        assert!(!node_supports_opacity(&mask.kind));
+        assert!(!node_supports_prop(&mask.kind, "opacity"));
+    }
+
+    #[test]
+    fn hidden_style_emits_nothing() {
+        let mut doc = Document::empty();
+        let shape = doc.create_node(shape_node());
+        let mut fill = fill_node();
+        fill.visible = false;
+        let fill_id = doc.create_node(fill);
+        let group = doc.create_node(Node::new("G", NodeKind::Group));
+        doc.attach(shape, super::Parent::Node(group), 0).unwrap();
+        doc.attach(fill_id, super::Parent::Node(group), 1).unwrap();
+        doc.attach(group, super::Parent::Comp(doc.main), 0).unwrap();
+        let scene = super::evaluate(&doc, doc.main, 0.0);
+        assert!(scene.items.is_empty());
     }
 }
 

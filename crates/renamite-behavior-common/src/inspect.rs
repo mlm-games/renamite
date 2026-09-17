@@ -8,6 +8,7 @@ use renamite_animation::Frame;
 use renamite_history::{EditorCommand, resolve_property_edit};
 use renamite_model::{
     BlendMode, Document, ModifierKind, NodeId, NodeKind, PropPath, ShapeKind, StyleKind, Value,
+    node_supports_opacity, node_supports_prop, node_supports_transform,
 };
 
 /// Shared blend-mode table: single source of truth for index ↔ mode ↔ label.
@@ -100,6 +101,15 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
     descriptors_for(&node.kind)
         .into_iter()
         .filter(|desc| {
+            // Drop anything the node kind cannot honor at render; the model
+            // is the contract, descriptors only add finer per-value gating
+            // (Burst inner radius, non-miter limit) below. Discrete enum/bool
+            // rows resolve via `cmd_set_discrete`, not `prop_mut`.
+            if !node_supports_prop(&node.kind, desc.path.as_str())
+                && !supports_discrete(&node.kind, desc.path.as_str())
+            {
+                return false;
+            }
             // Hide inner radius when Burst (no-op).
             if desc.path.as_str() == "shape.inner_r" {
                 match &node.kind {
@@ -275,8 +285,28 @@ pub fn props_for_node(doc: &Document, id: NodeId, playhead: Frame) -> Vec<PropRo
         .collect()
 }
 
-fn diamond_state(
-    doc: &Document,
+/// Discrete enum/bool rows bypass `prop_mut` via `cmd_set_discrete`.
+/// Mirror its path → kind table so the support filter keeps them.
+fn supports_discrete(kind: &NodeKind, path: &str) -> bool {
+    match path {
+        "trim.mode" => matches!(kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })),
+        "fill.rule" => matches!(kind, NodeKind::Style(StyleKind::Fill { .. })),
+        "star.kind" => {
+            matches!(kind, NodeKind::Shape(ShapeKind::Star { .. }))
+                || matches!(kind, NodeKind::Mask(m) if matches!(&m.shape, ShapeKind::Star { .. }))
+        }
+        "stroke.cap" | "stroke.join" => {
+            matches!(kind, NodeKind::Style(StyleKind::Stroke { .. }))
+        }
+        "text.align" => matches!(kind, NodeKind::Text(_)),
+        "mask.inverted" => matches!(kind, NodeKind::Mask(_)),
+        "zigzag.smooth" => matches!(kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })),
+        "layer.blend" => matches!(kind, NodeKind::Layer(_)),
+        _ => false,
+    }
+}
+
+fn diamond_state(    doc: &Document,
     id: NodeId,
     path: &PropPath,
     playhead: Frame,
@@ -293,44 +323,13 @@ fn diamond_state(
 }
 
 fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
-    let mut d = vec![
-        pd(
-            "Transform",
-            "Position",
-            "transform.position",
-            PropKind::DVec2,
-        ),
-        pd("Transform", "Scale %", "transform.scale", PropKind::DVec2),
-        pd(
-            "Transform",
-            "Rotation",
-            "transform.rotation",
-            PropKind::Angle,
-        ),
-        pd("Transform", "Opacity", "opacity", f04()),
-        pd(
-            "Transform",
-            "Pivot / Anchor",
-            "transform.anchor",
-            PropKind::DVec2,
-        ),
-        pd(
-            "Transform",
-            "Skew",
-            "transform.skew",
-            PropKind::F64 {
-                min: None,
-                max: None,
-                step: 0.5,
-            },
-        ),
-        pd(
-            "Transform",
-            "Skew axis",
-            "transform.skew_axis",
-            PropKind::Angle,
-        ),
-    ];
+    let mut d = Vec::new();
+    if node_supports_transform(kind) {
+        d.extend(transform_descriptors());
+    }
+    if node_supports_opacity(kind) {
+        d.push(pd("Transform", "Opacity", "opacity", f04()));
+    }
     match kind {
         NodeKind::Shape(s) => match s {
             ShapeKind::Path(_) => {}
@@ -822,6 +821,46 @@ fn f04() -> PropKind {
     }
 }
 
+fn transform_descriptors() -> Vec<PropDescriptor> {
+    vec![
+        pd(
+            "Transform",
+            "Position",
+            "transform.position",
+            PropKind::DVec2,
+        ),
+        pd("Transform", "Scale %", "transform.scale", PropKind::DVec2),
+        pd(
+            "Transform",
+            "Rotation",
+            "transform.rotation",
+            PropKind::Angle,
+        ),
+        pd(
+            "Transform",
+            "Pivot / Anchor",
+            "transform.anchor",
+            PropKind::DVec2,
+        ),
+        pd(
+            "Transform",
+            "Skew",
+            "transform.skew",
+            PropKind::F64 {
+                min: None,
+                max: None,
+                step: 0.5,
+            },
+        ),
+        pd(
+            "Transform",
+            "Skew axis",
+            "transform.skew_axis",
+            PropKind::Angle,
+        ),
+    ]
+}
+
 fn pd(section: &'static str, label: &'static str, path: &str, kind: PropKind) -> PropDescriptor {
     PropDescriptor {
         path: PropPath::new(path),
@@ -867,6 +906,7 @@ pub fn cmd_toggle_key(
 }
 
 /// Structural (non-Animated) inspector edits. Single place for path → command.
+/// `supports_discrete` above mirrors this table; update both together.
 pub fn cmd_set_discrete(
     doc: &Document,
     id: NodeId,

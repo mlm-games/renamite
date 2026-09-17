@@ -15,7 +15,7 @@ use renamite_machine::{
 };
 use renamite_model::{
     Asset, Color, CompId, Document, GradientStops, ModifierKind, Node, NodeId, NodeKind, PropRef,
-    ShapeKind, StyleKind, StylePaint, Value,
+    ShapeKind, StyleKind, StylePaint, Value, node_supports_opacity, node_supports_transform,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -358,6 +358,19 @@ impl<'a> Validator<'a> {
         let base = format!("node/{id:?}");
         self.check_transform(&format!("{base}/transform"), &node.transform);
         self.check_animated(&format!("{base}/opacity"), &node.opacity, finite_f64);
+
+        if !node_supports_transform(&node.kind) && !transform_is_default(&node.transform) {
+            self.warn(
+                format!("{base}/transform"),
+                "transform is not honored for this node kind and has no render effect",
+            );
+        }
+        if !node_supports_opacity(&node.kind) && !opacity_is_default(&node.opacity) {
+            self.warn(
+                format!("{base}/opacity"),
+                "opacity is not honored for this node kind and has no render effect",
+            );
+        }
 
         if node.transform.scale.base == DVec2::ZERO {
             self.warn(format!("{base}/transform/scale"), "transform scale is zero");
@@ -1162,6 +1175,28 @@ fn finite_path(path: &VectorPath) -> bool {
     path.anchors
         .iter()
         .all(|a| a.pos.is_finite() && a.tan_in.is_finite() && a.tan_out.is_finite())
+}
+
+fn transform_is_default(t: &AnimatedTransform) -> bool {
+    t.anchor.base == DVec2::ZERO
+        && t.position.base == DVec2::ZERO
+        && t.anchor.keyframes.is_empty()
+        && t.position.keyframes.is_empty()
+        && t.rotation.base.0 == 0.0
+        && t.rotation.keyframes.is_empty()
+        && t.skew.base == 0.0
+        && t.skew.keyframes.is_empty()
+        && t.skew_axis.base == 0.0
+        && t.skew_axis.keyframes.is_empty()
+        && scale_is_default(&t.scale)
+}
+
+fn scale_is_default(scale: &Animated<DVec2>) -> bool {
+    scale.base == DVec2::splat(100.0) && scale.keyframes.is_empty()
+}
+
+fn opacity_is_default(opacity: &Animated<f64>) -> bool {
+    opacity.base == 1.0 && opacity.keyframes.is_empty()
 }
 
 /// Base-value heuristic for "this shape has no geometry": empty path, zero-size
