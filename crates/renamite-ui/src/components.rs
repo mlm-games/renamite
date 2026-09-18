@@ -143,7 +143,6 @@ pub fn CompactIconAction(
     TooltipBox(
         tooltip,
         tooltip_state.clone(),
-        None,
         Modifier::new(),
         IconButton(
             AppIcon(symbol, 22.0),
@@ -168,7 +167,6 @@ pub fn CompactIconActionWithKey(
     TooltipBox(
         tooltip,
         tooltip_state.clone(),
-        None,
         Modifier::new(),
         IconButton(
             AppIcon(symbol, 22.0),
@@ -204,7 +202,6 @@ pub fn ToolAction(
     TooltipBox(
         label,
         tooltip_state.clone(),
-        None,
         Modifier::new(),
         button,
         TooltipConfig::default(),

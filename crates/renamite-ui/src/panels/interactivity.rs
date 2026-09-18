@@ -3339,7 +3339,6 @@ fn dropdown(
 
     DropdownMenu(
         state,
-        None,
         Modifier::new(),
         trigger,
         items,

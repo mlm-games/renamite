@@ -457,7 +457,6 @@ fn discard_dialog(session: SessionRef) -> View {
 
     Dialog(
         state,
-        None,
         Modifier::new(),
         DialogProperties::default(),
         content,

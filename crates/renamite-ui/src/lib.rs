@@ -237,7 +237,6 @@ pub fn FileMenu(session: SessionRef) -> View {
 
     DropdownMenu(
         state,
-        None,
         Modifier::new(),
         trigger,
         items,
