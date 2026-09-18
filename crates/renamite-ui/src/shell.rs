@@ -1,7 +1,7 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::{
-    Dp, FocusRequester, JustifyContent, Modifier, PaddingValues, Role, Semantics, UnitExt, View,
-    remember_with_key, request_frame, theme,
+    Dp, JustifyContent, Modifier, PaddingValues, UnitExt, View, remember_with_key, request_frame,
+    theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
@@ -9,7 +9,7 @@ use repose_material::material3::{
 };
 use repose_ui::overlay::{SnackbarController, SnackbarRequest};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use repose_docking::{
@@ -89,42 +89,124 @@ pub fn EditorShell(session: SessionRef) -> View {
     let picker = color_picker_overlay(session.clone());
     let menu = context_menu_overlay(session.clone());
 
-    // App-level key fallback. Repose only delivers `on_key_event` to the
-    // focused element (and its semantics ancestors), so a bare `on_key_event`
-    // on the overlay host never fires.
+    install_global_shortcuts(session.clone());
+
     let session_keys = session.clone();
-    let global_focus = remember_with_key("shell_global_focus", FocusRequester::new);
-    let global_focus_seen = remember_with_key("shell_global_focus_seen", || Cell::new(false));
-    if !global_focus_seen.get() {
-        global_focus.request_focus();
-    }
-    let global_keys = Modifier::new()
-        .fill_max_size()
-        .focusable(true)
-        .focus_requester((*global_focus).clone())
-        .semantics(Semantics::new(Role::Container))
-        .on_focus_changed({
-            let global_focus_seen = global_focus_seen.clone();
-            move |focused| {
-                if focused {
-                    global_focus_seen.set(true);
-                }
+    let global_keys = Modifier::new().fill_max_size().on_key_event(move |ke: KeyEvent| {
+        if matches!(ke.key, Key::Space | Key::Enter) {
+            // Never steal activation, but don't leave a stuck pan modifier
+            // if Space was released outside the canvas.
+            if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
+                session_keys.borrow_mut().viewport.space_held = false;
+                request_frame();
             }
-        })
-        .on_key_event(move |ke: KeyEvent| {
-            if matches!(ke.key, Key::Space | Key::Enter) {
-                // Never steal activation, but don't leave a stuck pan modifier
-                // if Space was released outside the canvas.
-                if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
-                    session_keys.borrow_mut().viewport.space_held = false;
-                    request_frame();
-                }
-                return false;
-            }
-            crate::shortcuts::handle_viewport_key(&session_keys, ke)
-        });
+            return false;
+        }
+        crate::shortcuts::handle_viewport_key(&session_keys, ke)
+    });
 
     ZStack(global_keys).child((scaffold, picker, menu, confirm))
+}
+
+fn install_global_shortcuts(session: SessionRef) {
+    use repose_core::input::Modifiers;
+    use repose_core::shortcuts::{Action, ShortcutMap};
+    use repose_core::{Dispose, scoped_effect};
+
+    let cmd = Modifiers {
+        command: true,
+        ctrl: !cfg!(target_os = "macos"),
+        ..Modifiers::default()
+    };
+    let cmd_shift = Modifiers {
+        command: true,
+        shift: true,
+        ctrl: !cfg!(target_os = "macos"),
+        ..Modifiers::default()
+    };
+    let mut map = ShortcutMap::new();
+    map.insert(Key::Character('z'), cmd, Action::Undo);
+    map.insert(Key::Character('z'), cmd_shift, Action::Redo);
+    map.insert(
+        Key::Character('y'),
+        cmd,
+        Action::Custom("renamite.redo".into()),
+    );
+    map.insert(Key::Character('c'), cmd, Action::Copy);
+    map.insert(Key::Character('x'), cmd, Action::Cut);
+    map.insert(Key::Character('v'), cmd, Action::Paste);
+    map.insert(
+        Key::Character('v'),
+        Modifiers {
+            shift: true,
+            ..cmd
+        },
+        Action::Custom("renamite.paste-style".into()),
+    );
+    map.insert(
+        Key::Character('v'),
+        Modifiers { alt: true, ..cmd },
+        Action::Custom("renamite.paste-in-place".into()),
+    );
+    map.insert(Key::Character('d'), cmd, Action::Custom("renamite.duplicate".into()));
+    map.insert(Key::Character('g'), cmd, Action::Custom("renamite.group".into()));
+    map.insert(
+        Key::Character('g'),
+        cmd_shift,
+        Action::Custom("renamite.ungroup".into()),
+    );
+    map.insert(
+        Key::Character('u'),
+        cmd,
+        Action::Custom("renamite.ungroup".into()),
+    );
+    map.insert(
+        Key::Character('c'),
+        Modifiers { alt: true, ..cmd },
+        Action::Custom("renamite.stroke-to-path".into()),
+    );
+    map.insert(
+        Key::Character('c'),
+        cmd_shift,
+        Action::Custom("renamite.convert-to-path".into()),
+    );
+    map.insert(
+        Key::Character('k'),
+        cmd,
+        Action::Custom("renamite.combine".into()),
+    );
+    map.insert(
+        Key::Character('k'),
+        cmd_shift,
+        Action::Custom("renamite.break-apart".into()),
+    );
+    map.insert(Key::Character('l'), cmd, Action::Custom("renamite.simplify".into()));
+    map.insert(
+        Key::Character('h'),
+        cmd,
+        Action::Custom("renamite.flip-h".into()),
+    );
+    map.insert(Key::Character('a'), cmd, Action::SelectAll);
+    map.insert(Key::Character('s'), cmd, Action::Save);
+    map.insert(Key::Delete, Modifiers::default(), Action::Custom("renamite.delete".into()));
+    map.insert(
+        Key::Backspace,
+        Modifiers::default(),
+        Action::Custom("renamite.delete".into()),
+    );
+
+    scoped_effect(move || {
+        let map_scope = repose_core::shortcuts::InstallShortcutMap(map.clone());
+        let handler_session = session.clone();
+        let handler_scope =
+            repose_core::shortcuts::InstallShortcutHandler(std::rc::Rc::new(move |action| {
+                crate::shortcuts::handle_global_action(&handler_session, action)
+            }));
+        Dispose::new(move || {
+            map_scope.run();
+            handler_scope.run();
+        })
+    });
 }
 
 fn context_menu_overlay(session: SessionRef) -> View {

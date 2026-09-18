@@ -37,6 +37,115 @@ pub fn text_input_focused() -> bool {
     TEXT_FOCUS_COUNT.with(|c| c.get() > 0)
 }
 
+pub fn handle_global_action(session: &SessionRef, action: repose_core::shortcuts::Action) -> bool {
+    use repose_core::shortcuts::Action;
+    if text_input_focused() || session.borrow().renaming.is_some() {
+        return false;
+    }
+    let mut s = session.borrow_mut();
+    match action {
+        Action::Undo => {
+            undo_cmd(&mut s);
+            s.bump();
+            true
+        }
+        Action::Redo => {
+            redo_cmd(&mut s);
+            s.bump();
+            true
+        }
+        Action::Copy => {
+            s.copy_selection();
+            true
+        }
+        Action::Cut => {
+            s.cut_selection();
+            true
+        }
+        Action::Paste => {
+            s.paste_clipboard();
+            true
+        }
+        Action::SelectAll => {
+            s.select_all_top_level();
+            true
+        }
+        Action::Save => {
+            crate::file::save_document(session);
+            true
+        }
+        Action::Custom(name) => match name.as_ref() {
+            "renamite.redo" => {
+                redo_cmd(&mut s);
+                s.bump();
+                true
+            }
+            "renamite.paste-style" => {
+                s.paste_style();
+                true
+            }
+            "renamite.paste-in-place" => {
+                s.paste_clipboard_in_place();
+                true
+            }
+            "renamite.duplicate" => {
+                s.duplicate_selection();
+                true
+            }
+            "renamite.group" => {
+                s.run_menu_action(MenuAction::Group);
+                true
+            }
+            "renamite.ungroup" => {
+                s.run_menu_action(MenuAction::Ungroup);
+                true
+            }
+            "renamite.stroke-to-path" => {
+                s.stroke_selection_to_path();
+                true
+            }
+            "renamite.convert-to-path" => {
+                s.convert_selection_to_path();
+                true
+            }
+            "renamite.combine" => {
+                s.combine_selection();
+                true
+            }
+            "renamite.break-apart" => {
+                s.break_apart_selection();
+                true
+            }
+            "renamite.simplify" => {
+                s.simplify_selection();
+                true
+            }
+            "renamite.flip-h" => {
+                s.flip_selection(true);
+                true
+            }
+            "renamite.delete" => {
+                if s.mode == EditorMode::Interact {
+                    s.delete_machine_selection();
+                    return true;
+                }
+                if !matches!(
+                    s.active_tool,
+                    ToolId::Select | ToolId::Transform | ToolId::PathEdit
+                ) && !s.selection.nodes.is_empty()
+                    && !s.tool.is_dragging(s.active_tool)
+                {
+                    s.delete_selection_nodes();
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Handle one viewport key event. Returns true when the event was consumed.
 pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     // Text fields own their keys: only Escape (overlay dismissal) is allowed
@@ -80,10 +189,6 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     let mut s = session.borrow_mut();
 
     if s.mode == EditorMode::Interact {
-        if matches!(event.key, Key::Delete | Key::Backspace) {
-            s.delete_machine_selection();
-            return true;
-        }
         if event.modifiers.command
             || !matches!(
                 event.key,
@@ -106,26 +211,6 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     };
     let key = event.key.clone();
 
-    match (command, shift, alt, &key) {
-        // Undo / redo
-        (true, false, false, Key::Character('z')) => {
-            undo_cmd(&mut s);
-            s.bump();
-            return true;
-        }
-        (true, true, false, Key::Character('z')) | (true, false, false, Key::Character('y')) => {
-            redo_cmd(&mut s);
-            s.bump();
-            return true;
-        }
-
-        _ => {}
-    }
-
-    // Punctuation shortcuts use the produced logical character. Ignore Shift as a
-    // semantic modifier because '+', '*', '^', '#', '%' and '|' require Shift on
-    // many layouts. Placed before the clipboard arms so Ctrl+Alt+V and
-    // Ctrl+Shift+V win over the broad Ctrl+V paste binding.
     if command {
         match key {
             Key::Character('+' | '=') => {
@@ -177,41 +262,6 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
     }
 
     match (command, shift, alt, &key) {
-        (true, false, false, Key::Character('h')) => {
-            s.flip_selection(true);
-            return true;
-        }
-        (true, false, false, Key::Character('H')) => {
-            s.flip_selection(false);
-            return true;
-        }
-        (true, false, false, Key::Character('c')) => {
-            s.copy_selection();
-            return true;
-        }
-        (true, false, false, Key::Character('x')) => {
-            s.cut_selection();
-            return true;
-        }
-        (true, false, false, Key::Character('v')) => {
-            s.paste_clipboard();
-            return true;
-        }
-        (true, false, false, Key::Character('d')) => {
-            s.duplicate_selection();
-            return true;
-        }
-
-        // Structure
-        (true, false, false, Key::Character('g')) => {
-            s.run_menu_action(MenuAction::Group);
-            return true;
-        }
-        (true, true, false, Key::Character('g')) | (true, false, false, Key::Character('u')) => {
-            s.run_menu_action(MenuAction::Ungroup);
-            return true;
-        }
-
         // Path operations backed by real history commands
         (false, true, false, Key::Character('r')) => {
             s.reverse_selected_paths();
@@ -225,28 +275,21 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    if command && !alt && matches!(key, Key::Character('a' | 'A')) {
-        if shift {
-            s.set_active_page(PanelPage::Inspect);
-            return true;
-        }
-        s.select_all_top_level();
+    if command && !alt && matches!(key, Key::Character('A')) {
+        s.set_active_page(PanelPage::Inspect);
         return true;
-    }
-
-    if matches!(key, Key::Escape) {
-        if s.context_menu.is_some() {
-            s.close_context_menu();
-            return true;
-        }
-        if s.open_picker.is_some() {
-            s.close_color_picker();
-            return true;
-        }
     }
 
     match key {
         Key::Escape => {
+            if s.context_menu.is_some() {
+                s.close_context_menu();
+                return true;
+            }
+            if s.open_picker.is_some() {
+                s.close_color_picker();
+                return true;
+            }
             let was_dragging = s.tool.is_dragging(s.active_tool);
             dispatch_canvas(&mut s, CanvasEvent::KeyDown(CanvasKey::Escape), mods);
             if !was_dragging {
@@ -255,15 +298,6 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             return true;
         }
         Key::Delete | Key::Backspace => {
-            if !matches!(
-                s.active_tool,
-                ToolId::Select | ToolId::Transform | ToolId::PathEdit
-            ) && !s.selection.nodes.is_empty()
-                && !s.tool.is_dragging(s.active_tool)
-            {
-                s.delete_selection_nodes();
-                return true;
-            }
             let k = if matches!(key, Key::Delete) {
                 CanvasKey::Delete
             } else {
