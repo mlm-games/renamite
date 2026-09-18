@@ -23,7 +23,6 @@ use repose_material::material3::{
     MenuState, TopAppBarConfig,
 };
 use repose_platform::RenderContext;
-use repose_ui::overlay::OverlayHandle;
 use repose_ui::{Box, Column, Row, ViewExt};
 use std::rc::Rc;
 use web_time::Instant;
@@ -88,7 +87,7 @@ fn EditorModeSwitch(session: SessionRef) -> View {
     ))
 }
 
-pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
+pub fn AppTopBar(session: SessionRef) -> View {
     let (dirty, mode, playing, preview_enabled) = {
         let s = session.borrow();
         (s.dirty, s.mode, s.playing, s.machine_preview_enabled)
@@ -146,13 +145,13 @@ pub fn AppTopBar(session: SessionRef, overlay: OverlayHandle) -> View {
     CenterAlignedTopAppBar(
         EditorModeSwitch(session.clone()),
         None,
-        Some(FileMenu(session.clone(), overlay)),
+        Some(FileMenu(session.clone())),
         actions,
         TopAppBarConfig::default(),
     )
 }
 
-pub fn FileMenu(session: SessionRef, overlay: OverlayHandle) -> View {
+pub fn FileMenu(session: SessionRef) -> View {
     let state = remember_with_key("renamite_file_menu", MenuState::new);
 
     let trigger = CompactIconAction(Symbols::menu, "File", {
@@ -238,7 +237,7 @@ pub fn FileMenu(session: SessionRef, overlay: OverlayHandle) -> View {
 
     DropdownMenu(
         state,
-        overlay,
+        None,
         Modifier::new(),
         trigger,
         items,

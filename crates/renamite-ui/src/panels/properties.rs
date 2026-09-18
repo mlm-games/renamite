@@ -825,6 +825,7 @@ fn diamond_button(
     TooltipBox(
         tip,
         tooltip_state.clone(),
+        None,
         Modifier::new(),
         IconButton(
             AppIcon(sym, 20.0).color(color),

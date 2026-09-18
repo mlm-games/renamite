@@ -33,7 +33,6 @@ use repose_material::material3::{
     Button, ButtonConfig, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
     MenuState,
 };
-use repose_ui::overlay::OverlayHandle;
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
@@ -74,7 +73,6 @@ fn graph_local_origin(rect: &Rc<RefCell<Option<Rect>>>) -> DVec2 {
 
 pub fn InteractivityPanel(session: SessionRef) -> View {
     let active = session.borrow().active_machine;
-    let overlay = remember_with_key("interact_overlay", OverlayHandle::new);
 
     let mut children: Vec<View> = vec![PanelHeader(
         Symbols::account_tree,
@@ -111,14 +109,13 @@ pub fn InteractivityPanel(session: SessionRef) -> View {
             children.push(ScrollArea(
                 Modifier::new().fill_max_size(),
                 remember_scroll_state("interact_scroll"),
-                MachineBody((*overlay).clone(), session.clone(), machine),
+                MachineBody(session.clone(), machine),
             ));
         }
         None => children.push(EmptyMachineState(session)),
     }
 
-    let panel = Column(Modifier::new().fill_max_size()).child(children);
-    overlay.host(Modifier::new().fill_max_size(), panel)
+    Column(Modifier::new().fill_max_size()).child(children)
 }
 
 fn PreviewStatusBar(session: SessionRef) -> View {
@@ -298,7 +295,7 @@ fn MachineSelector(session: SessionRef) -> View {
     .child(chips)
 }
 
-fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
+fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
     let name = session.borrow().file.machines[machine_id].name.clone();
 
     Column(Modifier::new().fill_max_width().gap(Dp(8.0))).child((
@@ -364,13 +361,13 @@ fn MachineBody(overlay: OverlayHandle, session: SessionRef, machine_id: MachineI
             "sm_inspector",
             "Selection",
             vec![],
-            SelectionInspector(overlay.clone(), session.clone(), machine_id),
+            SelectionInspector(session.clone(), machine_id),
         ),
         CollapsibleSection(
             "sm_listeners",
             "Listeners",
             vec![],
-            ListenersSection(overlay, session, machine_id),
+            ListenersSection(session, machine_id),
         ),
     ))
 }
@@ -1537,18 +1534,18 @@ fn kind_label(kind: &StateKind) -> String {
     }
 }
 
-fn SelectionInspector(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
+fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
     let selection = session.borrow().machine_selection.clone();
     match selection {
         MachineSelection::State { layer, state } => {
-            StateInspector(overlay, session, machine_id, layer, state)
+            StateInspector(session, machine_id, layer, state)
         }
         MachineSelection::Transition {
             layer,
             source,
             transition,
-        } => TransitionInspector(overlay, session, machine_id, layer, source, transition),
-        MachineSelection::Layer { layer } => LayerInspector(overlay, session, machine_id, layer),
+        } => TransitionInspector(session, machine_id, layer, source, transition),
+        MachineSelection::Layer { layer } => LayerInspector(session, machine_id, layer),
         _ => Text("Select a state, edge, or Any node")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
@@ -1557,7 +1554,6 @@ fn SelectionInspector(overlay: OverlayHandle, session: SessionRef, machine_id: M
 }
 
 fn LayerInspector(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -1648,7 +1644,6 @@ fn LayerInspector(
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant),
             Box(Modifier::new()).child(transition_target_dropdown(
-                overlay,
                 session,
                 machine_id,
                 layer,
@@ -1662,7 +1657,6 @@ fn LayerInspector(
 }
 
 fn StateInspector(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -1803,7 +1797,6 @@ fn StateInspector(
             rows.push(labeled_row(
                 "Clip",
                 clip_dropdown(
-                    overlay.clone(),
                     session.clone(),
                     machine_id,
                     layer,
@@ -1857,7 +1850,6 @@ fn StateInspector(
             rows.push(labeled_row(
                 "Input",
                 blend_input_dropdown(
-                    overlay.clone(),
                     session.clone(),
                     machine_id,
                     layer,
@@ -1878,7 +1870,6 @@ fn StateInspector(
             );
             for (ci, child) in children.iter().enumerate() {
                 rows.push(blend_child_row(
-                    overlay.clone(),
                     session.clone(),
                     machine_id,
                     layer,
@@ -2014,7 +2005,6 @@ fn StateInspector(
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
             Box(Modifier::new().flex_grow(0.0)).child(transition_target_dropdown(
-                overlay,
                 session,
                 machine_id,
                 layer,
@@ -2041,7 +2031,6 @@ fn set_clip_loop(session: SessionRef, layer: usize, state: usize, mode: LoopMode
 }
 
 fn blend_child_row(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2075,7 +2064,6 @@ fn blend_child_row(
             }),
         ),
         Box(Modifier::new().flex_grow(1.0)).child(clip_dropdown_for_blend(
-            overlay,
             session.clone(),
             machine_id,
             layer,
@@ -2102,7 +2090,6 @@ fn blend_child_row(
 }
 
 fn clip_dropdown_for_blend(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2137,7 +2124,6 @@ fn clip_dropdown_for_blend(
         })
         .collect();
     dropdown(
-        overlay,
         format!("bclip_{machine_id:?}_{layer}_{state}_{child_index}"),
         format!("{current_name} ▾"),
         items,
@@ -2145,7 +2131,6 @@ fn clip_dropdown_for_blend(
 }
 
 fn TransitionInspector(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2197,7 +2182,6 @@ fn TransitionInspector(
         labeled_row(
             "Target",
             retarget_dropdown(
-                overlay.clone(),
                 session.clone(),
                 machine_id,
                 layer,
@@ -2300,7 +2284,6 @@ fn TransitionInspector(
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().flex_grow(1.0)),
             Box(Modifier::new()).child(condition_dropdown(
-                overlay,
                 session.clone(),
                 machine_id,
                 layer,
@@ -2443,7 +2426,7 @@ fn next_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: MachineId) -> View {
+fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
     let th = theme();
     let (listeners, inputs, selected_node) = {
         let s = session.borrow();
@@ -2508,7 +2491,6 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
     // Add-listener row: node comes from the editor selection.
     if let Some(node) = selected_node {
         rows.push(AddListenerRow(
-            overlay,
             session.clone(),
             machine_id,
             node,
@@ -2532,7 +2514,6 @@ fn ListenersSection(overlay: OverlayHandle, session: SessionRef, machine_id: Mac
 }
 
 fn AddListenerRow(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     node: NodeId,
@@ -2697,19 +2678,16 @@ fn AddListenerRow(
             .size(th.typography.label_small)
             .color(th.on_surface_variant),
         dropdown(
-            overlay.clone(),
             "lst_event",
             format!("{event_label} ▾"),
             event_items,
         ),
         dropdown(
-            overlay.clone(),
             "lst_input",
             format!("{input_label} ▾"),
             input_items,
         ),
         dropdown(
-            overlay.clone(),
             "lst_action",
             format!("{action_label} ▾"),
             action_items,
@@ -2849,7 +2827,6 @@ fn clip_names(session: &SessionRef) -> Vec<(ClipId, String)> {
 }
 
 fn clip_dropdown(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2889,7 +2866,6 @@ fn clip_dropdown(
         })
         .collect();
     dropdown(
-        overlay,
         format!("clip_{machine_id:?}_{layer}_{state}"),
         format!("{current_name} ▾"),
         items,
@@ -2897,7 +2873,6 @@ fn clip_dropdown(
 }
 
 fn blend_input_dropdown(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -2935,7 +2910,6 @@ fn blend_input_dropdown(
         })
         .collect();
     dropdown(
-        overlay,
         format!("blend_{machine_id:?}_{layer}_{state}"),
         format!("{current_name} ▾"),
         items,
@@ -3013,7 +2987,6 @@ fn transition_row(
 /// `add_mode`: true = add new transition to target; false unused (use retarget_dropdown).
 #[allow(clippy::too_many_arguments)]
 fn transition_target_dropdown(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -3061,7 +3034,6 @@ fn transition_target_dropdown(
         })
         .collect();
     dropdown(
-        overlay,
         format!("target_add_{machine_id:?}_{layer}_{source:?}"),
         format!("{} ▾", Symbols::add.name),
         items,
@@ -3070,7 +3042,6 @@ fn transition_target_dropdown(
 
 #[allow(clippy::too_many_arguments)]
 fn retarget_dropdown(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -3104,7 +3075,6 @@ fn retarget_dropdown(
         })
         .collect();
     dropdown(
-        overlay,
         format!("retarget_{machine_id:?}_{layer}_{transition}"),
         format!("{current_name} ▾"),
         items,
@@ -3112,7 +3082,6 @@ fn retarget_dropdown(
 }
 
 fn condition_dropdown(
-    overlay: OverlayHandle,
     session: SessionRef,
     machine_id: MachineId,
     layer: usize,
@@ -3143,7 +3112,6 @@ fn condition_dropdown(
         })
         .collect();
     dropdown(
-        overlay,
         format!("cond_{machine_id:?}_{layer}_{transition:?}"),
         format!("{} ▾", Symbols::add.name),
         items,
@@ -3342,7 +3310,6 @@ fn listener_draft_number_scrub(session: SessionRef, value: f64, step: f64) -> Vi
 }
 
 fn dropdown(
-    overlay: OverlayHandle,
     key: impl Into<String>,
     label: String,
     items: Vec<DropdownMenuEntry>,
@@ -3372,7 +3339,7 @@ fn dropdown(
 
     DropdownMenu(
         state,
-        overlay.clone(),
+        None,
         Modifier::new(),
         trigger,
         items,

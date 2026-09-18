@@ -7,7 +7,7 @@ use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
     Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, Surface, SurfaceConfig, TextButton,
 };
-use repose_ui::overlay::{OverlayHandle, SnackbarController, SnackbarRequest};
+use repose_ui::overlay::{SnackbarController, SnackbarRequest};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,14 +42,10 @@ pub fn platform_shell_class() -> ShellClass {
 }
 
 pub fn EditorShell(session: SessionRef) -> View {
-    let overlay = remember_with_key("shell_overlay", OverlayHandle::new);
     let class = platform_shell_class();
     let session_body = session.clone();
 
-    let snackbar = remember_with_key("shell_snackbar", {
-        let overlay = (*overlay).clone();
-        move || SnackbarController::new(overlay)
-    });
+    let snackbar = remember_with_key("shell_snackbar", SnackbarController::ambient);
     {
         let mut s = session.borrow_mut();
         if s.status.is_some() {
@@ -78,7 +74,7 @@ pub fn EditorShell(session: SessionRef) -> View {
             ShellClass::Compact => CompactWorkspace(session_body.clone()),
         },
         ScaffoldConfig {
-            top_bar: Some(crate::AppTopBar(session.clone(), (*overlay).clone())),
+            top_bar: Some(crate::AppTopBar(session.clone())),
             bottom_bar: match class {
                 ShellClass::Compact => Some(BottomNavigation(session.clone())),
                 // status (file actions, errors) is surfaced as a snackbar.
@@ -89,7 +85,7 @@ pub fn EditorShell(session: SessionRef) -> View {
         },
     );
 
-    let confirm = discard_dialog(session.clone(), (*overlay).clone());
+    let confirm = discard_dialog(session.clone());
     let picker = color_picker_overlay(session.clone());
     let menu = context_menu_overlay(session.clone());
 
@@ -128,10 +124,7 @@ pub fn EditorShell(session: SessionRef) -> View {
             crate::shortcuts::handle_viewport_key(&session_keys, ke)
         });
 
-    overlay.host(
-        Modifier::new().fill_max_size(),
-        ZStack(global_keys).child((scaffold, picker, menu, confirm)),
-    )
+    ZStack(global_keys).child((scaffold, picker, menu, confirm))
 }
 
 fn context_menu_overlay(session: SessionRef) -> View {
@@ -329,7 +322,7 @@ fn picker_placement(anchor: glam::DVec2) -> (f32, f32) {
     (x, y)
 }
 
-fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
+fn discard_dialog(session: SessionRef) -> View {
     let state = session.borrow().confirm_dialog.clone();
     let label = theme().typography.label_large;
 
@@ -382,7 +375,7 @@ fn discard_dialog(session: SessionRef, overlay: OverlayHandle) -> View {
 
     Dialog(
         state,
-        overlay,
+        None,
         Modifier::new(),
         DialogProperties::default(),
         content,
