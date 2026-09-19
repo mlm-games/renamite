@@ -1,15 +1,16 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::{
-    Dp, JustifyContent, Modifier, PaddingValues, UnitExt, View, remember_with_key, request_frame,
+    Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_with_key, request_frame,
     theme,
 };
 use repose_material::material3::{
-    Button, ButtonConfig, Dialog, DialogProperties, NavItem, NavigationBar, NavigationBarConfig,
-    Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, Surface, SurfaceConfig, TextButton,
+    Button, ButtonConfig, Dialog, DialogProperties, DropdownMenu, DropdownMenuConfig,
+    DropdownMenuEntry, DropdownMenuItem, DropdownMenuSubmenu, MenuState, NavItem, NavigationBar,
+    NavigationBarConfig, Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, TextButton,
 };
 use repose_ui::overlay::{SnackbarController, SnackbarRequest};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use repose_docking::{
@@ -213,134 +214,80 @@ fn context_menu_overlay(session: SessionRef) -> View {
     let Some(menu) = session.borrow().context_menu.clone() else {
         return ZStack(Modifier::new());
     };
-    let th = theme();
-    let entries = menu.entries.clone();
-    let session_close = session.clone();
-    let session_entries = session.clone();
-
-    let (x, y) = menu_placement(menu.screen_pos, &entries);
-
-    ZStack(Modifier::new().fill_max_size()).child((
-        // Transparent scrim: any click outside closes the menu.
-        Box(Modifier::new().fill_max_size().on_pointer_down(move |_| {
-            session_close.borrow_mut().close_context_menu();
-        })),
-        Box(Modifier::new()
-            .absolute()
-            .offset(Some(Dp(x)), Some(Dp(y)), None, None))
-        .child(Surface(
-            SurfaceConfig {
-                modifier: Modifier::new().width(Dp(220.0)).padding(Dp(4.0)),
-                color: th.surface_container_high,
-                content_color: th.on_surface,
-                shape_radius: 8.0.dp(),
-                border: Some((1.0.dp(), th.outline_variant)),
-                ..Default::default()
-            },
-            move || {
-                Column(Modifier::new().fill_max_width().gap(Dp(2.0)))
-                    .child(render_menu_entries(session_entries.clone(), &entries))
-            },
-        )),
-    ))
-}
-
-/// Clamp a context menu near its anchor, then inside the window edges (mirrors
-/// the color picker placement so right/bottom-edge opens don't run off-screen).
-fn menu_placement(anchor: glam::DVec2, entries: &[MenuEntry]) -> (f32, f32) {
-    const W: f32 = 220.0;
-    const M: f32 = 8.0;
-    let height = menu_entries_height(entries)
-        .min(repose_core::get_window_container_height() - M * 2.0)
-        .max(8.0);
-    let vw = repose_core::get_window_container_width().max(1.0);
-    let vh = repose_core::get_window_container_height().max(1.0);
-    let mut x = anchor.x as f32;
-    let mut y = anchor.y as f32;
-    // Prefer opening below the cursor; flip above when there's no room.
-    if y + height > vh - M {
-        y = (anchor.y as f32 - height).max(M);
+    let state = remember_with_key("shell_context_menu", MenuState::new);
+    let anchor = Vec2 {
+        x: menu.screen_pos.x as f32,
+        y: menu.screen_pos.y as f32,
+    };
+    let menu_id = (
+        anchor.x.to_bits(),
+        anchor.y.to_bits(),
+        menu.entries.len(),
+    );
+    let last_menu_id = remember_with_key("shell_context_menu_id", || Cell::new(None::<(u32, u32, usize)>));
+    if last_menu_id.get() != Some(menu_id) {
+        last_menu_id.set(Some(menu_id));
+        state.open_at(anchor);
     }
-    x = x.clamp(M, (vw - W - M).max(M));
-    y = y.clamp(M, (vh - height - M).max(M));
-    (x, y)
+
+    DropdownMenu(
+        state.clone(),
+        Modifier::new(),
+        Box(Modifier::new()),
+        menu.entries
+            .iter()
+            .map(|e| context_menu_entry(session.clone(), state.clone(), e))
+            .collect(),
+        DropdownMenuConfig {
+            min_width: Dp(220.0),
+            max_width: Dp(280.0),
+            ..Default::default()
+        },
+    )
 }
 
-fn menu_entries_height(entries: &[MenuEntry]) -> f32 {
-    let mut h = 0.0;
-    for e in entries {
-        match e {
-            MenuEntry::Separator => h += 5.0,
-            MenuEntry::Action { .. } => h += 36.0 + 2.0,
-            MenuEntry::Submenu { children, .. } => {
-                h += 24.0 + menu_entries_height(children);
+fn context_menu_entry(
+    session: SessionRef,
+    state: Rc<MenuState>,
+    entry: &MenuEntry,
+) -> DropdownMenuEntry {
+    match entry {
+        MenuEntry::Separator => DropdownMenuEntry::Divider,
+        MenuEntry::Action { id, label, enabled, .. } => {
+            let action = id.clone();
+            let en = *enabled;
+            let session = session.clone();
+            let state = state.clone();
+            let mut item = DropdownMenuItem::new(*label, move || {
+                state.dismiss();
+                if en {
+                    session.borrow_mut().run_menu_action(action.clone());
+                }
+            });
+            if !en {
+                item = item.disabled();
             }
+            DropdownMenuEntry::Item(item)
+        }
+        MenuEntry::Submenu { label, children } => {
+            let nested = children
+                .iter()
+                .map(|e| context_menu_entry(session.clone(), state.clone(), e))
+                .collect();
+            let mut sub = DropdownMenuSubmenu::new(*label, nested);
+            if children
+                .iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Action { enabled, .. } => Some(*enabled),
+                    _ => None,
+                })
+                .all(|en| !en)
+            {
+                sub = sub.disabled();
+            }
+            DropdownMenuEntry::Submenu(sub)
         }
     }
-    h + 8.0 // Surface padding (4 + 4)
-}
-
-fn render_menu_entries(session: SessionRef, entries: &[MenuEntry]) -> Vec<View> {
-    let th = theme();
-    entries
-        .iter()
-        .flat_map(|e| match e {
-            MenuEntry::Separator => {
-                vec![Box(Modifier::new()
-                    .height(Dp(1.0))
-                    .fill_max_width()
-                    .background(th.outline_variant))]
-            }
-            MenuEntry::Action {
-                id, label, enabled, ..
-            } => {
-                let action = id.clone();
-                let en = *enabled;
-                vec![
-                    Box(Modifier::new()
-                        .height(Dp(36.0))
-                        .fill_max_width()
-                        .padding_values(PaddingValues {
-                            left: Dp(12.0),
-                            right: Dp(12.0),
-                            top: Dp(0.0),
-                            bottom: Dp(0.0),
-                        })
-                        .align_items(repose_core::AlignItems::CENTER)
-                        .on_pointer_down({
-                            let session = session.clone();
-                            move |_| {
-                                if en {
-                                    session.borrow_mut().run_menu_action(action.clone());
-                                }
-                            }
-                        }))
-                    .child(
-                        Text(*label).size(th.typography.body_medium).color(if en {
-                            th.on_surface
-                        } else {
-                            th.on_surface_variant
-                        }),
-                    ),
-                ]
-            }
-            MenuEntry::Submenu { label, children } => {
-                let mut views = vec![
-                    Text(*label)
-                        .size(th.typography.label_small)
-                        .color(th.on_surface_variant)
-                        .modifier(Modifier::new().padding_values(PaddingValues {
-                            left: Dp(12.0),
-                            right: Dp(8.0),
-                            top: Dp(8.0),
-                            bottom: Dp(2.0),
-                        })),
-                ];
-                views.extend(render_menu_entries(session.clone(), children));
-                views
-            }
-        })
-        .collect()
 }
 
 /// Transparent-to-closem modal layer containing the color picker popover,

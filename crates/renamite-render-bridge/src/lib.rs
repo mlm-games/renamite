@@ -71,9 +71,10 @@ pub enum PreparedDraw {
         tint: repose_core::Color,
         fit: repose_core::ImageFit,
         clips: Vec<u32>,
-        /// Model blend, preserved for round-tripping and future renderer
-        /// upgrades. Repose `DrawCommand::Image` / `SceneNode::Image` carry no
-        /// blend field yet, so this is intentionally unused by the paint sinks.
+        /// Model blend, applied where the backend supports it. The canvas
+        /// `DrawCommand::Image` / `SceneNode::Image` carry no blend field,
+        /// so non-normal modes on images render as normal through these
+        /// sinks until repose gains image blend support.
         blend: BlendMode,
     },
 }
@@ -311,10 +312,10 @@ impl SceneRenderer {
 
     fn model_color_to_repose(color: renamite_model::Color, opacity: f64) -> repose_core::Color {
         repose_core::Color(
-            (color.r.clamp(0.0, 1.0) * 255.0) as u8,
-            (color.g.clamp(0.0, 1.0) * 255.0) as u8,
-            (color.b.clamp(0.0, 1.0) * 255.0) as u8,
-            ((color.a * opacity).clamp(0.0, 1.0) * 255.0) as u8,
+            (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (color.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ((color.a * opacity).clamp(0.0, 1.0) * 255.0).round() as u8,
         )
     }
 
@@ -817,25 +818,20 @@ fn map_blend(b: ModelBlendMode) -> BlendMode {
     match b {
         ModelBlendMode::Normal => BlendMode::Alpha,
         ModelBlendMode::Multiply => BlendMode::Multiply,
-        // Screen is NOT additive: fall back to alpha until the Repose renderer
-        // implements a real screen blend. (Add is also unimplemented upstream.)
-        ModelBlendMode::Screen => BlendMode::Alpha,
+        ModelBlendMode::Screen => BlendMode::Screen,
         ModelBlendMode::Overlay => BlendMode::Overlay,
-        // TODO: advanced modes not yet implemented in ../repose renderer,
-        // HACK: fall back to alpha
-        // but preserve model value for round-tripping and future renderer upgrades.
-        ModelBlendMode::Darken
-        | ModelBlendMode::Lighten
-        | ModelBlendMode::ColorDodge
-        | ModelBlendMode::ColorBurn
-        | ModelBlendMode::HardLight
-        | ModelBlendMode::SoftLight
-        | ModelBlendMode::Difference
-        | ModelBlendMode::Exclusion
-        | ModelBlendMode::Hue
-        | ModelBlendMode::Saturation
-        | ModelBlendMode::Color
-        | ModelBlendMode::Luminosity => BlendMode::Alpha,
+        ModelBlendMode::Darken => BlendMode::Darken,
+        ModelBlendMode::Lighten => BlendMode::Lighten,
+        ModelBlendMode::ColorDodge => BlendMode::ColorDodge,
+        ModelBlendMode::ColorBurn => BlendMode::ColorBurn,
+        ModelBlendMode::HardLight => BlendMode::HardLight,
+        ModelBlendMode::SoftLight => BlendMode::SoftLight,
+        ModelBlendMode::Difference => BlendMode::Difference,
+        ModelBlendMode::Exclusion => BlendMode::Exclusion,
+        ModelBlendMode::Hue => BlendMode::Hue,
+        ModelBlendMode::Saturation => BlendMode::Saturation,
+        ModelBlendMode::Color => BlendMode::Color,
+        ModelBlendMode::Luminosity => BlendMode::Luminosity,
     }
 }
 

@@ -419,7 +419,7 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             s.flip_selection(true);
             return true;
         }
-        let tool = match tool_key(&key, event.physical.as_deref()) {
+        let tool = match tool_key(&key, event.physical.map(|p| p.name())) {
             Some(t) => Some(t),
             None => match key {
                 Key::Character('s' | 'v') => Some(ToolId::Select),
