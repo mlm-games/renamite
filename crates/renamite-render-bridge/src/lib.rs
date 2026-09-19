@@ -647,9 +647,19 @@ impl SceneRenderer {
     }
 }
 
+fn linear_vertex_color(r: f64, g: f64, b: f64, a: f64) -> [f32; 4] {
+    let c = repose_core::Color(
+        (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    );
+    c.to_linear()
+}
+
 fn colorize_mesh(mesh: VectorMeshData, paint: &ScenePaint, opacity: f64) -> Arc<VectorMeshData> {
     if let ScenePaint::Solid(c) = paint {
-        let rgba = [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32];
+        let rgba = linear_vertex_color(c.r, c.g, c.b, c.a * opacity);
         let vertices: Arc<[VectorVertex]> = mesh
             .vertices
             .iter()
@@ -669,7 +679,7 @@ fn colorize_mesh(mesh: VectorMeshData, paint: &ScenePaint, opacity: f64) -> Arc<
             let c = paint.color_at(p);
             VectorVertex {
                 pos: v.pos,
-                color: [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32],
+                color: linear_vertex_color(c.r, c.g, c.b, c.a * opacity),
                 uv: v.uv,
             }
         })
@@ -722,27 +732,155 @@ fn radial_fan_mesh(
         return None;
     }
 
-    let radius = (end - center).length().max(1e-12);
     let n = outline.len();
-    let mut vertices: Vec<VectorVertex> = Vec::with_capacity(n + 1);
-    let mut indices: Vec<u32> = Vec::with_capacity(n * 3);
+    let mut offsets: Vec<f64> = stops.0.iter().map(|s| s.offset.clamp(0.0, 1.0)).collect();
+    offsets.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    offsets.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    if offsets.is_empty() {
+        return None;
+    }
+    let max_spoke = outline
+        .iter()
+        .map(|o| (glam::DVec2::new(o[0] as f64, o[1] as f64) - center).length())
+        .fold(0.0f64, f64::max)
+        .max(1e-12);
+    let grad_radius = (end - center).length().max(1e-12);
+    let span = (max_spoke / grad_radius).max(1e-6);
 
-    let push = |vertices: &mut Vec<VectorVertex>, p: glam::DVec2| {
-        let c = stops.sample(((p - center).length() / radius).clamp(0.0, 1.0));
+    let push_center = |vertices: &mut Vec<VectorVertex>| {
+        let c = stops.sample(0.0);
         vertices.push(VectorVertex {
-            pos: [p.x as f32, p.y as f32],
-            color: [c.r as f32, c.g as f32, c.b as f32, (c.a * opacity) as f32],
+            pos: [center.x as f32, center.y as f32],
+            color: linear_vertex_color(c.r, c.g, c.b, c.a * opacity),
             uv: [0.0, 0.0],
         });
     };
 
-    push(&mut vertices, center);
-    let center_idx = 0u32;
-    for (i, pt) in outline.iter().enumerate() {
-        push(&mut vertices, glam::DVec2::new(pt[0] as f64, pt[1] as f64));
-        let i0 = (i as u32) + 1;
-        let i1 = ((i + 1) % n) as u32 + 1;
-        indices.extend_from_slice(&[center_idx, i0, i1]);
+    let ring_point = |t: f64, i: usize| -> glam::DVec2 {
+        let o = outline[i % n];
+        let p = glam::DVec2::new(o[0] as f64, o[1] as f64);
+        center + (p - center) * t
+    };
+    let ring_color = |t: f64| -> [f32; 4] {
+        let c = stops.sample((t * span).clamp(0.0, 1.0));
+        linear_vertex_color(c.r, c.g, c.b, c.a * opacity)
+    };
+
+    let first = offsets[0];
+    let mut vertices: Vec<VectorVertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut bounds: Vec<f64> = offsets.clone();
+    if bounds.last().copied().unwrap_or(1.0) < 1.0 - 1e-9 {
+        bounds.push(1.0);
+    }
+    if first <= 1e-9 {
+        push_center(&mut vertices);
+        let mut prev: Vec<u32> = Vec::with_capacity(n);
+        let t1 = bounds.get(1).copied().unwrap_or(1.0);
+        for i in 0..n {
+            let p = ring_point(t1, i);
+            vertices.push(VectorVertex {
+                pos: [p.x as f32, p.y as f32],
+                color: ring_color(t1),
+                uv: [0.0, 0.0],
+            });
+            prev.push((i as u32) + 1);
+        }
+        for i in 0..n {
+            indices.extend_from_slice(&[0, prev[i], prev[(i + 1) % n]]);
+        }
+        if bounds.len() == 1 {
+            return Some(VectorMeshData {
+                vertices: vertices.into(),
+                indices: indices.into(),
+            });
+        }
+        for &t in &bounds[2..] {
+            let base = vertices.len() as u32;
+            for i in 0..n {
+                let p = ring_point(t, i);
+                vertices.push(VectorVertex {
+                    pos: [p.x as f32, p.y as f32],
+                    color: ring_color(t),
+                    uv: [0.0, 0.0],
+                });
+            }
+            for i in 0..n {
+                let a0 = prev[i];
+                let a1 = prev[(i + 1) % n];
+                let b0 = base + i as u32;
+                let b1 = base + ((i + 1) % n) as u32;
+                indices.extend_from_slice(&[a0, b0, b1, a0, b1, a1]);
+            }
+            prev = (base..base + n as u32).collect();
+        }
+        let base = vertices.len() as u32;
+        let edge = ring_color(1.0);
+        for (i, pt) in outline.iter().enumerate() {
+            vertices.push(VectorVertex {
+                pos: *pt,
+                color: edge,
+                uv: [0.0, 0.0],
+            });
+            let _ = i;
+        }
+        for i in 0..n {
+            let a0 = prev[i];
+            let a1 = prev[(i + 1) % n];
+            let b0 = base + i as u32;
+            let b1 = base + ((i + 1) % n) as u32;
+            indices.extend_from_slice(&[a0, b0, b1, a0, b1, a1]);
+        }
+        return Some(VectorMeshData {
+            vertices: vertices.into(),
+            indices: indices.into(),
+        });
+    }
+
+    push_center(&mut vertices);
+    let mut prev: Vec<u32> = vec![0u32];
+    let mut prev_is_point = true;
+    for &t in &bounds {
+        let base = vertices.len() as u32;
+        for i in 0..n {
+            let p = ring_point(t, i);
+            vertices.push(VectorVertex {
+                pos: [p.x as f32, p.y as f32],
+                color: ring_color(t),
+                uv: [0.0, 0.0],
+            });
+        }
+        if prev_is_point {
+            for i in 0..n {
+                indices.extend_from_slice(&[0, base + i as u32, base + ((i + 1) % n) as u32]);
+            }
+        } else {
+            for i in 0..n {
+                let a0 = prev[i];
+                let a1 = prev[(i + 1) % n];
+                let b0 = base + i as u32;
+                let b1 = base + ((i + 1) % n) as u32;
+                indices.extend_from_slice(&[a0, b0, b1, a0, b1, a1]);
+            }
+        }
+        prev = (base..base + n as u32).collect();
+        prev_is_point = false;
+    }
+    let base = vertices.len() as u32;
+    let edge = ring_color(1.0);
+    for pt in outline.iter() {
+        vertices.push(VectorVertex {
+            pos: *pt,
+            color: edge,
+            uv: [0.0, 0.0],
+        });
+    }
+    for i in 0..n {
+        let a0 = prev[i];
+        let a1 = prev[(i + 1) % n];
+        let b0 = base + i as u32;
+        let b1 = base + ((i + 1) % n) as u32;
+        indices.extend_from_slice(&[a0, b0, b1, a0, b1, a1]);
     }
 
     Some(VectorMeshData {
