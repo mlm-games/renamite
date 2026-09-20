@@ -669,6 +669,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
 
     if !ids.is_empty() {
         children.push(align_section(session.clone(), ids.len()));
+        children.push(canvas_section(session.clone()));
     }
 
     for v in meta_views {
@@ -2334,6 +2335,185 @@ fn align_row(label: &'static str, chips: Vec<View>) -> View {
         )
         .child(chips),
     ))
+}
+
+fn canvas_section(session: SessionRef) -> View {
+    use crate::session::GuideAxis;
+    let (show_grid, show_guides, snapping, snap_grid, snap_guides, snap_objects, spacing, guides) = {
+        let s = session.borrow();
+        (
+            s.viewport.show_grid,
+            s.viewport.show_guides,
+            s.viewport.snapping_enabled,
+            s.viewport.snap_to_grid,
+            s.viewport.snap_to_guides,
+            s.viewport.snap_to_objects,
+            s.viewport.grid_spacing,
+            s.viewport.guides.clone(),
+        )
+    };
+    let mut rows: Vec<View> = Vec::new();
+    rows.push(align_row(
+        "Canvas",
+        vec![
+            align_chip(
+                session.clone(),
+                if show_grid { "Grid on" } else { "Grid off" },
+                move |s| {
+                    s.viewport.show_grid = !s.viewport.show_grid;
+                    s.repaint();
+                },
+            ),
+            align_chip(
+                session.clone(),
+                if show_guides {
+                    "Guides on"
+                } else {
+                    "Guides off"
+                },
+                move |s| {
+                    s.viewport.show_guides = !s.viewport.show_guides;
+                    s.repaint();
+                },
+            ),
+            align_chip(
+                session.clone(),
+                if snapping { "Snap on" } else { "Snap off" },
+                move |s| {
+                    s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+                    s.repaint();
+                },
+            ),
+        ],
+    ));
+    rows.push(align_row(
+        "Snap",
+        vec![
+            align_chip(
+                session.clone(),
+                if snap_grid { "Grid on" } else { "Grid off" },
+                move |s| {
+                    s.viewport.snap_to_grid = !s.viewport.snap_to_grid;
+                    s.repaint();
+                },
+            ),
+            align_chip(
+                session.clone(),
+                if snap_guides {
+                    "Guides on"
+                } else {
+                    "Guides off"
+                },
+                move |s| {
+                    s.viewport.snap_to_guides = !s.viewport.snap_to_guides;
+                    s.repaint();
+                },
+            ),
+            align_chip(
+                session.clone(),
+                if snap_objects {
+                    "Objects on"
+                } else {
+                    "Objects off"
+                },
+                move |s| {
+                    s.viewport.snap_to_objects = !s.viewport.snap_to_objects;
+                    s.repaint();
+                },
+            ),
+        ],
+    ));
+    rows.push(align_row(
+        "Grid",
+        vec![
+            Box(Modifier::new().width(Dp(84.0))).child(crate::components::AppTextField(
+                String::from("grid_spacing"),
+                format!("{}", spacing.x.round() as i64),
+                String::from("px"),
+                true,
+                32.0,
+                {
+                    let session = session.clone();
+                    move |text: String| {
+                        if let Ok(v) = text.trim().parse::<f64>() {
+                            let mut s = session.borrow_mut();
+                            let y = s.viewport.grid_spacing.y;
+                            s.viewport.set_grid_spacing(glam::DVec2::new(v, y));
+                        }
+                    }
+                },
+            )),
+            align_chip(session.clone(), "Clear guides", move |s| {
+                s.viewport.clear_guides();
+            }),
+        ],
+    ));
+    if !guides.is_empty() {
+        let guide_rows: Vec<View> = guides
+            .iter()
+            .enumerate()
+            .take(8)
+            .map(|(i, g)| {
+                let label = match g.axis {
+                    GuideAxis::Horizontal => format!("H {i}: {:.1}", g.position),
+                    GuideAxis::Vertical => format!("V {i}: {:.1}", g.position),
+                };
+                guide_chip(session.clone(), label, i)
+            })
+            .collect();
+        rows.push(align_row("Guides", guide_rows));
+    }
+    crate::components::CollapsibleSection(
+        "canvas_section",
+        "Canvas & Guides",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(rows),
+    )
+}
+
+fn guide_chip(session: SessionRef, label: String, index: usize) -> View {
+    let th = theme();
+    let label: &'static str = Box::leak(label.into_boxed_str());
+    Box(Modifier::new()
+        .padding_values(PaddingValues {
+            left: Dp(10.0),
+            right: Dp(10.0),
+            top: Dp(6.0),
+            bottom: Dp(6.0),
+        })
+        .background(th.surface_container_high)
+        .clip_rounded(Dp(999.0))
+        .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
+        .on_pointer_down(move |_| {
+            let mut s = session.borrow_mut();
+            if index < s.viewport.guides.len() {
+                s.viewport.guides.remove(index);
+                s.repaint();
+            }
+        }))
+    .child(Text(label).size(th.typography.label_medium))
+}
+
+fn align_chip(
+    session: SessionRef,
+    label: &'static str,
+    on_click: impl Fn(&mut crate::session::Session) + 'static,
+) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .padding_values(PaddingValues {
+            left: Dp(10.0),
+            right: Dp(10.0),
+            top: Dp(6.0),
+            bottom: Dp(6.0),
+        })
+        .background(th.surface_container_high)
+        .clip_rounded(Dp(999.0))
+        .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
+        .on_pointer_down(move |_| {
+            on_click(&mut session.borrow_mut());
+        }))
+    .child(Text(label).size(th.typography.label_medium))
 }
 
 fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {

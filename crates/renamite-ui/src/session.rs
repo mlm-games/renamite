@@ -3908,8 +3908,7 @@ impl ViewportState {
         self.guides.iter().position(|g| match g.axis {
             GuideAxis::Horizontal => {
                 let p = self.view.world_to_screen(DVec2::new(0.0, g.position));
-                (p.y - screen_pos.y).abs() <= HIT_PX
-                    || (g.position - world.y).abs() <= tol
+                (p.y - screen_pos.y).abs() <= HIT_PX || (g.position - world.y).abs() <= tol
             }
             GuideAxis::Vertical => {
                 let p = self.view.world_to_screen(DVec2::new(g.position, 0.0));
