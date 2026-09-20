@@ -124,6 +124,11 @@ pub fn handle_global_action(session: &SessionRef, action: repose_core::shortcuts
                 s.flip_selection(true);
                 true
             }
+            "renamite.toggle-snap" => {
+                s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+                s.repaint();
+                true
+            }
             "renamite.delete" => {
                 if s.mode == EditorMode::Interact {
                     s.delete_machine_selection();
@@ -460,6 +465,21 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             }
             Key::Character('|') => {
                 s.viewport.show_guides = !s.viewport.show_guides;
+                s.repaint();
+                return true;
+            }
+            Key::Character('G') if shift => {
+                s.viewport.snap_to_grid = !s.viewport.snap_to_grid;
+                s.repaint();
+                return true;
+            }
+            Key::Character('I') if shift => {
+                s.viewport.snap_to_guides = !s.viewport.snap_to_guides;
+                s.repaint();
+                return true;
+            }
+            Key::Character('O') if shift => {
+                s.viewport.snap_to_objects = !s.viewport.snap_to_objects;
                 s.repaint();
                 return true;
             }

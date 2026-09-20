@@ -11,7 +11,9 @@ use glam::DVec2;
 use kurbo::{Affine, ParamCurveNearest, Point, Shape as KurboShape};
 
 use renamite_animation::{Angle, Animated, Frame};
-use renamite_behavior_common::{ToolContext, fill::cmd_fill_shape, path::path_edit_target};
+use renamite_behavior_common::{
+    ToolContext, fill::cmd_fill_shape, path::path_edit_target, snap::SNAP_TOLERANCE_PX,
+};
 use renamite_geometry::{Anchor, AnchorEdit, TangentMode, VectorPath};
 use renamite_history::{
     EditorCommand, NodeTree, OutputVec, SelectionChange, ToolId, ToolOutput, resolve_property_edit,
@@ -505,11 +507,13 @@ impl SelectTool {
                 smallvec![]
             }
             SelState::DragMove { last, txn } => {
-                let delta = pos - *last;
+                let raw_delta = pos - *last;
                 *last = pos;
-                if delta.length_squared() == 0.0 {
+                if raw_delta.length_squared() == 0.0 {
                     return smallvec![];
                 }
+                let bounds = selection_bounds(ctx.doc, ctx.scene, &ctx.selection.nodes);
+                let delta = apply_canvas_snap_delta(ctx, bounds, raw_delta, &[]);
                 let mut out: OutputVec = smallvec![];
                 if !*txn {
                     out.push(ToolOutput::BeginTransaction("Move".into()));
@@ -1486,7 +1490,7 @@ impl ShapeTool {
             }
             CanvasEvent::PointerMove { pos } => {
                 if let Some((_, c)) = &mut self.drag {
-                    *c = pos;
+                    *c = apply_canvas_snap(ctx, pos, &[]);
                     smallvec![ToolOutput::Invalidate]
                 } else {
                     smallvec![]
@@ -1499,6 +1503,7 @@ impl ShapeTool {
                 let Some((start, _)) = self.drag.take() else {
                     return smallvec![];
                 };
+                let pos = apply_canvas_snap(ctx, pos, &[]);
                 let (min, max) =
                     constrained_rect(start, pos, ctx.modifiers.shift, ctx.modifiers.alt);
                 let size = max - min;
@@ -1601,6 +1606,46 @@ fn constrained_rect(start: DVec2, current: DVec2, shift: bool, alt: bool) -> (DV
         (start, start + d)
     };
     (a.min(b), a.max(b))
+}
+
+fn apply_canvas_snap(ctx: &ToolContext, raw: DVec2, guides: &[(bool, f64)]) -> DVec2 {
+    use renamite_behavior_common::snap::{SnapInput, snap_point};
+    let input = SnapInput {
+        doc: ctx.doc,
+        items: &ctx.scene.items,
+        selected: &ctx.selection.nodes,
+    };
+    snap_point(
+        &ctx.snap,
+        &input,
+        guides,
+        raw,
+        ctx.view.world_tolerance(SNAP_TOLERANCE_PX),
+        None,
+    )
+}
+
+fn apply_canvas_snap_delta(
+    ctx: &ToolContext,
+    bounds: Option<(DVec2, DVec2)>,
+    delta: DVec2,
+    guides: &[(bool, f64)],
+) -> DVec2 {
+    use renamite_behavior_common::snap::{SnapInput, snap_delta};
+    let input = SnapInput {
+        doc: ctx.doc,
+        items: &ctx.scene.items,
+        selected: &ctx.selection.nodes,
+    };
+    snap_delta(
+        &ctx.snap,
+        &input,
+        guides,
+        bounds,
+        delta,
+        ctx.view.world_tolerance(SNAP_TOLERANCE_PX),
+        None,
+    )
 }
 
 const CLOSE_THRESHOLD_PX: f64 = 10.0;

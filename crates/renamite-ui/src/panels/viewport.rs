@@ -417,10 +417,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         record: s.record_for_writes(),
                         view,
                         snap: SnapConfig {
-                            grid: (s.viewport.show_grid && s.viewport.snapping_enabled)
+                            grid: (s.viewport.show_grid
+                                && s.viewport.snapping_enabled
+                                && s.viewport.snap_to_grid)
                                 .then_some(s.viewport.grid_spacing.x.max(1e-6)),
-                            anchor: s.viewport.snapping_enabled,
-                            guide: s.viewport.show_guides && s.viewport.snapping_enabled,
+                            anchor: s.viewport.snapping_enabled && s.viewport.snap_to_objects,
+                            guide: s.viewport.show_guides
+                                && s.viewport.snapping_enabled
+                                && s.viewport.snap_to_guides,
                         },
                         modifiers: Modifiers::none(),
                         current_paint: &s.current_paint,
@@ -858,7 +862,16 @@ fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::se
 }
 
 fn ViewportControls(session: SessionRef) -> View {
-    let zoom = session.borrow().viewport.view.scale * 100.0;
+    let (zoom, snapping, snap_grid, snap_guides, snap_objects) = {
+        let s = session.borrow();
+        (
+            s.viewport.view.scale * 100.0,
+            s.viewport.snapping_enabled,
+            s.viewport.snap_to_grid,
+            s.viewport.snap_to_guides,
+            s.viewport.snap_to_objects,
+        )
+    };
 
     Box(Modifier::new()
         .absolute()
@@ -869,6 +882,74 @@ fn ViewportControls(session: SessionRef) -> View {
             .gap(Dp(2.0))
             .padding(Dp(4.0)))
         .child((
+            crate::components::ToolAction(
+                Symbols::magnet,
+                if snapping {
+                    "Snapping on (%)"
+                } else {
+                    "Snapping off (%)"
+                },
+                snapping,
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+                        s.repaint();
+                    }
+                },
+            ),
+            crate::components::ToolAction(
+                Symbols::grid_on,
+                if snap_grid {
+                    "Snap to grid on (Shift+G)"
+                } else {
+                    "Snap to grid off (Shift+G)"
+                },
+                snapping && snap_grid,
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.viewport.snap_to_grid = !s.viewport.snap_to_grid;
+                        s.repaint();
+                    }
+                },
+            ),
+            crate::components::ToolAction(
+                Symbols::arrow_selector_tool,
+                if snap_guides {
+                    "Snap to guides on (Shift+I)"
+                } else {
+                    "Snap to guides off (Shift+I)"
+                },
+                snapping && snap_guides,
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.viewport.snap_to_guides = !s.viewport.snap_to_guides;
+                        s.repaint();
+                    }
+                },
+            ),
+            crate::components::ToolAction(
+                Symbols::transform,
+                if snap_objects {
+                    "Snap to objects on (Shift+O)"
+                } else {
+                    "Snap to objects off (Shift+O)"
+                },
+                snapping && snap_objects,
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.viewport.snap_to_objects = !s.viewport.snap_to_objects;
+                        s.repaint();
+                    }
+                },
+            ),
             CompactIconAction(Symbols::zoom_out, "Zoom out", {
                 let session = session.clone();
                 move || {

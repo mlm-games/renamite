@@ -1,4 +1,5 @@
 use glam::DVec2;
+use kurbo::Shape as _;
 use renamite_model::{Document, NodeId, SceneItem, node_is_ancestor};
 
 use crate::SnapConfig;
@@ -20,16 +21,22 @@ pub fn snap_point(
     exclude_anchor_of: Option<NodeId>,
 ) -> DVec2 {
     let mut best = raw;
-    let mut best_dist = tolerance_world;
+    let mut best_x_dist = tolerance_world;
+    let mut best_y_dist = tolerance_world;
     if let Some(step) = config.grid
         && step > 1e-9
     {
         let gx = (raw.x / step).round() * step;
         let gy = (raw.y / step).round() * step;
-        let d = (DVec2::new(gx, gy) - raw).length();
-        if d <= best_dist {
-            best_dist = d;
-            best = DVec2::new(gx, gy);
+        let dx = (gx - raw.x).abs();
+        let dy = (gy - raw.y).abs();
+        if dx <= best_x_dist {
+            best_x_dist = dx;
+            best.x = gx;
+        }
+        if dy <= best_y_dist {
+            best_y_dist = dy;
+            best.y = gy;
         }
     }
     if config.guide {
@@ -37,31 +44,33 @@ pub fn snap_point(
             if !position.is_finite() {
                 continue;
             }
-            let candidate = if horizontal {
-                DVec2::new(raw.x, position)
+            if horizontal {
+                let dy = (position - raw.y).abs();
+                if dy <= best_y_dist {
+                    best_y_dist = dy;
+                    best.y = position;
+                }
             } else {
-                DVec2::new(position, raw.y)
-            };
-            let axis_dist = (candidate - raw).length();
-            if axis_dist <= best_dist {
-                best_dist = axis_dist;
-                best = if best == raw {
-                    candidate
-                } else if horizontal {
-                    DVec2::new(best.x, position)
-                } else {
-                    DVec2::new(position, best.y)
-                };
+                let dx = (position - raw.x).abs();
+                if dx <= best_x_dist {
+                    best_x_dist = dx;
+                    best.x = position;
+                }
             }
         }
     }
     if config.anchor {
+        let mut best_point = best;
+        let mut best_point_dist = tolerance_world;
         for point in anchor_points(input, exclude_anchor_of) {
             let d = (point - raw).length();
-            if d <= best_dist {
-                best_dist = d;
-                best = point;
+            if d <= best_point_dist {
+                best_point_dist = d;
+                best_point = point;
             }
+        }
+        if best_point_dist <= best_x_dist.min(best_y_dist) + 1e-9 {
+            best = best_point;
         }
     }
     best
@@ -94,7 +103,7 @@ pub fn snap_delta(
         (min + max) * 0.5,
     ];
     let mut best_delta = delta;
-    let mut best_dist = tolerance_world;
+    let mut best_dist = tolerance_world + 1e-9;
     for corner in corners {
         let snapped = snap_point(
             config,
@@ -104,14 +113,10 @@ pub fn snap_delta(
             tolerance_world,
             exclude_anchor_of,
         );
-        let candidate = snapped - corner;
-        let target = corner + delta;
-        let achieved = corner + candidate;
-        let dist = (snapped - target).length();
-        let dominated = (achieved - target).length() > dist + 1e-9;
-        if !dominated && dist <= best_dist {
+        let dist = (snapped - (corner + delta)).length();
+        if dist <= tolerance_world && dist < best_dist - 1e-9 {
             best_dist = dist;
-            best_delta = candidate;
+            best_delta = snapped - corner;
         }
     }
     best_delta
@@ -275,5 +280,27 @@ mod tests {
             None,
         );
         assert_eq!(got, DVec2::new(-1.0, -1.0));
+    }
+
+    #[test]
+    fn snap_delta_snaps_corner_to_grid() {
+        let doc = Document::empty();
+        let items: Vec<SceneItem> = Vec::new();
+        let selected: Vec<NodeId> = Vec::new();
+        let cfg = SnapConfig {
+            grid: Some(10.0),
+            ..config()
+        };
+        let bounds = Some((DVec2::new(1.0, 1.0), DVec2::new(11.0, 11.0)));
+        let got = snap_delta(
+            &cfg,
+            &input(&doc, &items, &selected),
+            &[],
+            bounds,
+            DVec2::new(8.5, 8.5),
+            8.0,
+            None,
+        );
+        assert_eq!(got, DVec2::new(9.0, 9.0));
     }
 }

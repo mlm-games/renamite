@@ -3758,6 +3758,9 @@ pub struct ViewportState {
     pub show_grid: bool,
     pub snapping_enabled: bool,
     pub show_guides: bool,
+    pub snap_to_grid: bool,
+    pub snap_to_guides: bool,
+    pub snap_to_objects: bool,
     pub grid_spacing: DVec2,
     pub guides: Vec<Guide>,
 }
@@ -3790,6 +3793,9 @@ impl Default for ViewportState {
             show_grid: false,
             snapping_enabled: true,
             show_guides: true,
+            snap_to_grid: true,
+            snap_to_guides: true,
+            snap_to_objects: true,
             grid_spacing: DVec2::splat(10.0),
             guides: Vec::new(),
         }
@@ -4190,7 +4196,10 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             mode,
             ..
         } = s;
-        let snap_grid = if viewport.show_grid && viewport.snapping_enabled {
+        let snap_grid = if viewport.show_grid
+            && viewport.snapping_enabled
+            && viewport.snap_to_grid
+        {
             Some(viewport.grid_spacing.x.max(1e-6))
         } else {
             None
@@ -4205,8 +4214,10 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             view: viewport.view,
             snap: SnapConfig {
                 grid: snap_grid,
-                anchor: viewport.snapping_enabled,
-                guide: viewport.show_guides && viewport.snapping_enabled,
+                anchor: viewport.snapping_enabled && viewport.snap_to_objects,
+                guide: viewport.show_guides
+                    && viewport.snapping_enabled
+                    && viewport.snap_to_guides,
             },
             modifiers: m,
             current_paint,

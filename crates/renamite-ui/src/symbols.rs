@@ -23,6 +23,8 @@ repose_material::material_symbols! {
     check:               '\u{e5ca}',
 
     arrow_selector_tool: '\u{f82f}',
+    magnet:              '\u{eb5c}',
+    grid_on:             '\u{e3eb}',
     edit:                '\u{f097}',
     transform:           '\u{e428}',
     draw:                '\u{e746}',

@@ -189,6 +189,11 @@ fn install_global_shortcuts(session: SessionRef) {
     );
     map.insert(Key::Character('a'), cmd, Action::SelectAll);
     map.insert(Key::Character('s'), cmd, Action::Save);
+    map.insert(
+        Key::Character('%'),
+        Modifiers::default(),
+        Action::Custom("renamite.toggle-snap".into()),
+    );
     map.insert(Key::Delete, Modifiers::default(), Action::Custom("renamite.delete".into()));
     map.insert(
         Key::Backspace,
