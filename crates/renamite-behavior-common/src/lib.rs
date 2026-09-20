@@ -10,6 +10,7 @@ pub mod layers;
 pub mod machine;
 pub mod modifiers;
 pub mod path;
+pub mod snap;
 pub mod stroke;
 
 use glam::DVec2;
