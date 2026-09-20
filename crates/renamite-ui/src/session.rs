@@ -557,7 +557,6 @@ impl Session {
         let [node] = self.selection.nodes.as_slice() else {
             return;
         };
-
         let scene = self.engine.scene();
         let Some((min, max)) = selection_bounds(&self.file.document, scene, &self.selection.nodes)
         else {
@@ -603,6 +602,21 @@ impl Session {
         self.apply_outputs(outs);
     }
 
+    pub fn zoom_to_selection(&mut self) {
+        if self.selection.nodes.is_empty() {
+            return;
+        }
+        let scene = self.engine.scene().clone();
+        let Some((min, max)) = selection_bounds(&self.file.document, &scene, &self.selection.nodes)
+        else {
+            self.status = Some("Nothing to zoom".into());
+            self.repaint();
+            return;
+        };
+        self.viewport.zoom_to_rect(min, max);
+        self.repaint();
+    }
+
     pub(crate) fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
         let sel = &self.selection.nodes;
         sel.iter()
@@ -627,7 +641,10 @@ impl Session {
     /// `node_supports_transform`), so resolve them to the shape they paint
     /// or affect instead of writing dead values. Returns `None` when the
     /// node is geometric already or no carrier exists.
-    pub(crate) fn geometric_target(&self, id: renamite_model::NodeId) -> Option<renamite_model::NodeId> {
+    pub(crate) fn geometric_target(
+        &self,
+        id: renamite_model::NodeId,
+    ) -> Option<renamite_model::NodeId> {
         let node = self.file.document.nodes.get(id)?;
         if renamite_model::node_supports_transform(&node.kind) {
             return Some(id);
@@ -3763,6 +3780,7 @@ pub struct ViewportState {
     pub snap_to_objects: bool,
     pub grid_spacing: DVec2,
     pub guides: Vec<Guide>,
+    pub(crate) guide_drag: Option<GuideDrag>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3775,6 +3793,12 @@ pub struct Guide {
 pub enum GuideAxis {
     Horizontal,
     Vertical,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum GuideDrag {
+    Existing(usize),
+    New(GuideAxis),
 }
 
 impl Default for ViewportState {
@@ -3798,6 +3822,7 @@ impl Default for ViewportState {
             snap_to_objects: true,
             grid_spacing: DVec2::splat(10.0),
             guides: Vec::new(),
+            guide_drag: None,
         }
     }
 }
@@ -3839,6 +3864,25 @@ impl ViewportState {
         self.fit.zoom_at(&mut self.view, screen_pos, factor);
     }
 
+    pub fn zoom_to_rect(&mut self, min: DVec2, max: DVec2) {
+        let surface = self.fit.surface_size();
+        if surface.x <= 1.0 || surface.y <= 1.0 {
+            return;
+        }
+        let size = (max - min).abs();
+        if !size.is_finite() || size.x <= 1e-6 || size.y <= 1e-6 {
+            return;
+        }
+        let margin = 48.0;
+        let available = (surface - DVec2::splat(margin * 2.0)).max(DVec2::splat(1.0));
+        let scale = (available.x / size.x)
+            .min(available.y / size.y)
+            .clamp(0.05, 64.0);
+        let center = (min + max) * 0.5;
+        self.view.scale = scale;
+        self.view.offset = surface * 0.5 - center * scale;
+    }
+
     pub fn begin_pan(&mut self, position: DVec2) {
         self.pan_last = Some(position);
     }
@@ -3855,6 +3899,103 @@ impl ViewportState {
 
     pub fn end_pan(&mut self) {
         self.pan_last = None;
+    }
+
+    pub fn guide_hit(&self, screen_pos: DVec2) -> Option<usize> {
+        const HIT_PX: f64 = 6.0;
+        let tol = HIT_PX / self.view.scale.max(1e-6);
+        let world = self.view.screen_to_world(screen_pos);
+        self.guides.iter().position(|g| match g.axis {
+            GuideAxis::Horizontal => {
+                let p = self.view.world_to_screen(DVec2::new(0.0, g.position));
+                (p.y - screen_pos.y).abs() <= HIT_PX
+                    || (g.position - world.y).abs() <= tol
+            }
+            GuideAxis::Vertical => {
+                let p = self.view.world_to_screen(DVec2::new(g.position, 0.0));
+                (p.x - screen_pos.x).abs() <= HIT_PX || (g.position - world.x).abs() <= tol
+            }
+        })
+    }
+
+    pub fn begin_guide_drag_existing(&mut self, index: usize) {
+        self.guide_drag = Some(GuideDrag::Existing(index));
+    }
+
+    pub fn begin_guide_drag_new(&mut self, axis: GuideAxis) {
+        self.guide_drag = Some(GuideDrag::New(axis));
+    }
+
+    pub fn update_guide_drag(&mut self, screen_pos: DVec2) -> bool {
+        let world = self.view.screen_to_world(screen_pos);
+        match self.guide_drag {
+            Some(GuideDrag::Existing(i)) => {
+                let Some(g) = self.guides.get_mut(i) else {
+                    return false;
+                };
+                g.position = match g.axis {
+                    GuideAxis::Horizontal => world.y,
+                    GuideAxis::Vertical => world.x,
+                };
+                true
+            }
+            Some(GuideDrag::New(axis)) => {
+                let position = match axis {
+                    GuideAxis::Horizontal => world.y,
+                    GuideAxis::Vertical => world.x,
+                };
+                if position.is_finite() {
+                    self.guides.push(Guide { axis, position });
+                    self.guide_drag =
+                        Some(GuideDrag::Existing(self.guides.len().saturating_sub(1)));
+                    return true;
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub fn end_guide_drag(&mut self, screen_pos: DVec2, surface: DVec2) -> bool {
+        let drag = self.guide_drag.take();
+        let outside = screen_pos.x < -8.0
+            || screen_pos.y < -8.0
+            || screen_pos.x > surface.x + 8.0
+            || screen_pos.y > surface.y + 8.0;
+        match drag {
+            Some(GuideDrag::Existing(i)) if outside && i < self.guides.len() => {
+                self.guides.remove(i);
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    pub fn add_guide(&mut self, axis: GuideAxis, position: f64) {
+        if position.is_finite() {
+            self.guides.push(Guide { axis, position });
+            self.repaint_requested();
+        }
+    }
+
+    pub fn clear_guides(&mut self) {
+        if !self.guides.is_empty() {
+            self.guides.clear();
+            self.repaint_requested();
+        }
+    }
+
+    pub fn set_grid_spacing(&mut self, spacing: DVec2) {
+        let spacing = DVec2::new(spacing.x.clamp(1.0, 1024.0), spacing.y.clamp(1.0, 1024.0));
+        if spacing.is_finite() && spacing != self.grid_spacing {
+            self.grid_spacing = spacing;
+            self.repaint_requested();
+        }
+    }
+
+    fn repaint_requested(&mut self) {
+        repose_core::request_frame();
     }
 
     /// Record the graph canvas rect (main-viewport-local) for gesture routing.
@@ -4196,14 +4337,27 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             mode,
             ..
         } = s;
-        let snap_grid = if viewport.show_grid
-            && viewport.snapping_enabled
-            && viewport.snap_to_grid
+        let snap_grid = if viewport.show_grid && viewport.snapping_enabled && viewport.snap_to_grid
         {
             Some(viewport.grid_spacing.x.max(1e-6))
         } else {
             None
         };
+        let guide_positions: Vec<(bool, f64)> =
+            if viewport.show_guides && viewport.snapping_enabled && viewport.snap_to_guides {
+                viewport
+                    .guides
+                    .iter()
+                    .map(|g| {
+                        (
+                            matches!(g.axis, crate::session::GuideAxis::Horizontal),
+                            g.position,
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let ctx = ToolContext {
             doc: &file.document,
             scene: engine.scene(),
@@ -4215,10 +4369,9 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
             snap: SnapConfig {
                 grid: snap_grid,
                 anchor: viewport.snapping_enabled && viewport.snap_to_objects,
-                guide: viewport.show_guides
-                    && viewport.snapping_enabled
-                    && viewport.snap_to_guides,
+                guide: viewport.show_guides && viewport.snapping_enabled && viewport.snap_to_guides,
             },
+            guides: &guide_positions,
             modifiers: m,
             current_paint,
         };

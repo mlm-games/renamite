@@ -513,7 +513,7 @@ impl SelectTool {
                     return smallvec![];
                 }
                 let bounds = selection_bounds(ctx.doc, ctx.scene, &ctx.selection.nodes);
-                let delta = apply_canvas_snap_delta(ctx, bounds, raw_delta, &[]);
+                let delta = apply_canvas_snap_delta(ctx, bounds, raw_delta);
                 let mut out: OutputVec = smallvec![];
                 if !*txn {
                     out.push(ToolOutput::BeginTransaction("Move".into()));
@@ -642,6 +642,7 @@ impl SelectTool {
                 parent_to_anchor,
                 txn,
             } => {
+                let pos = apply_canvas_snap(ctx, pos);
                 let parent_point = *world_to_parent * Point::new(pos.x, pos.y);
 
                 let new_position = DVec2::new(parent_point.x, parent_point.y);
@@ -1128,8 +1129,9 @@ impl GradientTool {
             return smallvec![];
         }
         *dragging = true;
+        let snapped = apply_canvas_snap(ctx, pos);
         let local = {
-            let p = *w2l * Point::new(pos.x, pos.y);
+            let p = *w2l * Point::new(snapped.x, snapped.y);
             DVec2::new(p.x, p.y)
         };
         match active {
@@ -1389,6 +1391,7 @@ impl TextTool {
         else {
             return smallvec![];
         };
+        let pos = apply_canvas_snap(ctx, pos);
         let mut text_node = Node::new(
             "Text",
             NodeKind::Text(renamite_model::TextNode {
@@ -1485,12 +1488,13 @@ impl ShapeTool {
                 pos,
                 button: PointerButton::Primary,
             } => {
+                let pos = apply_canvas_snap(ctx, pos);
                 self.drag = Some((pos, pos));
                 smallvec![ToolOutput::Invalidate]
             }
             CanvasEvent::PointerMove { pos } => {
                 if let Some((_, c)) = &mut self.drag {
-                    *c = apply_canvas_snap(ctx, pos, &[]);
+                    *c = apply_canvas_snap(ctx, pos);
                     smallvec![ToolOutput::Invalidate]
                 } else {
                     smallvec![]
@@ -1503,7 +1507,7 @@ impl ShapeTool {
                 let Some((start, _)) = self.drag.take() else {
                     return smallvec![];
                 };
-                let pos = apply_canvas_snap(ctx, pos, &[]);
+                let pos = apply_canvas_snap(ctx, pos);
                 let (min, max) =
                     constrained_rect(start, pos, ctx.modifiers.shift, ctx.modifiers.alt);
                 let size = max - min;
@@ -1608,7 +1612,7 @@ fn constrained_rect(start: DVec2, current: DVec2, shift: bool, alt: bool) -> (DV
     (a.min(b), a.max(b))
 }
 
-fn apply_canvas_snap(ctx: &ToolContext, raw: DVec2, guides: &[(bool, f64)]) -> DVec2 {
+fn apply_canvas_snap(ctx: &ToolContext, raw: DVec2) -> DVec2 {
     use renamite_behavior_common::snap::{SnapInput, snap_point};
     let input = SnapInput {
         doc: ctx.doc,
@@ -1618,7 +1622,7 @@ fn apply_canvas_snap(ctx: &ToolContext, raw: DVec2, guides: &[(bool, f64)]) -> D
     snap_point(
         &ctx.snap,
         &input,
-        guides,
+        ctx.guides,
         raw,
         ctx.view.world_tolerance(SNAP_TOLERANCE_PX),
         None,
@@ -1629,7 +1633,6 @@ fn apply_canvas_snap_delta(
     ctx: &ToolContext,
     bounds: Option<(DVec2, DVec2)>,
     delta: DVec2,
-    guides: &[(bool, f64)],
 ) -> DVec2 {
     use renamite_behavior_common::snap::{SnapInput, snap_delta};
     let input = SnapInput {
@@ -1640,7 +1643,7 @@ fn apply_canvas_snap_delta(
     snap_delta(
         &ctx.snap,
         &input,
-        guides,
+        ctx.guides,
         bounds,
         delta,
         ctx.view.world_tolerance(SNAP_TOLERANCE_PX),
@@ -1704,11 +1707,11 @@ impl PenTool {
                 pos,
                 button: PointerButton::Primary,
             } => self.press(ctx, pos),
-            CanvasEvent::PointerMove { pos } => self.moved(pos),
+            CanvasEvent::PointerMove { pos } => self.moved(ctx, pos),
             CanvasEvent::PointerUp {
                 pos,
                 button: PointerButton::Primary,
-            } => self.release(pos),
+            } => self.release(ctx, pos),
             CanvasEvent::KeyDown(Key::Enter) => self.finish(ctx, false),
             CanvasEvent::KeyDown(Key::Escape) => {
                 self.state = PenState::Idle;
@@ -1720,6 +1723,7 @@ impl PenTool {
     }
 
     fn press(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let pos = apply_canvas_snap(ctx, pos);
         match &mut self.state {
             PenState::Idle => {
                 // First click enters tangent-drag mode immediately: dragging the
@@ -1750,7 +1754,8 @@ impl PenTool {
         }
     }
 
-    fn moved(&mut self, pos: DVec2) -> OutputVec {
+    fn moved(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let pos = apply_canvas_snap(ctx, pos);
         match &mut self.state {
             PenState::Idle => smallvec![],
             PenState::Building { hover, .. } => {
@@ -1776,7 +1781,8 @@ impl PenTool {
         }
     }
 
-    fn release(&mut self, pos: DVec2) -> OutputVec {
+    fn release(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let pos = apply_canvas_snap(ctx, pos);
         if let PenState::DraggingTangent { anchors, .. } = &self.state {
             let anchors = anchors.clone();
             self.state = PenState::Building {
@@ -2258,6 +2264,7 @@ impl PathEditTool {
                 edit_frame,
                 txn,
             } => {
+                let pos = apply_canvas_snap(ctx, pos);
                 let mut out: OutputVec = smallvec![];
                 if !*txn {
                     out.push(ToolOutput::BeginTransaction("Edit path".into()));
@@ -2397,6 +2404,7 @@ impl PathEditTool {
     }
 
     fn insert_anchor(&mut self, ctx: &ToolContext, pos: DVec2) -> OutputVec {
+        let pos = apply_canvas_snap(ctx, pos);
         let Some(id) = Self::editable_path_node(ctx) else {
             return smallvec![];
         };

@@ -508,8 +508,12 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
                 return true;
             }
             Key::Character('5' | 'f') => {
-                s.viewport.request_fit();
-                request_frame();
+                if shift {
+                    s.zoom_to_selection();
+                } else {
+                    s.viewport.request_fit();
+                    request_frame();
+                }
                 return true;
             }
             _ => {}

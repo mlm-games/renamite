@@ -211,6 +211,39 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
 
+                        if map_button(&pe) == PointerButton::Primary
+                            && s.mode != crate::session::EditorMode::Interact
+                            && !s.machine_preview_enabled
+                        {
+                            let ruler = 20.0;
+                            let surface = s.viewport.surface_size();
+                            let in_top_ruler = pos.y >= 0.0
+                                && pos.y < ruler
+                                && pos.x >= ruler
+                                && pos.x < surface.x.max(ruler);
+                            let in_left_ruler = pos.x >= 0.0
+                                && pos.x < ruler
+                                && pos.y >= ruler
+                                && pos.y < surface.y.max(ruler);
+                            if in_top_ruler || in_left_ruler {
+                                pe.consume();
+                                s.viewport.begin_guide_drag_new(if in_top_ruler {
+                                    crate::session::GuideAxis::Horizontal
+                                } else {
+                                    crate::session::GuideAxis::Vertical
+                                });
+                                s.viewport.update_guide_drag(pos);
+                                request_frame();
+                                return;
+                            }
+                            if let Some(index) = s.viewport.guide_hit(pos) {
+                                pe.consume();
+                                s.viewport.begin_guide_drag_existing(index);
+                                request_frame();
+                                return;
+                            }
+                        }
+
                         focus.request_focus();
                         s.viewport.pointer_down = true;
                         if s.renaming.is_some() {
@@ -281,6 +314,13 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
 
+                        if s.viewport.guide_drag.is_some() {
+                            pe.consume();
+                            s.viewport.update_guide_drag(pos);
+                            request_frame();
+                            return;
+                        }
+
                         let world = s.viewport.view.screen_to_world(pos);
                         let to_engine = match s.viewport.pointer_route {
                             Some(v) => v,
@@ -309,6 +349,18 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                     move |pe: PointerEvent| {
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
+
+                        if s.viewport.guide_drag.is_some() {
+                            let surface = s.viewport.surface_size();
+                            let pos = pe_pos(&pe);
+                            if s.viewport.end_guide_drag(pos, surface) {
+                                s.dirty = true;
+                            }
+                            pe.consume();
+                            request_frame();
+                            s.viewport.pointer_route = None;
+                            return;
+                        }
 
                         if s.viewport.pan_last.is_some() {
                             if map_button(&pe) != PointerButton::Secondary {
@@ -394,6 +446,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
 
                 let comp = &s.file.document.compositions[comp_id];
                 paint_artboard(scope, comp, &s.viewport.view);
+                paint_rulers(scope, &s.viewport.view, surface);
 
                 if s.viewport.show_grid {
                     paint_grid(scope, comp, &s.viewport);
@@ -408,6 +461,17 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 s.renderer.paint_prepared(&prepared, scope);
 
                 let overlay = {
+                    let guide_positions: Vec<(bool, f64)> = s
+                        .viewport
+                        .guides
+                        .iter()
+                        .map(|g| {
+                            (
+                                matches!(g.axis, crate::session::GuideAxis::Horizontal),
+                                g.position,
+                            )
+                        })
+                        .collect();
                     let ctx = ToolContext {
                         doc: &s.file.document,
                         scene: &scene,
@@ -426,6 +490,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                                 && s.viewport.snapping_enabled
                                 && s.viewport.snap_to_guides,
                         },
+                        guides: &guide_positions,
                         modifiers: Modifiers::none(),
                         current_paint: &s.current_paint,
                     };
@@ -827,6 +892,104 @@ fn paint_grid(scope: &mut DrawScope, comp: &Composition, viewport: &crate::sessi
     }
 }
 
+fn paint_rulers(scope: &mut DrawScope, view: &ViewTransform, surface: DVec2) {
+    const RULER: f64 = 20.0;
+    if surface.x < RULER * 2.0 || surface.y < RULER * 2.0 {
+        return;
+    }
+    let th = theme();
+    let bg = th.surface_container_high;
+    let tick = th.on_surface_variant.with_alpha(140);
+    scope.draw_rect(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: surface.x as f32,
+            h: RULER as f32,
+        },
+        bg,
+        Px(0.0),
+    );
+    scope.draw_rect(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: RULER as f32,
+            h: surface.y as f32,
+        },
+        bg,
+        Px(0.0),
+    );
+    let step = ruler_step(view.scale);
+    if step <= 0.0 {
+        return;
+    }
+    let x0 = view.screen_to_world(DVec2::new(RULER, 0.0)).x;
+    let x1 = view.screen_to_world(DVec2::new(surface.x, 0.0)).x;
+    let mut x = (x0 / step).floor() * step;
+    while x <= x1 {
+        let p = view.world_to_screen(DVec2::new(x, 0.0));
+        if p.x >= RULER {
+            let major = (x / (step * 5.0)).fract().abs() < 1e-9;
+            let h = if major { 10.0 } else { 5.0 };
+            scope.draw_rect(
+                Rect {
+                    x: p.x as f32,
+                    y: (RULER - h) as f32,
+                    w: 1.0,
+                    h: h as f32,
+                },
+                tick,
+                Px(0.0),
+            );
+        }
+        x += step;
+    }
+    let y0 = view.screen_to_world(DVec2::new(0.0, RULER)).y;
+    let y1 = view.screen_to_world(DVec2::new(0.0, surface.y)).y;
+    let mut y = (y0 / step).floor() * step;
+    while y <= y1 {
+        let p = view.world_to_screen(DVec2::new(0.0, y));
+        if p.y >= RULER {
+            let major = (y / (step * 5.0)).fract().abs() < 1e-9;
+            let w = if major { 10.0 } else { 5.0 };
+            scope.draw_rect(
+                Rect {
+                    x: (RULER - w) as f32,
+                    y: p.y as f32,
+                    w: w as f32,
+                    h: 1.0,
+                },
+                tick,
+                Px(0.0),
+            );
+        }
+        y += step;
+    }
+    scope.draw_rect(
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: RULER as f32,
+            h: RULER as f32,
+        },
+        th.surface_container,
+        Px(0.0),
+    );
+}
+
+fn ruler_step(scale: f64) -> f64 {
+    let target_px = 80.0;
+    let raw = target_px / scale.max(1e-6);
+    let mag = 10f64.powf(raw.log10().floor().clamp(-9.0, 9.0));
+    for m in [1.0, 2.0, 5.0, 10.0] {
+        if mag * m >= raw {
+            return mag * m;
+        }
+    }
+    mag * 10.0
+}
+
 fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::session::Guide]) {
     let color = theme().tertiary.with_alpha(180);
     for guide in guides {
@@ -968,7 +1131,7 @@ fn ViewportControls(session: SessionRef) -> View {
                     request_frame();
                 }
             }),
-            CompactIconAction(Symbols::fit_screen, "Fit artboard", {
+            CompactIconAction(Symbols::fit_screen, "Fit artboard (F)", {
                 let session = session.clone();
                 move || {
                     let mut s = session.borrow_mut();

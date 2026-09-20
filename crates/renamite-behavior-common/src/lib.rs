@@ -232,6 +232,9 @@ pub struct ToolContext<'a> {
     pub record: bool,
     pub view: ViewTransform,
     pub snap: SnapConfig,
+    /// Live guide positions for snapping: `(horizontal, position)`.
+    /// `(true, y)` is a horizontal guide, `(false, x)` is vertical.
+    pub guides: &'a [(bool, f64)],
     pub modifiers: Modifiers,
     /// Current paint used by the Fill tool (set from Properties or a future picker).
     pub current_paint: &'a renamite_model::StylePaint,
