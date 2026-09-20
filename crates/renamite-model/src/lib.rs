@@ -90,6 +90,9 @@ pub enum NodeKind {
         #[serde(default)]
         time_map: TimeMap,
     },
+    Use {
+        target: NodeId,
+    },
     Mask(MaskProps),
 }
 
@@ -1663,6 +1666,29 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
 
 const MAX_DEPTH: u32 = 32; // precomp cycle guard
 
+fn use_chain_ok(doc: &Document, use_id: NodeId, mut target: NodeId) -> bool {
+    if target == use_id {
+        return false;
+    }
+    let mut hops = 0u32;
+    while let Some(node) = doc.nodes.get(target) {
+        match &node.kind {
+            NodeKind::Use { target: next } => {
+                if *next == use_id {
+                    return false;
+                }
+                target = *next;
+                hops += 1;
+                if hops > MAX_DEPTH {
+                    return false;
+                }
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn eval_group(
     doc: &Document,
@@ -1886,6 +1912,39 @@ fn eval_group(
                         &[],
                     );
                 }
+            }
+            NodeKind::Use { target } => {
+                if !use_chain_ok(doc, id, *target) {
+                    continue;
+                }
+                let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
+                let Some(source) = doc.nodes.get(*target) else {
+                    continue;
+                };
+                if !source.visible {
+                    continue;
+                }
+                let kids: Vec<NodeId> = match &source.kind {
+                    NodeKind::Group | NodeKind::Layer(_) => source.children.clone(),
+                    _ => vec![*target],
+                };
+                if kids.is_empty() {
+                    continue;
+                }
+                eval_group(
+                    doc,
+                    &kids,
+                    frame,
+                    ntf,
+                    node_op,
+                    blend,
+                    scene,
+                    depth + 1,
+                    ov,
+                    scope_rect,
+                    clips,
+                    &[],
+                );
             }
             NodeKind::Style(st) => {
                 emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene)
@@ -2931,6 +2990,7 @@ pub fn node_supports_transform(kind: &NodeKind) -> bool {
             | NodeKind::Text(_)
             | NodeKind::Image(_)
             | NodeKind::Precomp { .. }
+            | NodeKind::Use { .. }
             | NodeKind::Mask(_)
     )
 }
@@ -4296,6 +4356,34 @@ mod prop_support_tests {
         doc.attach(shape, super::Parent::Node(group), 0).unwrap();
         doc.attach(fill_id, super::Parent::Node(group), 1).unwrap();
         doc.attach(group, super::Parent::Comp(doc.main), 0).unwrap();
+        let scene = super::evaluate(&doc, doc.main, 0.0);
+        assert!(scene.items.is_empty());
+    }
+
+    #[test]
+    fn use_node_renders_source_geometry() {
+        let mut doc = Document::empty();
+        let shape = doc.create_node(shape_node());
+        let fill_id = doc.create_node(fill_node());
+        let group = doc.create_node(Node::new("G", NodeKind::Group));
+        doc.attach(shape, super::Parent::Node(group), 0).unwrap();
+        doc.attach(fill_id, super::Parent::Node(group), 1).unwrap();
+        doc.attach(group, super::Parent::Comp(doc.main), 0).unwrap();
+        let use_id = doc.create_node(Node::new("Clone", NodeKind::Use { target: group }));
+        doc.attach(use_id, super::Parent::Comp(doc.main), 0).unwrap();
+        let scene = super::evaluate(&doc, doc.main, 0.0);
+        assert!(!scene.items.is_empty());
+    }
+
+    #[test]
+    fn use_self_reference_renders_nothing() {
+        let mut doc = Document::empty();
+        let use_id = doc.create_node(Node::new("Clone", NodeKind::Group));
+        doc.attach(use_id, super::Parent::Comp(doc.main), 0).unwrap();
+        let target = use_id;
+        if let Some(node) = doc.nodes.get_mut(use_id) {
+            node.kind = NodeKind::Use { target };
+        }
         let scene = super::evaluate(&doc, doc.main, 0.0);
         assert!(scene.items.is_empty());
     }

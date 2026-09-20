@@ -30,6 +30,7 @@ pub enum MenuEntry {
 pub enum MenuAction {
     Rename,
     Duplicate,
+    Clone,
     Delete,
     Cut,
     Copy,
@@ -83,6 +84,7 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
     let mut m = vec![
         action(MenuAction::Rename, "Rename", !locked),
         action(MenuAction::Duplicate, "Duplicate", true),
+        action(MenuAction::Clone, "Clone (live link)", true),
         action(MenuAction::Delete, "Delete", !locked),
         MenuEntry::Separator,
         action(MenuAction::Cut, "Cut", !locked),
@@ -198,6 +200,7 @@ fn selection_canvas_menu(ctx: &MenuContext) -> Vec<MenuEntry> {
         action(MenuAction::Copy, "Copy", true),
         action(MenuAction::Paste, "Paste", ctx.has_clipboard),
         action(MenuAction::Duplicate, "Duplicate", true),
+        action(MenuAction::Clone, "Clone (live link)", !any_locked),
         action(MenuAction::Delete, "Delete", !any_locked),
         MenuEntry::Separator,
         action(MenuAction::Group, "Group", multi && same_parent(ctx)),
@@ -403,6 +406,7 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
 
         // Host-side in the session: needs scene + playhead, unavailable here.
         MenuAction::CenterPivot => vec![],
+        MenuAction::Clone => vec![],
 
         MenuAction::Rename
         | MenuAction::Cut

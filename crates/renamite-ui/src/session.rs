@@ -525,6 +525,11 @@ impl Session {
                 self.close_context_menu();
                 return;
             }
+            MenuAction::Clone => {
+                self.clone_selection();
+                self.close_context_menu();
+                return;
+            }
             MenuAction::CenterPivot => {
                 self.center_pivot();
                 self.close_context_menu();
@@ -1179,6 +1184,58 @@ impl Session {
             self.ensure_selection_visible();
             self.bump();
         }
+    }
+
+    pub fn clone_selection(&mut self) {
+        use renamite_model::{Node, NodeKind};
+        self.finalize_open_edit();
+        let roots = self.selected_roots();
+        if roots.is_empty() {
+            self.status = Some("Nothing to clone".into());
+            self.repaint();
+            return;
+        }
+        self.history.begin("Clone");
+        let mut created = Vec::new();
+        for id in roots {
+            let Some(node) = self.file.document.nodes.get(id) else {
+                continue;
+            };
+            if node.locked {
+                continue;
+            }
+            if matches!(&node.kind, NodeKind::Style(_) | NodeKind::Modifier(_)) {
+                continue;
+            }
+            let Some((parent, index)) = self.file.document.locate(id) else {
+                continue;
+            };
+            let target = match &node.kind {
+                NodeKind::Use { target } => *target,
+                _ => id,
+            };
+            let mut use_node = Node::new(format!("{} clone", node.name), NodeKind::Use { target });
+            use_node.transform.position.base += DVec2::new(20.0, 20.0);
+            let tree = renamite_history::NodeTree::leaf(use_node);
+            let insert_at = index + 1;
+            if let Some(new_id) = self.history_apply(EditorCommand::InsertNode {
+                parent,
+                index: insert_at,
+                tree,
+            }) {
+                created.push(new_id);
+            }
+        }
+        self.history.commit();
+        if created.is_empty() {
+            self.status = Some("Nothing to clone".into());
+            self.repaint();
+            return;
+        }
+        self.selection.nodes = created;
+        self.ensure_selection_visible();
+        self.dirty = true;
+        self.bump();
     }
 
     pub fn cut_selection(&mut self) {
@@ -2678,6 +2735,74 @@ impl Session {
                 }
             }
         }
+    }
+
+    pub fn unlink_use_node(&mut self, id: renamite_model::NodeId) {
+        use renamite_model::NodeKind;
+        let target = match self.file.document.nodes.get(id).map(|n| &n.kind) {
+            Some(NodeKind::Use { target }) => *target,
+            _ => {
+                self.status = Some("Select a clone to unlink".into());
+                self.repaint();
+                return;
+            }
+        };
+        let Some(source) = self.file.document.nodes.get(target).cloned() else {
+            self.status = Some("Clone source is missing".into());
+            self.repaint();
+            return;
+        };
+        if matches!(
+            &source.kind,
+            NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Use { .. }
+        ) {
+            self.status = Some("Cannot unlink this clone".into());
+            self.repaint();
+            return;
+        }
+        let keep_transform = self
+            .file
+            .document
+            .nodes
+            .get(id)
+            .map(|n| n.transform.clone());
+        let mut baked = source.clone();
+        baked.name = format!("{} copy", source.name);
+        if let Some(t) = keep_transform {
+            baked.transform = t;
+        }
+        baked.parent = None;
+        baked.children.clear();
+        let tree = match &source.kind {
+            NodeKind::Group | NodeKind::Layer(_) => {
+                let mut children = Vec::new();
+                for &c in &source.children {
+                    children.push(self.tree_of(c));
+                }
+                renamite_history::NodeTree {
+                    node: baked,
+                    id: None,
+                    children,
+                }
+            }
+            _ => renamite_history::NodeTree::leaf(baked),
+        };
+        let Some((parent, index)) = self.file.document.locate(id) else {
+            return;
+        };
+        self.finalize_open_edit();
+        self.history.begin("Unlink clone");
+        let created = self.history_apply(EditorCommand::InsertNode {
+            parent,
+            index: index + 1,
+            tree,
+        });
+        if created.is_some() {
+            let _ = self.history_apply(EditorCommand::RemoveNode { id });
+        }
+        self.history.commit();
+        self.engine.reevaluate(&self.file);
+        self.repaint();
     }
 
     pub fn commit_rename(&mut self) {

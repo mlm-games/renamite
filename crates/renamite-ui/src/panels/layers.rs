@@ -378,6 +378,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 LayerKind::Shape => Symbols::circle,
                 LayerKind::Style => Symbols::format_color_fill,
                 LayerKind::Mask => Symbols::content_cut,
+                LayerKind::Use => Symbols::content_copy,
                 LayerKind::Group => Symbols::layers,
                 LayerKind::Other => Symbols::layers,
             },

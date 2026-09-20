@@ -612,11 +612,17 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         if let Some(v) = precomp_section(session.clone(), inspect_id) {
             meta_views.push(v);
         }
+        if let Some(v) = use_section(session.clone(), inspect_id) {
+            meta_views.push(v);
+        }
         if inspect_id != ids[0] {
             if let Some(v) = layer_section(session.clone(), ids[0]) {
                 meta_views.push(v);
             }
             if let Some(v) = precomp_section(session.clone(), ids[0]) {
+                meta_views.push(v);
+            }
+            if let Some(v) = use_section(session.clone(), ids[0]) {
                 meta_views.push(v);
             }
         }
@@ -2595,6 +2601,7 @@ fn kind_label(kind: &NodeKind) -> &'static str {
         NodeKind::Text(_) => "Text",
         NodeKind::Image(_) => "Image",
         NodeKind::Precomp { .. } => "Precomp",
+        NodeKind::Use { .. } => "Use",
         NodeKind::Mask(_) => "Mask",
     }
 }
@@ -3324,6 +3331,83 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                 }
                 chips
             }),
+        )),
+    ))
+}
+
+fn use_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let (target, target_name) = {
+        let s = session.borrow();
+        let doc = &s.file.document;
+        let NodeKind::Use { target } = &doc.nodes.get(id)?.kind else {
+            return None;
+        };
+        let name = doc
+            .nodes
+            .get(*target)
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| "(missing)".into());
+        (*target, name)
+    };
+    let th = theme();
+    Some(crate::components::CollapsibleSection(
+        format!("use_props_{id:?}"),
+        "Clone link",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child((
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(6.0),
+                    bottom: Dp(4.0),
+                })
+                .gap(Dp(8.0))
+                .align_items(AlignItems::CENTER))
+            .child((
+                Text("Source")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface)
+                    .modifier(Modifier::new().width(Dp(96.0))),
+                Text(target_name)
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface_variant)
+                    .modifier(Modifier::new().flex_grow(1.0)),
+            )),
+            Row(Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(8.0),
+                })
+                .gap(Dp(8.0)))
+            .child((
+                Box(Modifier::new().width(Dp(96.0))),
+                Text("Select source")
+                    .size(th.typography.label_medium)
+                    .color(th.primary)
+                    .modifier(Modifier::new().on_pointer_down({
+                        let session = session.clone();
+                        move |_| {
+                            let mut s = session.borrow_mut();
+                            s.selection.nodes = vec![target];
+                            s.ensure_selection_visible();
+                            s.repaint();
+                        }
+                    })),
+                Text("Unlink (bake copy)")
+                    .size(th.typography.label_medium)
+                    .color(th.primary)
+                    .modifier(Modifier::new().on_pointer_down({
+                        let session = session.clone();
+                        move |_| {
+                            session.borrow_mut().unlink_use_node(id);
+                        }
+                    })),
+            )),
         )),
     ))
 }

@@ -37,6 +37,7 @@ repose_material::material_symbols! {
     colorize:            '\u{e3b8}',
     palette:             '\u{e40a}',
     content_cut:         '\u{e0d1}',
+    content_copy:        '\u{e14d}',
 
     fit_screen:          '\u{ea10}',
     zoom_in:             '\u{e8ff}',

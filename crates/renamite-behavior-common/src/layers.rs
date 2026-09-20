@@ -23,6 +23,7 @@ pub enum LayerKind {
     Shape,
     Style,
     Mask,
+    Use,
     Other,
 }
 
@@ -33,6 +34,7 @@ impl LayerKind {
             NodeKind::Shape(_) => LayerKind::Shape,
             NodeKind::Style(_) => LayerKind::Style,
             NodeKind::Mask(_) => LayerKind::Mask,
+            NodeKind::Use { .. } => LayerKind::Use,
             _ => LayerKind::Other,
         }
     }
@@ -85,7 +87,11 @@ fn walk(
 fn is_expandable(kind: LayerKind, has_children: bool) -> bool {
     match kind {
         LayerKind::Group => true,
-        LayerKind::Shape | LayerKind::Style | LayerKind::Mask | LayerKind::Other => has_children,
+        LayerKind::Shape
+        | LayerKind::Style
+        | LayerKind::Mask
+        | LayerKind::Use
+        | LayerKind::Other => has_children,
     }
 }
 
@@ -220,6 +226,7 @@ mod tests {
             LayerKind::Shape,
             LayerKind::Style,
             LayerKind::Mask,
+            LayerKind::Use,
             LayerKind::Other,
         ] {
             assert!(!is_expandable(kind, false));

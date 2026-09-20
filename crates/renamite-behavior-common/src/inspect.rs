@@ -306,7 +306,8 @@ fn supports_discrete(kind: &NodeKind, path: &str) -> bool {
     }
 }
 
-fn diamond_state(    doc: &Document,
+fn diamond_state(
+    doc: &Document,
     id: NodeId,
     path: &PropPath,
     playhead: Frame,
@@ -800,6 +801,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
         NodeKind::Image(_) => {
             d.push(pd("Image", "Tint", "image.tint", PropKind::Color));
         }
+        NodeKind::Use { .. } => {}
         NodeKind::Group => {}
     }
     d

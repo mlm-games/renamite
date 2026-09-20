@@ -92,6 +92,10 @@ pub fn handle_global_action(session: &SessionRef, action: repose_core::shortcuts
                 s.duplicate_selection();
                 true
             }
+            "renamite.clone" => {
+                s.clone_selection();
+                true
+            }
             "renamite.group" => {
                 s.run_menu_action(MenuAction::Group);
                 true

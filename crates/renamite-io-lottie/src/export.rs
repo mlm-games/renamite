@@ -73,7 +73,10 @@ impl Exporter<'_> {
                 continue;
             };
             match &node.kind {
-                NodeKind::Layer(_) | NodeKind::Group | NodeKind::Precomp { .. } => {
+                NodeKind::Layer(_)
+                | NodeKind::Group
+                | NodeKind::Precomp { .. }
+                | NodeKind::Use { .. } => {
                     self.flush_bare_run(&composition, &mut output, &mut bare_run)?;
                     match &node.kind {
                         NodeKind::Layer(props) => {
@@ -91,6 +94,16 @@ impl Exporter<'_> {
                             output.extend(self.export_group_layer(
                                 node_id,
                                 &node,
+                                &composition,
+                                base,
+                            ));
+                        }
+                        NodeKind::Use { target } => {
+                            let base = output.len() as u32 + 1;
+                            output.extend(self.export_use_layer(
+                                node_id,
+                                &node,
+                                *target,
                                 &composition,
                                 base,
                             ));
@@ -258,6 +271,51 @@ impl Exporter<'_> {
             out.insert(0, layer);
         }
         out
+    }
+
+    fn export_use_layer(
+        &mut self,
+        _id: NodeId,
+        node: &Node,
+        target: NodeId,
+        composition: &Composition,
+        index: u32,
+    ) -> Vec<Value> {
+        let Some(source) = self.document.nodes.get(target).cloned() else {
+            self.warnings.push(LottieWarning::new(
+                format!("node/{_id:?}"),
+                "clone source is missing; exporting empty layer",
+            ));
+            return Vec::new();
+        };
+        self.warnings.push(LottieWarning::new(
+            format!("node/{_id:?}"),
+            "clone bakes to a copy on Lottie export",
+        ));
+        let kids: Vec<NodeId> = match &source.kind {
+            NodeKind::Group | NodeKind::Layer(_) => source.children.clone(),
+            _ => vec![target],
+        };
+        let mut shapes = Vec::new();
+        for child in kids {
+            shapes.extend(self.export_node_item(child, None));
+        }
+        if shapes.is_empty() {
+            return Vec::new();
+        }
+        let mut layer = self.shape_layer(
+            node.name.clone(),
+            transform_json(&node.transform, &node.opacity),
+            shapes,
+            composition.range.0.0 as f64,
+            composition.range.1.0 as f64,
+            0.0,
+            1.0,
+            0,
+        );
+        layer["ind"] = json!(index);
+        layer["hd"] = json!(!node.visible);
+        vec![layer]
     }
 
     fn export_group_layer(
@@ -1184,6 +1242,7 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Text(_) => "text",
         NodeKind::Image(_) => "image",
         NodeKind::Precomp { .. } => "precomposition",
+        NodeKind::Use { .. } => "use",
         NodeKind::Mask(_) => "mask",
     }
 }

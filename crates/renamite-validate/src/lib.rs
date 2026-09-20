@@ -431,7 +431,7 @@ impl<'a> Validator<'a> {
                     }
                 }
             }
-            NodeKind::Group | NodeKind::Precomp { .. } => {}
+            NodeKind::Group | NodeKind::Precomp { .. } | NodeKind::Use { .. } => {}
         }
     }
 
@@ -697,6 +697,24 @@ impl<'a> Validator<'a> {
                         format!("node/{id:?}/precomp/stretch"),
                         "invalid time stretch",
                     );
+                }
+            }
+            if let NodeKind::Use { target } = &node.kind {
+                let Some(source) = doc.nodes.get(*target) else {
+                    self.err(format!("node/{id:?}/use"), "referenced node does not exist");
+                    continue;
+                };
+                if matches!(
+                    &source.kind,
+                    NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Use { .. }
+                ) {
+                    self.err(
+                        format!("node/{id:?}/use"),
+                        "use target must be a shape, group, or layer",
+                    );
+                }
+                if *target == id {
+                    self.err(format!("node/{id:?}/use"), "use node references itself");
                 }
             }
         }
@@ -1092,6 +1110,12 @@ impl<'a> Validator<'a> {
                     self.warn(
                         format!("node/{id:?}/precomp"),
                         "nested precomp is skipped by Lottie export (hoist to a top-level child)",
+                    );
+                }
+                NodeKind::Use { .. } => {
+                    self.warn(
+                        format!("node/{id:?}/use"),
+                        "use node bakes to a copy on Lottie export",
                     );
                 }
                 _ => {}
