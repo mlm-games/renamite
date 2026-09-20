@@ -69,7 +69,7 @@ pub fn snap_point(
                 best_point = point;
             }
         }
-        if best_point_dist <= best_x_dist.min(best_y_dist) + 1e-9 {
+        if best_point_dist < tolerance_world + 1e-9 {
             best = best_point;
         }
     }

@@ -1204,7 +1204,10 @@ impl Session {
             if node.locked {
                 continue;
             }
-            if matches!(&node.kind, NodeKind::Style(_) | NodeKind::Modifier(_)) {
+            if matches!(
+                &node.kind,
+                NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Mask(_)
+            ) {
                 continue;
             }
             let Some((parent, index)) = self.file.document.locate(id) else {
@@ -2754,7 +2757,7 @@ impl Session {
         };
         if matches!(
             &source.kind,
-            NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Use { .. }
+            NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Mask(_) | NodeKind::Use { .. }
         ) {
             self.status = Some("Cannot unlink this clone".into());
             self.repaint();

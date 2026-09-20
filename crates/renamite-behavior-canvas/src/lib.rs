@@ -2,9 +2,9 @@
 //! rubber band, delete) and Rect/Ellipse/Star creation. Pure state machines:
 //! world-space events in, EditorCommands out. Behavior reference (clean-room,
 //! observed): rotation handle preserves direction and multiple full turns;
-//! Shift snaps rotation to 15° and constrains shapes to square/circle
-//! (Shift on the star tool draws a regular polygon instead; Alt on the star
-//! tool draws from center with 6 points instead of 5);
+//! Ctrl (or Shift) snaps rotation to 15° and Shift constrains shapes to
+//! square/circle (Shift on the star tool draws a regular polygon instead;
+//! Alt on the star tool draws from center with 6 points instead of 5);
 //! drag = one undo step; Esc cancels the open drag.
 
 use glam::DVec2;
@@ -559,7 +559,7 @@ impl SelectTool {
                 let raw = angle_of(pos - *pivot) - *start;
                 *acc = unwrap_continuous(*acc, raw);
                 let mut deg = *base_deg + acc.to_degrees();
-                if ctx.modifiers.shift {
+                if ctx.modifiers.shift || ctx.modifiers.ctrl {
                     deg = (deg / 15.0).round() * 15.0;
                 }
                 let delta_rad = (deg - *base_deg).to_radians();

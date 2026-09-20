@@ -1924,6 +1924,12 @@ fn eval_group(
                 if !source.visible {
                     continue;
                 }
+                if matches!(
+                    &source.kind,
+                    NodeKind::Style(_) | NodeKind::Modifier(_) | NodeKind::Mask(_)
+                ) {
+                    continue;
+                }
                 let kids: Vec<NodeId> = match &source.kind {
                     NodeKind::Group | NodeKind::Layer(_) => source.children.clone(),
                     _ => vec![*target],
