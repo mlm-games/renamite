@@ -21,8 +21,12 @@ pub fn wasm_start() -> Result<(), JsValue> {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
+    rlobkit_app_events::android_log::init(
+        env!("CARGO_PKG_NAME"),
+        concat!(
+            env!("CARGO_PKG_NAME"),
+            "=info,renamite_ui=info,renamite_platform=info"
+        ),
     );
 
     rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {

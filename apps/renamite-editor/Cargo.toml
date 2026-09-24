@@ -51,7 +51,5 @@ env_logger = "0.11"
 wasm-bindgen = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.15"
-log = "0.4"
 winit = "0.30"
 rlobkit-app-events = { version = "0.5", features = ["jni-bridge"] }
