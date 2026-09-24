@@ -23,7 +23,11 @@ impl FrameRate {
         self.num as f64 / self.den.max(1) as f64
     }
     pub fn secs_to_frames(self, secs: f64) -> f64 {
-        secs * self.fps()
+        if !secs.is_finite() {
+            return 0.0;
+        }
+        let frames = secs * self.fps();
+        if frames.is_finite() { frames } else { 0.0 }
     }
     pub fn frames_to_secs(self, frames: f64) -> f64 {
         let fps = self.fps();
@@ -162,6 +166,11 @@ pub enum KeyEdit {
 /// Progress through a segment: maps normalized time u∈[0,1] to eased t∈[0,1].
 /// This is the single easing implementation shared by `Animated<T>` and clip tracks.
 pub fn ease_progress(i: Interpolation, out: EasingHandle, inn: EasingHandle, u: f64) -> f64 {
+    let u = if u.is_finite() {
+        u.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     match i {
         Interpolation::Hold => 0.0,
         Interpolation::Linear => u,
@@ -185,6 +194,9 @@ impl<T: Tween> Animated<T> {
         if ks.is_empty() {
             return self.base.clone();
         }
+        if !frame.is_finite() {
+            return self.base.clone();
+        }
         if frame <= ks[0].frame.0 as f64 {
             return ks[0].value.clone();
         }
@@ -195,7 +207,10 @@ impl<T: Tween> Animated<T> {
         let i = ks.partition_point(|k| (k.frame.0 as f64) <= frame) - 1;
         let (a, b) = (&ks[i], &ks[i + 1]);
         let span = (b.frame.0 - a.frame.0) as f64;
-        let u = (frame - a.frame.0 as f64) / span;
+        if !span.is_finite() || span <= 0.0 {
+            return a.value.clone();
+        }
+        let u = ((frame - a.frame.0 as f64) / span).clamp(0.0, 1.0);
         let y = ease_progress(a.interpolation, a.ease_out, a.ease_in, u);
         T::tween(&a.value, &b.value, y)
     }
@@ -289,7 +304,21 @@ fn cubic_deriv(t: f64, p1: f64, p2: f64) -> f64 {
 }
 /// Newton with bisection fallback: find t with x(t) = u.
 fn solve_cubic_x(x1: f64, x2: f64, u: f64) -> f64 {
-    let (x1, x2) = (x1.clamp(0.0, 1.0), x2.clamp(0.0, 1.0));
+    let x1 = if x1.is_finite() {
+        x1.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let x2 = if x2.is_finite() {
+        x2.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let u = if u.is_finite() {
+        u.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let mut t = u;
     for _ in 0..8 {
         let err = cubic_at(t, x1, x2) - u;
@@ -457,14 +486,48 @@ impl Playback {
         if fps <= 0.0 || !fps.is_finite() {
             return false;
         }
-        if self.loop_mode == LoopMode::Once {
-            self.dir = 1.0;
-        } else if self.dir >= 0.0 {
-            self.dir = 1.0;
+        let dir = if self.loop_mode != LoopMode::Once && self.dir < 0.0 {
+            -1.0
         } else {
-            self.dir = -1.0;
+            1.0
+        };
+        let delta = dir * dt_secs * fps;
+        if !delta.is_finite() || !self.head.is_finite() {
+            return false;
         }
-        self.head += self.dir * dt_secs * fps;
+        self.dir = dir;
+        if self.loop_mode == LoopMode::PingPong {
+            if delta == 0.0 {
+                return true;
+            }
+            let span = e - s;
+            let period = 2.0 * span;
+            let phase = if dir > 0.0 {
+                self.head - s
+            } else {
+                period - (self.head - s)
+            }
+            .rem_euclid(period);
+            let unfolded = (phase + delta.rem_euclid(period)).rem_euclid(period);
+            let cycle = (unfolded / span).floor();
+            self.head = if cycle.rem_euclid(2.0) == 0.0 {
+                s + unfolded - cycle * span
+            } else {
+                s + (cycle + 1.0) * span - unfolded
+            };
+            self.head = self.head.clamp(s, e);
+            self.dir = if cycle.rem_euclid(2.0) == 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            return true;
+        }
+        let next = self.head + delta;
+        if !next.is_finite() {
+            return false;
+        }
+        self.head = next;
         match self.loop_mode {
             LoopMode::Once => {
                 if self.head >= e {
@@ -478,21 +541,7 @@ impl Playback {
             LoopMode::Loop => {
                 self.head = s + (self.head - s).rem_euclid(e - s);
             }
-            LoopMode::PingPong => {
-                let mut guard = 0;
-                while (self.head > e || self.head < s) && guard < 8 {
-                    if self.head > e {
-                        self.head = 2.0 * e - self.head;
-                        self.dir = -self.dir;
-                    }
-                    if self.head < s {
-                        self.head = 2.0 * s - self.head;
-                        self.dir = -self.dir;
-                    }
-                    guard += 1;
-                }
-                self.head = self.head.clamp(s, e);
-            }
+            LoopMode::PingPong => {}
         }
         true
     }

@@ -13,6 +13,8 @@ use crate::session::{PendingFileOp, PendingIntent, SessionRef, blank_file};
 use std::fmt::Display;
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
+use std::io::Read;
+#[cfg(not(target_arch = "wasm32"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{
@@ -76,9 +78,31 @@ fn is_binary(name: &str) -> bool {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn read_file_limited(path: &Path, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        anyhow::bail!("file is too large");
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_file_limited(path: &Path, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    let bytes = fs::read(path)?;
+    if bytes.len() > max_bytes {
+        anyhow::bail!("file is too large");
+    }
+    Ok(bytes)
+}
+
 /// Parse a `.ren` / `.renb` document from raw bytes (name decides the format).
 fn parse_ren(name: &str, data: &[u8]) -> anyhow::Result<renamite_io_ren::RenFile> {
-    if is_binary(name) {
+    if renamite_io_ren::is_binary(data) || is_binary(name) {
         Ok(renamite_io_ren::open_binary(data)?)
     } else {
         Ok(renamite_io_ren::open(str::from_utf8(data)?)?)
@@ -89,8 +113,7 @@ fn import_lottie_bytes(
     name: &str,
     data: &[u8],
 ) -> anyhow::Result<(renamite_io_ren::RenFile, Vec<String>)> {
-    let json: serde_json::Value = serde_json::from_slice(data)?;
-    let report = renamite_io_lottie::import_with_report(&json)?;
+    let report = renamite_io_lottie::import_bytes(data)?;
     let warnings: Vec<String> = report
         .warnings
         .iter()
@@ -154,6 +177,7 @@ pub fn export_lottie(session: &SessionRef) {
             } else {
                 ops.lock_sync().push_back(PendingFileOp::Failed {
                     message: "Lottie export cancelled or failed".into(),
+                    token: None,
                 });
             }
             wake_ui();
@@ -162,7 +186,14 @@ pub fn export_lottie(session: &SessionRef) {
 }
 
 fn request_guard(session: &SessionRef, intent: PendingIntent) -> bool {
-    if !session.borrow().dirty {
+    let (dirty, pending) = {
+        let session = session.borrow();
+        (session.dirty, session.pending_intent.is_some())
+    };
+    if pending {
+        return false;
+    }
+    if !dirty {
         return true;
     }
     session.borrow_mut().request_discard(intent);
@@ -177,6 +208,9 @@ pub fn run_pending_intent(session: &SessionRef) {
         Some(PendingIntent::Open) => open_document_inner(session),
         Some(PendingIntent::ImportLottie) => import_lottie_inner(session),
         Some(PendingIntent::ImportSvg) => import_svg_inner(session),
+        Some(PendingIntent::ImportAsset) => {}
+        Some(PendingIntent::RecoverAutosave) => recover_autosave_inner(session),
+        Some(PendingIntent::Save) => {}
         None => {}
     }
 }
@@ -203,7 +237,13 @@ pub fn discard_save(session: &SessionRef) {
 
 /// Guard "Discard" button: drop unsaved changes and run the deferred intent.
 pub fn discard_discard(session: &SessionRef) {
+    let _preserve_recovery =
+        session.borrow().pending_intent == Some(PendingIntent::RecoverAutosave);
     session.borrow().confirm_dialog.dismiss();
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    if !_preserve_recovery {
+        renamite_platform::clear_autosave();
+    }
     run_pending_intent(session);
 }
 
@@ -211,6 +251,29 @@ pub fn discard_discard(session: &SessionRef) {
 pub fn discard_cancel(session: &SessionRef) {
     session.borrow().confirm_dialog.dismiss();
     session.borrow_mut().clear_pending_intent();
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub fn recover_autosave(session: &SessionRef) {
+    if !request_guard(session, PendingIntent::RecoverAutosave) {
+        return;
+    }
+    recover_autosave_inner(session);
+}
+
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+pub fn recover_autosave(session: &SessionRef) {
+    set_status(session, "Autosave recovery is available on desktop");
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+fn recover_autosave_inner(session: &SessionRef) {
+    session.borrow_mut().recover_autosave_unchecked();
+}
+
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+fn recover_autosave_inner(session: &SessionRef) {
+    set_status(session, "Autosave recovery is available on desktop");
 }
 
 /// New document, discarding the current one (after an unsaved guard).
@@ -240,32 +303,39 @@ pub fn open_document(session: &SessionRef) {
 }
 
 fn open_document_inner(session: &SessionRef) {
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::Open);
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Open project",
         &["ren", "renb"],
         Box::new(move |picked| {
             let op = match picked {
-                None => None,
+                None => Some(PendingFileOp::OpenCancelled { token }),
                 Some(PickedFile::Path(p)) => match read_ren(&p) {
                     Ok(file) => Some(PendingFileOp::OpenDone {
+                        token,
                         file: Box::new(file),
                         path: Some(p),
                         message: "Opened".to_string(),
                         warnings: Vec::new(),
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
+                        token: Some(token),
                         message: format!("Open failed: {e}"),
                     }),
                 },
                 Some(PickedFile::Bytes { name, data }) => match parse_ren(&name, &data) {
                     Ok(file) => Some(PendingFileOp::OpenDone {
+                        token,
                         file: Box::new(file),
                         path: None,
                         message: "Opened".to_string(),
                         warnings: Vec::new(),
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
+                        token: Some(token),
                         message: format!("Open failed: {e}"),
                     }),
                 },
@@ -299,6 +369,7 @@ pub fn save_document(session: &SessionRef) -> bool {
 /// guard flow correct); WASM/Android use the async `save_bytes` picker.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn save_document_as(session: &SessionRef) -> bool {
+    session.borrow_mut().invalidate_file_operation();
     let suggested = format!("{}.ren", document_stem(session));
     match renamite_platform::dialogs::export_path("Save project", &suggested, &["ren", "renb"]) {
         Some(path) => write_ren(session, &path),
@@ -309,9 +380,13 @@ pub fn save_document_as(session: &SessionRef) -> bool {
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub fn save_document_as(session: &SessionRef) -> bool {
     let suggested = format!("{}.ren", document_stem(session));
-    let bytes = match session.borrow().save_snapshot() {
-        Ok(b) => b,
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::Save);
+    let (bytes, fingerprint) = match session.borrow().save_snapshot_with_fingerprint(false) {
+        Ok(snapshot) => snapshot,
         Err(e) => {
+            session.borrow_mut().finish_file_operation(token);
             report_error(session, e);
             return false;
         }
@@ -324,8 +399,10 @@ pub fn save_document_as(session: &SessionRef) -> bool {
         bytes,
         Box::new(move |outcome| {
             ops.lock_sync().push_back(PendingFileOp::SaveOutcome {
+                token,
                 ok: outcome.ok,
                 path: None,
+                fingerprint,
             });
             wake_ui();
         }),
@@ -342,42 +419,49 @@ pub fn import_lottie(session: &SessionRef) {
 }
 
 fn import_lottie_inner(session: &SessionRef) {
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::ImportLottie);
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Import Lottie",
         &["json"],
         Box::new(move |picked| {
             let op = match picked {
-                None => None,
+                None => Some(PendingFileOp::OpenCancelled { token }),
                 Some(PickedFile::Path(p)) => {
                     let name = p
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let result = match fs::read(&p) {
+                    let result = match read_file_limited(&p, renamite_io_lottie::MAX_LOTTIE_BYTES) {
                         Ok(data) => import_lottie_bytes(&name, &data),
-                        Err(e) => Err(e.into()),
+                        Err(e) => Err(e),
                     };
                     match result {
                         Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
+                            token,
                             file: Box::new(file),
                             path: None,
                             message: "Imported Lottie".to_string(),
                             warnings,
                         }),
                         Err(e) => Some(PendingFileOp::Failed {
+                            token: Some(token),
                             message: format!("Import failed: {e}"),
                         }),
                     }
                 }
                 Some(PickedFile::Bytes { name, data }) => match import_lottie_bytes(&name, &data) {
                     Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
+                        token,
                         file: Box::new(file),
                         path: None,
                         message: "Imported Lottie".to_string(),
                         warnings,
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
+                        token: Some(token),
                         message: format!("Import failed: {e}"),
                     }),
                 },
@@ -416,42 +500,49 @@ pub fn import_svg(session: &SessionRef) {
 }
 
 fn import_svg_inner(session: &SessionRef) {
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::ImportSvg);
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Import SVG",
         &["svg"],
         Box::new(move |picked| {
             let op = match picked {
-                None => None,
+                None => Some(PendingFileOp::OpenCancelled { token }),
                 Some(PickedFile::Path(p)) => {
                     let name = p
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let result = match fs::read(&p) {
+                    let result = match read_file_limited(&p, renamite_io_svg::MAX_INPUT_BYTES) {
                         Ok(data) => import_svg_bytes(&name, &data),
-                        Err(e) => Err(e.into()),
+                        Err(e) => Err(e),
                     };
                     match result {
                         Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
+                            token,
                             file: Box::new(file),
                             path: None,
                             message: "Imported SVG".to_string(),
                             warnings,
                         }),
                         Err(e) => Some(PendingFileOp::Failed {
+                            token: Some(token),
                             message: format!("Import failed: {e}"),
                         }),
                     }
                 }
                 Some(PickedFile::Bytes { name, data }) => match import_svg_bytes(&name, &data) {
                     Ok((file, warnings)) => Some(PendingFileOp::OpenDone {
+                        token,
                         file: Box::new(file),
                         path: None,
                         message: "Imported SVG".to_string(),
                         warnings,
                     }),
                     Err(e) => Some(PendingFileOp::Failed {
+                        token: Some(token),
                         message: format!("Import failed: {e}"),
                     }),
                 },
@@ -556,28 +647,40 @@ pub fn export_svg(session: &SessionRef) {
 /// Read `.ttf` / `.otf` bytes into the project as a font asset (undoable).
 /// The family key is derived by `Session::import_font` from the font itself.
 pub fn import_font(session: &SessionRef) {
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::ImportAsset);
     let ops = { session.borrow().file_ops.clone() };
     renamite_platform::dialogs::pick_open_file(
         "Import Font",
         &["ttf", "otf"],
         Box::new(move |picked| {
             let op = match picked {
-                None => None,
+                None => Some(PendingFileOp::OpenCancelled { token }),
                 Some(PickedFile::Path(path)) => {
                     let name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "Font".into());
-                    match fs::read(&path) {
-                        Ok(bytes) => Some(PendingFileOp::ImportFontDone { name, bytes }),
+                    match read_file_limited(&path, 64 * 1024 * 1024) {
+                        Ok(bytes) => Some(PendingFileOp::ImportFontDone { token, name, bytes }),
                         Err(e) => Some(PendingFileOp::Failed {
                             message: format!("Font import failed: {e}"),
+                            token: Some(token),
                         }),
                     }
                 }
-                Some(PickedFile::Bytes { name, data }) => {
-                    Some(PendingFileOp::ImportFontDone { name, bytes: data })
+                Some(PickedFile::Bytes { name, data }) if data.len() <= 64 * 1024 * 1024 => {
+                    Some(PendingFileOp::ImportFontDone {
+                        token,
+                        name,
+                        bytes: data,
+                    })
                 }
+                Some(PickedFile::Bytes { .. }) => Some(PendingFileOp::Failed {
+                    message: "Font file is too large".into(),
+                    token: Some(token),
+                }),
             };
             if let Some(op) = op {
                 ops.lock_sync().push_back(op);
@@ -593,8 +696,18 @@ fn image_asset_from_bytes(
     bytes: Vec<u8>,
 ) -> anyhow::Result<renamite_model::ImageAsset> {
     use image::GenericImageView;
+    use std::io::Cursor;
 
-    let decoded = image::load_from_memory(&bytes)?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        anyhow::bail!("image file is too large");
+    }
+    let mut reader = image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let decoded = reader.decode()?;
     let (width, height) = decoded.dimensions();
 
     let extension = Path::new(&name)
@@ -624,6 +737,9 @@ fn image_asset_from_bytes(
 /// Decoding happens on the picker thread. The asset is applied on the UI
 /// thread via `PendingFileOp::ImportImageDone`.
 pub fn import_image(session: &SessionRef) {
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::ImportAsset);
     let operations = session.borrow().file_ops.clone();
 
     renamite_platform::dialogs::pick_open_file(
@@ -640,8 +756,7 @@ pub fn import_image(session: &SessionRef) {
                         .unwrap_or_else(|| "Image".into());
 
                     Some(
-                        fs::read(path)
-                            .map_err(anyhow::Error::from)
+                        read_file_limited(&path, 32 * 1024 * 1024)
                             .and_then(|bytes| image_asset_from_bytes(name, bytes)),
                     )
                 }
@@ -651,14 +766,19 @@ pub fn import_image(session: &SessionRef) {
 
             if let Some(result) = result {
                 let operation = match result {
-                    Ok(asset) => PendingFileOp::ImportImageDone { asset },
+                    Ok(asset) => PendingFileOp::ImportImageDone { token, asset },
 
                     Err(error) => PendingFileOp::Failed {
                         message: format!("Image import failed: {error}"),
+                        token: Some(token),
                     },
                 };
 
                 operations.lock_sync().push_back(operation);
+            } else {
+                operations
+                    .lock_sync()
+                    .push_back(PendingFileOp::OpenCancelled { token });
             }
 
             wake_ui();
@@ -670,56 +790,130 @@ pub fn import_image(session: &SessionRef) {
 /// Atomic (temp + rename) so a crash can't leave a truncated project.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn write_ren(session: &SessionRef, path: &Path) -> bool {
-    let bytes = if is_binary(path.to_string_lossy().as_ref()) {
-        session.borrow().pack_snapshot()
-    } else {
-        session.borrow().save_snapshot()
+    let token = session
+        .borrow_mut()
+        .begin_file_operation(PendingIntent::Save);
+    let binary = is_binary(path.to_string_lossy().as_ref());
+    let (bytes, fingerprint) = match session.borrow().save_snapshot_with_fingerprint(binary) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            session.borrow_mut().finish_file_operation(token);
+            report_error(session, error);
+            return false;
+        }
     };
-    match bytes {
-        Ok(bytes) => match atomic_fs_write(path, &bytes) {
-            Ok(()) => {
-                session.borrow_mut().mark_saved(Some(path.to_path_buf()));
-                set_status(session, "Saved");
-                true
-            }
-            Err(e) => {
-                report_error(session, e);
-                false
-            }
-        },
-        Err(e) => {
-            report_error(session, e);
+
+    let previous = match read_file_limited(
+        path,
+        renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES),
+    ) {
+        Ok(bytes) => Some(bytes),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            None
+        }
+        Err(error) => {
+            session.borrow_mut().finish_file_operation(token);
+            report_error(session, error);
+            return false;
+        }
+    };
+
+    let backup = previous.as_ref().and_then(|data| {
+        parse_ren(&path.to_string_lossy(), data)
+            .ok()
+            .and_then(|_| backup_path(path))
+    });
+    let result = if let (Some(previous), Some(backup)) = (previous, backup) {
+        atomic_fs_write(&backup, &previous).and_then(|()| atomic_fs_write(path, &bytes))
+    } else {
+        atomic_fs_write(path, &bytes)
+    };
+
+    match result {
+        Ok(()) => {
+            session.borrow_mut().finish_file_operation(token);
+            session
+                .borrow_mut()
+                .mark_saved_snapshot(Some(path.to_path_buf()), fingerprint);
+            set_status(session, "Saved");
+            true
+        }
+        Err(error) => {
+            session.borrow_mut().finish_file_operation(token);
+            report_error(session, error);
             false
         }
     }
 }
 
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+fn backup_path(path: &Path) -> Option<std::path::PathBuf> {
+    let file_name = path.file_name()?;
+    let mut backup_name = file_name.to_os_string();
+    backup_name.push(".bak");
+    Some(path.with_file_name(backup_name))
+}
+
 /// Atomic file write for desktop targets (temp in same dir + rename).
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn atomic_fs_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let tmp = path.with_extension(format!(
-        "{}.tmp-{}",
-        path.extension().and_then(|s| s.to_str()).unwrap_or("tmp"),
-        std::process::id()
-    ));
-    std::fs::write(&tmp, bytes)?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e.into())
-        }
-    }
+    renamite_platform::atomic_write(path, bytes)?;
+    Ok(())
 }
 
 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn atomic_fs_write(_path: &Path, _bytes: &[u8]) -> anyhow::Result<()> {
     anyhow::bail!("atomic_fs_write is desktop-only")
 }
 
 fn read_ren(path: &Path) -> anyhow::Result<renamite_io_ren::RenFile> {
-    let data = fs::read(path)?;
-    parse_ren(&path.to_string_lossy(), &data)
+    #[cfg(target_arch = "wasm32")]
+    let primary = read_file_limited(
+        path,
+        renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES),
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let primary = read_file_limited(
+        path,
+        renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES),
+    );
+    let data = match primary {
+        Ok(data) => data,
+        Err(error) => {
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            if let Some(backup) = backup_path(path)
+                && let Ok(backup_data) = read_file_limited(
+                    &backup,
+                    renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES),
+                )
+                && let Ok(file) = parse_ren(&backup.to_string_lossy(), &backup_data)
+            {
+                return Ok(file);
+            }
+            return Err(error);
+        }
+    };
+    match parse_ren(&path.to_string_lossy(), &data) {
+        Ok(file) => Ok(file),
+        Err(primary_error) => {
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            if let Some(backup) = backup_path(path)
+                && let Ok(backup_data) = read_file_limited(
+                    &backup,
+                    renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES),
+                )
+                && let Ok(file) = parse_ren(&backup.to_string_lossy(), &backup_data)
+            {
+                return Ok(file);
+            }
+            Err(primary_error)
+        }
+    }
 }
 
 /// Prepare the current playhead scene for export: build the Repose scene and
@@ -729,7 +923,13 @@ fn prepare_export(
 ) -> anyhow::Result<(repose_core::Scene, (u32, u32), renamite_model::Document)> {
     let (scene, artboard, document) = {
         let s = session.borrow();
-        let size = s.file.document.compositions[s.file.document.main].size;
+        let size = s
+            .file
+            .document
+            .compositions
+            .get(s.file.document.main)
+            .map(|composition| composition.size)
+            .unwrap_or((1, 1));
         let scene = s.engine.scene().clone();
         (scene, size, s.file.document.clone())
     };
@@ -830,6 +1030,7 @@ pub fn export_png(session: &SessionRef) {
                 *exporting_since().lock_sync() = None;
                 ops_w.lock_sync().push_back(PendingFileOp::Failed {
                     message: "PNG export timed out after 30s (GPU hang or very large image)".into(),
+                    token: None,
                 });
                 wake_ui();
             }
@@ -852,6 +1053,7 @@ pub fn export_png(session: &SessionRef) {
                     ops_w.lock_sync().push_back(PendingFileOp::Failed {
                         message: "PNG export timed out after 30s (GPU hang or very large image)"
                             .into(),
+                        token: None,
                     });
                     wake_ui();
                     return;
@@ -871,9 +1073,11 @@ pub fn export_png(session: &SessionRef) {
                     },
                     Ok(Err(e)) => PendingFileOp::Failed {
                         message: format!("PNG export failed: {e}"),
+                        token: None,
                     },
                     Err(panic) => PendingFileOp::Failed {
                         message: format!("PNG export failed: {}", panic_payload(&panic)),
+                        token: None,
                     },
                 };
             ops.lock_sync().push_back(op);
@@ -933,6 +1137,7 @@ pub fn export_png(session: &SessionRef) {
                     png_err(format!("render failed: {e}"));
                     PendingFileOp::Failed {
                         message: format!("PNG export failed: {e}"),
+                        token: None,
                     }
                 }
             };

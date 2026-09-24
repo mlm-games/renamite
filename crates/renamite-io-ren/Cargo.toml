@@ -6,16 +6,26 @@ license.workspace = true
 description = ".ren project format (RON) + .renb runtime binary (postcard)."
 
 [dependencies]
+renamite-animation = { workspace = true, optional = true }
+renamite-geometry = { workspace = true, optional = true }
 renamite-model.workspace = true
 renamite-machine.workspace = true
+glam = { workspace = true, optional = true }
 serde.workspace = true
 ron.workspace = true
+slotmap = { workspace = true, optional = true }
 thiserror.workspace = true
 postcard = { workspace = true, optional = true }
 
 [features]
 default = []
-binary = ["dep:postcard"]
+binary = [
+    "dep:postcard",
+    "dep:slotmap",
+    "dep:renamite-animation",
+    "dep:renamite-geometry",
+    "dep:glam",
+]
 
 [dev-dependencies]
 renamite-animation.workspace = true

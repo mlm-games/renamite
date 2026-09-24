@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -76,6 +77,8 @@ pub struct Session {
     pub file: RenFile,
     pub current_path: Option<PathBuf>,
     pub dirty: bool,
+    saved_fingerprint: u64,
+    dirty_without_history: bool,
     pub history: History,
     pub engine: Engine,
     pub selection: Selection,
@@ -120,6 +123,13 @@ pub struct Session {
     /// Horizontal scroll offset (px) for the timeline key area.
     /// `origin_x = -timeline_offset_x`; zoom keeps the left edge stable.
     pub timeline_offset_x: f64,
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    autosave_last_ms: f64,
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    recovery_available: bool,
+    document_generation: u64,
+    next_file_operation: u64,
+    active_file_operation: Option<FileOperationToken>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -169,10 +179,21 @@ pub enum PendingIntent {
     Open,
     ImportLottie,
     ImportSvg,
+    ImportAsset,
+    RecoverAutosave,
+    Save,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileOperationToken {
+    pub id: u64,
+    pub generation: u64,
+    pub intent: PendingIntent,
 }
 
 pub enum PendingFileOp {
     OpenDone {
+        token: FileOperationToken,
         file: Box<RenFile>,
         path: Option<PathBuf>,
         message: String,
@@ -181,9 +202,14 @@ pub enum PendingFileOp {
         #[allow(dead_code)]
         warnings: Vec<String>,
     },
+    OpenCancelled {
+        token: FileOperationToken,
+    },
     SaveOutcome {
+        token: FileOperationToken,
         ok: bool,
         path: Option<PathBuf>,
+        fingerprint: u64,
     },
     Exported,
     ExportFinished {
@@ -194,14 +220,17 @@ pub enum PendingFileOp {
         suggested_name: String,
     },
     ImportFontDone {
+        token: FileOperationToken,
         name: String,
         bytes: Vec<u8>,
     },
     ImportImageDone {
+        token: FileOperationToken,
         asset: renamite_model::ImageAsset,
     },
     Failed {
         message: String,
+        token: Option<FileOperationToken>,
     },
 }
 
@@ -275,7 +304,11 @@ impl Session {
         Self::with_render_context(file, repose_core::RenderContext::new())
     }
 
-    pub fn with_render_context(file: RenFile, render_context: repose_core::RenderContext) -> Self {
+    pub fn with_render_context(
+        mut file: RenFile,
+        render_context: repose_core::RenderContext,
+    ) -> Self {
+        file.document.ensure_main_composition();
         let engine = Engine::new(&file).unwrap_or_else(|e| {
             log::warn!(
                 "Engine::new failed for project '{}': {e}; creating fallback engine",
@@ -288,15 +321,26 @@ impl Session {
                 Engine::new(&fallback).expect("empty document must produce a valid engine")
             })
         });
-        let range = file.document.compositions[file.document.main].range;
+        let range = file
+            .document
+            .compositions
+            .get(file.document.main)
+            .map(|composition| composition.range)
+            .unwrap_or((Frame(0), Frame(0)));
         let active_machine = file
             .start_machine
             .or_else(|| file.machine_order.first().copied());
+        let history = History::new();
+        let saved_fingerprint = file_fingerprint(&file);
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        let recovery_available = renamite_platform::autosave_bytes().is_some();
         Self {
             file,
             current_path: None,
             dirty: false,
-            history: History::new(),
+            saved_fingerprint,
+            dirty_without_history: false,
+            history,
             engine,
             selection: Selection::default(),
             viewport: ViewportState::default(),
@@ -346,6 +390,13 @@ impl Session {
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
             timeline_offset_x: 0.0,
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            autosave_last_ms: 0.0,
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            recovery_available,
+            document_generation: 0,
+            next_file_operation: 0,
+            active_file_operation: None,
         }
     }
 
@@ -354,62 +405,66 @@ impl Session {
         let mut needs_evaluation = false;
         let mut needs_repaint = false;
         let mut in_transaction = false;
-        let mut txn_mutated = false;
-        let mut mutated_outside_transaction = false;
+        let mut transaction_mutated = false;
+        let mut canceled_transaction = false;
 
         for out in outputs {
             match out {
-                ToolOutput::BeginTransaction(l) => {
-                    self.history.begin(l);
+                ToolOutput::BeginTransaction(label) => {
+                    self.history.begin(label);
                     in_transaction = true;
-                    txn_mutated = false;
+                    transaction_mutated = false;
                 }
                 ToolOutput::CommitTransaction => {
-                    if in_transaction {
+                    let had_open = in_transaction || self.history.transaction_open();
+                    if had_open {
                         self.history.commit();
-                        if txn_mutated {
-                            self.dirty = true;
-                        }
-                        in_transaction = false;
-                    } else if self.history.transaction_open() {
-                        self.history.commit();
-                        self.dirty = true;
                     }
-                    if txn_mutated || self.dirty {
+                    if transaction_mutated {
                         document_changed = true;
                     }
-                }
-                ToolOutput::CancelTransaction => {
-                    apply_cmd(&mut self.history, &mut self.file, None);
-                    document_changed = true;
-                    needs_evaluation = true;
                     in_transaction = false;
                 }
-                ToolOutput::Commands(cmds) => {
-                    for c in cmds {
-                        if let Some(id) = self.history_apply(c) {
+                ToolOutput::CancelTransaction => {
+                    let had_open = in_transaction || self.history.transaction_open();
+                    if had_open {
+                        apply_cmd(&mut self.history, &mut self.file, None);
+                        self.document_generation = self.document_generation.wrapping_add(1);
+                        document_changed = true;
+                        needs_evaluation = true;
+                        canceled_transaction = true;
+                    }
+                    in_transaction = false;
+                }
+                ToolOutput::Commands(commands) => {
+                    for command in commands {
+                        if command_is_noop(&self.file, &command) {
+                            continue;
+                        }
+                        let applied = self.history_apply_full(command);
+                        let Some(applied) = applied else {
+                            continue;
+                        };
+                        document_changed = true;
+                        needs_evaluation = true;
+                        if let Some(id) = applied.created {
                             self.selection.nodes = vec![id];
                         }
-                    }
-                    self.ensure_selection_visible();
-                    document_changed = true;
-                    needs_evaluation = true;
-                    if in_transaction || self.history.transaction_open() {
-                        txn_mutated = true;
-                    } else {
-                        mutated_outside_transaction = true;
-                    }
-                }
-                ToolOutput::SetPlayhead(f) => {
-                    if self.machine_preview_enabled {
-                    } else {
-                        self.playback.head = f;
-                        self.engine.scrub(&self.file, f);
+                        if in_transaction || self.history.transaction_open() {
+                            transaction_mutated = true;
+                        }
                     }
                     needs_repaint = true;
                 }
-                ToolOutput::SwitchTool(t) => {
-                    self.active_tool = t;
+                ToolOutput::SetPlayhead(frame) => {
+                    if !self.machine_preview_enabled && frame.is_finite() {
+                        self.playback.head = frame;
+                        self.engine.scrub(&self.file, frame);
+                    }
+                    needs_repaint = true;
+                }
+                ToolOutput::SwitchTool(tool) => {
+                    self.active_tool = tool;
                     needs_repaint = true;
                 }
                 ToolOutput::Invalidate => {
@@ -419,45 +474,39 @@ impl Session {
                     self.current_paint = paint;
                     needs_repaint = true;
                 }
-                ToolOutput::RequestSelection(ch) => {
-                    match ch {
+                ToolOutput::RequestSelection(change) => {
+                    match change {
                         renamite_history::SelectionChange::Set(ids) => self.selection.nodes = ids,
                         renamite_history::SelectionChange::Toggle(id) => {
-                            if let Some(i) = self.selection.nodes.iter().position(|&x| x == id) {
-                                self.selection.nodes.remove(i);
+                            if let Some(index) =
+                                self.selection.nodes.iter().position(|&value| value == id)
+                            {
+                                self.selection.nodes.remove(index);
                             } else {
                                 self.selection.nodes.push(id);
                             }
                         }
                     }
-                    self.ensure_selection_visible();
                     needs_repaint = true;
                 }
                 _ => {}
             }
         }
 
-        if mutated_outside_transaction {
-            self.dirty = true;
+        if canceled_transaction || document_changed {
+            self.refresh_dirty_from_saved();
         }
-
+        self.prune_session_context();
         if document_changed {
-            let rows = timeline_rows(self);
-            let range = self.file.document.compositions[self.file.document.main].range;
-            let ctx = timeline_ctx(
-                &self.file.document,
-                &self.file.clips,
-                &rows,
-                range,
-                self.playback.head,
-                self.timeline_zoom,
-            );
-            self.keys.retain_valid(&ctx);
+            retain_timeline_keys(self);
             sync_playback_range(self);
         }
-
         if needs_evaluation {
             self.engine.reevaluate(&self.file);
+        }
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        if document_changed {
+            self.autosave_if_due();
         }
         if document_changed || needs_evaluation || needs_repaint {
             self.revision = self.revision.wrapping_add(1);
@@ -623,20 +672,34 @@ impl Session {
     }
 
     pub(crate) fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
-        let sel = &self.selection.nodes;
-        sel.iter()
+        let selected: HashSet<_> = self
+            .selection
+            .nodes
+            .iter()
             .copied()
+            .filter(|&id| node_is_attached(&self.file.document, id))
+            .collect();
+        self.selection
+            .nodes
+            .iter()
+            .copied()
+            .filter(|&id| node_is_attached(&self.file.document, id))
             .filter(|&id| {
-                !sel.iter().any(|&anc| {
-                    let mut p = self.file.document.nodes.get(id).and_then(|n| n.parent);
-                    while let Some(par) = p {
-                        if par == anc {
-                            return true;
-                        }
-                        p = self.file.document.nodes.get(par).and_then(|n| n.parent);
+                let mut current = id;
+                let mut seen = HashSet::new();
+                while let Some(node) = self.file.document.nodes.get(current) {
+                    if !seen.insert(current) {
+                        return false;
                     }
-                    false
-                })
+                    let Some(parent) = node.parent else {
+                        break;
+                    };
+                    if selected.contains(&parent) {
+                        return false;
+                    }
+                    current = parent;
+                }
+                true
             })
             .collect()
     }
@@ -699,13 +762,38 @@ impl Session {
 
         if self.history.transaction_open() {
             self.history.commit();
-            self.dirty = true;
         }
 
         self.inspector_drag = None;
         self.layer_drag = None;
         self.machine_drag = None;
+        self.machine_graph_gesture = None;
+        self.viewport.guide_drag = None;
         self.tool = renamite_behavior_canvas::ToolSet::default();
+        self.refresh_dirty_from_saved();
+    }
+
+    pub fn cancel_active_edits(&mut self) {
+        self.cancel_open_picker_state();
+        self.open_picker = None;
+        self.context_menu = None;
+        self.renaming = None;
+        self.inspector_drag = None;
+        self.layer_drag = None;
+        self.machine_drag = None;
+        self.machine_graph_gesture = None;
+        self.viewport.guide_drag = None;
+        self.viewport.pointer_down = false;
+        self.viewport.pointer_route = None;
+        self.tool = renamite_behavior_canvas::ToolSet::default();
+        cancel_timeline(self);
+        if self.history.transaction_open() {
+            apply_cmd(&mut self.history, &mut self.file, None);
+            self.document_generation = self.document_generation.wrapping_add(1);
+            self.engine.reevaluate(&self.file);
+        }
+        self.refresh_dirty_from_saved();
+        self.repaint();
     }
 
     fn clipboard_from_selection(&mut self, cut: bool) {
@@ -836,17 +924,9 @@ impl Session {
     }
 
     fn parent_is_attached(&self, parent: renamite_model::Parent) -> bool {
-        let doc = &self.file.document;
         match parent {
-            renamite_model::Parent::Comp(c) => doc.compositions.contains_key(c),
-            renamite_model::Parent::Node(p) => {
-                doc.nodes.contains_key(p)
-                    && (doc.nodes.get(p).and_then(|n| n.parent).is_some()
-                        || doc
-                            .compositions
-                            .values()
-                            .any(|comp| comp.children.contains(&p)))
-            }
+            renamite_model::Parent::Comp(c) => self.file.document.compositions.contains_key(c),
+            renamite_model::Parent::Node(p) => node_is_attached(&self.file.document, p),
         }
     }
 
@@ -870,7 +950,7 @@ impl Session {
             }
         }
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         created
     }
 
@@ -934,7 +1014,7 @@ impl Session {
         }
 
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         self.selection.nodes = created;
         self.ensure_selection_visible();
         self.bump();
@@ -1139,7 +1219,7 @@ impl Session {
         }
 
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         if failed {
             self.status = Some("Paste style failed on part of the selection".into());
         }
@@ -1237,7 +1317,7 @@ impl Session {
         }
         self.selection.nodes = created;
         self.ensure_selection_visible();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         self.bump();
     }
 
@@ -1842,9 +1922,13 @@ impl Session {
                 Some(b) => b,
                 None => return,
             },
-            align::AlignAnchor::Page => {
-                align::page_bounds(self.file.document.compositions[self.file.document.main].size)
-            }
+            align::AlignAnchor::Page => align::page_bounds(
+                self.file
+                    .document
+                    .main_composition()
+                    .map(|composition| composition.size)
+                    .unwrap_or((512, 512)),
+            ),
         };
         let frame = self.playback.head;
         let record = self.record_for_writes();
@@ -2119,8 +2203,14 @@ impl Session {
     }
 
     pub fn cycle_selection(&mut self, reverse: bool) {
-        let comp = self.file.document.main;
-        let children = self.file.document.compositions[comp].children.clone();
+        let Some(children) = self
+            .file
+            .document
+            .main_composition()
+            .map(|composition| composition.children.clone())
+        else {
+            return;
+        };
         if children.is_empty() {
             return;
         }
@@ -2142,8 +2232,12 @@ impl Session {
     }
 
     pub fn select_all_top_level(&mut self) {
-        let comp = self.file.document.main;
-        self.selection.nodes = self.file.document.compositions[comp].children.clone();
+        self.selection.nodes = self
+            .file
+            .document
+            .main_composition()
+            .map(|composition| composition.children.clone())
+            .unwrap_or_default();
         self.ensure_selection_visible();
         self.repaint();
     }
@@ -2411,7 +2505,7 @@ impl Session {
         }
 
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         if failed {
             self.status = Some("Stroke to path failed on part of the selection".into());
         }
@@ -2423,7 +2517,14 @@ impl Session {
         use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
 
         let comp = self.file.document.main;
-        let (w, h) = self.file.document.compositions[comp].size;
+        let Some((w, h)) = self
+            .file
+            .document
+            .main_composition()
+            .map(|composition| composition.size)
+        else {
+            return;
+        };
         let center = DVec2::new(w as f64 * 0.5, h as f64 * 0.5);
         let shape = Node::new(
             "Ellipse",
@@ -2451,32 +2552,30 @@ impl Session {
             self.ensure_selection_visible();
         }
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         self.bump();
     }
 
     pub fn set_all_expanded(&mut self, expanded: bool) {
         let doc = &self.file.document;
         let mut all = HashSet::new();
-        fn collect(
-            node: renamite_model::NodeId,
-            doc: &renamite_model::Document,
-            out: &mut HashSet<renamite_model::NodeId>,
-        ) {
-            if let Some(n) = doc.nodes.get(node) {
-                if !n.children.is_empty() {
-                    out.insert(node);
-                }
-                for &child in &n.children {
-                    collect(child, doc, out);
-                }
+        let mut pending: Vec<_> = doc
+            .compositions
+            .get(doc.main)
+            .map(|comp| comp.children.clone())
+            .unwrap_or_default();
+        let mut visited = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
             }
-        }
-        let main = doc.main;
-        if let Some(comp) = doc.compositions.get(main) {
-            for child in &comp.children {
-                collect(*child, doc, &mut all);
+            let Some(node) = doc.nodes.get(id) else {
+                continue;
+            };
+            if !node.children.is_empty() {
+                all.insert(id);
             }
+            pending.extend(node.children.iter().copied());
         }
         if expanded {
             self.expanded_layers = all;
@@ -2538,7 +2637,75 @@ impl Session {
         ]);
     }
 
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    pub fn recover_autosave(&mut self) {
+        if self.dirty {
+            self.status = Some("Save or discard the current document before recovering".into());
+            self.repaint();
+            return;
+        }
+        self.recover_autosave_unchecked();
+    }
+
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    pub fn recover_autosave_unchecked(&mut self) {
+        let Some(bytes) = renamite_platform::autosave_bytes() else {
+            self.recovery_available = false;
+            self.status = Some("No autosave recovery is available".into());
+            self.repaint();
+            return;
+        };
+        let file = if renamite_io_ren::is_binary(&bytes) {
+            renamite_io_ren::open_binary(&bytes).map_err(anyhow::Error::from)
+        } else {
+            std::str::from_utf8(&bytes)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| renamite_io_ren::open(text).map_err(anyhow::Error::from))
+        };
+        let file = match file {
+            Ok(file) => file,
+            Err(error) => {
+                self.status = Some(format!("Recovery failed: {error}"));
+                self.repaint();
+                return;
+            }
+        };
+        self.replace_file_preserving_recovery(file);
+        self.current_path = None;
+        self.mark_dirty();
+        self.status = Some("Recovered autosave".into());
+        self.repaint();
+    }
+
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    fn autosave_if_due(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        let now = renamite_platform::now_ms();
+        if self.autosave_last_ms > 0.0 && (now - self.autosave_last_ms).max(0.0) < 2_000.0 {
+            return;
+        }
+        let Ok(bytes) = self.save_snapshot() else {
+            return;
+        };
+        match renamite_platform::autosave_store()
+            .set_checked(renamite_platform::AUTOSAVE_KEY, &bytes)
+        {
+            Ok(()) => {
+                self.autosave_last_ms = now;
+                self.recovery_available = true;
+            }
+            Err(error) => {
+                log::error!("autosave write failed: {error}");
+            }
+        }
+    }
+
     pub fn bump(&mut self) {
+        self.refresh_dirty_from_saved();
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        self.autosave_if_due();
         self.engine.reevaluate(&self.file);
         self.revision = self.revision.wrapping_add(1);
         request_frame();
@@ -2633,7 +2800,12 @@ impl Session {
     }
 
     fn clamp_timeline_offset(&mut self) {
-        let range = self.file.document.compositions[self.file.document.main].range;
+        let range = self
+            .file
+            .document
+            .main_composition()
+            .map(|composition| composition.range)
+            .unwrap_or((Frame(0), Frame(180)));
         let frames = (range.1.0 - range.0.0).max(1) as f64;
         let content_w = frames * self.timeline_zoom.max(0.5);
         self.timeline_offset_x = self
@@ -2656,7 +2828,12 @@ impl Session {
     }
 
     pub fn step_frames(&mut self, delta: f64) {
-        let range = self.file.document.compositions[self.file.document.main].range;
+        let range = self
+            .file
+            .document
+            .main_composition()
+            .map(|composition| composition.range)
+            .unwrap_or((Frame(0), Frame(180)));
         self.playback.head = (self.playback.head + delta).clamp(range.0.0 as f64, range.1.0 as f64);
         let crate::session::Session {
             file,
@@ -2711,7 +2888,10 @@ impl Session {
         }
 
         let target = candidate.unwrap_or_else(|| {
-            let range = doc.compositions[doc.main].range;
+            let range = doc
+                .main_composition()
+                .map(|composition| composition.range)
+                .unwrap_or((Frame(0), Frame(180)));
             if direction < 0 { range.0.0 } else { range.1.0 }
         });
         self.playback.head = target as f64;
@@ -2727,16 +2907,78 @@ impl Session {
     }
 
     pub fn ensure_selection_visible(&mut self) {
+        self.selection
+            .nodes
+            .retain(|&id| node_is_attached(&self.file.document, id));
+        let mut seen = HashSet::new();
+        self.selection.nodes.retain(|id| seen.insert(*id));
+        self.expanded_layers.retain(|id| {
+            node_is_attached(&self.file.document, *id)
+                && self
+                    .file
+                    .document
+                    .nodes
+                    .get(*id)
+                    .is_some_and(|node| !node.children.is_empty())
+        });
         for &id in &self.selection.nodes {
             let mut walk = id;
-            while let Some(n) = self.file.document.nodes.get(walk) {
-                if let Some(p) = n.parent {
-                    self.expanded_layers.insert(p);
-                    walk = p;
-                } else {
+            let mut visited = HashSet::new();
+            while visited.insert(walk) {
+                let Some(node) = self.file.document.nodes.get(walk) else {
                     break;
-                }
+                };
+                let Some(parent) = node.parent else {
+                    break;
+                };
+                self.expanded_layers.insert(parent);
+                walk = parent;
             }
+        }
+    }
+
+    fn prune_session_context(&mut self) {
+        self.ensure_selection_visible();
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|(id, _)| !node_is_attached(&self.file.document, *id))
+        {
+            self.renaming = None;
+        }
+        if self
+            .layer_drag
+            .as_ref()
+            .is_some_and(|drag| !node_is_attached(&self.file.document, drag.id))
+        {
+            self.layer_drag = None;
+        }
+        if self.inspector_drag.as_ref().is_some_and(|drag| {
+            drag.ids
+                .iter()
+                .any(|id| !node_is_attached(&self.file.document, *id))
+        }) {
+            self.inspector_drag = None;
+        }
+        if self
+            .active_machine
+            .is_some_and(|id| !self.file.machine_order.contains(&id))
+        {
+            self.active_machine = self
+                .file
+                .start_machine
+                .or_else(|| self.file.machine_order.first().copied());
+        }
+        validate_machine_selection(self);
+        if self
+            .file
+            .document
+            .compositions
+            .get(self.file.document.main)
+            .is_none()
+        {
+            self.active_machine = None;
+            self.machine_selection = MachineSelection::None;
         }
     }
 
@@ -2853,13 +3095,25 @@ impl Session {
         &mut self,
         command: renamite_history::EditorCommand,
     ) -> Option<renamite_history::Applied> {
-        let history = &mut self.history;
-        let file = &mut self.file;
-        let mut project = pm_from(file);
-
-        match history.apply(&mut project, command) {
+        if command_is_noop(&self.file, &command) {
+            return Some(renamite_history::Applied {
+                created: None,
+                created_asset: None,
+                created_machine: None,
+            });
+        }
+        let result = {
+            let history = &mut self.history;
+            let file = &mut self.file;
+            let mut project = pm_from(file);
+            history.apply(&mut project, command)
+        };
+        match result {
             Ok(applied) => {
-                self.dirty = true;
+                self.document_generation = self.document_generation.wrapping_add(1);
+                self.refresh_dirty_from_saved();
+                #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+                self.autosave_if_due();
                 Some(applied)
             }
             Err(error) => {
@@ -2867,6 +3121,19 @@ impl Session {
                 None
             }
         }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.document_generation = self.document_generation.wrapping_add(1);
+        self.dirty_without_history = true;
+        self.refresh_dirty_from_saved();
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        self.autosave_if_due();
+    }
+
+    fn refresh_dirty_from_saved(&mut self) {
+        let current = file_fingerprint(&self.file);
+        self.dirty = self.dirty_without_history || current != self.saved_fingerprint;
     }
 
     pub fn sync_image_assets(&mut self) {
@@ -2925,20 +3192,55 @@ impl Session {
     }
 
     pub fn save_snapshot(&self) -> anyhow::Result<Vec<u8>> {
-        let mut file = self.file.clone();
-        file.normalize();
-        file.garbage_collect();
-        Ok(renamite_io_ren::save(&file)?.into_bytes())
+        Ok(self.save_snapshot_with_fingerprint(false)?.0)
     }
 
     pub fn pack_snapshot(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(self.save_snapshot_with_fingerprint(true)?.0)
+    }
+
+    pub fn save_snapshot_with_fingerprint(&self, binary: bool) -> anyhow::Result<(Vec<u8>, u64)> {
         let mut file = self.file.clone();
+        file.document.ensure_main_composition();
         file.normalize();
         file.garbage_collect();
-        Ok(renamite_io_ren::save_binary(&file)?)
+        let bytes = if binary {
+            renamite_io_ren::save_binary(&file)?
+        } else {
+            renamite_io_ren::save(&file)?.into_bytes()
+        };
+        let max = if binary {
+            renamite_io_ren::MAX_BINARY_BYTES
+        } else {
+            renamite_io_ren::MAX_TEXT_BYTES
+        };
+        if bytes.len() > max {
+            anyhow::bail!("serialized project is too large");
+        }
+        Ok((bytes, file_fingerprint(&file)))
     }
 
     pub fn replace_file(&mut self, file: RenFile) {
+        self.replace_file_inner(file, false);
+    }
+
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    fn replace_file_preserving_recovery(&mut self, file: RenFile) {
+        self.replace_file_inner(file, true);
+    }
+
+    fn replace_file_inner(&mut self, mut file: RenFile, _preserve_recovery: bool) {
+        self.cancel_open_picker_state();
+        if self.history.transaction_open() {
+            let history = &mut self.history;
+            let project_file = &mut self.file;
+            let mut project = pm_from(project_file);
+            let _ = history.cancel(&mut project);
+        }
+        self.active_file_operation = None;
+        self.document_generation = self.document_generation.wrapping_add(1);
+        file.document.ensure_main_composition();
+        file.normalize();
         self.file = file;
         self.welcome = false;
         self.history = History::new();
@@ -2974,18 +3276,102 @@ impl Session {
         self.viewport.request_fit();
         self.viewport.pan_last = None;
         self.viewport.last_pointer = DVec2::ZERO;
+        self.playing = false;
+        self.playback = Playback::stopped(
+            self.file
+                .document
+                .compositions
+                .get(self.file.document.main)
+                .map(|composition| composition.range)
+                .unwrap_or((Frame(0), Frame(0))),
+        );
+        self.last_tick = Instant::now();
+        self.engine.set_timeline_playback(self.playback);
         self.dirty = false;
+        self.saved_fingerprint = file_fingerprint(&self.file);
+        self.dirty_without_history = false;
         self.exporting_png = false;
         self.sync_image_assets();
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        {
+            if !_preserve_recovery {
+                renamite_platform::clear_autosave();
+                self.recovery_available = false;
+                self.autosave_last_ms = 0.0;
+            } else {
+                self.recovery_available = true;
+            }
+        }
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
 
+    pub fn persisted_fingerprint(&self) -> u64 {
+        file_fingerprint(&self.file)
+    }
+
     pub fn mark_saved(&mut self, path: Option<PathBuf>) {
+        let fingerprint = self.persisted_fingerprint();
+        self.mark_saved_snapshot(path, fingerprint);
+    }
+
+    pub fn mark_saved_snapshot(&mut self, path: Option<PathBuf>, fingerprint: u64) {
         self.current_path = path;
-        self.dirty = false;
+        self.saved_fingerprint = fingerprint;
+        self.dirty_without_history = false;
+        self.refresh_dirty_from_saved();
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        if !self.dirty && self.pending_intent != Some(PendingIntent::RecoverAutosave) {
+            renamite_platform::clear_autosave();
+            self.recovery_available = false;
+            self.autosave_last_ms = 0.0;
+        }
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    pub(crate) fn begin_file_operation(&mut self, intent: PendingIntent) -> FileOperationToken {
+        self.next_file_operation = self.next_file_operation.wrapping_add(1);
+        let token = FileOperationToken {
+            id: self.next_file_operation,
+            generation: self.document_generation,
+            intent,
+        };
+        self.active_file_operation = Some(token);
+        token
+    }
+
+    pub(crate) fn file_operation_active(&self, token: FileOperationToken) -> bool {
+        self.active_file_operation == Some(token)
+    }
+
+    pub(crate) fn file_operation_current(&self, token: FileOperationToken) -> bool {
+        self.file_operation_active(token) && self.document_generation == token.generation
+    }
+
+    pub(crate) fn finish_file_operation(&mut self, token: FileOperationToken) {
+        if self.active_file_operation == Some(token) {
+            self.active_file_operation = None;
+        }
+    }
+
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    pub(crate) fn invalidate_file_operation(&mut self) {
+        self.active_file_operation = None;
+    }
+
+    fn accept_file_operation(&mut self, token: FileOperationToken) -> bool {
+        if !self.file_operation_active(token) {
+            return false;
+        }
+        if self.file_operation_current(token) {
+            return true;
+        }
+        self.finish_file_operation(token);
+        self.clear_pending_intent();
+        self.status = Some("File operation canceled because the document changed".into());
+        self.repaint();
+        false
     }
 
     pub fn drain_file_ops(&mut self) -> bool {
@@ -2994,11 +3380,16 @@ impl Session {
         for op in ops {
             match op {
                 PendingFileOp::OpenDone {
+                    token,
                     file,
                     path,
                     message,
                     warnings,
                 } => {
+                    if !self.accept_file_operation(token) {
+                        continue;
+                    }
+                    self.finish_file_operation(token);
                     self.replace_file(*file);
                     self.welcome = false;
                     self.current_path = path;
@@ -3016,17 +3407,42 @@ impl Session {
                         ));
                     }
                 }
-                PendingFileOp::SaveOutcome { ok: true, path } => {
-                    self.mark_saved(path);
-                    self.status = Some("Saved".to_string());
-                    if self.pending_intent.is_some() {
-                        run_intent = true;
+                PendingFileOp::OpenCancelled { token } => {
+                    if self.accept_file_operation(token) {
+                        self.finish_file_operation(token);
+                        self.status = Some("Open canceled".into());
+                        self.repaint();
                     }
                 }
-                PendingFileOp::SaveOutcome { ok: false, .. } => {
-                    self.clear_pending_intent();
-                    self.status = Some("Save canceled".to_string());
-                    self.bump();
+                PendingFileOp::SaveOutcome {
+                    token,
+                    ok: true,
+                    path,
+                    fingerprint,
+                } => {
+                    if !self.accept_file_operation(token) {
+                        continue;
+                    }
+                    self.finish_file_operation(token);
+                    self.mark_saved_snapshot(path, fingerprint);
+                    self.status = Some("Saved".to_string());
+                    if self.pending_intent.is_some() && !self.dirty {
+                        run_intent = true;
+                    } else if self.pending_intent.is_some() {
+                        self.clear_pending_intent();
+                        self.status =
+                            Some("Saved an earlier snapshot; current edits were kept".into());
+                    }
+                }
+                PendingFileOp::SaveOutcome {
+                    token, ok: false, ..
+                } => {
+                    if self.accept_file_operation(token) {
+                        self.finish_file_operation(token);
+                        self.clear_pending_intent();
+                        self.status = Some("Save canceled".to_string());
+                        self.bump();
+                    }
                 }
                 PendingFileOp::Exported => {
                     self.status = Some("Exported".to_string());
@@ -3069,15 +3485,28 @@ impl Session {
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();
                 }
-                PendingFileOp::ImportFontDone { name, bytes } => {
-                    self.import_font(name, bytes);
+                PendingFileOp::ImportFontDone { token, name, bytes } => {
+                    if self.accept_file_operation(token) {
+                        self.finish_file_operation(token);
+                        self.import_font(name, bytes);
+                    }
                 }
-                PendingFileOp::ImportImageDone { asset } => {
-                    self.import_image(asset);
+                PendingFileOp::ImportImageDone { token, asset } => {
+                    if self.accept_file_operation(token) {
+                        self.finish_file_operation(token);
+                        self.import_image(asset);
+                    }
                 }
-                PendingFileOp::Failed { message } => {
-                    self.clear_pending_intent();
-                    self.exporting_png = false;
+                PendingFileOp::Failed { message, token } => {
+                    if let Some(token) = token {
+                        if !self.accept_file_operation(token) {
+                            continue;
+                        }
+                        self.finish_file_operation(token);
+                        self.clear_pending_intent();
+                    } else {
+                        self.exporting_png = false;
+                    }
                     self.status = Some(format!("Error: {message}"));
                     self.revision = self.revision.wrapping_add(1);
                     request_frame();
@@ -3088,6 +3517,10 @@ impl Session {
     }
 
     pub fn request_discard(&mut self, intent: PendingIntent) {
+        if self.pending_intent.is_some() {
+            return;
+        }
+        self.active_file_operation = None;
         self.pending_intent = Some(intent);
         self.confirm_dialog.show();
         self.repaint();
@@ -3129,7 +3562,9 @@ impl Session {
             let file = &mut self.file;
             let mut project = pm_from(file);
             let _ = history.cancel(&mut project);
+            self.document_generation = self.document_generation.wrapping_add(1);
             self.engine.reevaluate(&self.file);
+            self.refresh_dirty_from_saved();
         }
 
         if let Some(paint) = open.cancel_current_paint {
@@ -3625,13 +4060,18 @@ impl Session {
             return;
         };
 
+        let Some(name) = self
+            .file
+            .machines
+            .get(machine)
+            .and_then(|definition| definition.inputs.get(input))
+            .map(|input| input.name.clone())
+        else {
+            return;
+        };
         if let Some(InputValue::Bool(current)) = self.machine_preview_inputs.get_mut(input) {
             *current = value;
-            self.engine.set_bool(
-                &self.file,
-                &self.file.machines[machine].inputs[input].name,
-                value,
-            );
+            self.engine.set_bool(&self.file, &name, value);
             request_frame();
         }
     }
@@ -3642,13 +4082,18 @@ impl Session {
             return;
         };
 
+        let Some(name) = self
+            .file
+            .machines
+            .get(machine)
+            .and_then(|definition| definition.inputs.get(input))
+            .map(|input| input.name.clone())
+        else {
+            return;
+        };
         if let Some(InputValue::Number(current)) = self.machine_preview_inputs.get_mut(input) {
             *current = value;
-            self.engine.set_number(
-                &self.file,
-                &self.file.machines[machine].inputs[input].name,
-                value,
-            );
+            self.engine.set_number(&self.file, &name, value);
             request_frame();
         }
     }
@@ -3659,7 +4104,12 @@ impl Session {
             return;
         };
 
-        let Some(input_def) = self.file.machines[machine].inputs.get(input) else {
+        let Some(input_def) = self
+            .file
+            .machines
+            .get(machine)
+            .and_then(|definition| definition.inputs.get(input))
+        else {
             return;
         };
 
@@ -3805,7 +4255,7 @@ impl Session {
         if self.machine_preview_enabled {
             self.engine.reevaluate(&self.file);
         }
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         self.revision = self.revision.wrapping_add(1);
         request_frame();
     }
@@ -3864,7 +4314,7 @@ impl Session {
             id: None,
         });
         self.history.commit();
-        self.dirty = true;
+        self.refresh_dirty_from_saved();
         let created = self.file.clip_order.last().copied();
         self.bump();
         created
@@ -4031,7 +4481,7 @@ impl ViewportState {
 
     pub fn guide_hit(&self, screen_pos: DVec2) -> Option<usize> {
         const HIT_PX: f64 = 6.0;
-        let tol = HIT_PX / self.view.scale.max(1e-6);
+        let tol = self.view.world_tolerance(HIT_PX);
         let world = self.view.screen_to_world(screen_pos);
         self.guides.iter().position(|g| match g.axis {
             GuideAxis::Horizontal => {
@@ -4185,7 +4635,13 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     }
     let rows = timeline_rows(s);
     let (head, comp) = (s.playback.head, s.file.document.main);
-    let range = s.file.document.compositions[comp].range;
+    let range = s
+        .file
+        .document
+        .compositions
+        .get(comp)
+        .map(|composition| composition.range)
+        .unwrap_or((Frame(0), Frame(0)));
     let zoom = s.timeline_zoom;
     let offset_x = s.timeline_offset_x;
     let ctx = timeline_ctx_with_offset(
@@ -4226,10 +4682,13 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
 }
 
 pub fn timeline_rows(s: &Session) -> Vec<TimelineRow> {
-    let comp = &s.file.document.compositions[s.file.document.main];
+    let Some(comp) = s.file.document.compositions.get(s.file.document.main) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
+    let mut visited = HashSet::new();
     for &id in &comp.children {
-        append_timeline_rows_for_node(s, id, &mut out);
+        append_timeline_rows_for_node(s, id, &mut out, &mut visited);
     }
     out
 }
@@ -4238,7 +4697,11 @@ fn append_timeline_rows_for_node(
     s: &Session,
     id: renamite_model::NodeId,
     out: &mut Vec<TimelineRow>,
+    visited: &mut HashSet<renamite_model::NodeId>,
 ) {
+    if !visited.insert(id) || !node_is_attached(&s.file.document, id) {
+        return;
+    }
     let doc = &s.file.document;
 
     for row in renamite_behavior_common::inspect::props_for_node(doc, id, Frame(0)) {
@@ -4254,9 +4717,30 @@ fn append_timeline_rows_for_node(
         && let Some(node) = doc.nodes.get(id)
     {
         for &child in &node.children {
-            append_timeline_rows_for_node(s, child, out);
+            append_timeline_rows_for_node(s, child, out, visited);
         }
     }
+}
+
+fn retain_timeline_keys(s: &mut Session) {
+    let rows = timeline_rows(s);
+    let range = s
+        .file
+        .document
+        .compositions
+        .get(s.file.document.main)
+        .map(|comp| comp.range)
+        .unwrap_or((Frame(0), Frame(0)));
+    let ctx = timeline_ctx_with_offset(
+        &s.file.document,
+        &s.file.clips,
+        &rows,
+        range,
+        s.playback.head,
+        s.timeline_zoom,
+        s.timeline_offset_x,
+    );
+    s.keys.retain_valid(&ctx);
 }
 
 fn pm_from(file: &mut RenFile) -> ProjectMut<'_> {
@@ -4290,21 +4774,47 @@ fn validate_machine_selection(s: &mut Session) {
     let Some(mid) = s.active_machine else {
         s.machine_selection = MachineSelection::None;
         s.active_machine_layer = 0;
+        s.machine_preview_inputs.clear();
+        s.listener_draft = ListenerDraft::default();
         return;
     };
     let Some(m) = s.file.machines.get(mid) else {
+        s.active_machine = s
+            .file
+            .start_machine
+            .or_else(|| s.file.machine_order.first().copied());
         s.machine_selection = MachineSelection::None;
         s.active_machine_layer = 0;
+        s.machine_preview_inputs.clear();
+        s.listener_draft = ListenerDraft::default();
         return;
     };
+    if !s.file.machine_order.contains(&mid) {
+        s.active_machine = s
+            .file
+            .start_machine
+            .or_else(|| s.file.machine_order.first().copied());
+        s.machine_selection = MachineSelection::None;
+        s.active_machine_layer = 0;
+        s.machine_preview_inputs.clear();
+        s.listener_draft = ListenerDraft::default();
+        return;
+    }
+    s.machine_preview_inputs.truncate(m.inputs.len());
+    if s.listener_draft
+        .input
+        .is_some_and(|input| input >= m.inputs.len())
+    {
+        s.listener_draft.input = None;
+    }
     // Clamp active layer
     if s.active_machine_layer >= m.layers.len() {
         s.active_machine_layer = m.layers.len().saturating_sub(1);
     }
     let valid = match &s.machine_selection {
-        MachineSelection::None
-        | MachineSelection::Input { .. }
-        | MachineSelection::Listener { .. } => true,
+        MachineSelection::None => true,
+        MachineSelection::Input { input } => *input < m.inputs.len(),
+        MachineSelection::Listener { listener } => *listener < m.listeners.len(),
         MachineSelection::Layer { layer } => *layer < m.layers.len(),
         MachineSelection::State { layer, state } => m
             .layers
@@ -4335,31 +4845,41 @@ fn validate_machine_selection(s: &mut Session) {
 }
 
 pub fn undo_cmd(s: &mut Session) {
-    let his = &mut s.history;
-    let file = &mut s.file;
-    let mut pm = pm_from(file);
-    if his.undo(&mut pm).is_ok() {
-        s.dirty = true;
-        s.selection
-            .nodes
-            .retain(|&id| node_is_attached(&s.file.document, id));
-        validate_machine_selection(s);
+    s.cancel_active_edits();
+    let can_undo = s.history.can_undo();
+    let result = if can_undo {
+        let history = &mut s.history;
+        let file = &mut s.file;
+        let mut project = pm_from(file);
+        history.undo(&mut project)
+    } else {
+        Ok(())
+    };
+    if result.is_ok() && can_undo {
+        s.document_generation = s.document_generation.wrapping_add(1);
+        s.prune_session_context();
         retain_valid_keys(s);
+        s.refresh_dirty_from_saved();
     }
     sync_playback_range(s);
 }
 
 pub fn redo_cmd(s: &mut Session) {
-    let his = &mut s.history;
-    let file = &mut s.file;
-    let mut pm = pm_from(file);
-    if his.redo(&mut pm).is_ok() {
-        s.dirty = true;
-        s.selection
-            .nodes
-            .retain(|&id| node_is_attached(&s.file.document, id));
-        validate_machine_selection(s);
+    s.cancel_active_edits();
+    let can_redo = s.history.can_redo();
+    let result = if can_redo {
+        let history = &mut s.history;
+        let file = &mut s.file;
+        let mut project = pm_from(file);
+        history.redo(&mut project)
+    } else {
+        Ok(())
+    };
+    if result.is_ok() && can_redo {
+        s.document_generation = s.document_generation.wrapping_add(1);
+        s.prune_session_context();
         retain_valid_keys(s);
+        s.refresh_dirty_from_saved();
     }
     sync_playback_range(s);
 }
@@ -4367,19 +4887,7 @@ pub fn redo_cmd(s: &mut Session) {
 /// Drop key selections whose keyframes no longer exist (undo/redo can delete
 /// keys or whole nodes). The behavior documents this as the host's job.
 fn retain_valid_keys(s: &mut Session) {
-    let rows = timeline_rows(s);
-    let comp = s.file.document.main;
-    let range = s.file.document.compositions[comp].range;
-    let ctx = timeline_ctx_with_offset(
-        &s.file.document,
-        &s.file.clips,
-        &rows,
-        range,
-        s.playback.head,
-        s.timeline_zoom,
-        s.timeline_offset_x,
-    );
-    s.keys.retain_valid(&ctx);
+    retain_timeline_keys(s);
 }
 
 /// Abort any in-progress timeline gesture, committing nothing. Used for
@@ -4393,21 +4901,59 @@ pub fn cancel_timeline(s: &mut Session) {
     s.repaint();
 }
 
-/// Attached = node exists and is reachable: has a parent node, or is a
-/// direct child of ANY composition (attach() sets parent=None for
-/// Parent::Comp, so checking only `main` dropped valid non-main selections).
 fn node_is_attached(doc: &renamite_model::Document, id: renamite_model::NodeId) -> bool {
-    let Some(n) = doc.nodes.get(id) else {
-        return false;
-    };
-    if n.parent.is_some() {
-        return true;
+    let mut current = id;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        let Some(node) = doc.nodes.get(current) else {
+            return false;
+        };
+        let root_memberships: usize = doc
+            .compositions
+            .values()
+            .map(|composition| {
+                composition
+                    .children
+                    .iter()
+                    .filter(|&&child| child == current)
+                    .count()
+            })
+            .sum();
+        if node.parent.is_some() && root_memberships != 0 {
+            return false;
+        }
+        let Some(parent) = node.parent else {
+            return root_memberships == 1;
+        };
+        let Some(parent_node) = doc.nodes.get(parent) else {
+            return false;
+        };
+        if parent_node
+            .children
+            .iter()
+            .filter(|&&child| child == current)
+            .count()
+            != 1
+        {
+            return false;
+        }
+        current = parent;
     }
-    doc.compositions.values().any(|c| c.children.contains(&id))
 }
 
 fn sync_playback_range(s: &mut Session) {
-    let range = s.file.document.compositions[s.file.document.main].range;
+    let Some(range) = s
+        .file
+        .document
+        .compositions
+        .get(s.file.document.main)
+        .map(|composition| composition.range)
+    else {
+        return;
+    };
     s.playback.range = range;
     let head = s.playback.head.clamp(range.0.0 as f64, range.1.0 as f64);
     if head != s.playback.head {
@@ -4615,6 +5161,213 @@ fn affine_vector(affine: kurbo::Affine, value: DVec2) -> DVec2 {
     DVec2::new(a * value.x + c * value.y, b * value.x + d * value.y)
 }
 
+fn file_fingerprint(file: &RenFile) -> u64 {
+    let mut normalized = file.clone();
+    normalized.normalize();
+    normalized.garbage_collect();
+    let serialized = renamite_io_ren::save_binary(&normalized)
+        .or_else(|_| renamite_io_ren::save(&normalized).map(String::into_bytes))
+        .or_else(|_| serde_json::to_vec(&normalized).map_err(|error| error.to_string()));
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match serialized {
+        Ok(bytes) => bytes.hash(&mut hasher),
+        Err(error) => format!("{normalized:#?}\n{error}").hash(&mut hasher),
+    }
+    hasher.finish()
+}
+
+fn command_is_noop(file: &RenFile, command: &EditorCommand) -> bool {
+    use renamite_history::EditorCommand as Command;
+    use renamite_model::{NodeKind, StyleKind};
+
+    let document = &file.document;
+    match command {
+        Command::SetNodeFlags {
+            id,
+            visible,
+            locked,
+        } => document.nodes.get(*id).is_some_and(|node| {
+            visible.is_none_or(|value| node.visible == value)
+                && locked.is_none_or(|value| node.locked == value)
+        }),
+        Command::SetNodeName { id, name } => {
+            document.nodes.get(*id).is_some_and(|node| node.name == *name)
+        }
+        Command::SetTextContent { id, text } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Text(value) if value.text == *text)
+        }),
+        Command::SetTextFont { id, font } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Text(value) if value.font == *font)
+        }),
+        Command::SetPaint { id, paint } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Style(style) if style.paint() == paint)
+        }),
+        Command::SetTrimMode { id, mode } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Modifier(renamite_model::ModifierKind::TrimPath { mode: current, .. }) if current == mode)
+        }),
+        Command::SetStrokeDash { id, dash } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Style(StyleKind::Stroke { dash: current, .. }) if current == dash)
+        }),
+        Command::SetStrokeCap { id, cap } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Style(StyleKind::Stroke { cap: current, .. }) if current == cap)
+        }),
+        Command::SetStrokeJoin { id, join } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Style(StyleKind::Stroke { join: current, .. }) if current == join)
+        }),
+        Command::SetFillRule { id, rule } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Style(StyleKind::Fill { rule: current, .. }) if current == rule)
+        }),
+        Command::SetTextAlign { id, align } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Text(value) if value.align == *align)
+        }),
+        Command::SetMaskInverted { id, inverted } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Mask(mask) if mask.inverted == *inverted)
+        }),
+        Command::SetZigZagSmooth { id, smooth } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Modifier(renamite_model::ModifierKind::ZigZag { smooth: current, .. }) if current == smooth)
+        }),
+        Command::MoveNode {
+            id,
+            new_parent,
+            index,
+        } => document.locate(*id).is_some_and(|(parent, current)| {
+            if parent != *new_parent {
+                return false;
+            }
+            let length = match parent {
+                renamite_model::Parent::Comp(comp) => document
+                    .compositions
+                    .get(comp)
+                    .map(|composition| composition.children.len())
+                    .unwrap_or(0),
+                renamite_model::Parent::Node(parent) => document
+                    .nodes
+                    .get(parent)
+                    .map(|node| node.children.len())
+                    .unwrap_or(0),
+            };
+            current == (*index).min(length)
+        }),
+        Command::MoveKeyframes { moves } => moves.iter().all(|move_| move_.from == move_.to),
+        Command::SetStatic { id, prop, value } => document
+            .get_static(*id, prop)
+            .ok()
+            .as_ref()
+            == Some(value),
+        Command::AddKeyframe {
+            id,
+            prop,
+            frame,
+            value,
+        } => document
+            .keyframe_data(*id, prop, *frame)
+            .is_some_and(|key| key.value == *value),
+        Command::SetEasing {
+            id,
+            prop,
+            frame,
+            interpolation,
+            ease_out,
+            ease_in,
+        } => document.keyframe_data(*id, prop, *frame).is_some_and(|key| {
+            key.interpolation == *interpolation
+                && key.ease_out == *ease_out
+                && key.ease_in == *ease_in
+        }),
+        Command::SetCompositionRange { comp, start, end } => document
+            .compositions
+            .get(*comp)
+            .is_some_and(|composition| {
+                start.is_none_or(|value| composition.range.0 == value)
+                    && end.is_none_or(|value| composition.range.1 == value)
+            }),
+        Command::SetCompositionName { comp, name } => document
+            .compositions
+            .get(*comp)
+            .is_some_and(|composition| composition.name == *name),
+        Command::SetCompositionSize { comp, size } => document
+            .compositions
+            .get(*comp)
+            .is_some_and(|composition| composition.size == *size),
+        Command::SetCompositionRate { comp, rate } => document
+            .compositions
+            .get(*comp)
+            .is_some_and(|composition| composition.rate == *rate),
+        Command::SetImageCrop { id, crop } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Image(image) if image.crop() == *crop)
+        }),
+        Command::SetLayerProps {
+            id,
+            in_frame,
+            out_frame,
+            time_stretch,
+            blend,
+        } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Layer(layer)
+                if in_frame.is_none_or(|value| layer.in_frame == value)
+                    && out_frame.is_none_or(|value| layer.out_frame == value)
+                    && time_stretch.is_none_or(|value| layer.time_stretch == value)
+                    && blend.is_none_or(|value| layer.blend == value))
+        }),
+        Command::SetPrecompTimeMap {
+            id,
+            offset,
+            stretch,
+        } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Precomp { time_map, .. }
+                if offset.is_none_or(|value| time_map.offset == value)
+                    && stretch.is_none_or(|value| time_map.stretch == value))
+        }),
+        Command::SetPrecompComp { id, comp } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Precomp { comp: current, .. } if current == comp)
+        }),
+        Command::SetStarKind { id, kind } => document.nodes.get(*id).is_some_and(|node| {
+            match &node.kind {
+                NodeKind::Shape(renamite_model::ShapeKind::Star { kind: current, .. })
+                | NodeKind::Mask(renamite_model::MaskProps {
+                    shape: renamite_model::ShapeKind::Star { kind: current, .. },
+                    ..
+                }) => current == kind,
+                _ => false,
+            }
+        }),
+        Command::SetNodeKind { id, kind } => document.nodes.get(*id).is_some_and(|node| {
+            matches!(
+                (serde_json::to_vec(&node.kind), serde_json::to_vec(kind)),
+                (Ok(current), Ok(next)) if current == next
+            )
+        }),
+        Command::SetStartMachine { start } => file.start_machine == *start,
+        Command::SetClipMeta { id, name, range } => file.clips.get(*id).is_some_and(|clip| {
+            name.as_ref().is_none_or(|value| clip.name == **value)
+                && range.is_none_or(|value| clip.range == value)
+        }),
+        Command::AddClipKey {
+            clip,
+            node,
+            prop,
+            key,
+        } => file
+            .clips
+            .get(*clip)
+            .and_then(|clip| {
+                clip.tracks
+                    .iter()
+                    .find(|track| track.node == *node && track.prop == *prop)
+            })
+            .and_then(|track| track.keys.binary_search_by_key(&key.frame, |entry| entry.frame).ok())
+            .is_some_and(|index| {
+                file.clips
+                    .get(*clip)
+                    .and_then(|clip| clip.tracks.iter().find(|track| track.node == *node && track.prop == *prop))
+                    .is_some_and(|track| track.keys[index] == *key)
+            }),
+        Command::MoveClipKeys { moves } => moves.iter().all(|move_| move_.from == move_.to),
+        Command::ReplaceMachine { id, machine } => file.machines.get(*id) == Some(machine),
+        _ => false,
+    }
+}
+
 pub fn blank_file() -> RenFile {
     RenFile::new(renamite_model::Document::empty(), "Untitled")
 }
@@ -4627,7 +5380,10 @@ pub fn seeded_demo_file() -> RenFile {
 
     let mut doc = renamite_model::Document::empty();
     let comp = doc.main;
-    let (w, h) = doc.compositions[comp].size;
+    let (w, h) = doc
+        .main_composition()
+        .map(|composition| composition.size)
+        .unwrap_or((512, 512));
     let center = DVec2::new(w as f64 * 0.5, h as f64 * 0.5);
 
     let shape = doc.create_node(Node::new(

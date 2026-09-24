@@ -16,7 +16,9 @@ use glam::DVec2;
 use renamite_animation::{FrameRate, LoopMode, PlayState, Playback};
 use renamite_io_ren::RenFile;
 use renamite_machine::{InputValue, MachineId, MachineInstance, PointerEventKind};
-use renamite_model::{CompId, NodeId, Overrides, PropPath, Scene, Value, evaluate_with, pick};
+use renamite_model::{
+    CompId, NodeId, Overrides, PropPath, Scene, Value, evaluate_with, pick_selectable_with_leaf,
+};
 
 pub use renamite_model::{nodes_bounds, pick_box};
 
@@ -54,12 +56,18 @@ pub struct Engine {
     pub mode: PlayMode,
     paused: bool,
 
-    ov: Overrides,           // scratch, reused every tick
-    host_ov: Overrides,      // durable host-driven patch; wins over machine/timeline
-    scene: Scene,            // last evaluated frame; also the pick surface
-    hover: Option<NodeId>,   // Enter/Exit synthesis
-    pressed: Option<NodeId>, // Click synthesis
-    events: Vec<String>,     // fired this tick, read by host
+    ov: Overrides,               // scratch, reused every tick
+    host_ov: Overrides,          // durable host-driven patch; wins over machine/timeline
+    scene: Scene,                // last evaluated frame; also the pick surface
+    hover: Option<PointerHit>,   // Enter/Exit synthesis
+    pressed: Option<PointerHit>, // Click synthesis
+    events: Vec<String>,         // fired this tick, read by host
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PointerHit {
+    outer: NodeId,
+    leaf: NodeId,
 }
 
 impl Engine {
@@ -107,6 +115,9 @@ impl Engine {
     /// While paused, positive-dt ticks are no-ops (the scene is left as-is).
     pub fn tick(&mut self, project: &RenFile, dt_secs: f64) -> &[String] {
         self.events.clear();
+        if !dt_secs.is_finite() || dt_secs < 0.0 {
+            return &self.events;
+        }
         if self.paused {
             if dt_secs == 0.0 {
                 self.ov.clear();
@@ -125,8 +136,11 @@ impl Engine {
         if let Some(c) = project.document.compositions.get(self.comp) {
             self.rate = c.rate;
         }
-        self.ov.clear();
         let dt_frames = dt_secs * self.rate.fps();
+        if !dt_frames.is_finite() {
+            return &self.events;
+        }
+        self.ov.clear();
 
         let frame = match &mut self.mode {
             PlayMode::Machine {
@@ -162,21 +176,15 @@ impl Engine {
     /// Re-evaluate at the current head without advancing time. Call after any
     /// editor mutation of the document (History apply/undo/redo).
     pub fn reevaluate(&mut self, project: &RenFile) {
+        self.events.clear();
         if let Some(c) = project.document.compositions.get(self.comp) {
             self.rate = c.rate;
         }
-        match &mut self.mode {
-            PlayMode::Machine { id, instance, .. } => {
-                self.ov.clear();
-                if let Some(m) = project.machines.get(*id) {
-                    let out = instance.tick(m, &project.clips, 0.0, &mut self.ov);
-                    let _ = out.events.len();
-                    self.events.clear();
-                }
-            }
-            PlayMode::Timeline { .. } | PlayMode::Scrub { .. } => {
-                self.ov.clear();
-            }
+        self.ov.clear();
+        if let PlayMode::Machine { id, instance, .. } = &mut self.mode
+            && let Some(m) = project.machines.get(*id)
+        {
+            let _ = instance.reevaluate(m, &project.clips, &mut self.ov);
         }
         self.apply_host_overrides();
         self.scene = evaluate_with(&project.document, self.comp, self.head(), &self.ov);
@@ -220,7 +228,14 @@ impl Engine {
     }
 
     pub fn play_timeline(&mut self, project: &RenFile, loop_mode: LoopMode) {
-        let range = project.document.compositions[self.comp].range;
+        let Some(range) = project
+            .document
+            .compositions
+            .get(self.comp)
+            .map(|composition| composition.range)
+        else {
+            return;
+        };
         let head = match &self.mode {
             PlayMode::Timeline { playback } if playback.range == range => playback
                 .head
@@ -239,18 +254,27 @@ impl Engine {
                 dir: 1.0,
             },
         };
+        self.hover = None;
+        self.pressed = None;
     }
 
     pub fn set_timeline_playback(&mut self, pb: Playback) {
         match &mut self.mode {
             PlayMode::Timeline { playback } => *playback = pb,
-            PlayMode::Scrub { .. } => self.mode = PlayMode::Timeline { playback: pb },
+            PlayMode::Scrub { .. } => {
+                self.mode = PlayMode::Timeline { playback: pb };
+                self.hover = None;
+                self.pressed = None;
+            }
             PlayMode::Machine { .. } => {}
         }
     }
 
     /// Lock to a frame (editor scrubbing). Machine state is discarded.
     pub fn scrub(&mut self, project: &RenFile, frame: f64) {
+        if !frame.is_finite() {
+            return;
+        }
         self.mode = PlayMode::Scrub { frame };
         self.reevaluate(project);
     }
@@ -278,7 +302,12 @@ impl Engine {
     }
 
     fn playing_playback(&self, project: &RenFile) -> Playback {
-        let range = project.document.compositions[self.comp].range;
+        let range = project
+            .document
+            .compositions
+            .get(self.comp)
+            .map(|composition| composition.range)
+            .unwrap_or((renamite_animation::Frame(0), renamite_animation::Frame(180)));
         let head = match &self.mode {
             PlayMode::Timeline { playback } if playback.range == range => playback.head,
             PlayMode::Machine { background, .. } if background.range == range => background.head,
@@ -380,34 +409,32 @@ impl Engine {
     }
 
     pub fn pointer_move(&mut self, project: &RenFile, pt: DVec2) {
-        let hit = pick(&self.scene, pt);
+        let hit = self.pointer_hit(project, pt);
         if hit != self.hover {
             if let Some(prev) = self.hover {
-                self.route(project, prev, PointerEventKind::Exit);
+                self.route_hit(project, prev, PointerEventKind::Exit);
             }
             if let Some(now) = hit {
-                self.route(project, now, PointerEventKind::Enter);
+                self.route_hit(project, now, PointerEventKind::Enter);
             }
             self.hover = hit;
         }
     }
 
     pub fn pointer_down(&mut self, project: &RenFile, pt: DVec2) {
-        self.pressed = pick(&self.scene, pt);
-        if let Some(n) = self.pressed {
-            self.route(project, n, PointerEventKind::Down);
+        self.pressed = self.pointer_hit(project, pt);
+        if let Some(hit) = self.pressed {
+            self.route_hit(project, hit, PointerEventKind::Down);
         }
     }
 
     pub fn pointer_up(&mut self, project: &RenFile, pt: DVec2) {
-        let release_hit = pick(&self.scene, pt);
+        let release_hit = self.pointer_hit(project, pt);
         if let Some(pressed) = self.pressed {
-            self.route(project, pressed, PointerEventKind::Up);
+            self.route_hit(project, pressed, PointerEventKind::Up);
             if release_hit == Some(pressed) {
-                self.route(project, pressed, PointerEventKind::Click);
+                self.route_hit(project, pressed, PointerEventKind::Click);
             }
-        } else if let Some(n) = release_hit {
-            let _ = n;
         }
         self.pressed = None;
     }
@@ -416,20 +443,47 @@ impl Engine {
     /// A captured press still gets Up (drag released off-surface).
     pub fn pointer_leave(&mut self, project: &RenFile) {
         if let Some(prev) = self.hover.take() {
-            self.route(project, prev, PointerEventKind::Exit);
+            self.route_hit(project, prev, PointerEventKind::Exit);
         }
         if let Some(pressed) = self.pressed.take() {
-            self.route(project, pressed, PointerEventKind::Up);
-        } else {
-            self.pressed = None;
+            self.route_hit(project, pressed, PointerEventKind::Up);
         }
     }
 
-    fn route(&mut self, project: &RenFile, node: NodeId, kind: PointerEventKind) {
+    fn pointer_hit(&self, project: &RenFile, pt: DVec2) -> Option<PointerHit> {
+        pick_selectable_with_leaf(&project.document, &self.scene, self.comp, pt)
+            .map(|(outer, leaf)| PointerHit { outer, leaf })
+    }
+
+    fn route_hit(&mut self, project: &RenFile, hit: PointerHit, kind: PointerEventKind) {
         if let PlayMode::Machine { id, instance, .. } = &mut self.mode
             && let Some(m) = project.machines.get(*id)
         {
-            instance.pointer_event(m, node, kind);
+            let mut current = Some(hit.leaf);
+            let mut seen = std::collections::HashSet::new();
+            let mut chain = Vec::new();
+            while let Some(node) = current {
+                if !seen.insert(node) {
+                    return;
+                }
+                let Some(entry) = project.document.nodes.get(node) else {
+                    return;
+                };
+                if entry.locked {
+                    return;
+                }
+                chain.push(node);
+                if node == hit.outer {
+                    break;
+                }
+                current = entry.parent;
+            }
+            if !seen.contains(&hit.outer) {
+                return;
+            }
+            for node in chain {
+                instance.pointer_event(m, node, kind);
+            }
         }
     }
 }
@@ -471,6 +525,9 @@ impl Player {
                 return Err(PlayerError::BinaryDisabled);
             }
         }
+        if bytes.len() > renamite_io_ren::MAX_TEXT_BYTES {
+            return Err(renamite_io_ren::RenError::InputLimit("text input is too large").into());
+        }
         let text = std::str::from_utf8(bytes).map_err(|_| PlayerError::InvalidUtf8)?;
         Self::from_ren_str(text)
     }
@@ -502,7 +559,12 @@ impl Player {
 
     /// Pixel size of the active composition's artboard.
     pub fn artboard_size(&self) -> (u32, u32) {
-        self.project.document.compositions[self.engine.composition()].size
+        self.project
+            .document
+            .compositions
+            .get(self.engine.composition())
+            .map(|composition| composition.size)
+            .unwrap_or((1, 1))
     }
 
     /// Re-evaluate at the current head without advancing time. Call after any

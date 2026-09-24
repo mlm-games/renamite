@@ -190,6 +190,10 @@ pub fn FileMenu(session: SessionRef) -> View {
                 file::save_document_as(&session);
             })
         }),
+        item("Recover autosave", {
+            let session = session.clone();
+            Rc::new(move || file::recover_autosave(&session))
+        }),
         DropdownMenuEntry::Divider,
         item("Undo", {
             let session = session.clone();

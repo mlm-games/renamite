@@ -93,18 +93,18 @@ pub fn EditorShell(session: SessionRef) -> View {
     install_global_shortcuts(session.clone());
 
     let session_keys = session.clone();
-    let global_keys = Modifier::new().fill_max_size().on_key_event(move |ke: KeyEvent| {
-        if matches!(ke.key, Key::Space | Key::Enter) {
-            // Never steal activation, but don't leave a stuck pan modifier
-            // if Space was released outside the canvas.
-            if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
-                session_keys.borrow_mut().viewport.space_held = false;
-                request_frame();
+    let global_keys = Modifier::new()
+        .fill_max_size()
+        .on_key_event(move |ke: KeyEvent| {
+            if matches!(ke.key, Key::Space | Key::Enter) {
+                if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {
+                    session_keys.borrow_mut().viewport.space_held = false;
+                    request_frame();
+                }
+                return false;
             }
-            return false;
-        }
-        crate::shortcuts::handle_viewport_key(&session_keys, ke)
-    });
+            crate::shortcuts::handle_viewport_key(&session_keys, ke)
+        });
 
     ZStack(global_keys).child((scaffold, picker, menu, confirm))
 }
@@ -138,10 +138,7 @@ fn install_global_shortcuts(session: SessionRef) {
     map.insert(Key::Character('v'), cmd, Action::Paste);
     map.insert(
         Key::Character('v'),
-        Modifiers {
-            shift: true,
-            ..cmd
-        },
+        Modifiers { shift: true, ..cmd },
         Action::Custom("renamite.paste-style".into()),
     );
     map.insert(
@@ -149,8 +146,16 @@ fn install_global_shortcuts(session: SessionRef) {
         Modifiers { alt: true, ..cmd },
         Action::Custom("renamite.paste-in-place".into()),
     );
-    map.insert(Key::Character('d'), cmd, Action::Custom("renamite.duplicate".into()));
-    map.insert(Key::Character('g'), cmd, Action::Custom("renamite.group".into()));
+    map.insert(
+        Key::Character('d'),
+        cmd,
+        Action::Custom("renamite.duplicate".into()),
+    );
+    map.insert(
+        Key::Character('g'),
+        cmd,
+        Action::Custom("renamite.group".into()),
+    );
     map.insert(
         Key::Character('g'),
         cmd_shift,
@@ -181,7 +186,11 @@ fn install_global_shortcuts(session: SessionRef) {
         cmd_shift,
         Action::Custom("renamite.break-apart".into()),
     );
-    map.insert(Key::Character('l'), cmd, Action::Custom("renamite.simplify".into()));
+    map.insert(
+        Key::Character('l'),
+        cmd,
+        Action::Custom("renamite.simplify".into()),
+    );
     map.insert(
         Key::Character('h'),
         cmd,
@@ -194,7 +203,11 @@ fn install_global_shortcuts(session: SessionRef) {
         Modifiers::default(),
         Action::Custom("renamite.toggle-snap".into()),
     );
-    map.insert(Key::Delete, Modifiers::default(), Action::Custom("renamite.delete".into()));
+    map.insert(
+        Key::Delete,
+        Modifiers::default(),
+        Action::Custom("renamite.delete".into()),
+    );
     map.insert(
         Key::Backspace,
         Modifiers::default(),
@@ -224,12 +237,10 @@ fn context_menu_overlay(session: SessionRef) -> View {
         x: menu.screen_pos.x as f32,
         y: menu.screen_pos.y as f32,
     };
-    let menu_id = (
-        anchor.x.to_bits(),
-        anchor.y.to_bits(),
-        menu.entries.len(),
-    );
-    let last_menu_id = remember_with_key("shell_context_menu_id", || Cell::new(None::<(u32, u32, usize)>));
+    let menu_id = (anchor.x.to_bits(), anchor.y.to_bits(), menu.entries.len());
+    let last_menu_id = remember_with_key("shell_context_menu_id", || {
+        Cell::new(None::<(u32, u32, usize)>)
+    });
     if last_menu_id.get() != Some(menu_id) {
         last_menu_id.set(Some(menu_id));
         state.open_at(anchor);
@@ -258,7 +269,9 @@ fn context_menu_entry(
 ) -> DropdownMenuEntry {
     match entry {
         MenuEntry::Separator => DropdownMenuEntry::Divider,
-        MenuEntry::Action { id, label, enabled, .. } => {
+        MenuEntry::Action {
+            id, label, enabled, ..
+        } => {
             let action = id.clone();
             let en = *enabled;
             let session = session.clone();
@@ -407,12 +420,7 @@ fn discard_dialog(session: SessionRef) -> View {
         )),
     ));
 
-    Dialog(
-        state,
-        Modifier::new(),
-        DialogProperties::default(),
-        content,
-    )
+    Dialog(state, Modifier::new(), DialogProperties::default(), content)
 }
 
 fn ExpandedWorkspace(session: SessionRef) -> View {

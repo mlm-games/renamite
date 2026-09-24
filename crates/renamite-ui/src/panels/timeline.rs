@@ -238,7 +238,7 @@ fn RangeEditor(
             Modifier::new()
                 .width(Dp(48.0))
                 .height(Dp(28.0))
-                .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
+                .on_focus_changed(crate::shortcuts::note_text_focus)
                 .on_key_event({
                     let committed = committed.clone();
                     let start_state = start_state.clone();
@@ -357,9 +357,8 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 move |delta: repose_core::Vec2| {
                     let mut s = session.borrow_mut();
-                    if delta.y.abs() < delta.x.abs() {
-                        s.pan_timeline(delta.x as f64);
-                    } else if delta.x.abs() > 0.5 && delta.y.abs() > 0.5 {
+                    if delta.y.abs() < delta.x.abs() || (delta.x.abs() > 0.5 && delta.y.abs() > 0.5)
+                    {
                         s.pan_timeline(delta.x as f64);
                     } else {
                         let factor = (1.0 + (delta.y as f64) * 0.002).clamp(0.5, 2.0);

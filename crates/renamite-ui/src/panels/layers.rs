@@ -473,7 +473,7 @@ fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String)
             Modifier::new()
                 .flex_grow(1.0)
                 .height(Dp(32.0))
-                .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
+                .on_focus_changed(crate::shortcuts::note_text_focus)
                 .on_key_event({
                     let session = session.clone();
                     move |ke: KeyEvent| {

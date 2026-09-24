@@ -20,6 +20,14 @@ pub fn snap_point(
     tolerance_world: f64,
     exclude_anchor_of: Option<NodeId>,
 ) -> DVec2 {
+    if !raw.is_finite() {
+        return DVec2::ZERO;
+    }
+    let tolerance_world = if tolerance_world.is_finite() {
+        tolerance_world.max(0.0)
+    } else {
+        0.0
+    };
     let mut best = raw;
     let mut best_x_dist = tolerance_world;
     let mut best_y_dist = tolerance_world;
@@ -85,6 +93,14 @@ pub fn snap_delta(
     tolerance_world: f64,
     exclude_anchor_of: Option<NodeId>,
 ) -> DVec2 {
+    if !delta.is_finite() {
+        return DVec2::ZERO;
+    }
+    let tolerance_world = if tolerance_world.is_finite() {
+        tolerance_world.max(0.0)
+    } else {
+        0.0
+    };
     let Some((min, max)) = bounds else {
         return snap_point(
             config,
@@ -95,6 +111,9 @@ pub fn snap_delta(
             exclude_anchor_of,
         ) - delta;
     };
+    if !min.is_finite() || !max.is_finite() {
+        return delta;
+    }
     let corners = [
         min,
         DVec2::new(max.x, min.y),
@@ -125,6 +144,9 @@ pub fn snap_delta(
 fn anchor_points(input: &SnapInput<'_>, exclude: Option<NodeId>) -> Vec<DVec2> {
     let mut out = Vec::new();
     for item in input.items {
+        if item.path.segments().next().is_none() {
+            continue;
+        }
         if is_excluded(input.doc, input.selected, exclude, item.node) {
             continue;
         }
@@ -145,12 +167,7 @@ fn anchor_points(input: &SnapInput<'_>, exclude: Option<NodeId>) -> Vec<DVec2> {
     out
 }
 
-fn is_excluded(
-    doc: &Document,
-    selected: &[NodeId],
-    exclude: Option<NodeId>,
-    node: NodeId,
-) -> bool {
+fn is_excluded(doc: &Document, selected: &[NodeId], exclude: Option<NodeId>, node: NodeId) -> bool {
     if selected.contains(&node) {
         return true;
     }
@@ -177,7 +194,11 @@ mod tests {
         }
     }
 
-    fn input<'a>(doc: &'a Document, items: &'a [SceneItem], selected: &'a [NodeId]) -> SnapInput<'a> {
+    fn input<'a>(
+        doc: &'a Document,
+        items: &'a [SceneItem],
+        selected: &'a [NodeId],
+    ) -> SnapInput<'a> {
         SnapInput {
             doc,
             items,

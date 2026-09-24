@@ -25,7 +25,7 @@ use renamite_behavior_common::stroke::{
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
     Color, GradientKind, GradientStop, GradientStops, NodeId, NodeKind, PropPath, ShapeKind,
-    StyleKind, StylePaint, Value, node_affine,
+    StyleKind, StylePaint, Value, node_world_affine,
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
@@ -434,10 +434,10 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         ));
     }
     let mut children: Vec<View> = vec![PanelHeader(Symbols::settings, title, header_actions)];
-    if ids.len() == 1 {
-        if let Some(v) = identity_section(session.clone(), ids[0]) {
-            children.push(v);
-        }
+    if ids.len() == 1
+        && let Some(v) = identity_section(session.clone(), ids[0])
+    {
+        children.push(v);
     }
     // Use effective inspect id for shape/text appearance and modifier routing
     let inspect_id_opt = if ids.len() == 1 {
@@ -951,7 +951,7 @@ fn scrub_f64_w(
             View::new(0, ViewKind::Box).modifier(
                 Modifier::new()
                     .focus_requester(focus_requester.as_ref().clone())
-                    .on_focus_changed(|focused| crate::shortcuts::note_text_focus(focused))
+                    .on_focus_changed(crate::shortcuts::note_text_focus)
                     .text_input(TextInputConfig {
                         hint: String::new(),
                         multiline: false,
@@ -3975,7 +3975,10 @@ fn default_axis(s: &Session, shape: NodeId, frame: f64) -> Option<(glam::DVec2, 
         .find(|it| it.node == shape)?
         .path
         .bounding_box();
-    let w2l = node_affine(&s.file.document, shape, frame).inverse();
+    let w2l = node_world_affine(&s.file.document, shape, frame)?.inverse();
+    if !w2l.as_coeffs().iter().all(|value| value.is_finite()) {
+        return None;
+    }
     let a = w2l * KurboPoint::new(r.x0, r.y0);
     let b = w2l * KurboPoint::new(r.x1, r.y0);
     Some((glam::DVec2::new(a.x, a.y), glam::DVec2::new(b.x, b.y)))

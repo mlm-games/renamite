@@ -242,9 +242,13 @@ pub(crate) fn export_gradient(animated: &Animated<GradientStops>) -> (usize, Val
     (count, json!({ "a": 1, "k": keys }))
 }
 
+fn bounded_number(number: f64) -> Option<f64> {
+    (number.is_finite() && number.abs() <= 1_000_000_000.0).then_some(number)
+}
+
 fn first_number(value: &Value) -> Option<f64> {
     match value {
-        Value::Number(number) => number.as_f64(),
+        Value::Number(number) => number.as_f64().and_then(bounded_number),
         Value::Array(array) => array.first().and_then(first_number),
         _ => None,
     }
@@ -256,8 +260,8 @@ fn parse_vec2_value(value: &Value) -> Option<DVec2> {
         return parse_vec2_value(array.first()?);
     }
     Some(DVec2::new(
-        array.first()?.as_f64()?,
-        array.get(1)?.as_f64()?,
+        bounded_number(array.first()?.as_f64()?)?,
+        bounded_number(array.get(1)?.as_f64()?)?,
     ))
 }
 
@@ -278,50 +282,152 @@ fn parse_color_value(value: &Value) -> Option<Color> {
     ))
 }
 
-fn parse_path_value(value: &Value) -> Option<VectorPath> {
-    let object = if let Some(array) = value.as_array() {
-        array.first()?
-    } else {
-        value
-    };
+pub(crate) fn path_contour_count(value: &Value) -> usize {
+    path_key_contours(value)
+        .map(|values| {
+            values
+                .into_iter()
+                .flatten()
+                .map(|contours| contours.len())
+                .filter(|count| *count > 0)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+pub(crate) fn path_contours(value: &Value) -> Option<Vec<VectorPath>> {
+    path_key_contours(value)?
+        .into_iter()
+        .flatten()
+        .find(|contours| !contours.is_empty())
+}
+
+fn path_key_contours(value: &Value) -> Option<Vec<Option<Vec<VectorPath>>>> {
+    let raw = value.get("k").unwrap_or(value);
+    let explicitly_animated = value.get("a").and_then(Value::as_u64) == Some(1);
+    let looks_animated = raw
+        .as_array()
+        .and_then(|array| array.first())
+        .is_some_and(|first| first.get("t").is_some());
+    if explicitly_animated || looks_animated {
+        let keys = raw.as_array()?;
+        return Some(
+            keys.iter()
+                .map(|key| {
+                    key.get("s")
+                        .and_then(direct_path_contours)
+                        .or_else(|| key.get("e").and_then(direct_path_contours))
+                })
+                .collect(),
+        );
+    }
+    Some(vec![Some(direct_path_contours(raw)?)])
+}
+
+fn direct_path_contours(value: &Value) -> Option<Vec<VectorPath>> {
+    match value {
+        Value::Object(object) if object.contains_key("v") => parse_path_object(object),
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Some(Vec::new());
+            }
+            if items.iter().all(|item| item.get("v").is_some()) {
+                return items
+                    .iter()
+                    .map(|item| item.as_object().and_then(parse_path_object))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|contours| contours.into_iter().flatten().collect());
+            }
+            if items
+                .first()
+                .and_then(Value::as_array)
+                .is_some_and(|first| first.first().and_then(Value::as_array).is_some())
+            {
+                return items
+                    .iter()
+                    .filter_map(Value::as_array)
+                    .map(|vertices| parse_flat_contour(vertices, &[], &[], false))
+                    .collect::<Option<Vec<_>>>();
+            }
+            if items
+                .first()
+                .and_then(Value::as_array)
+                .is_some_and(|first| first.first().is_some_and(Value::is_number))
+            {
+                return Some(vec![parse_flat_contour(items, &[], &[], false)?]);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn parse_path_object(object: &serde_json::Map<String, Value>) -> Option<Vec<VectorPath>> {
     let vertices_raw = object.get("v")?.as_array()?;
     let nested = vertices_raw
         .first()
         .and_then(Value::as_array)
-        .is_some_and(|inner| inner.first().is_some_and(Value::is_array));
-    let vertices: Vec<Value> = if nested {
-        vertices_raw.first()?.as_array()?.iter().cloned().collect()
-    } else {
-        vertices_raw.clone()
-    };
-    let pick_nested = |key: &str| -> Vec<Value> {
-        let arr = object
-            .get(key)
-            .and_then(Value::as_array)
-            .cloned()
+        .is_some_and(|first| first.first().and_then(Value::as_array).is_some());
+    let incoming = object.get("i").and_then(Value::as_array);
+    let outgoing = object.get("o").and_then(Value::as_array);
+    let closed = object.get("c");
+    if nested {
+        let incoming = incoming
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_array)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
-        if nested {
-            arr.first()
+        let outgoing = outgoing
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_array)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut contours = Vec::with_capacity(vertices_raw.len());
+        for (index, vertices) in vertices_raw.iter().enumerate() {
+            let vertices = vertices.as_array()?;
+            let is_closed = closed
                 .and_then(Value::as_array)
-                .map(|inner| inner.clone())
-                .unwrap_or_default()
-        } else {
-            arr
+                .and_then(|values| values.get(index).or_else(|| values.first()))
+                .and_then(Value::as_bool)
+                .or_else(|| closed.and_then(Value::as_bool))
+                .unwrap_or(false);
+            contours.push(parse_flat_contour(
+                vertices,
+                incoming
+                    .get(index)
+                    .map(|value| value.as_slice())
+                    .unwrap_or(&[]),
+                outgoing
+                    .get(index)
+                    .map(|value| value.as_slice())
+                    .unwrap_or(&[]),
+                is_closed,
+            )?);
         }
-    };
-    let incoming = pick_nested("i");
-    let outgoing = pick_nested("o");
-    let closed = if nested {
-        object
-            .get("c")
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first())
-            .and_then(Value::as_bool)
-            .or_else(|| object.get("c").and_then(Value::as_bool))
-            .unwrap_or(false)
+        Some(contours)
     } else {
-        object.get("c").and_then(Value::as_bool).unwrap_or(false)
-    };
+        Some(vec![parse_flat_contour(
+            vertices_raw,
+            incoming.map(|value| value.as_slice()).unwrap_or(&[]),
+            outgoing.map(|value| value.as_slice()).unwrap_or(&[]),
+            closed.and_then(Value::as_bool).unwrap_or(false),
+        )?])
+    }
+}
+
+fn parse_flat_contour(
+    vertices: &[Value],
+    incoming: &[Value],
+    outgoing: &[Value],
+    closed: bool,
+) -> Option<VectorPath> {
     let mut anchors = Vec::with_capacity(vertices.len());
     for (index, vertex) in vertices.iter().enumerate() {
         let pos = parse_vec2_value(vertex)?;
@@ -350,7 +456,7 @@ fn parse_path_value(value: &Value) -> Option<VectorPath> {
 
 fn handle_component(value: &Value) -> Option<f64> {
     match value {
-        Value::Number(number) => number.as_f64(),
+        Value::Number(number) => number.as_f64().and_then(bounded_number),
         Value::Array(array) => array.first().and_then(handle_component),
         _ => None,
     }
@@ -388,6 +494,27 @@ fn parse_interpolation(object: &Value) -> (Interpolation, EasingHandle, EasingHa
     }
 }
 
+fn import_frame(value: Option<&Value>) -> Frame {
+    import_frame_or(value, Frame(0))
+}
+
+fn import_frame_or(value: Option<&Value>, default: Frame) -> Frame {
+    let Some(value) = value.and_then(Value::as_f64) else {
+        return default;
+    };
+    if !value.is_finite() {
+        return default;
+    }
+    let rounded = value.round();
+    if rounded <= i64::MIN as f64 {
+        Frame(i64::MIN)
+    } else if rounded >= i64::MAX as f64 {
+        Frame(i64::MAX)
+    } else {
+        Frame(rounded as i64)
+    }
+}
+
 fn import_property<T: Clone + Tween>(
     property: &Value,
     default: T,
@@ -411,6 +538,7 @@ fn import_property<T: Clone + Tween>(
     let mut keys = Vec::with_capacity(raw_keys.len());
     let mut previous_value = default.clone();
     let mut previous_end: Option<T> = None;
+    let mut previous_frame = Frame(0);
     for raw_key in raw_keys {
         let value = raw_key
             .get("s")
@@ -419,13 +547,8 @@ fn import_property<T: Clone + Tween>(
             .or_else(|| raw_key.get("e").and_then(&parse_value))
             .unwrap_or_else(|| previous_value.clone());
         let (interpolation, ease_out, ease_in) = parse_interpolation(raw_key);
-        let frame = Frame(
-            raw_key
-                .get("t")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-                .round() as i64,
-        );
+        let frame = import_frame_or(raw_key.get("t"), previous_frame);
+        previous_frame = frame;
         keys.push(Keyframe {
             frame,
             value: value.clone(),
@@ -507,7 +630,81 @@ pub(crate) fn import_color(property: &Value, default: Color) -> Animated<Color> 
 }
 
 pub(crate) fn import_path(property: &Value) -> Animated<VectorPath> {
-    import_property(property, VectorPath::default(), parse_path_value)
+    let raw = property.get("k").unwrap_or(property);
+    let explicitly_animated = property.get("a").and_then(Value::as_u64) == Some(1);
+    let looks_animated = raw
+        .as_array()
+        .and_then(|array| array.first())
+        .is_some_and(|first| first.get("t").is_some());
+    if !explicitly_animated && !looks_animated {
+        return Animated::new(
+            path_contours(property)
+                .and_then(|mut contours| contours.drain(..).next())
+                .unwrap_or_default(),
+        );
+    }
+    let Some(raw_keys) = raw.as_array() else {
+        return Animated::new(VectorPath::default());
+    };
+    let mut values = Vec::new();
+    let mut previous = None;
+    for raw_key in raw_keys {
+        let parsed = raw_key
+            .get("s")
+            .and_then(direct_path_contours)
+            .or_else(|| raw_key.get("e").and_then(direct_path_contours));
+        let value = parsed.or_else(|| previous.clone());
+        previous = value.clone();
+        if let Some(value) = value {
+            let (interpolation, ease_out, ease_in) = parse_interpolation(raw_key);
+            values.push((
+                import_frame(raw_key.get("t")),
+                value,
+                interpolation,
+                ease_out,
+                ease_in,
+            ));
+        }
+    }
+    let first_nonempty = values.iter().position(|(_, contours, _, _, _)| {
+        contours
+            .first()
+            .is_some_and(|path| !path.anchors.is_empty())
+    });
+    let Some(first_nonempty) = first_nonempty else {
+        return Animated::new(VectorPath::default());
+    };
+    let values = values.split_off(first_nonempty);
+    let base = values[0].1[0].clone();
+    let mut keys = Vec::with_capacity(values.len());
+    for (frame, contours, interpolation, ease_out, ease_in) in values {
+        let Some(path) = contours.into_iter().next() else {
+            continue;
+        };
+        keys.push(Keyframe {
+            frame,
+            value: path,
+            interpolation,
+            ease_out,
+            ease_in,
+        });
+    }
+    keys.sort_by_key(|key| key.frame);
+    let mut unique = Vec::with_capacity(keys.len());
+    for key in keys {
+        if unique
+            .last()
+            .is_some_and(|last: &Keyframe<VectorPath>| last.frame == key.frame)
+        {
+            *unique.last_mut().unwrap() = key;
+        } else {
+            unique.push(key);
+        }
+    }
+    Animated {
+        base,
+        keyframes: unique,
+    }
 }
 
 fn alpha_at(alpha: &[(f64, f64)], offset: f64) -> f64 {
@@ -531,6 +728,9 @@ fn alpha_at(alpha: &[(f64, f64)], offset: f64) -> f64 {
 
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn unpack_stops(value: &Value, count: usize) -> Option<GradientStops> {
+    if count == 0 || count > 4096 {
+        return None;
+    }
     let values = value.as_array()?;
     if values.len() < count * 4 {
         return None;
@@ -558,11 +758,70 @@ fn unpack_stops(value: &Value, count: usize) -> Option<GradientStops> {
     Some(GradientStops(stops))
 }
 
-pub(crate) fn import_gradient(gradient: &Value) -> Animated<GradientStops> {
-    let count = gradient.get("p").and_then(Value::as_u64).unwrap_or(2) as usize;
-    import_property(
-        gradient.get("k").unwrap_or(&Value::Null),
-        GradientStops::default(),
-        |value| unpack_stops(value, count),
-    )
+pub(crate) fn import_gradient(gradient: &Value) -> Option<Animated<GradientStops>> {
+    let count = match gradient.get("p").and_then(Value::as_u64) {
+        Some(value) => usize::try_from(value).ok()?,
+        None => 2,
+    };
+    if count == 0 || count > 4096 {
+        return None;
+    }
+    let property = gradient.get("k")?;
+    let raw = property.get("k").unwrap_or(property);
+    let explicitly_animated = property.get("a").and_then(Value::as_u64) == Some(1);
+    let looks_animated = raw
+        .as_array()
+        .and_then(|array| array.first())
+        .is_some_and(|first| first.get("t").is_some());
+    if !explicitly_animated && !looks_animated {
+        return unpack_stops(raw, count).map(Animated::new);
+    }
+    let raw_keys = raw.as_array()?;
+    if raw_keys.is_empty() {
+        return None;
+    }
+    let mut keys = Vec::with_capacity(raw_keys.len());
+    let mut previous_value = None;
+    let mut previous_end = None;
+    for raw_key in raw_keys {
+        let value = raw_key
+            .get("s")
+            .and_then(|value| unpack_stops(value, count))
+            .or_else(|| previous_end.clone())
+            .or_else(|| {
+                raw_key
+                    .get("e")
+                    .and_then(|value| unpack_stops(value, count))
+            });
+        let value = value.or_else(|| previous_value.clone())?;
+        let (interpolation, ease_out, ease_in) = parse_interpolation(raw_key);
+        keys.push(Keyframe {
+            frame: import_frame(raw_key.get("t")),
+            value: value.clone(),
+            interpolation,
+            ease_out,
+            ease_in,
+        });
+        previous_value = Some(value);
+        previous_end = raw_key
+            .get("e")
+            .and_then(|value| unpack_stops(value, count));
+    }
+    keys.sort_by_key(|key| key.frame);
+    let mut unique = Vec::with_capacity(keys.len());
+    for key in keys {
+        if unique
+            .last()
+            .is_some_and(|last: &Keyframe<GradientStops>| last.frame == key.frame)
+        {
+            *unique.last_mut().unwrap() = key;
+        } else {
+            unique.push(key);
+        }
+    }
+    let base = unique.first()?.value.clone();
+    Some(Animated {
+        base,
+        keyframes: unique,
+    })
 }

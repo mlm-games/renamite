@@ -46,6 +46,7 @@ pub struct EventKey {
 /// Tween two Values of the same variant; Hold otherwise (mirrors path rules).
 pub fn value_tween(a: &Value, b: &Value, t: f64) -> Value {
     use Value::*;
+    let t = if t.is_finite() { t } else { 0.0 };
     match (a, b) {
         (F64(x), F64(y)) => F64(f64::tween(x, y, t)),
         (DVec2(x), DVec2(y)) => DVec2(glam::DVec2::tween(x, y, t)),
@@ -68,6 +69,9 @@ impl Track {
         if ks.is_empty() {
             return None;
         }
+        if !frame.is_finite() {
+            return Some(ks[0].value.clone());
+        }
         if frame <= ks[0].frame.0 as f64 {
             return Some(ks[0].value.clone());
         }
@@ -77,7 +81,11 @@ impl Track {
         }
         let i = ks.partition_point(|k| (k.frame.0 as f64) <= frame) - 1;
         let (a, b) = (&ks[i], &ks[i + 1]);
-        let u = (frame - a.frame.0 as f64) / (b.frame.0 - a.frame.0) as f64;
+        let span = (b.frame.0 as f64) - (a.frame.0 as f64);
+        if !span.is_finite() || span <= 0.0 {
+            return Some(a.value.clone());
+        }
+        let u = ((frame - a.frame.0 as f64) / span).clamp(0.0, 1.0);
         let y = ease_progress(a.interpolation, a.ease_out, a.ease_in, u);
         Some(value_tween(&a.value, &b.value, y))
     }
@@ -85,12 +93,15 @@ impl Track {
 
 impl Clip {
     pub fn len_frames(&self) -> f64 {
-        (self.range.1.0 - self.range.0.0).max(1) as f64
+        self.range.1.0.saturating_sub(self.range.0.0).max(1) as f64
     }
 
     /// Map layer-local time to a clip frame; returns (frame, normalized 0..1).
     pub fn local(&self, time: f64, loop_mode: LoopMode) -> (f64, f64) {
         let (s, len) = (self.range.0.0 as f64, self.len_frames());
+        if !time.is_finite() {
+            return (s, 0.0);
+        }
         let t = match loop_mode {
             LoopMode::Once => time.clamp(0.0, len),
             LoopMode::Loop => time.rem_euclid(len),
@@ -227,6 +238,14 @@ pub enum ListenerAction {
     FireTrigger { input: usize },
 }
 
+fn finite_nonnegative(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputValue {
     Bool(bool),
@@ -237,9 +256,12 @@ pub enum InputValue {
 #[derive(Clone, Debug)]
 struct LayerRt {
     current: usize,
+    state_names: Vec<String>,
+    state_kinds: Vec<StateKind>,
     /// Frames spent in current state.
     time: f64,
     fade: Option<Fade>,
+    entered: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +276,7 @@ struct Fade {
 pub struct MachineInstance {
     pub inputs: Vec<InputValue>,
     layers: Vec<LayerRt>,
+    layer_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -271,26 +294,99 @@ pub enum MachineError {
 
 impl MachineInstance {
     pub fn new(m: &Machine) -> Self {
-        Self {
-            inputs: m
-                .inputs
-                .iter()
-                .map(|i| match i.kind {
-                    InputKind::Bool { default } => InputValue::Bool(default),
-                    InputKind::Number { default } => InputValue::Number(default),
-                    InputKind::Trigger => InputValue::Trigger { fired: false },
-                })
-                .collect(),
-            layers: m
-                .layers
-                .iter()
-                .map(|l| LayerRt {
-                    current: l.entry.min(l.states.len().saturating_sub(1)),
-                    time: 0.0,
-                    fade: None,
-                })
-                .collect(),
+        let mut instance = Self {
+            inputs: Vec::new(),
+            layers: Vec::new(),
+            layer_names: Vec::new(),
+        };
+        instance.sync_runtime(m);
+        instance
+    }
+
+    fn sync_runtime(&mut self, m: &Machine) {
+        self.inputs.resize(m.inputs.len(), InputValue::Bool(false));
+        for (index, definition) in m.inputs.iter().enumerate() {
+            let valid = matches!(
+                (&self.inputs[index], definition.kind),
+                (InputValue::Bool(_), InputKind::Bool { .. })
+                    | (InputValue::Number(_), InputKind::Number { .. })
+                    | (InputValue::Trigger { .. }, InputKind::Trigger)
+            );
+            if !valid {
+                self.inputs[index] = default_input(definition);
+            }
+            if let InputValue::Number(value) = &mut self.inputs[index]
+                && !value.is_finite()
+            {
+                *value = 0.0;
+            }
         }
+
+        let old_layers = std::mem::take(&mut self.layers);
+        let old_names = std::mem::take(&mut self.layer_names);
+        let mut used = vec![false; old_layers.len()];
+        let mut layers = Vec::with_capacity(m.layers.len());
+        for (index, layer) in m.layers.iter().enumerate() {
+            let old_index = old_names
+                .iter()
+                .enumerate()
+                .filter(|(old, name)| !used[*old] && *name == &layer.name)
+                .map(|(old, _)| old)
+                .next()
+                .or_else(|| {
+                    old_layers
+                        .iter()
+                        .enumerate()
+                        .find(|(old, _)| !used[*old] && *old == index)
+                        .map(|(old, _)| old)
+                });
+            let mut runtime = old_index
+                .and_then(|old| {
+                    used[old] = true;
+                    old_layers.get(old).cloned()
+                })
+                .unwrap_or_else(|| new_layer_runtime(layer));
+            let old_state_names = runtime.state_names.clone();
+            let old_state_kinds = runtime.state_kinds.clone();
+            let current =
+                remap_state_index(&old_state_names, &old_state_kinds, runtime.current, layer);
+            let exact_current =
+                state_index_matches(&old_state_names, &old_state_kinds, runtime.current, layer);
+            if runtime.current >= layer.states.len()
+                || !runtime.time.is_finite()
+                || runtime.time < 0.0
+                || !exact_current
+            {
+                runtime.current = current;
+                runtime.time = 0.0;
+                runtime.fade = None;
+                runtime.entered = false;
+            } else {
+                runtime.current = current;
+            }
+            if let Some(fade) = &mut runtime.fade {
+                let old_from = fade.from;
+                let mapped = remap_state_index(&old_state_names, &old_state_kinds, old_from, layer);
+                if state_index_matches(&old_state_names, &old_state_kinds, old_from, layer) {
+                    fade.from = mapped;
+                } else {
+                    runtime.fade = None;
+                }
+            }
+            runtime.state_names = layer
+                .states
+                .iter()
+                .map(|state| state.name.clone())
+                .collect();
+            runtime.state_kinds = layer
+                .states
+                .iter()
+                .map(|state| state.kind.clone())
+                .collect();
+            layers.push(runtime);
+        }
+        self.layers = layers;
+        self.layer_names = m.layers.iter().map(|layer| layer.name.clone()).collect();
     }
 
     pub fn input_index(m: &Machine, name: &str) -> Option<usize> {
@@ -307,7 +403,7 @@ impl MachineInstance {
     }
     pub fn set_number(&mut self, idx: usize, v: f64) {
         if let Some(InputValue::Number(n)) = self.inputs.get_mut(idx) {
-            *n = v;
+            *n = if v.is_finite() { v } else { 0.0 };
         }
     }
     pub fn fire(&mut self, idx: usize) {
@@ -346,10 +442,25 @@ impl MachineInstance {
         out: &mut Overrides,
     ) -> TickOutput {
         let mut output = TickOutput::default();
+        if !dt_frames.is_finite() || dt_frames < 0.0 {
+            return output;
+        }
+        self.sync_runtime(m);
         for (li, layer) in m.layers.iter().enumerate() {
-            let rt = &mut self.layers[li];
+            if layer.states.is_empty() {
+                continue;
+            }
+            let Some(rt) = self.layers.get_mut(li) else {
+                continue;
+            };
+            let current = rt.current.min(layer.states.len() - 1);
+            rt.current = current;
             let prev_time = rt.time;
-            rt.time += dt_frames;
+            let advanced_time = prev_time + dt_frames;
+            if !advanced_time.is_finite() {
+                continue;
+            }
+            rt.time = advanced_time;
             if let Some(f) = &mut rt.fade {
                 f.from_time += dt_frames;
                 f.t = if f.duration <= 0.0 {
@@ -357,58 +468,59 @@ impl MachineInstance {
                 } else {
                     (f.t + dt_frames / f.duration).min(1.0)
                 };
-                if f.t >= 1.0 {
+                if f.t >= 1.0 || !f.t.is_finite() || !f.from_time.is_finite() {
                     rt.fade = None;
                 }
             }
 
             // transitions: Any first, then current state's, first match wins
-            let state = &layer.states[rt.current];
-            let norm = normalized_time(state, clips, rt.time);
+            let state = &layer.states[current];
+            let progress = state_progress(state, clips, prev_time, advanced_time);
             let fired = layer
                 .any_transitions
                 .iter()
                 .chain(state.transitions.iter())
-                .find(|tr| transition_ready(tr, &self.inputs, norm));
-            let fired = fired.cloned().filter(|tr| {
-                let to = tr.to.min(layer.states.len() - 1);
-                if to != rt.current {
-                    return true;
-                }
-                tr.conditions
-                    .iter()
-                    .any(|c| matches!(c, Condition::Triggered { .. }))
-            });
+                .find(|tr| {
+                    transition_target_valid(tr, layer.states.len())
+                        && transition_ready(tr, &self.inputs, progress)
+                        && (tr.to != current
+                            || tr
+                                .conditions
+                                .iter()
+                                .any(|c| matches!(c, Condition::Triggered { .. })))
+                })
+                .cloned();
+            let old_entered = rt.entered;
             let mut transitioned_from: Option<(usize, f64, f64)> = None;
             if let Some(tr) = fired {
-                consume_triggers(&tr, &mut self.inputs);
-                transitioned_from = Some((rt.current, prev_time, rt.time));
-                rt.fade = (tr.duration > 0.0).then_some(Fade {
-                    from: rt.current,
+                transitioned_from = Some((current, prev_time, advanced_time));
+                let duration = finite_nonnegative(tr.duration);
+                rt.fade = (duration > 0.0).then_some(Fade {
+                    from: current,
                     from_time: prev_time,
                     t: 0.0,
-                    duration: tr.duration,
+                    duration,
                 });
-                rt.current = tr.to.min(layer.states.len() - 1);
+                rt.current = tr.to;
                 rt.time = 0.0;
+                rt.entered = false;
             }
 
             // sample
             let mut b = HashMap::new();
             let mut evs = Vec::new();
             if let Some((from_idx, from_prev, from_cur)) = transitioned_from {
-                let mut old_evs = Vec::new();
-                let mut old_vals = HashMap::new();
+                let mut old_values = HashMap::new();
                 sample_state(
                     &layer.states[from_idx],
                     clips,
                     &self.inputs,
                     from_prev,
                     from_cur,
-                    &mut old_vals,
-                    &mut old_evs,
+                    &mut old_values,
+                    &mut evs,
+                    old_entered,
                 );
-                evs.append(&mut old_evs);
             }
             let sample_prev = if transitioned_from.is_some() {
                 rt.time
@@ -423,8 +535,10 @@ impl MachineInstance {
                 rt.time,
                 &mut b,
                 &mut evs,
+                !rt.entered,
             );
-            if let Some(f) = &rt.fade {
+            rt.entered = true;
+            if let Some(f) = rt.fade.clone() {
                 let mut a = HashMap::new();
                 let mut fade_evs = Vec::new();
                 let fade_prev = (f.from_time - dt_frames).max(0.0);
@@ -436,8 +550,11 @@ impl MachineInstance {
                     f.from_time,
                     &mut a,
                     &mut fade_evs,
+                    false,
                 );
-                evs.append(&mut fade_evs);
+                if transitioned_from.is_none() {
+                    evs.append(&mut fade_evs);
+                }
                 for (k, va) in a {
                     let merged = match b.get(&k) {
                         Some(vb) => value_tween(&va, vb, f.t),
@@ -459,13 +576,224 @@ impl MachineInstance {
         }
         output
     }
+
+    pub fn reevaluate(&mut self, m: &Machine, clips: &ClipMap, out: &mut Overrides) -> TickOutput {
+        let mut output = TickOutput::default();
+        self.sync_runtime(m);
+        for (li, layer) in m.layers.iter().enumerate() {
+            if layer.states.is_empty() {
+                continue;
+            }
+            let Some(rt) = self.layers.get(li) else {
+                continue;
+            };
+            let mut b = HashMap::new();
+            sample_state(
+                &layer.states[rt.current],
+                clips,
+                &self.inputs,
+                rt.time,
+                rt.time,
+                &mut b,
+                &mut output.events,
+                false,
+            );
+            if let Some(f) = rt.fade.clone() {
+                let mut a = HashMap::new();
+                let mut ignored_events = Vec::new();
+                sample_state(
+                    &layer.states[f.from],
+                    clips,
+                    &self.inputs,
+                    f.from_time,
+                    f.from_time,
+                    &mut a,
+                    &mut ignored_events,
+                    false,
+                );
+                for (k, va) in a {
+                    let merged = match b.get(&k) {
+                        Some(vb) => value_tween(&va, vb, f.t),
+                        None => va,
+                    };
+                    b.insert(k, merged);
+                }
+            }
+            for (k, v) in b {
+                out.set(k.0, k.1, v);
+            }
+        }
+        output
+    }
+}
+
+fn new_layer_runtime(layer: &MachineLayer) -> LayerRt {
+    LayerRt {
+        current: valid_state_index(layer),
+        state_names: layer
+            .states
+            .iter()
+            .map(|state| state.name.clone())
+            .collect(),
+        state_kinds: layer
+            .states
+            .iter()
+            .map(|state| state.kind.clone())
+            .collect(),
+        time: 0.0,
+        fade: None,
+        entered: false,
+    }
+}
+
+fn unique_index<T: PartialEq>(values: &[T], value: &T) -> Option<usize> {
+    let mut found = None;
+    for (index, candidate) in values.iter().enumerate() {
+        if candidate == value {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(index);
+        }
+    }
+    found
+}
+
+fn state_index_matches(
+    old_names: &[String],
+    old_kinds: &[StateKind],
+    old_index: usize,
+    layer: &MachineLayer,
+) -> bool {
+    if old_index < old_names.len()
+        && old_names.len() == layer.states.len()
+        && old_kinds.len() == layer.states.len()
+        && old_names
+            .iter()
+            .zip(&layer.states)
+            .all(|(name, state)| name == &state.name)
+        && old_kinds
+            .iter()
+            .zip(&layer.states)
+            .all(|(kind, state)| kind == &state.kind)
+    {
+        return true;
+    }
+    let Some(old_name) = old_names.get(old_index) else {
+        return false;
+    };
+    if unique_index(old_names, old_name).is_some()
+        && layer
+            .states
+            .iter()
+            .filter(|state| &state.name == old_name)
+            .count()
+            == 1
+    {
+        return true;
+    }
+    let Some(old_kind) = old_kinds.get(old_index) else {
+        return false;
+    };
+    unique_index(old_kinds, old_kind).is_some()
+        && layer
+            .states
+            .iter()
+            .filter(|state| &state.kind == old_kind)
+            .count()
+            == 1
+}
+
+fn remap_state_index(
+    old_names: &[String],
+    old_kinds: &[StateKind],
+    old_index: usize,
+    layer: &MachineLayer,
+) -> usize {
+    if layer.states.is_empty() {
+        return 0;
+    }
+    if old_index < old_names.len()
+        && old_names.len() == layer.states.len()
+        && old_kinds.len() == layer.states.len()
+        && old_names
+            .iter()
+            .zip(&layer.states)
+            .all(|(name, state)| name == &state.name)
+        && old_kinds
+            .iter()
+            .zip(&layer.states)
+            .all(|(kind, state)| kind == &state.kind)
+    {
+        return old_index;
+    }
+    if let Some(name) = old_names.get(old_index)
+        && unique_index(old_names, name).is_some()
+        && let Some(index) = layer
+            .states
+            .iter()
+            .position(|state| &state.name == name)
+            .filter(|_| {
+                layer
+                    .states
+                    .iter()
+                    .filter(|state| &state.name == name)
+                    .count()
+                    == 1
+            })
+    {
+        return index;
+    }
+    if let Some(kind) = old_kinds.get(old_index)
+        && unique_index(old_kinds, kind).is_some()
+        && let Some(index) = layer
+            .states
+            .iter()
+            .position(|state| &state.kind == kind)
+            .filter(|_| {
+                layer
+                    .states
+                    .iter()
+                    .filter(|state| &state.kind == kind)
+                    .count()
+                    == 1
+            })
+    {
+        return index;
+    }
+    old_index.min(layer.states.len() - 1)
+}
+
+fn default_input(definition: &InputDef) -> InputValue {
+    match definition.kind {
+        InputKind::Bool { default } => InputValue::Bool(default),
+        InputKind::Number { default } => {
+            InputValue::Number(if default.is_finite() { default } else { 0.0 })
+        }
+        InputKind::Trigger => InputValue::Trigger { fired: false },
+    }
+}
+
+fn valid_state_index(layer: &MachineLayer) -> usize {
+    layer.entry.min(layer.states.len().saturating_sub(1))
+}
+
+fn transition_target_valid(transition: &Transition, state_count: usize) -> bool {
+    transition.to < state_count
 }
 
 fn prev_if_same(prev: f64, cur: f64) -> f64 {
     if cur < prev { 0.0 } else { prev }
 }
 
-fn normalized_time(state: &State, clips: &ClipMap, time: f64) -> f64 {
+#[derive(Clone, Copy, Debug)]
+struct StateProgress {
+    previous: f64,
+    current: f64,
+    reached_one: bool,
+}
+
+fn state_progress(state: &State, clips: &ClipMap, previous: f64, current: f64) -> StateProgress {
     match &state.kind {
         StateKind::Clip {
             clip,
@@ -473,27 +801,105 @@ fn normalized_time(state: &State, clips: &ClipMap, time: f64) -> f64 {
             loop_mode,
         } => clips
             .get(*clip)
-            .map(|c| c.local(time * speed.max(0.0), *loop_mode).1)
-            .unwrap_or(1.0),
-        StateKind::Blend1D { children, .. } => {
-            if children.is_empty() {
-                return 1.0;
-            }
-            children
-                .first()
-                .and_then(|ch| clips.get(ch.clip))
-                .map(|c| c.local(time, LoopMode::Loop).1)
-                .unwrap_or(1.0)
-        }
-        StateKind::Empty => 1.0,
+            .map(|clip| clip_progress(clip, previous, current, *loop_mode, *speed))
+            .unwrap_or(StateProgress {
+                previous: 0.0,
+                current: 0.0,
+                reached_one: false,
+            }),
+        StateKind::Blend1D { children, .. } => children
+            .iter()
+            .find_map(|child| clips.get(child.clip))
+            .map(|clip| clip_progress(clip, previous, current, LoopMode::Loop, 1.0))
+            .unwrap_or(StateProgress {
+                previous: 0.0,
+                current: 0.0,
+                reached_one: false,
+            }),
+        StateKind::Empty => StateProgress {
+            previous: 1.0,
+            current: 1.0,
+            reached_one: true,
+        },
     }
 }
 
-fn transition_ready(tr: &Transition, inputs: &[InputValue], norm: f64) -> bool {
-    if let Some(et) = tr.exit_time
-        && norm < et
-    {
-        return false;
+fn clip_progress(
+    clip: &Clip,
+    previous: f64,
+    current: f64,
+    loop_mode: LoopMode,
+    speed: f64,
+) -> StateProgress {
+    let speed = finite_nonnegative(speed);
+    let previous = if previous.is_finite() {
+        previous * speed
+    } else {
+        0.0
+    };
+    let current = if current.is_finite() {
+        current * speed
+    } else {
+        previous
+    };
+    let length = clip.len_frames();
+    if length <= 0.0 || !length.is_finite() {
+        return StateProgress {
+            previous: 1.0,
+            current: 1.0,
+            reached_one: true,
+        };
+    }
+    let phase = |time: f64| clip_phase(clip, time, loop_mode);
+    let (previous_phase, current_phase) = (phase(previous), phase(current));
+    let reached_one = match loop_mode {
+        LoopMode::Once => current >= length && previous < length,
+        LoopMode::Loop | LoopMode::PingPong => {
+            current >= previous && (current / length).floor() > (previous / length).floor()
+        }
+    };
+    StateProgress {
+        previous: previous_phase,
+        current: current_phase,
+        reached_one,
+    }
+}
+
+fn clip_phase(clip: &Clip, time: f64, loop_mode: LoopMode) -> f64 {
+    let length = clip.len_frames();
+    if !time.is_finite() || length <= 0.0 || !length.is_finite() {
+        return 0.0;
+    }
+    let phase = match loop_mode {
+        LoopMode::Once => time.clamp(0.0, length),
+        LoopMode::Loop => {
+            let remainder = time.rem_euclid(length);
+            if time >= length && remainder == 0.0 {
+                length
+            } else {
+                remainder
+            }
+        }
+        LoopMode::PingPong => {
+            let cycle = time.rem_euclid(2.0 * length);
+            if cycle > length {
+                2.0 * length - cycle
+            } else {
+                cycle
+            }
+        }
+    };
+    (phase / length).clamp(0.0, 1.0)
+}
+
+fn transition_ready(tr: &Transition, inputs: &[InputValue], progress: StateProgress) -> bool {
+    if let Some(et) = tr.exit_time {
+        if !et.is_finite() || !(0.0..=1.0).contains(&et) {
+            return false;
+        }
+        if !progress.reached_one && progress.previous < et && progress.current < et {
+            return false;
+        }
     }
     if tr.conditions.is_empty() && tr.exit_time.is_none() {
         return false;
@@ -503,7 +909,7 @@ fn transition_ready(tr: &Transition, inputs: &[InputValue], norm: f64) -> bool {
             matches!(inputs.get(input), Some(InputValue::Bool(b)) if *b == value)
         }
         Condition::NumberCmp { input, op, value } => match inputs.get(input) {
-            Some(InputValue::Number(n)) => match op {
+            Some(InputValue::Number(n)) if n.is_finite() && value.is_finite() => match op {
                 CmpOp::Eq => (n - value).abs() < 1e-9,
                 CmpOp::Ne => (n - value).abs() >= 1e-9,
                 CmpOp::Lt => *n < value,
@@ -519,16 +925,7 @@ fn transition_ready(tr: &Transition, inputs: &[InputValue], norm: f64) -> bool {
     })
 }
 
-fn consume_triggers(tr: &Transition, inputs: &mut [InputValue]) {
-    for c in &tr.conditions {
-        if let Condition::Triggered { input } = c
-            && let Some(InputValue::Trigger { fired }) = inputs.get_mut(*input)
-        {
-            *fired = false;
-        }
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 fn sample_state(
     state: &State,
     clips: &ClipMap,
@@ -537,6 +934,7 @@ fn sample_state(
     time: f64,
     out: &mut HashMap<(NodeId, PropPath), Value>,
     events: &mut Vec<String>,
+    include_start: bool,
 ) {
     match &state.kind {
         StateKind::Empty => {}
@@ -546,36 +944,88 @@ fn sample_state(
             loop_mode,
         } => {
             let Some(c) = clips.get(*clip) else { return };
-            let (frame, _) = c.local(time * speed.max(0.0), *loop_mode);
-            let (pframe, _) = c.local(prev_time * speed.max(0.0), *loop_mode);
+            let speed = finite_nonnegative(*speed);
+            let time = if time.is_finite() { time } else { 0.0 };
+            let prev_time = if prev_time.is_finite() {
+                prev_time
+            } else {
+                time
+            };
+            let (frame, _) = c.local(time * speed, *loop_mode);
             c.sample_into(frame, out);
-            emit_events(c, pframe, frame, *loop_mode, events);
+            emit_events(
+                c,
+                prev_time * speed,
+                time * speed,
+                *loop_mode,
+                include_start,
+                events,
+            );
         }
         StateKind::Blend1D { input, children } => {
             if children.is_empty() {
                 return;
             }
             let x = match inputs.get(*input) {
-                Some(InputValue::Number(n)) => *n,
+                Some(InputValue::Number(n)) if n.is_finite() => *n,
                 _ => 0.0,
             };
             let (lo, hi, t) = bracket(children, x);
+            let lo_clip = clips.get(children[lo].clip);
+            let hi_clip = if hi == lo {
+                None
+            } else {
+                clips.get(children[hi].clip)
+            };
             let mut a = HashMap::new();
-            if let Some(c) = clips.get(children[lo].clip) {
+            let mut b = HashMap::new();
+            let mut low_events = Vec::new();
+            let mut high_events = Vec::new();
+            if let Some(c) = lo_clip {
                 c.sample_into(c.local(time, LoopMode::Loop).0, &mut a);
+                emit_events(
+                    c,
+                    prev_time,
+                    time,
+                    LoopMode::Loop,
+                    include_start,
+                    &mut low_events,
+                );
             }
+            if let Some(c) = hi_clip {
+                c.sample_into(c.local(time, LoopMode::Loop).0, &mut b);
+                emit_events(
+                    c,
+                    prev_time,
+                    time,
+                    LoopMode::Loop,
+                    include_start,
+                    &mut high_events,
+                );
+            }
+            let mut event_keys = std::collections::HashSet::new();
+            events.extend(
+                low_events
+                    .into_iter()
+                    .filter(|event| event_keys.insert((children[lo].clip, event.clone()))),
+            );
             if hi != lo {
-                let mut b = HashMap::new();
-                if let Some(c) = clips.get(children[hi].clip) {
-                    c.sample_into(c.local(time, LoopMode::Loop).0, &mut b);
-                }
-                for (k, va) in a {
-                    let v = match b.remove(&k) {
+                events.extend(
+                    high_events
+                        .into_iter()
+                        .filter(|event| event_keys.insert((children[hi].clip, event.clone()))),
+                );
+            }
+            if hi != lo && lo_clip.is_some() && hi_clip.is_some() {
+                for (key, va) in a {
+                    let value = match b.remove(&key) {
                         Some(vb) => value_tween(&va, &vb, t),
                         None => va,
                     };
-                    out.insert(k, v);
+                    out.insert(key, value);
                 }
+                out.extend(b);
+            } else if hi != lo && lo_clip.is_none() {
                 out.extend(b);
             } else {
                 out.extend(a);
@@ -586,46 +1036,107 @@ fn sample_state(
 
 /// Index pair + blend factor for x among sorted thresholds.
 fn bracket(children: &[BlendChild], x: f64) -> (usize, usize, f64) {
-    if children.is_empty() {
+    let mut low: Option<usize> = None;
+    let mut high: Option<usize> = None;
+    let mut minimum: Option<usize> = None;
+    let mut maximum: Option<usize> = None;
+    for (index, child) in children.iter().enumerate() {
+        if !child.threshold.is_finite() {
+            continue;
+        }
+        if minimum.is_none_or(|current| child.threshold < children[current].threshold) {
+            minimum = Some(index);
+        }
+        if maximum.is_none_or(|current| child.threshold > children[current].threshold) {
+            maximum = Some(index);
+        }
+        if child.threshold <= x
+            && low.is_none_or(|current| child.threshold > children[current].threshold)
+        {
+            low = Some(index);
+        }
+        if child.threshold >= x
+            && high.is_none_or(|current| child.threshold < children[current].threshold)
+        {
+            high = Some(index);
+        }
+    }
+    let (Some(minimum), Some(maximum)) = (minimum, maximum) else {
         return (0, 0, 0.0);
+    };
+    let low = low.unwrap_or(minimum);
+    let high = high.unwrap_or(maximum);
+    if x <= children[low].threshold {
+        return (low, low, 0.0);
     }
-    if x <= children[0].threshold {
-        return (0, 0, 0.0);
+    if x >= children[high].threshold {
+        return (high, high, 0.0);
     }
-    let last = children.len() - 1;
-    if x >= children[last].threshold {
-        return (last, last, 0.0);
-    }
-    let hi = children.partition_point(|c| c.threshold <= x);
-    let (lo, hi) = (hi - 1, hi);
-    let span = children[hi].threshold - children[lo].threshold;
-    (
-        lo,
-        hi,
-        if span <= 0.0 {
-            0.0
-        } else {
-            (x - children[lo].threshold) / span
-        },
-    )
+    let span = children[high].threshold - children[low].threshold;
+    let factor = if span > 0.0 {
+        (x - children[low].threshold) / span
+    } else {
+        0.0
+    };
+    (low, high, factor.clamp(0.0, 1.0))
 }
 
-fn emit_events(c: &Clip, prev: f64, cur: f64, loop_mode: LoopMode, out: &mut Vec<String>) {
-    let hit = |a: f64, b: f64, out: &mut Vec<String>| {
-        for e in &c.events {
-            let f = e.frame.0 as f64;
-            if f > a && f <= b {
-                out.push(e.name.clone());
-            }
-        }
+fn emit_events(
+    c: &Clip,
+    prev: f64,
+    cur: f64,
+    loop_mode: LoopMode,
+    include_start: bool,
+    out: &mut Vec<String>,
+) {
+    if !prev.is_finite() || !cur.is_finite() {
+        return;
+    }
+    let length = c.len_frames();
+    if length <= 0.0 || !length.is_finite() {
+        return;
+    }
+    let start = c.range.0.0 as f64;
+    let (from, to) = if cur >= prev {
+        (prev, cur)
+    } else {
+        (cur, prev)
     };
-    if cur >= prev {
-        hit(prev, cur, out);
-    } else if loop_mode == LoopMode::Loop {
-        hit(prev, c.range.1.0 as f64, out);
-        hit(c.range.0.0 as f64 - 1.0, cur, out);
-    } else if loop_mode == LoopMode::PingPong {
-        hit(cur, prev, out);
+    let period = match loop_mode {
+        LoopMode::Once | LoopMode::Loop => length,
+        LoopMode::PingPong => 2.0 * length,
+    };
+    let mut seen = std::collections::HashSet::new();
+    for event in &c.events {
+        if !seen.insert((event.frame, event.name.clone())) {
+            continue;
+        }
+        let offset = event.frame.0 as f64 - start;
+        if !offset.is_finite() || offset < 0.0 || offset > length {
+            continue;
+        }
+        let crossed = match loop_mode {
+            LoopMode::Once => {
+                offset > from && offset <= to || include_start && from <= 0.0 && offset == 0.0
+            }
+            LoopMode::Loop => {
+                let first = ((from - offset) / period).floor() + 1.0;
+                let crossing = first * period + offset;
+                crossing <= to || include_start && from <= 0.0 && offset == 0.0
+            }
+            LoopMode::PingPong => {
+                let forward = ((from - offset) / period).floor() + 1.0;
+                let reverse = ((from - (2.0 * length - offset)) / period).floor() + 1.0;
+                let forward_crossing = forward * period + offset;
+                let reverse_crossing = reverse * period + (2.0 * length - offset);
+                forward_crossing <= to
+                    || reverse_crossing <= to
+                    || include_start && from <= 0.0 && offset == 0.0
+            }
+        };
+        if crossed {
+            out.push(event.name.clone());
+        }
     }
 }
 

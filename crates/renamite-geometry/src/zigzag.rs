@@ -6,13 +6,11 @@ use kurbo::{BezPath, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point, Vec2}
 const TOL: f64 = 1e-3;
 
 pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) -> BezPath {
-    if !amplitude.is_finite() || amplitude.abs() < 1e-9 {
+    if !amplitude.is_finite() || amplitude.abs() < 1e-9 || !ridges.is_finite() || !path.is_finite()
+    {
         return path.clone();
     }
-    if !ridges.is_finite() {
-        return path.clone();
-    }
-    let ridges_total = (ridges.floor().max(0.0).min(1024.0)) as usize;
+    let ridges_total = ridges.round().clamp(0.0, 1024.0) as usize;
     if ridges_total == 0 {
         return path.clone();
     }
@@ -21,37 +19,41 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
     if subpaths.is_empty() {
         return path.clone();
     }
-    let grand_total: f64 = subpaths
+    let lengths = subpaths
         .iter()
-        .map(|(segs, _)| segs.iter().map(|s| s.arclen(TOL)).sum::<f64>())
-        .sum();
-    if grand_total < 1e-9 {
+        .map(|(segments, _)| {
+            segments
+                .iter()
+                .map(|segment| segment.arclen(TOL))
+                .sum::<f64>()
+        })
+        .collect::<Vec<_>>();
+    let grand_total: f64 = lengths.iter().sum();
+    if !grand_total.is_finite() || grand_total < 1e-9 {
         return path.clone();
     }
 
+    let allocations = allocate_ridges(&lengths, ridges_total);
     let mut out = BezPath::new();
-    let mut sign = 1.0_f64;
-
-    for (segs, closed) in &subpaths {
-        let lens: Vec<f64> = segs.iter().map(|s| s.arclen(TOL)).collect();
-        let sub_total: f64 = lens.iter().sum();
-        if sub_total < 1e-9 {
+    for (((segments, closed), sub_total), n_sub) in
+        subpaths.iter().zip(lengths.iter()).zip(allocations.iter())
+    {
+        if !sub_total.is_finite() || *sub_total < 1e-9 {
             continue;
         }
-        let n_sub = ((ridges_total as f64 * sub_total / grand_total).round() as usize).max(1);
-        let mut per_seg = distribute_by_length(&lens, n_sub);
-        if per_seg.iter().sum::<usize>() == 0 {
-            if let Some(idx) = lens
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-            {
-                per_seg[idx] = 1;
-            }
+        let n_sub = *n_sub;
+        if n_sub == 0 {
+            append_subpath(&mut out, segments, *closed);
+            continue;
         }
+        let lens = segments
+            .iter()
+            .map(|segment| segment.arclen(TOL))
+            .collect::<Vec<_>>();
+        let per_seg = distribute_by_length(&lens, n_sub);
+        let mut sign = 1.0_f64;
         let mut first_in_subpath = true;
-        for (seg, n) in segs.iter().zip(per_seg.iter()) {
+        for (seg, n) in segments.iter().zip(per_seg.iter()) {
             let n = *n;
             if n == 0 {
                 let p = seg.eval(1.0);
@@ -63,23 +65,14 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
                 }
                 continue;
             }
-            let mut samples: Vec<(Point, Vec2)> = Vec::with_capacity(n + 1);
-
+            let mut samples = Vec::with_capacity(n + 1);
+            let seg_len = seg.arclen(TOL);
+            let mut carry = Vec2::new(1.0, 0.0);
             for i in 0..=n {
-                let t = i as f64 / n as f64;
-                let seg_len = seg.arclen(TOL);
-                let target = seg_len * t;
-                let t_arc = arclen_to_t(seg, target, seg_len);
-                let p = seg.eval(t_arc);
-                let d = tangent_at(seg, t_arc);
-                let dl = d.length();
-                let tangent = if dl > 1e-12 {
-                    Vec2::new(d.x / dl, d.y / dl)
-                } else {
-                    Vec2::new(1.0, 0.0)
-                };
-                let normal = Vec2::new(-tangent.y, tangent.x);
-                samples.push((p, normal));
+                let t_arc = arclen_to_t(seg, seg_len * i as f64 / n as f64, seg_len);
+                let tangent = unit_tangent(seg, t_arc, carry);
+                carry = tangent;
+                samples.push((seg.eval(t_arc), tangent));
             }
 
             let (p0, _) = samples[0];
@@ -91,19 +84,11 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
             }
 
             for i in 0..n {
-                let (p_start, _) = samples[i];
-                let (p_end, _) = samples[i + 1];
-                let mid_t = (i as f64 + 0.5) / n as f64;
-                let seg_len = seg.arclen(TOL);
-                let t_arc = arclen_to_t(seg, seg_len * mid_t, seg_len);
+                let (p_start, start_tangent) = samples[i];
+                let (p_end, end_tangent) = samples[i + 1];
+                let t_arc = arclen_to_t(seg, seg_len * (i as f64 + 0.5) / n as f64, seg_len);
                 let p_mid = seg.eval(t_arc);
-                let d = tangent_at(seg, t_arc);
-                let dl = d.length();
-                let tangent = if dl > 1e-12 {
-                    Vec2::new(d.x / dl, d.y / dl)
-                } else {
-                    Vec2::new(1.0, 0.0)
-                };
+                let tangent = unit_tangent(seg, t_arc, start_tangent);
                 let normal = Vec2::new(-tangent.y, tangent.x);
                 let peak = Point::new(
                     p_mid.x + normal.x * amplitude * sign,
@@ -114,11 +99,14 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
                 if smooth {
                     let h = ((p_end.x - p_start.x).powi(2) + (p_end.y - p_start.y).powi(2)).sqrt()
                         * 0.25;
-                    let c1 = Point::new(p_start.x + tangent.x * h, p_start.y + tangent.y * h);
+                    let c1 = Point::new(
+                        p_start.x + start_tangent.x * h,
+                        p_start.y + start_tangent.y * h,
+                    );
                     let c2 = Point::new(peak.x - tangent.x * h, peak.y - tangent.y * h);
                     out.curve_to(c1, c2, peak);
                     let c3 = Point::new(peak.x + tangent.x * h, peak.y + tangent.y * h);
-                    let c4 = Point::new(p_end.x - tangent.x * h, p_end.y - tangent.y * h);
+                    let c4 = Point::new(p_end.x - end_tangent.x * h, p_end.y - end_tangent.y * h);
                     out.curve_to(c3, c4, p_end);
                 } else {
                     out.line_to(peak);
@@ -136,43 +124,109 @@ pub fn zigzag_path(path: &BezPath, amplitude: f64, ridges: f64, smooth: bool) ->
     out
 }
 
+fn append_subpath(out: &mut BezPath, segments: &[PathSeg], closed: bool) {
+    let Some(first) = segments.first() else {
+        return;
+    };
+    out.move_to(first.start());
+    for segment in segments {
+        match segment {
+            PathSeg::Line(line) => out.line_to(line.p1),
+            PathSeg::Quad(quad) => out.quad_to(quad.p1, quad.p2),
+            PathSeg::Cubic(cubic) => out.curve_to(cubic.p1, cubic.p2, cubic.p3),
+        }
+    }
+    if closed {
+        out.close_path();
+    }
+}
+
+fn allocate_ridges(lengths: &[f64], total: usize) -> Vec<usize> {
+    if lengths.is_empty() || total == 0 {
+        return vec![0; lengths.len()];
+    }
+    let sum = lengths
+        .iter()
+        .filter(|length| length.is_finite())
+        .sum::<f64>();
+    if !sum.is_finite() || sum <= 0.0 {
+        return vec![0; lengths.len()];
+    }
+    let raw = lengths
+        .iter()
+        .map(|length| {
+            if length.is_finite() && *length > 0.0 {
+                total as f64 * *length / sum
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut output = raw
+        .iter()
+        .map(|value| value.floor() as usize)
+        .collect::<Vec<_>>();
+    let mut assigned = output.iter().sum::<usize>();
+    let mut order = (0..raw.len()).collect::<Vec<_>>();
+    order.sort_by(|a, b| {
+        let left = raw[*a].fract();
+        let right = raw[*b].fract();
+        right.total_cmp(&left)
+    });
+    let mut cursor = 0usize;
+    let mut attempts = 0usize;
+    while assigned < total
+        && !order.is_empty()
+        && attempts
+            <= total
+                .saturating_mul(order.len())
+                .saturating_add(order.len())
+    {
+        attempts += 1;
+        let index = order[cursor % order.len()];
+        if lengths[index].is_finite() && lengths[index] > 0.0 {
+            output[index] += 1;
+            assigned += 1;
+        }
+        cursor += 1;
+    }
+    output
+}
+
 fn distribute_by_length(lens: &[f64], total: usize) -> Vec<usize> {
     if lens.is_empty() || total == 0 {
         return vec![0; lens.len()];
     }
-    let sum: f64 = lens.iter().sum();
-    if sum < 1e-12 {
+    let sum: f64 = lens.iter().filter(|length| length.is_finite()).sum();
+    if !sum.is_finite() || sum < 1e-12 {
         return vec![0; lens.len()];
     }
-    let mut out: Vec<usize> = lens
+    let mut out = lens
         .iter()
-        .map(|l| (total as f64 * l / sum).floor() as usize)
-        .collect();
+        .map(|length| {
+            if length.is_finite() {
+                (total as f64 * length / sum).floor() as usize
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<_>>();
     let mut assigned: usize = out.iter().sum();
-    let mut order: Vec<usize> = (0..lens.len()).collect();
-    order.sort_by(|a, b| lens[*b].partial_cmp(&lens[*a]).unwrap());
-    let mut i = 0;
-    while assigned < total && !order.is_empty() {
+    let mut order = (0..lens.len())
+        .filter(|index| lens[*index].is_finite() && lens[*index] >= 1e-12)
+        .collect::<Vec<_>>();
+    order.sort_by(|a, b| lens[*b].total_cmp(&lens[*a]));
+    while assigned < total {
         let mut advanced = false;
-        for &idx in &order {
-            if assigned >= total {
-                break;
-            }
-            if lens[idx] < 1e-12 {
-                continue;
-            }
-            out[idx] += 1;
+        for &index in &order {
+            out[index] += 1;
             assigned += 1;
             advanced = true;
-            if assigned >= total {
+            if assigned == total {
                 break;
             }
         }
         if !advanced {
-            break;
-        }
-        i += 1;
-        if i > total + lens.len() {
             break;
         }
     }
@@ -180,75 +234,55 @@ fn distribute_by_length(lens: &[f64], total: usize) -> Vec<usize> {
 }
 
 fn split_subpaths(path: &BezPath) -> Vec<(Vec<PathSeg>, bool)> {
-    let mut out: Vec<(Vec<PathSeg>, bool)> = Vec::new();
-    let mut cur: Vec<PathSeg> = Vec::new();
+    let mut out = Vec::new();
+    let mut current = BezPath::new();
     let mut closed = false;
-    for seg in path.segments() {
-        if let Some(last) = cur.last() {
-            let prev_end = last.eval(1.0);
-            let cur_start = seg.eval(0.0);
-            let dx = prev_end.x - cur_start.x;
-            let dy = prev_end.y - cur_start.y;
-            if dx.hypot(dy) > 1e-6 {
-                out.push((std::mem::take(&mut cur), closed));
+    let flush = |out: &mut Vec<(Vec<PathSeg>, bool)>, current: &mut BezPath, closed: bool| {
+        if current.elements().is_empty() {
+            return;
+        }
+        let segments = current.segments().collect::<Vec<_>>();
+        if !segments.is_empty() {
+            out.push((segments, closed));
+        }
+        *current = BezPath::new();
+    };
+    for element in path.elements().iter().copied() {
+        match element {
+            PathEl::MoveTo(_) => {
+                if !current.elements().is_empty() {
+                    flush(&mut out, &mut current, closed);
+                }
+                closed = false;
+                current.push(element);
+            }
+            PathEl::ClosePath => {
+                current.push(element);
+                flush(&mut out, &mut current, true);
                 closed = false;
             }
-        }
-        cur.push(seg);
-    }
-    let closes = subpath_close_flags(path);
-    if !cur.is_empty() {
-        out.push((cur, false));
-    }
-    for (i, c) in closes.into_iter().enumerate() {
-        if let Some(entry) = out.get_mut(i) {
-            entry.1 = c;
+            PathEl::LineTo(_) | PathEl::QuadTo(_, _) | PathEl::CurveTo(_, _, _) => {
+                current.push(element)
+            }
         }
     }
-    if out.len() == 1
-        && path
-            .elements()
-            .last()
-            .is_some_and(|e| matches!(e, PathEl::ClosePath))
-    {
-        out[0].1 = true;
-    }
+    flush(&mut out, &mut current, closed);
     out
 }
 
-fn subpath_close_flags(path: &BezPath) -> Vec<bool> {
-    let mut flags = Vec::new();
-    let mut has_geom = false;
-    for el in path.elements() {
-        match el {
-            PathEl::MoveTo(_) => {
-                if has_geom {
-                    flags.push(false);
-                }
-                has_geom = false;
-            }
-            PathEl::ClosePath => {
-                flags.push(true);
-                has_geom = false;
-            }
-            _ => {
-                has_geom = true;
-            }
+fn unit_tangent(seg: &PathSeg, t: f64, fallback: Vec2) -> Vec2 {
+    let eps = 1e-4;
+    let ranges = [((t - eps).max(0.0), t), (t, (t + eps).min(1.0)), (0.0, 1.0)];
+    for (a, b) in ranges {
+        let p0 = seg.eval(a);
+        let p1 = seg.eval(b);
+        let d = Vec2::new(p1.x - p0.x, p1.y - p0.y);
+        let length = d.length();
+        if length.is_finite() && length > 1e-12 {
+            return Vec2::new(d.x / length, d.y / length);
         }
     }
-    if has_geom {
-        flags.push(false);
-    }
-    flags
-}
-
-fn tangent_at(seg: &PathSeg, t: f64) -> Vec2 {
-    let eps = 1e-4;
-    let t0 = (t - eps).max(0.0);
-    let t1 = (t + eps).min(1.0);
-    let p0 = seg.eval(t0);
-    let p1 = seg.eval(t1);
-    Vec2::new(p1.x - p0.x, p1.y - p0.y)
+    fallback
 }
 
 fn arclen_to_t(seg: &PathSeg, target: f64, total: f64) -> f64 {

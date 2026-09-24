@@ -240,15 +240,13 @@ mod tests {
         let main = doc.main;
         let shape = group(&mut doc, "shape");
         doc.attach(shape, Parent::Comp(main), 0).unwrap();
-        let style = doc
-            .create_node(Node::new(
-                "fill",
-                NodeKind::Style(renamite_model::StyleKind::Fill {
-                    paint: renamite_model::StylePaint::solid(renamite_model::Color::BLACK),
-                    rule: renamite_model::FillRule::NonZero,
-                }),
-            ))
-            .clone();
+        let style = doc.create_node(Node::new(
+            "fill",
+            NodeKind::Style(renamite_model::StyleKind::Fill {
+                paint: renamite_model::StylePaint::solid(renamite_model::Color::BLACK),
+                rule: renamite_model::FillRule::NonZero,
+            }),
+        ));
         doc.attach(style, Parent::Node(shape), 0).unwrap();
         let collapsed = flatten_layers(&doc, main, &std::collections::HashSet::new());
         assert_eq!(collapsed.len(), 1);

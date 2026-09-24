@@ -50,29 +50,78 @@ impl ViewTransform {
         }
     }
 
+    fn usable_scale(&self) -> f64 {
+        if self.scale.is_finite() && self.scale > 1e-12 {
+            self.scale
+        } else {
+            1.0
+        }
+    }
+
     pub fn screen_to_world(&self, p: DVec2) -> DVec2 {
-        (p - self.offset) / self.scale
+        if !p.is_finite() {
+            return DVec2::ZERO;
+        }
+        let offset = if self.offset.is_finite() {
+            self.offset
+        } else {
+            DVec2::ZERO
+        };
+        (p - offset) / self.usable_scale()
     }
 
     pub fn world_to_screen(&self, p: DVec2) -> DVec2 {
-        p * self.scale + self.offset
+        if !p.is_finite() {
+            return DVec2::ZERO;
+        }
+        let offset = if self.offset.is_finite() {
+            self.offset
+        } else {
+            DVec2::ZERO
+        };
+        p * self.usable_scale() + offset
     }
 
     /// Tolerance in world units for a sub-pixel screen tolerance (0.25px).
     pub fn world_tolerance(&self, px: f64) -> f64 {
-        px / self.scale
+        if !px.is_finite() || px < 0.0 {
+            return 0.0;
+        }
+        px / self.usable_scale()
     }
 
     /// Zoom about `screen_pos` by `factor`, clamped to `[min, max]`.
     /// Shared by canvas viewport and machine graph to stay DRY.
     pub fn zoom_at(&mut self, screen_pos: DVec2, factor: f64, min: f64, max: f64) {
-        let world = self.screen_to_world(screen_pos);
-        self.scale = (self.scale * factor).clamp(min, max);
-        self.offset = screen_pos - world * self.scale;
+        if !screen_pos.is_finite()
+            || !factor.is_finite()
+            || factor <= 0.0
+            || !min.is_finite()
+            || !max.is_finite()
+            || min <= 0.0
+            || max < min
+        {
+            return;
+        }
+        let current = self.usable_scale();
+        let next = (current * factor).clamp(min, max);
+        if !next.is_finite() || next <= 0.0 {
+            return;
+        }
+        let offset = if self.offset.is_finite() {
+            self.offset
+        } else {
+            DVec2::ZERO
+        };
+        let world = (screen_pos - offset) / current;
+        self.scale = next;
+        self.offset = screen_pos - world * next;
     }
 
     pub fn pan_by(&mut self, delta: DVec2) {
-        self.offset += delta;
+        if delta.is_finite() && self.offset.is_finite() {
+            self.offset += delta;
+        }
     }
 
     /// Fit `artboard` inside `surface` with a margin, centering it.
@@ -87,7 +136,13 @@ impl ViewTransform {
 /// `artboard` inside `surface` with a 56 px margin, centered.
 /// No-op on degenerate inputs.
 pub fn fit_view(view: &mut ViewTransform, surface: DVec2, artboard: DVec2) {
-    if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
+    if !surface.is_finite()
+        || !artboard.is_finite()
+        || surface.x <= 1.0
+        || surface.y <= 1.0
+        || artboard.x <= 0.0
+        || artboard.y <= 0.0
+    {
         return;
     }
     let margin = 56.0;
@@ -103,7 +158,13 @@ pub fn fit_view(view: &mut ViewTransform, surface: DVec2, artboard: DVec2) {
 /// with no margin, letterboxing inside the surface when aspects differ.
 /// No-op on degenerate inputs.
 pub fn fit_exact_view(view: &mut ViewTransform, surface: DVec2, artboard: DVec2) {
-    if surface.x <= 1.0 || surface.y <= 1.0 || artboard.x <= 0.0 || artboard.y <= 0.0 {
+    if !surface.is_finite()
+        || !artboard.is_finite()
+        || surface.x <= 1.0
+        || surface.y <= 1.0
+        || artboard.x <= 0.0
+        || artboard.y <= 0.0
+    {
         return;
     }
     let scale = (surface.x / artboard.x)
@@ -135,6 +196,11 @@ impl FitState {
     /// Pre-seed the surface record (e.g. after an explicit `fit` call) so
     /// zoom anchors work even when the artboard was degenerate.
     pub fn with_surface(surface: DVec2) -> Self {
+        let surface = if surface.is_finite() {
+            surface
+        } else {
+            DVec2::ZERO
+        };
         Self {
             surface,
             artboard: DVec2::ZERO,
@@ -157,6 +223,9 @@ impl FitState {
         artboard: DVec2,
         refit_on_resize: bool,
     ) -> bool {
+        if !surface.is_finite() || !artboard.is_finite() {
+            return false;
+        }
         let resized = (surface - self.surface).abs().max_element() > 0.5;
         let art_changed = (artboard - self.artboard).abs().max_element() > 0.5;
         let first_layout = self.surface == DVec2::ZERO && surface != DVec2::ZERO;

@@ -13,6 +13,7 @@ renamite-machine.workspace = true
 renamite-io-ren.workspace = true
 serde.workspace = true
 glam.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 slotmap.workspace = true

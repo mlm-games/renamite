@@ -6,6 +6,8 @@
 //! go through `rlobkit-dialogs` so one crate serves every platform (native
 //! backends on desktop, browser/Activity pickers on WASM/Android).
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 use std::path::PathBuf;
 
 /// File dialogs.
@@ -148,16 +150,26 @@ pub mod dialogs {
     ) {
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         {
+            use super::atomic_write;
             std::thread::spawn(move || {
                 let outcome = match rlobkit_dialogs::blocking_save_file(
                     title,
                     &suggested_name,
                     &extensions.join(","),
                 ) {
-                    Some(path) => SaveOutcome {
-                        ok: std::fs::write(&path, &data).is_ok(),
-                        path: Some(path),
-                    },
+                    Some(path) => {
+                        let ok = match atomic_write(&path, &data) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                log::error!("save failed for {}: {error}", path.display());
+                                false
+                            }
+                        };
+                        SaveOutcome {
+                            ok,
+                            path: Some(path),
+                        }
+                    }
                     None => SaveOutcome {
                         ok: false,
                         path: None,
@@ -208,14 +220,134 @@ pub mod dialogs {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::ffi::OsString;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+
+    let (temporary, mut file) = (0..128)
+        .find_map(|_| {
+            let mut name = OsString::from(".");
+            name.push(file_name);
+            name.push(format!(
+                ".{}.{}.tmp",
+                std::process::id(),
+                TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let temporary = parent.join(name);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => Some(Ok((temporary, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique temporary file",
+            )
+        })??;
+
+    let result = (|| {
+        match fs::metadata(path) {
+            Ok(metadata) => fs::set_permissions(&temporary, metadata.permissions())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace_path(&temporary, path)?;
+        sync_parent(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn replace_path(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result =
+        unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
+fn replace_path(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn sync_parent(parent: &Path) -> std::io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+fn sync_parent(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub const AUTOSAVE_KEY: &str = "last-session";
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub fn autosave_bytes() -> Option<Vec<u8>> {
+    autosave_store().get(AUTOSAVE_KEY)
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub fn clear_autosave() {
+    let path = autosave_store().dir.join(sanitize_key(AUTOSAVE_KEY));
+    let _ = std::fs::remove_file(path);
+}
+
 /// Filesystem-backed autosave store (desktop).
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn autosave_store() -> DirStore {
-    let base = std::env::var_os("RENAMITE_DATA_DIR")
+    let configured = std::env::var_os("RENAMITE_DATA_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|p| PathBuf::from(p).join("renamite")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("autosave");
+        .filter(|path| !path.as_os_str().is_empty());
+    let data_dir = dirs::data_dir().map(|path| path.join("renamite"));
+    let fallback = std::env::temp_dir().join("renamite");
+    let candidates = configured
+        .into_iter()
+        .chain(data_dir)
+        .chain(std::iter::once(fallback));
+
+    for base in candidates {
+        let dir = base.join("autosave");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return DirStore { dir };
+        }
+    }
+
+    let dir = std::env::temp_dir().join("renamite").join("autosave");
     let _ = std::fs::create_dir_all(&dir);
     DirStore { dir }
 }
@@ -231,14 +363,37 @@ pub struct DirStore {
     pub dir: PathBuf,
 }
 
+impl DirStore {
+    pub fn set_checked(&self, key: &str, value: &[u8]) -> std::io::Result<()> {
+        if value.len() > 256 * 1024 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "autosave payload is too large",
+            ));
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let path = self.dir.join(sanitize_key(key));
+        #[cfg(not(target_arch = "wasm32"))]
+        atomic_write(&path, value)?;
+        #[cfg(target_arch = "wasm32")]
+        std::fs::write(path, value)?;
+        Ok(())
+    }
+}
+
 impl KvStore for DirStore {
     fn get(&self, key: &str) -> Option<Vec<u8>> {
         let path = self.dir.join(sanitize_key(key));
-        std::fs::read(&path).ok()
+        let metadata = std::fs::metadata(&path).ok()?;
+        if !metadata.is_file() || metadata.len() > 256 * 1024 * 1024 {
+            return None;
+        }
+        std::fs::read(path).ok()
     }
     fn set(&self, key: &str, value: &[u8]) {
-        let path = self.dir.join(sanitize_key(key));
-        let _ = std::fs::write(&path, value);
+        if let Err(error) = self.set_checked(key, value) {
+            log::error!("autosave write failed: {error}");
+        }
     }
 }
 

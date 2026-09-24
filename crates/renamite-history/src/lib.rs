@@ -24,6 +24,38 @@ pub struct ProjectMut<'a> {
     pub start_machine: &'a mut Option<MachineId>,
 }
 
+#[derive(Clone)]
+struct ProjectState {
+    document: Document,
+    clips: ClipMap,
+    clip_order: Vec<ClipId>,
+    machines: MachineMap,
+    machine_order: Vec<MachineId>,
+    start_machine: Option<MachineId>,
+}
+
+impl ProjectState {
+    fn capture(project: &ProjectMut<'_>) -> Self {
+        Self {
+            document: project.document.clone(),
+            clips: project.clips.clone(),
+            clip_order: project.clip_order.clone(),
+            machines: project.machines.clone(),
+            machine_order: project.machine_order.clone(),
+            start_machine: *project.start_machine,
+        }
+    }
+
+    fn restore(self, project: &mut ProjectMut<'_>) {
+        *project.document = self.document;
+        *project.clips = self.clips;
+        *project.clip_order = self.clip_order;
+        *project.machines = self.machines;
+        *project.machine_order = self.machine_order;
+        *project.start_machine = self.start_machine;
+    }
+}
+
 /// Node payload for creation. `id` is None until first apply, then filled so
 /// redo re-attaches the SAME arena nodes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -377,6 +409,11 @@ pub enum EditorCommand {
     SetStartMachine {
         start: Option<MachineId>,
     },
+    AttachClipTrack {
+        clip: ClipId,
+        track: Track,
+        index: usize,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -428,6 +465,8 @@ pub enum EditError {
     AssetNotAttached,
     #[error("asset is still referenced by an image layer")]
     AssetInUse,
+    #[error("a transaction is already open")]
+    TransactionOpen,
 }
 
 /// Result of a single apply (created ids surface for selection).
@@ -451,6 +490,27 @@ struct AppliedTransaction {
     forward: Vec<EditorCommand>,
     /// inverse[i] undoes forward[i]. Each may be several commands.
     inverse: Vec<Vec<EditorCommand>>,
+}
+
+fn command_needs_snapshot(command: &EditorCommand) -> bool {
+    matches!(
+        command,
+        EditorCommand::InsertNode { .. }
+            | EditorCommand::AttachNode { .. }
+            | EditorCommand::RemoveNode { .. }
+            | EditorCommand::MoveNode { .. }
+            | EditorCommand::GroupNodes { .. }
+            | EditorCommand::GroupSelection { .. }
+            | EditorCommand::SetNodeKind { .. }
+            | EditorCommand::EditAnchors { .. }
+            | EditorCommand::MoveKeyframes { .. }
+            | EditorCommand::MoveClipKeys { .. }
+            | EditorCommand::CreateClip { .. }
+            | EditorCommand::DetachClip { .. }
+            | EditorCommand::CreateMachine { .. }
+            | EditorCommand::DetachMachine { .. }
+            | EditorCommand::ReplaceMachine { .. }
+    )
 }
 
 #[derive(Default)]
@@ -486,17 +546,40 @@ impl History {
         // Coalesce repeated live-drag edits so one drag = one inverse entry.
         if let Some(t) = &mut self.open
             && let Some(last) = t.forward.last_mut()
-            && coalesce(last, &cmd)
         {
-            let (created, _) = apply_command(p, &mut cmd)?;
-            *last = cmd;
-            return Ok(Applied {
-                created: created.node,
-                created_asset: created.asset,
-                created_machine: created.machine,
-            });
+            let old_inverse = t.inverse.last().cloned().unwrap_or_default();
+            let mut replacement = last.clone();
+            if coalesce(&mut replacement, &cmd) {
+                let snapshot = ProjectState::capture(p);
+                let (created, inverse) = match apply_command(p, &mut cmd) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        snapshot.restore(p);
+                        return Err(error);
+                    }
+                };
+                let inverse = coalesced_inverse(&replacement, &inverse, &old_inverse);
+                *last = replacement;
+                *t.inverse
+                    .last_mut()
+                    .expect("open transaction has an inverse") = inverse;
+                return Ok(Applied {
+                    created: created.node,
+                    created_asset: created.asset,
+                    created_machine: created.machine,
+                });
+            }
         }
-        let (created, inverse) = apply_command(p, &mut cmd)?;
+        let snapshot = command_needs_snapshot(&cmd).then(|| ProjectState::capture(p));
+        let (created, inverse) = match apply_command(p, &mut cmd) {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(snapshot) = snapshot {
+                    snapshot.restore(p);
+                }
+                return Err(error);
+            }
+        };
         if let Some(t) = &mut self.open {
             t.forward.push(cmd);
             t.inverse.push(inverse);
@@ -539,8 +622,20 @@ impl History {
         });
         if merge {
             let prev = self.undo.last_mut().expect("merge requires a prior entry");
-            prev.forward.extend(t.forward);
-            prev.inverse.extend(t.inverse);
+            let mut replacement = prev
+                .forward
+                .last()
+                .cloned()
+                .expect("merge requires a command");
+            coalesce(&mut replacement, &t.forward[0]);
+            let old_inverse = prev.inverse.last().cloned().unwrap_or_default();
+            let inverse = coalesced_inverse(&replacement, &t.inverse[0], &old_inverse);
+            prev.forward.pop();
+            prev.forward.push(replacement);
+            prev.inverse.pop();
+            prev.inverse.push(inverse);
+            prev.forward.extend(t.forward.into_iter().skip(1));
+            prev.inverse.extend(t.inverse.into_iter().skip(1));
         } else {
             self.undo.push(t);
         }
@@ -549,26 +644,58 @@ impl History {
 
     /// Discard the open transaction, applying its inverses.
     pub fn cancel(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
-        if let Some(t) = self.open.take() {
-            undo_transaction(p, &t)?;
+        let Some(t) = self.open.take() else {
+            return Ok(());
+        };
+        let snapshot = ProjectState::capture(p);
+        if let Err(error) = undo_transaction(p, &t) {
+            snapshot.restore(p);
+            self.open = Some(t);
+            return Err(error);
         }
         Ok(())
     }
 
     pub fn undo(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
-        if let Some(t) = self.undo.pop() {
-            undo_transaction(p, &t)?;
-            self.redo.push(t);
+        if self.open.is_some() {
+            return Err(EditError::TransactionOpen);
         }
-        Ok(())
+        let Some(t) = self.undo.pop() else {
+            return Ok(());
+        };
+        let snapshot = ProjectState::capture(p);
+        match undo_transaction(p, &t) {
+            Ok(()) => {
+                self.redo.push(t);
+                Ok(())
+            }
+            Err(error) => {
+                snapshot.restore(p);
+                self.undo.push(t);
+                Err(error)
+            }
+        }
     }
 
     pub fn redo(&mut self, p: &mut ProjectMut<'_>) -> Result<(), EditError> {
-        if let Some(t) = self.redo.pop() {
-            redo_transaction(p, &t)?;
-            self.undo.push(t);
+        if self.open.is_some() {
+            return Err(EditError::TransactionOpen);
         }
-        Ok(())
+        let Some(t) = self.redo.pop() else {
+            return Ok(());
+        };
+        let snapshot = ProjectState::capture(p);
+        match redo_transaction(p, &t) {
+            Ok(()) => {
+                self.undo.push(t);
+                Ok(())
+            }
+            Err(error) => {
+                snapshot.restore(p);
+                self.redo.push(t);
+                Err(error)
+            }
+        }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -840,62 +967,10 @@ fn apply_command(
             ))
         }
         MoveClipKeys { moves } => {
-            use std::collections::{HashMap, HashSet};
             // Phase 0: validate against the batch's FINAL frame-set per track.
-            let mut sets: HashMap<(ClipId, NodeId, PropPath), HashSet<Frame>> = HashMap::new();
-            for m in moves.iter() {
-                let k = (m.clip, m.node, m.prop.clone());
-                if !sets.contains_key(&k) {
-                    let c = p.clips.get(m.clip).ok_or(EditError::MissingClip)?;
-                    let t = c
-                        .tracks
-                        .iter()
-                        .find(|t| t.node == m.node && t.prop == m.prop)
-                        .ok_or(EditError::MissingTrack)?;
-                    sets.insert(k.clone(), t.keys.iter().map(|x| x.frame).collect());
-                }
-            }
-            for m in moves.iter() {
-                let s = sets.get_mut(&(m.clip, m.node, m.prop.clone())).unwrap();
-                if !s.remove(&m.from) {
-                    return Err(EditError::NoClipKey(m.from.0));
-                }
-            }
-            for m in moves.iter() {
-                let s = sets.get_mut(&(m.clip, m.node, m.prop.clone())).unwrap();
-                if !s.insert(m.to) {
-                    return Err(EditError::ClipKeyExists(m.to.0));
-                }
-            }
+            let inverse = move_clip_keys(p.clips, moves)?;
             // Phase 1: remove all sources. Phase 2: insert all at destinations.
-            let mut captured = Vec::with_capacity(moves.len());
-            for m in moves.iter() {
-                let c = p.clips.get_mut(m.clip).expect("validated");
-                let t = clip_track_mut(c, m.node, &m.prop).expect("validated");
-                let i = t
-                    .keys
-                    .binary_search_by_key(&m.from, |k| k.frame)
-                    .expect("validated");
-                captured.push(t.keys.remove(i));
-            }
-            for (m, mut key) in moves.iter().zip(captured) {
-                key.frame = m.to;
-                let c = p.clips.get_mut(m.clip).expect("validated");
-                let t = clip_track_mut(c, m.node, &m.prop).expect("validated");
-                let i = t.keys.partition_point(|k| k.frame < m.to);
-                t.keys.insert(i, key);
-            }
-            let inv = moves
-                .iter()
-                .map(|m| ClipKeyMove {
-                    clip: m.clip,
-                    node: m.node,
-                    prop: m.prop.clone(),
-                    from: m.to,
-                    to: m.from,
-                })
-                .collect();
-            Ok((Created::default(), vec![MoveClipKeys { moves: inv }]))
+            Ok((Created::default(), vec![MoveClipKeys { moves: inverse }]))
         }
         CreateClipTrack { clip, track } => {
             let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
@@ -903,6 +978,22 @@ fn apply_command(
                 return Err(EditError::TrackExists);
             }
             c.tracks.push(track.clone());
+            Ok((
+                Created::default(),
+                vec![RemoveClipTrack {
+                    clip: *clip,
+                    node: track.node,
+                    prop: track.prop.clone(),
+                }],
+            ))
+        }
+        AttachClipTrack { clip, track, index } => {
+            let c = p.clips.get_mut(*clip).ok_or(EditError::MissingClip)?;
+            if clip_track_mut(c, track.node, &track.prop).is_some() {
+                return Err(EditError::TrackExists);
+            }
+            let index = (*index).min(c.tracks.len());
+            c.tracks.insert(index, track.clone());
             Ok((
                 Created::default(),
                 vec![RemoveClipTrack {
@@ -922,7 +1013,11 @@ fn apply_command(
             let track = c.tracks.remove(i);
             Ok((
                 Created::default(),
-                vec![CreateClipTrack { clip: *clip, track }],
+                vec![AttachClipTrack {
+                    clip: *clip,
+                    track,
+                    index: i,
+                }],
             ))
         }
         AddClipEvent { clip, event } => {
@@ -1045,11 +1140,22 @@ fn apply_document_command(
             index,
             tree,
         } => {
+            validate_parent(doc, *parent)?;
             let root = ensure_tree(doc, tree)?;
+            if doc.locate(root).is_some() {
+                return Err(ModelError::AlreadyAttached.into());
+            }
             doc.attach(root, *parent, *index)?;
             Ok((Some(root), vec![RemoveNode { id: root }]))
         }
         AttachNode { id, parent, index } => {
+            if !doc.nodes.contains_key(*id) {
+                return Err(ModelError::MissingNode.into());
+            }
+            if doc.locate(*id).is_some() {
+                return Err(ModelError::AlreadyAttached.into());
+            }
+            validate_parent(doc, *parent)?;
             doc.attach(*id, *parent, *index)?;
             Ok((None, vec![RemoveNode { id: *id }]))
         }
@@ -1070,8 +1176,15 @@ fn apply_document_command(
             index,
         } => {
             let old = doc.locate(*id).ok_or(ModelError::NotAttached)?;
+            if *new_parent == Parent::Node(*id) || parent_is_descendant(doc, *new_parent, *id) {
+                return Err(ModelError::AttachmentCycle.into());
+            }
+            validate_parent(doc, *new_parent)?;
             doc.detach(*id)?;
-            doc.attach(*id, *new_parent, *index)?;
+            if let Err(error) = doc.attach(*id, *new_parent, *index) {
+                let _ = doc.attach(*id, old.0, old.1);
+                return Err(error.into());
+            }
             Ok((
                 None,
                 vec![MoveNode {
@@ -1085,22 +1198,107 @@ fn apply_document_command(
             if !doc.nodes.contains_key(*group) {
                 return Err(ModelError::MissingNode.into());
             }
-            let originals: Vec<(NodeId, Parent, usize)> = ids
-                .iter()
-                .filter_map(|&id| doc.locate(id).map(|(p, i)| (id, p, i)))
-                .collect();
-            for &id in ids.iter() {
-                doc.detach(id)?;
-                doc.attach(id, Parent::Node(*group), usize::MAX)?;
+            if doc.locate(*group).is_none() {
+                return Err(ModelError::NotAttached.into());
             }
-            let inverse = originals
-                .into_iter()
-                .map(|(id, parent, index)| MoveNode {
-                    id,
-                    new_parent: parent,
-                    index,
+            let mut seen = std::collections::HashSet::new();
+            let mut originals = Vec::with_capacity(ids.len());
+            let mut desired_children = Vec::<(Parent, Vec<NodeId>)>::new();
+            for &id in ids.iter() {
+                if !seen.insert(id) || id == *group {
+                    return Err(ModelError::AttachmentCycle.into());
+                }
+                let (parent, index) = doc.locate(id).ok_or(ModelError::NotAttached)?;
+                if parent_is_descendant(doc, Parent::Node(*group), id) {
+                    return Err(ModelError::AttachmentCycle.into());
+                }
+                if !desired_children.iter().any(|(known, _)| *known == parent) {
+                    let children =
+                        children_for_parent(doc, parent).ok_or(ModelError::MalformedTree)?;
+                    desired_children.push((parent, children));
+                }
+                originals.push((id, parent, index));
+            }
+            if !desired_children
+                .iter()
+                .any(|(parent, _)| *parent == Parent::Node(*group))
+            {
+                let children = children_for_parent(doc, Parent::Node(*group))
+                    .ok_or(ModelError::MalformedTree)?;
+                desired_children.push((Parent::Node(*group), children));
+            }
+            for (moved, &id) in ids.iter().enumerate() {
+                if let Err(error) = doc.detach(id) {
+                    for &(id, parent, index) in originals.iter().take(moved).rev() {
+                        let _ = doc.attach(id, parent, index);
+                    }
+                    return Err(error.into());
+                }
+                if let Err(error) = doc.attach(id, Parent::Node(*group), usize::MAX) {
+                    for &(id, parent, index) in originals.iter().take(moved).rev() {
+                        let _ = doc.attach(id, parent, index);
+                    }
+                    let _ = doc.attach(id, originals[moved].1, originals[moved].2);
+                    return Err(error.into());
+                }
+            }
+            let group_parent = Parent::Node(*group);
+            let mut current_children = desired_children
+                .iter()
+                .map(|(parent, _)| {
+                    (
+                        *parent,
+                        children_for_parent(doc, *parent).unwrap_or_default(),
+                    )
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let group_slot = current_children
+                .iter()
+                .position(|(parent, _)| *parent == group_parent)
+                .expect("group parent was captured");
+            let mut operations = Vec::with_capacity(originals.len());
+            for (id, parent, _) in &originals {
+                let target_slot = current_children
+                    .iter()
+                    .position(|(known, _)| known == parent)
+                    .expect("original parent was captured");
+                let desired_slot = desired_children
+                    .iter()
+                    .position(|(known, _)| known == parent)
+                    .expect("original parent was captured");
+                let target_position = desired_children[desired_slot]
+                    .1
+                    .iter()
+                    .position(|candidate| candidate == id)
+                    .expect("selected node was captured");
+                if group_slot != target_slot {
+                    current_children[group_slot]
+                        .1
+                        .retain(|candidate| *candidate != *id);
+                } else {
+                    current_children[target_slot]
+                        .1
+                        .retain(|candidate| *candidate != *id);
+                }
+                let index = current_children[target_slot]
+                    .1
+                    .iter()
+                    .filter(|candidate| {
+                        desired_children[desired_slot]
+                            .1
+                            .iter()
+                            .position(|wanted| wanted == *candidate)
+                            .is_some_and(|position| position < target_position)
+                    })
+                    .count();
+                current_children[target_slot].1.insert(index, *id);
+                operations.push(MoveNode {
+                    id: *id,
+                    new_parent: *parent,
+                    index,
+                });
+            }
+            let inverse = operations.into_iter().rev().collect();
             Ok((None, inverse))
         }
         GroupSelection {
@@ -1109,30 +1307,72 @@ fn apply_document_command(
             index,
             group,
         } => {
-            let originals: Vec<(NodeId, Parent, usize)> = ids
-                .iter()
-                .filter_map(|&id| doc.locate(id).map(|(p, i)| (id, p, i)))
-                .collect();
-            if originals.len() != ids.len() {
-                return Err(ModelError::NotAttached.into());
-            }
-            let gid = match *group {
-                Some(g) => g,
-                None => {
-                    let g = doc.create_node(Node::new("Group", NodeKind::Group));
-                    *group = Some(g);
-                    g
-                }
-            };
-            if !doc.nodes.contains_key(gid) {
-                return Err(ModelError::MissingNode.into());
-            }
-            if doc.locate(gid).is_none() {
-                doc.attach(gid, *parent, *index)?;
-            }
+            validate_parent(doc, *parent)?;
+            let mut seen = std::collections::HashSet::new();
+            let mut originals = Vec::with_capacity(ids.len());
             for &id in ids.iter() {
-                doc.detach(id)?;
-                doc.attach(id, Parent::Node(gid), usize::MAX)?;
+                if !seen.insert(id) {
+                    return Err(ModelError::AttachmentCycle.into());
+                }
+                let old = doc.locate(id).ok_or(ModelError::NotAttached)?;
+                if parent_is_descendant(doc, *parent, id) {
+                    return Err(ModelError::AttachmentCycle.into());
+                }
+                originals.push((id, old.0, old.1));
+            }
+            let existing_group = *group;
+            if let Some(gid) = existing_group {
+                if !doc.nodes.contains_key(gid) {
+                    return Err(ModelError::MissingNode.into());
+                }
+                if doc.locate(gid).is_some() {
+                    return Err(ModelError::AlreadyAttached.into());
+                }
+                if ids.contains(&gid) || node_contains(doc, gid, ids) {
+                    return Err(ModelError::AttachmentCycle.into());
+                }
+            }
+            let created_group = existing_group.is_none();
+            let gid = if let Some(gid) = existing_group {
+                gid
+            } else {
+                let gid = doc.create_node(Node::new("Group", NodeKind::Group));
+                *group = Some(gid);
+                gid
+            };
+            if doc.locate(gid).is_none()
+                && let Err(error) = doc.attach(gid, *parent, *index)
+            {
+                if created_group {
+                    doc.nodes.remove(gid);
+                    *group = None;
+                }
+                return Err(error.into());
+            }
+            for (moved, &id) in ids.iter().enumerate() {
+                if let Err(error) = doc.detach(id) {
+                    for &(id, old_parent, old_index) in originals.iter().take(moved).rev() {
+                        let _ = doc.attach(id, old_parent, old_index);
+                    }
+                    let _ = doc.detach(gid);
+                    if created_group {
+                        doc.nodes.remove(gid);
+                        *group = None;
+                    }
+                    return Err(error.into());
+                }
+                if let Err(error) = doc.attach(id, Parent::Node(gid), usize::MAX) {
+                    for &(id, old_parent, old_index) in originals.iter().take(moved).rev() {
+                        let _ = doc.attach(id, old_parent, old_index);
+                    }
+                    let _ = doc.attach(id, originals[moved].1, originals[moved].2);
+                    let _ = doc.detach(gid);
+                    if created_group {
+                        doc.nodes.remove(gid);
+                        *group = None;
+                    }
+                    return Err(error.into());
+                }
             }
             // Undo order matters: move ids back to their original parents
             // FIRST, then detach the (now empty) group. Since undo applies
@@ -1468,53 +1708,8 @@ fn apply_document_command(
             Ok((None, inv))
         }
         MoveKeyframes { moves } => {
-            use std::collections::HashSet;
-            let mut seen_to: HashSet<(NodeId, String, i64)> = HashSet::new();
-            let mut seen_from: HashSet<(NodeId, String, i64)> = HashSet::new();
-            for m in moves.iter() {
-                if m.from == m.to {
-                    continue;
-                }
-                let from_key = (m.id, m.prop.as_string(), m.from.0);
-                let to_key = (m.id, m.prop.as_string(), m.to.0);
-                if !seen_to.insert(to_key.clone()) {
-                    return Err(ModelError::KeyframeExists(m.to.0).into());
-                }
-                seen_from.insert(from_key);
-            }
-            for m in moves.iter() {
-                if m.from == m.to {
-                    continue;
-                }
-                if doc.keyframe_data(m.id, &m.prop, m.from).is_none() {
-                    return Err(ModelError::NoKeyframe(m.from.0).into());
-                }
-                let to_occupied = doc.keyframe_data(m.id, &m.prop, m.to).is_some()
-                    && !seen_from.contains(&(m.id, m.prop.as_string(), m.to.0));
-                if to_occupied {
-                    return Err(ModelError::KeyframeExists(m.to.0).into());
-                }
-            }
-            let mut applied: Vec<&KeyframeMove> = Vec::new();
-            for m in moves.iter() {
-                if let Err(e) = doc.move_keyframe(m.id, &m.prop, m.from, m.to) {
-                    for done in applied.iter().rev() {
-                        let _ = doc.move_keyframe(done.id, &done.prop, done.to, done.from);
-                    }
-                    return Err(e.into());
-                }
-                applied.push(m);
-            }
-            let inv = moves
-                .iter()
-                .map(|m| KeyframeMove {
-                    id: m.id,
-                    prop: m.prop.clone(),
-                    from: m.to,
-                    to: m.from,
-                })
-                .collect();
-            Ok((None, vec![MoveKeyframes { moves: inv }]))
+            let inverse = move_keyframes(doc, moves)?;
+            Ok((None, vec![MoveKeyframes { moves: inverse }]))
         }
         SetEasing {
             id,
@@ -1575,8 +1770,7 @@ fn apply_document_command(
                 .compositions
                 .get_mut(*comp)
                 .ok_or(ModelError::MissingComp)?;
-            let old_start = start.is_some().then_some(c.range.0);
-            let old_end = end.is_some().then_some(c.range.1);
+            let old_range = c.range;
             if let Some(s) = start {
                 c.range.0 = *s;
             }
@@ -1593,12 +1787,15 @@ fn apply_document_command(
                     c.range = (renamite_animation::Frame(a), renamite_animation::Frame(b));
                 }
             }
+            let inverse_start =
+                (start.is_some() || c.range.0 != old_range.0).then_some(old_range.0);
+            let inverse_end = (end.is_some() || c.range.1 != old_range.1).then_some(old_range.1);
             Ok((
                 None,
                 vec![SetCompositionRange {
                     comp: *comp,
-                    start: old_start,
-                    end: old_end,
+                    start: inverse_start,
+                    end: inverse_end,
                 }],
             ))
         }
@@ -1734,10 +1931,10 @@ fn apply_document_command(
                 return Err(ModelError::MissingComp.into());
             }
             // Cycle guard: precomp must not be reachable from its target.
-            if let Some(host) = find_host_comp(doc, *id) {
-                if *comp == host || is_comp_reachable(doc, *comp, host) {
-                    return Err(EditError::Model(ModelError::PrecompCycle));
-                }
+            if let Some(host) = find_host_comp(doc, *id)
+                && (*comp == host || is_comp_reachable(doc, *comp, host))
+            {
+                return Err(EditError::Model(ModelError::PrecompCycle));
             }
             let n = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
             let NodeKind::Precomp { comp: cur, .. } = &mut n.kind else {
@@ -1758,6 +1955,71 @@ fn apply_document_command(
         }
         _ => unreachable!("clip/machine commands handled in `apply_command`"),
     }
+}
+
+fn validate_parent(doc: &Document, parent: Parent) -> Result<(), ModelError> {
+    match parent {
+        Parent::Node(id) => {
+            if doc.nodes.contains_key(id) {
+                Ok(())
+            } else {
+                Err(ModelError::MissingNode)
+            }
+        }
+        Parent::Comp(id) => {
+            if doc.compositions.contains_key(id) {
+                Ok(())
+            } else {
+                Err(ModelError::MissingComp)
+            }
+        }
+    }
+}
+
+fn children_for_parent(doc: &Document, parent: Parent) -> Option<Vec<NodeId>> {
+    match parent {
+        Parent::Node(id) => doc.nodes.get(id).map(|node| node.children.clone()),
+        Parent::Comp(id) => doc
+            .compositions
+            .get(id)
+            .map(|composition| composition.children.clone()),
+    }
+}
+
+fn parent_is_descendant(doc: &Document, parent: Parent, ancestor: NodeId) -> bool {
+    let Parent::Node(mut current) = parent else {
+        return false;
+    };
+    for _ in 0..=doc.nodes.len() {
+        if current == ancestor {
+            return true;
+        }
+        let Some(node) = doc.nodes.get(current) else {
+            return false;
+        };
+        let Some(next) = node.parent else {
+            return false;
+        };
+        current = next;
+    }
+    false
+}
+
+fn node_contains(doc: &Document, ancestor: NodeId, needles: &[NodeId]) -> bool {
+    let mut pending = vec![ancestor];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        if needles.contains(&id) {
+            return true;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(node) = doc.nodes.get(id) {
+            pending.extend(node.children.iter().copied());
+        }
+    }
+    false
 }
 
 fn find_host_comp(doc: &Document, mut node: NodeId) -> Option<CompId> {
@@ -1783,6 +2045,7 @@ fn is_comp_reachable(doc: &Document, from: CompId, target: CompId) -> bool {
     use std::collections::HashSet;
     let mut stack = vec![from];
     let mut visited = HashSet::new();
+    let mut visited_nodes = HashSet::new();
     while let Some(cur) = stack.pop() {
         if cur == target {
             return true;
@@ -1791,34 +2054,60 @@ fn is_comp_reachable(doc: &Document, from: CompId, target: CompId) -> bool {
             continue;
         }
         if let Some(comp) = doc.compositions.get(cur) {
-            for &child in &comp.children {
-                if let Some(node) = doc.nodes.get(child) {
-                    if let NodeKind::Precomp {
-                        comp: child_comp, ..
-                    } = &node.kind
-                    {
-                        stack.push(*child_comp);
-                    }
-                    // Also check nested precomps inside groups/layers via recursion
-                    // For deep search, walk node children
-                    let mut inner_stack = vec![child];
-                    while let Some(nid) = inner_stack.pop() {
-                        if let Some(n) = doc.nodes.get(nid) {
-                            for &c in &n.children {
-                                if let Some(cn) = doc.nodes.get(c) {
-                                    if let NodeKind::Precomp { comp: cc, .. } = &cn.kind {
-                                        stack.push(*cc);
-                                    }
-                                    inner_stack.push(c);
-                                }
-                            }
-                        }
-                    }
+            let mut nodes = comp.children.clone();
+            while let Some(node_id) = nodes.pop() {
+                if !visited_nodes.insert(node_id) {
+                    continue;
                 }
+                let Some(node) = doc.nodes.get(node_id) else {
+                    continue;
+                };
+                if let NodeKind::Precomp {
+                    comp: child_comp, ..
+                } = &node.kind
+                {
+                    stack.push(*child_comp);
+                }
+                nodes.extend(node.children.iter().copied());
             }
         }
     }
     false
+}
+
+fn coalesce_keyframe_moves(last: &mut [KeyframeMove], new: &[KeyframeMove]) -> bool {
+    if last.len() != new.len() {
+        return false;
+    }
+    if !last
+        .iter()
+        .zip(new)
+        .all(|(a, b)| a.id == b.id && a.prop == b.prop && (a.from == b.from || a.to == b.from))
+    {
+        return false;
+    }
+    for (a, b) in last.iter_mut().zip(new) {
+        a.to = b.to;
+    }
+    true
+}
+
+fn coalesce_clip_key_moves(last: &mut [ClipKeyMove], new: &[ClipKeyMove]) -> bool {
+    if last.len() != new.len() {
+        return false;
+    }
+    if !last.iter().zip(new).all(|(a, b)| {
+        a.clip == b.clip
+            && a.node == b.node
+            && a.prop == b.prop
+            && (a.from == b.from || a.to == b.from)
+    }) {
+        return false;
+    }
+    for (a, b) in last.iter_mut().zip(new) {
+        a.to = b.to;
+    }
+    true
 }
 
 /// True if `new` continues the same logical edit as `last` (live drag). The
@@ -1826,7 +2115,7 @@ fn is_comp_reachable(doc: &Document, from: CompId, target: CompId) -> bool {
 /// (pre-drag state) is preserved.
 fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
     use EditorCommand::*;
-    match (last, new) {
+    let same = match (&*last, new) {
         (
             SetStatic { id, prop, .. },
             SetStatic {
@@ -1865,14 +2154,23 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 ..
             },
         ) => *id == *nid && *frame == *nframe,
-        (MoveKeyframes { moves }, MoveKeyframes { moves: nmoves }) => {
-            moves.len() == nmoves.len()
-                && moves
-                    .iter()
-                    .zip(nmoves.iter())
-                    .all(|(a, b)| a.id == b.id && a.prop == b.prop && a.from == b.from)
+        (MoveKeyframes { .. }, MoveKeyframes { .. }) => true,
+        (
+            SetNodeFlags {
+                id,
+                visible,
+                locked,
+            },
+            SetNodeFlags {
+                id: nid,
+                visible: nvisible,
+                locked: nlocked,
+            },
+        ) => {
+            *id == *nid
+                && visible.is_some() == nvisible.is_some()
+                && locked.is_some() == nlocked.is_some()
         }
-        (SetNodeFlags { id, .. }, SetNodeFlags { id: nid, .. }) => *id == *nid,
         (SetNodeName { id, .. }, SetNodeName { id: nid, .. }) => *id == *nid,
         (SetTextContent { id, .. }, SetTextContent { id: nid, .. }) => *id == *nid,
         (SetTextFont { id, .. }, SetTextFont { id: nid, .. }) => *id == *nid,
@@ -1890,15 +2188,28 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
                 key: nk,
             },
         ) => *clip == *nc && *node == *nn && *prop == *np && key.frame == nk.frame,
-        (SetClipMeta { id, .. }, SetClipMeta { id: nid, .. }) => *id == *nid,
         (
-            SetCompositionRange { comp, start, .. },
+            SetClipMeta { id, name, range },
+            SetClipMeta {
+                id: nid,
+                name: nname,
+                range: nrange,
+            },
+        ) => {
+            *id == *nid && name.is_some() == nname.is_some() && range.is_some() == nrange.is_some()
+        }
+        (
+            SetCompositionRange { comp, start, end },
             SetCompositionRange {
                 comp: ncomp,
                 start: nstart,
-                ..
+                end: nend,
             },
-        ) => *comp == *ncomp && *start == *nstart,
+        ) => {
+            *comp == *ncomp
+                && start.is_some() == nstart.is_some()
+                && end.is_some() == nend.is_some()
+        }
         (SetCompositionName { comp, .. }, SetCompositionName { comp: c2, .. }) => *comp == *c2,
         (SetCompositionSize { comp, .. }, SetCompositionSize { comp: c2, .. }) => *comp == *c2,
         (SetCompositionRate { comp, .. }, SetCompositionRate { comp: c2, .. }) => *comp == *c2,
@@ -1941,32 +2252,386 @@ fn coalesce(last: &mut EditorCommand, new: &EditorCommand) -> bool {
         (SetPrecompComp { id, .. }, SetPrecompComp { id: id2, .. }) => *id == *id2,
         (SetImageCrop { id, .. }, SetImageCrop { id: id2, .. }) => *id == *id2,
         (ReplaceMachine { id, .. }, ReplaceMachine { id: nid, .. }) => *id == *nid,
-        (MoveClipKeys { moves }, MoveClipKeys { moves: nmoves }) => {
-            moves.len() == nmoves.len()
-                && moves.iter().zip(nmoves.iter()).all(|(a, b)| {
-                    a.clip == b.clip && a.node == b.node && a.prop == b.prop && a.from == b.from
-                })
-        }
+        (MoveClipKeys { .. }, MoveClipKeys { .. }) => true,
         _ => false,
+    };
+    if !same {
+        return false;
+    }
+    match (&mut *last, new) {
+        (
+            EditAnchors {
+                id: _,
+                frame: _,
+                edits,
+            },
+            EditAnchors {
+                id: _,
+                frame: _,
+                edits: new_edits,
+            },
+        ) => edits.extend(new_edits.iter().cloned()),
+        (MoveKeyframes { moves }, MoveKeyframes { moves: new_moves }) => {
+            if !coalesce_keyframe_moves(moves, new_moves) {
+                return false;
+            }
+        }
+        (MoveClipKeys { moves }, MoveClipKeys { moves: new_moves }) => {
+            if !coalesce_clip_key_moves(moves, new_moves) {
+                return false;
+            }
+        }
+        _ => *last = new.clone(),
+    }
+    true
+}
+
+fn coalesced_inverse(
+    replacement: &EditorCommand,
+    new_inverse: &[EditorCommand],
+    old_inverse: &[EditorCommand],
+) -> Vec<EditorCommand> {
+    match replacement {
+        EditorCommand::MoveKeyframes { moves } => {
+            vec![EditorCommand::MoveKeyframes {
+                moves: moves
+                    .iter()
+                    .filter(|m| m.from != m.to)
+                    .map(|m| KeyframeMove {
+                        id: m.id,
+                        prop: m.prop.clone(),
+                        from: m.to,
+                        to: m.from,
+                    })
+                    .collect(),
+            }]
+        }
+        EditorCommand::MoveClipKeys { moves } => {
+            vec![EditorCommand::MoveClipKeys {
+                moves: moves
+                    .iter()
+                    .filter(|m| m.from != m.to)
+                    .map(|m| ClipKeyMove {
+                        clip: m.clip,
+                        node: m.node,
+                        prop: m.prop.clone(),
+                        from: m.to,
+                        to: m.from,
+                    })
+                    .collect(),
+            }]
+        }
+        EditorCommand::EditAnchors { .. } => {
+            let mut inverse = old_inverse.to_vec();
+            inverse.extend_from_slice(new_inverse);
+            inverse
+        }
+        _ => old_inverse.to_vec(),
+    }
+}
+
+fn rollback_applied(p: &mut ProjectMut<'_>, applied: &[Vec<EditorCommand>]) {
+    for inverse in applied.iter().rev() {
+        for cmd in inverse.iter().rev() {
+            let mut c = cmd.clone();
+            let _ = apply_command(p, &mut c);
+        }
     }
 }
 
 fn undo_transaction(p: &mut ProjectMut<'_>, t: &AppliedTransaction) -> Result<(), EditError> {
+    let mut applied = Vec::new();
     for group in t.inverse.iter().rev() {
         for cmd in group.iter().rev() {
             let mut c = cmd.clone();
-            apply_command(p, &mut c)?;
+            match apply_command(p, &mut c) {
+                Ok((_, inverse)) => applied.push(inverse),
+                Err(error) => {
+                    rollback_applied(p, &applied);
+                    return Err(error);
+                }
+            }
         }
     }
     Ok(())
 }
 
 fn redo_transaction(p: &mut ProjectMut<'_>, t: &AppliedTransaction) -> Result<(), EditError> {
+    let mut applied = Vec::new();
     for cmd in &t.forward {
         let mut c = cmd.clone();
-        apply_command(p, &mut c)?;
+        match apply_command(p, &mut c) {
+            Ok((_, inverse)) => applied.push(inverse),
+            Err(error) => {
+                rollback_applied(p, &applied);
+                return Err(error);
+            }
+        }
     }
     Ok(())
+}
+
+fn move_keyframes(
+    doc: &mut Document,
+    moves: &[KeyframeMove],
+) -> Result<Vec<KeyframeMove>, ModelError> {
+    use std::collections::HashSet;
+
+    struct Group {
+        id: NodeId,
+        prop: PropPath,
+        moves: Vec<KeyframeMove>,
+    }
+
+    let mut groups: Vec<Group> = Vec::new();
+    for m in moves {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.id == m.id && group.prop == m.prop)
+        {
+            group.moves.push(m.clone());
+        } else {
+            groups.push(Group {
+                id: m.id,
+                prop: m.prop.clone(),
+                moves: vec![m.clone()],
+            });
+        }
+    }
+
+    let mut snapshots: Vec<Vec<KeyframeData>> = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let frames = doc.key_frames(group.id, &group.prop);
+        let mut sources = HashSet::new();
+        let mut destinations = HashSet::new();
+        let mut moving_sources = HashSet::new();
+        for m in &group.moves {
+            if !sources.insert(m.from) {
+                return Err(ModelError::KeyframeExists(m.from.0));
+            }
+            if !destinations.insert(m.to) {
+                return Err(ModelError::KeyframeExists(m.to.0));
+            }
+            if m.from != m.to {
+                moving_sources.insert(m.from);
+            }
+        }
+        for m in &group.moves {
+            if !frames.contains(&m.from) {
+                return Err(ModelError::NoKeyframe(m.from.0));
+            }
+            if m.from != m.to && frames.contains(&m.to) && !moving_sources.contains(&m.to) {
+                return Err(ModelError::KeyframeExists(m.to.0));
+            }
+        }
+        let snapshot = frames
+            .iter()
+            .map(|frame| {
+                doc.keyframe_data(group.id, &group.prop, *frame)
+                    .ok_or(ModelError::NoKeyframe(frame.0))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        snapshots.push(snapshot);
+    }
+
+    let mut applied: Vec<usize> = Vec::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        let result = (|| {
+            for m in group.moves.iter().filter(|m| m.from != m.to) {
+                doc.remove_keyframe(group.id, &group.prop, m.from)?;
+            }
+            for m in group.moves.iter().filter(|m| m.from != m.to) {
+                let mut key = snapshots[group_index]
+                    .iter()
+                    .find(|key| key.frame == m.from)
+                    .cloned()
+                    .ok_or(ModelError::NoKeyframe(m.from.0))?;
+                key.frame = m.to;
+                doc.restore_keyframe(group.id, &group.prop, &key)?;
+            }
+            Ok::<(), ModelError>(())
+        })();
+        if let Err(error) = result {
+            for index in applied.into_iter().rev() {
+                restore_keyframe_set(
+                    doc,
+                    groups[index].id,
+                    &groups[index].prop,
+                    &snapshots[index],
+                );
+            }
+            restore_keyframe_set(doc, group.id, &group.prop, &snapshots[group_index]);
+            return Err(error);
+        }
+        applied.push(group_index);
+    }
+
+    Ok(moves
+        .iter()
+        .filter(|m| m.from != m.to)
+        .map(|m| KeyframeMove {
+            id: m.id,
+            prop: m.prop.clone(),
+            from: m.to,
+            to: m.from,
+        })
+        .collect())
+}
+
+fn move_clip_keys(
+    clips: &mut ClipMap,
+    moves: &[ClipKeyMove],
+) -> Result<Vec<ClipKeyMove>, EditError> {
+    use std::collections::HashSet;
+
+    struct Group {
+        clip: ClipId,
+        node: NodeId,
+        prop: PropPath,
+        moves: Vec<ClipKeyMove>,
+    }
+
+    let mut groups: Vec<Group> = Vec::new();
+    for m in moves {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.clip == m.clip && group.node == m.node && group.prop == m.prop)
+        {
+            group.moves.push(m.clone());
+        } else {
+            groups.push(Group {
+                clip: m.clip,
+                node: m.node,
+                prop: m.prop.clone(),
+                moves: vec![m.clone()],
+            });
+        }
+    }
+
+    let mut snapshots: Vec<Vec<KeyframeData>> = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let clip = clips.get(group.clip).ok_or(EditError::MissingClip)?;
+        let track = clip
+            .tracks
+            .iter()
+            .find(|track| track.node == group.node && track.prop == group.prop)
+            .ok_or(EditError::MissingTrack)?;
+        let frames: Vec<Frame> = track.keys.iter().map(|key| key.frame).collect();
+        let mut sources = HashSet::new();
+        let mut destinations = HashSet::new();
+        let mut moving_sources = HashSet::new();
+        for m in &group.moves {
+            if !sources.insert(m.from) {
+                return Err(EditError::NoClipKey(m.from.0));
+            }
+            if !destinations.insert(m.to) {
+                return Err(EditError::ClipKeyExists(m.to.0));
+            }
+            if m.from != m.to {
+                moving_sources.insert(m.from);
+            }
+        }
+        for m in &group.moves {
+            if !frames.contains(&m.from) {
+                return Err(EditError::NoClipKey(m.from.0));
+            }
+            if m.from != m.to && frames.contains(&m.to) && !moving_sources.contains(&m.to) {
+                return Err(EditError::ClipKeyExists(m.to.0));
+            }
+        }
+        snapshots.push(track.keys.clone());
+    }
+
+    let mut applied: Vec<usize> = Vec::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        let result = (|| {
+            let clip = clips.get_mut(group.clip).ok_or(EditError::MissingClip)?;
+            let track = clip
+                .tracks
+                .iter_mut()
+                .find(|track| track.node == group.node && track.prop == group.prop)
+                .ok_or(EditError::MissingTrack)?;
+            for frame in snapshots[group_index].iter().map(|key| key.frame) {
+                let index = track
+                    .keys
+                    .binary_search_by_key(&frame, |key| key.frame)
+                    .map_err(|_| EditError::NoClipKey(frame.0))?;
+                track.keys.remove(index);
+            }
+            for m in &group.moves {
+                let mut key = snapshots[group_index]
+                    .iter()
+                    .find(|key| key.frame == m.from)
+                    .cloned()
+                    .ok_or(EditError::NoClipKey(m.from.0))?;
+                key.frame = m.to;
+                let index = track.keys.partition_point(|key| key.frame < m.to);
+                track.keys.insert(index, key);
+            }
+            Ok::<(), EditError>(())
+        })();
+        if let Err(error) = result {
+            for index in applied.into_iter().rev() {
+                restore_clip_track_keys(
+                    clips,
+                    groups[index].clip,
+                    groups[index].node,
+                    &groups[index].prop,
+                    &snapshots[index],
+                );
+            }
+            restore_clip_track_keys(
+                clips,
+                group.clip,
+                group.node,
+                &group.prop,
+                &snapshots[group_index],
+            );
+            return Err(error);
+        }
+        applied.push(group_index);
+    }
+
+    Ok(moves
+        .iter()
+        .map(|m| ClipKeyMove {
+            clip: m.clip,
+            node: m.node,
+            prop: m.prop.clone(),
+            from: m.to,
+            to: m.from,
+        })
+        .collect())
+}
+
+fn restore_clip_track_keys(
+    clips: &mut ClipMap,
+    clip_id: ClipId,
+    node: NodeId,
+    prop: &PropPath,
+    keys: &[KeyframeData],
+) {
+    let Some(clip) = clips.get_mut(clip_id) else {
+        return;
+    };
+    let Some(track) = clip
+        .tracks
+        .iter_mut()
+        .find(|track| track.node == node && &track.prop == prop)
+    else {
+        return;
+    };
+    track.keys.clear();
+    track.keys.extend_from_slice(keys);
+}
+
+fn restore_keyframe_set(doc: &mut Document, id: NodeId, prop: &PropPath, keys: &[KeyframeData]) {
+    for frame in doc.key_frames(id, prop) {
+        let _ = doc.remove_keyframe(id, prop, frame);
+    }
+    for key in keys {
+        let _ = doc.restore_keyframe(id, prop, key);
+    }
 }
 
 /// Find the (node, prop) track on a clip, if it exists.
@@ -1979,25 +2644,59 @@ fn clip_track_mut<'t>(c: &'t mut Clip, node: NodeId, prop: &PropPath) -> Option<
 /// Recursively create a tree's arena nodes once, filling `tree.id`. No-ops on
 /// redo when ids are already filled. Children are attached to their parents.
 fn ensure_tree(doc: &mut Document, tree: &mut NodeTree) -> Result<NodeId, ModelError> {
+    let mut created = Vec::new();
+    let result = ensure_tree_inner(doc, tree, &mut created);
+    if result.is_err() {
+        let created_set: std::collections::HashSet<_> = created.iter().copied().collect();
+        clear_created_tree_ids(tree, &created_set);
+        for id in created.into_iter().rev() {
+            doc.nodes.remove(id);
+        }
+    }
+    result
+}
+
+fn ensure_tree_inner(
+    doc: &mut Document,
+    tree: &mut NodeTree,
+    created: &mut Vec<NodeId>,
+) -> Result<NodeId, ModelError> {
     if let Some(id) = tree.id {
-        return Ok(id);
+        if doc.nodes.contains_key(id) {
+            return Ok(id);
+        }
+        return Err(ModelError::MissingNode);
     }
     let mut child_ids = Vec::with_capacity(tree.children.len());
     for child in &mut tree.children {
-        child_ids.push(ensure_tree(doc, child)?);
+        let id = ensure_tree_inner(doc, child, created)?;
+        if doc.locate(id).is_some() {
+            return Err(ModelError::WrongNodeKind("detached tree node"));
+        }
+        child_ids.push(id);
     }
     // Fresh arena payload: strip any stale topology from the snapshot.
     let mut node = tree.node.clone();
     node.parent = None;
     node.children.clear();
     let id = doc.create_node(node);
+    created.push(id);
+    tree.id = Some(id);
     tree.node.parent = None;
     tree.node.children.clear();
-    for cid in child_ids {
-        doc.attach(cid, Parent::Node(id), usize::MAX)?;
+    for child_id in child_ids {
+        doc.attach(child_id, Parent::Node(id), usize::MAX)?;
     }
-    tree.id = Some(id);
     Ok(id)
+}
+
+fn clear_created_tree_ids(tree: &mut NodeTree, created: &std::collections::HashSet<NodeId>) {
+    if tree.id.is_some_and(|id| created.contains(&id)) {
+        tree.id = None;
+    }
+    for child in &mut tree.children {
+        clear_created_tree_ids(child, created);
+    }
 }
 
 /// Resolve the current path (keyed value at `frame`, else base) and apply each
@@ -2007,21 +2706,23 @@ fn apply_edits_to(
     frame: Option<Frame>,
     edits: &[AnchorEdit],
 ) -> Result<Vec<AnchorEdit>, EditError> {
+    let mut candidate = a.clone();
     let mut inv = Vec::with_capacity(edits.len());
     for e in edits {
         let path = match frame {
             Some(f) => {
-                let i = a
+                let i = candidate
                     .keyframes
                     .binary_search_by_key(&f, |k| k.frame)
                     .map_err(|_| EditError::Model(ModelError::NoKeyframe(f.0)))?;
-                &mut a.keyframes[i].value
+                &mut candidate.keyframes[i].value
             }
-            None => &mut a.base,
+            None => &mut candidate.base,
         };
         inv.push(path.apply_edit(e).ok_or(EditError::NotAPath)?);
     }
     inv.reverse();
+    *a = candidate;
     Ok(inv)
 }
 

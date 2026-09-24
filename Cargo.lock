@@ -3193,6 +3193,7 @@ dependencies = [
  "renamite-io-ren",
  "renamite-io-svg",
  "renamite-model",
+ "renamite-platform",
  "renamite-player",
  "renamite-render-bridge",
  "renamite-render-offscreen",
@@ -3262,6 +3263,7 @@ version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "glam",
+ "image",
  "kurbo",
  "renamite-animation",
  "renamite-geometry",
@@ -3276,12 +3278,15 @@ dependencies = [
 name = "renamite-io-ren"
 version = "0.3.2"
 dependencies = [
+ "glam",
  "postcard",
  "renamite-animation",
+ "renamite-geometry",
  "renamite-machine",
  "renamite-model",
  "ron",
  "serde",
+ "slotmap",
  "thiserror 2.0.20",
 ]
 
@@ -3335,10 +3340,12 @@ dependencies = [
 name = "renamite-platform"
 version = "0.3.2"
 dependencies = [
+ "dirs",
  "futures-lite",
  "log",
  "rlobkit-dialogs",
  "wasm-bindgen-futures",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3485,6 +3492,7 @@ name = "renamite-validate"
 version = "0.3.2"
 dependencies = [
  "glam",
+ "image",
  "renamite-animation",
  "renamite-geometry",
  "renamite-io-ren",

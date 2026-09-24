@@ -20,8 +20,8 @@ use renamite_history::{
 };
 use renamite_model::{
     Document, FillRule, GradientKind, Node, NodeId, NodeKind, PaintKind, Parent, PropPath,
-    ShapeKind, StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_affine,
-    node_is_ancestor, node_transform_context, pick_box_selectable, pick_selectable,
+    ShapeKind, StarKind, StyleKind, StylePaint, Value, immediate_child_below, node_is_ancestor,
+    node_transform_context, node_world_affine, pick_box_selectable, pick_selectable,
     pick_selectable_with_leaf, selected_ancestor_for_pick, selection_bounds, world_delta_to_parent,
 };
 use smallvec::{SmallVec, smallvec};
@@ -524,7 +524,15 @@ impl SelectTool {
                     .selection
                     .nodes
                     .iter()
+                    .filter(|&&node| {
+                        !ctx.selection.nodes.iter().any(|&ancestor| {
+                            ancestor != node && node_is_ancestor(ctx.doc, ancestor, node)
+                        })
+                    })
                     .filter_map(|&node| {
+                        if ctx.doc.nodes.get(node).is_some_and(|node| node.locked) {
+                            return None;
+                        }
                         let Ok(Value::DVec2(current)) =
                             ctx.doc.value_at(node, &prop, ctx.playhead.0 as f64)
                         else {
@@ -752,8 +760,14 @@ impl SelectTool {
             .selection
             .nodes
             .iter()
-            .map(|&id| EditorCommand::RemoveNode { id })
-            .collect();
+            .filter_map(|&id| {
+                (!ctx.doc.nodes.get(id).is_some_and(|node| node.locked))
+                    .then_some(EditorCommand::RemoveNode { id })
+            })
+            .collect::<SmallVec<[_; 4]>>();
+        if cmds.is_empty() {
+            return smallvec![];
+        }
         smallvec![
             ToolOutput::BeginTransaction("Delete".into()),
             ToolOutput::Commands(cmds),
@@ -1050,8 +1064,13 @@ impl GradientTool {
             return smallvec![];
         };
         let style = item.style;
-        let l2w = node_affine(ctx.doc, shape, ctx.playhead.0 as f64);
+        let Some(l2w) = node_world_affine(ctx.doc, shape, ctx.playhead.0 as f64) else {
+            return smallvec![];
+        };
         let w2l = l2w.inverse();
+        if !w2l.as_coeffs().iter().all(|value| value.is_finite()) {
+            return smallvec![];
+        }
         let local = {
             let p = w2l * Point::new(pos.x, pos.y);
             DVec2::new(p.x, p.y)
@@ -1252,7 +1271,7 @@ impl DropperTool {
             .items
             .iter()
             .rev()
-            .find(|it| it.opacity > 0.0 && paint_covers(it, pos))
+            .find(|it| it.opacity > 0.0 && paint_covers(ctx.scene, it, pos))
             .cloned()
         else {
             return smallvec![];
@@ -1286,7 +1305,11 @@ impl DropperTool {
 }
 
 /// True when `pos` is inside (or within stroke width of) an evaluated item.
-fn paint_covers(item: &renamite_model::SceneItem, pos: DVec2) -> bool {
+fn paint_covers(
+    scene: &renamite_model::Scene,
+    item: &renamite_model::SceneItem,
+    pos: DVec2,
+) -> bool {
     let q = Point::new(pos.x, pos.y);
     let padding = match &item.kind {
         renamite_model::PaintKind::Stroke(s) => (s.width * 0.5).max(1.0),
@@ -1298,6 +1321,17 @@ fn paint_covers(item: &renamite_model::SceneItem, pos: DVec2) -> bool {
         .inflate(padding, padding)
         .contains(q)
     {
+        return false;
+    }
+    if !item.clips.iter().all(|&index| {
+        let Some(clip) = scene.clips.get(index as usize) else {
+            return false;
+        };
+        match clip.rule {
+            FillRule::NonZero => clip.path.winding(q) != 0,
+            FillRule::EvenOdd => clip.path.winding(q) % 2 != 0,
+        }
+    }) {
         return false;
     }
     match &item.kind {
@@ -1679,7 +1713,10 @@ impl PenTool {
     }
 
     pub fn cancel(&mut self) -> OutputVec {
-        if matches!(self.state, PenState::DraggingTangent { .. }) {
+        if matches!(
+            self.state,
+            PenState::Building { .. } | PenState::DraggingTangent { .. }
+        ) {
             self.state = PenState::Idle;
         }
         smallvec![]
@@ -1967,18 +2004,22 @@ impl PathEditTool {
             return None;
         };
         let node = ctx.doc.nodes.get(sel)?;
+        if node.locked {
+            return None;
+        }
 
         match &node.kind {
             NodeKind::Shape(ShapeKind::Path(_) | ShapeKind::CompoundPath(_)) => Some(sel),
             NodeKind::Group | NodeKind::Layer(_) => {
                 let mut path_children = node.children.iter().copied().filter(|id| {
-                    matches!(
-                        ctx.doc.nodes.get(*id).map(|n| &n.kind),
-                        Some(
-                            NodeKind::Shape(ShapeKind::Path(_))
-                                | NodeKind::Shape(ShapeKind::CompoundPath(_))
-                        )
-                    )
+                    ctx.doc.nodes.get(*id).is_some_and(|child| {
+                        !child.locked
+                            && matches!(
+                                &child.kind,
+                                NodeKind::Shape(ShapeKind::Path(_))
+                                    | NodeKind::Shape(ShapeKind::CompoundPath(_))
+                            )
+                    })
                 });
                 let first = path_children.next()?;
                 if path_children.next().is_none() {

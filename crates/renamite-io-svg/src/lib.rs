@@ -17,6 +17,8 @@ mod path;
 
 use renamite_model::{CompId, Document};
 
+pub const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
 /// One non-fatal compatibility warning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SvgWarning {
@@ -43,6 +45,8 @@ pub enum SvgError {
     Model(#[from] renamite_model::ModelError),
     #[error("image decoding failed: {0}")]
     Image(String),
+    #[error("SVG input limit exceeded: {0}")]
+    InputLimit(&'static str),
 }
 
 /// Import a static SVG document, discarding non-fatal warnings.

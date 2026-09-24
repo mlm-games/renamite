@@ -40,6 +40,17 @@ use crate::components::{CollapsibleSection, CompactIconAction, PanelHeader};
 use crate::session::{MachineGraphGesture, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 
+fn machine_state_mut(
+    machine: &mut Machine,
+    layer: usize,
+    state: usize,
+) -> Option<&mut renamite_machine::State> {
+    machine
+        .layers
+        .get_mut(layer)
+        .and_then(|layer| layer.states.get_mut(state))
+}
+
 fn graph_view(machine_id: MachineId) -> Rc<RefCell<ViewTransform>> {
     remember_with_key(format!("machine_graph_view_{machine_id:?}"), || {
         RefCell::new(ViewTransform::identity())
@@ -144,22 +155,23 @@ fn PreviewStatusBar(session: SessionRef) -> View {
         Some(st) if !st.is_empty() => {
             let names = {
                 let s = session.borrow();
-                let Some(id) = s.active_machine else {
-                    return Box(Modifier::new());
-                };
-                let m = &s.file.machines[id];
-                st.iter()
-                    .enumerate()
-                    .map(|(li, si)| {
-                        m.layers
-                            .get(li)
-                            .and_then(|l| l.states.get(*si))
-                            .map(|s| s.name.as_str())
-                            .unwrap_or("?")
-                            .to_string()
+                s.active_machine
+                    .and_then(|id| s.file.machines.get(id))
+                    .map(|m| {
+                        st.iter()
+                            .enumerate()
+                            .map(|(li, si)| {
+                                m.layers
+                                    .get(li)
+                                    .and_then(|l| l.states.get(*si))
+                                    .map(|s| s.name.as_str())
+                                    .unwrap_or("?")
+                                    .to_string()
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     })
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                    .unwrap_or_else(|| "unavailable".into())
             };
             format!("▶ {name} ,  {names}")
         }
@@ -296,7 +308,15 @@ fn MachineSelector(session: SessionRef) -> View {
 }
 
 fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
-    let name = session.borrow().file.machines[machine_id].name.clone();
+    let Some(name) = session
+        .borrow()
+        .file
+        .machines
+        .get(machine_id)
+        .map(|machine| machine.name.clone())
+    else {
+        return Box(Modifier::new());
+    };
 
     Column(Modifier::new().fill_max_width().gap(Dp(8.0))).child((
         Row(Modifier::new()
@@ -385,8 +405,14 @@ fn target_layer(session: &SessionRef) -> usize {
 fn add_state_ui(session: &SessionRef, machine_id: MachineId, layer: usize) {
     let mut s = session.borrow_mut();
     let name = {
-        let m = &s.file.machines[machine_id];
-        let n = m.layers.get(layer).map(|l| l.states.len()).unwrap_or(0) + 1;
+        let n = s
+            .file
+            .machines
+            .get(machine_id)
+            .and_then(|m| m.layers.get(layer))
+            .map(|l| l.states.len())
+            .unwrap_or(0)
+            + 1;
         format!("State {n}")
     };
     let ok = s.edit_active_machine("Add state", move |machine| {
@@ -409,7 +435,12 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
     let (inputs, preview) = {
         let session = session.borrow();
         (
-            session.file.machines[machine_id].inputs.clone(),
+            session
+                .file
+                .machines
+                .get(machine_id)
+                .map(|machine| machine.inputs.clone())
+                .unwrap_or_default(),
             session.machine_preview_inputs.clone(),
         )
     };
@@ -524,7 +555,10 @@ fn InputRow(
     let name = input.name.clone();
     let removable = {
         let s = session.borrow();
-        !input_is_referenced(&s.file.machines[machine_id], index)
+        s.file
+            .machines
+            .get(machine_id)
+            .is_some_and(|machine| !input_is_referenced(machine, index))
     };
 
     let mut controls: Vec<View> = vec![
@@ -847,7 +881,9 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 }),
             move |scope| {
                 let session = draw_session.borrow();
-                let machine = &session.file.machines[machine_id];
+                let Some(machine) = session.file.machines.get(machine_id) else {
+                    return;
+                };
                 let view_val = *view.borrow();
                 let mut layout = auto_layout(machine);
                 if let Some(MachineGraphGesture::DragState {
@@ -957,7 +993,9 @@ fn handle_graph_down(
 
     let view_val = *view.borrow();
     let world = view_val.screen_to_world(position);
-    let machine = session.borrow().file.machines[machine_id].clone();
+    let Some(machine) = session.borrow().file.machines.get(machine_id).cloned() else {
+        return;
+    };
     let layout = auto_layout(&machine);
     let mut s = session.borrow_mut();
 
@@ -1095,7 +1133,10 @@ fn handle_graph_up(
         Some(MachineGraphGesture::WireTransition {
             layer, from_state, ..
         }) => {
-            let machine = s.file.machines[machine_id].clone();
+            let Some(machine) = s.file.machines.get(machine_id).cloned() else {
+                request_frame();
+                return;
+            };
             let layout = auto_layout(&machine);
             if let Some((to_layer, to_state)) = hit_state(&layout, world)
                 && to_layer == layer
@@ -1113,16 +1154,22 @@ fn handle_graph_up(
                     Ok(())
                 });
                 if ok && let Some(m) = s.file.machines.get(machine_id) {
-                    let count = match source {
-                        TransitionSource::Any => m.layers[layer].any_transitions.len(),
-                        TransitionSource::State(si) => m.layers[layer].states[si].transitions.len(),
-                    };
-                    s.machine_selection = MachineSelection::Transition {
-                        layer,
-                        source,
-                        transition: count.saturating_sub(1),
-                    };
-                    s.active_machine_layer = layer;
+                    let count = m.layers.get(layer).map(|machine_layer| match source {
+                        TransitionSource::Any => machine_layer.any_transitions.len(),
+                        TransitionSource::State(si) => machine_layer
+                            .states
+                            .get(si)
+                            .map(|state| state.transitions.len())
+                            .unwrap_or(0),
+                    });
+                    if let Some(count) = count.filter(|count| *count > 0) {
+                        s.machine_selection = MachineSelection::Transition {
+                            layer,
+                            source,
+                            transition: count - 1,
+                        };
+                        s.active_machine_layer = layer;
+                    }
                 }
             }
         }
@@ -1318,7 +1365,13 @@ fn draw_machine_states(
 ) {
     let th = theme();
     for gs in layout {
-        let state = &machine.layers[gs.layer].states[gs.state];
+        let Some(state) = machine
+            .layers
+            .get(gs.layer)
+            .and_then(|layer| layer.states.get(gs.state))
+        else {
+            continue;
+        };
         let rect = Rect {
             x: gs.rect.x as f32,
             y: gs.rect.y as f32,
@@ -1479,7 +1532,13 @@ fn draw_machine_states_with_view(
 ) {
     let th = theme();
     for gs in screen_layout {
-        let state = &machine.layers[gs.layer].states[gs.state];
+        let Some(state) = machine
+            .layers
+            .get(gs.layer)
+            .and_then(|layer| layer.states.get(gs.state))
+        else {
+            continue;
+        };
         let rect = Rect {
             x: gs.rect.x as f32,
             y: gs.rect.y as f32,
@@ -1553,15 +1612,16 @@ fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
     }
 }
 
-fn LayerInspector(
-    session: SessionRef,
-    machine_id: MachineId,
-    layer: usize,
-) -> View {
+fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> View {
     let th = theme();
     let (name, any_count, state_count) = {
         let s = session.borrow();
-        let Some(l) = s.file.machines[machine_id].layers.get(layer) else {
+        let Some(l) = s
+            .file
+            .machines
+            .get(machine_id)
+            .and_then(|machine| machine.layers.get(layer))
+        else {
             return Box(Modifier::new());
         };
         (l.name.clone(), l.any_transitions.len(), l.states.len())
@@ -1656,16 +1716,13 @@ fn LayerInspector(
     ))
 }
 
-fn StateInspector(
-    session: SessionRef,
-    machine_id: MachineId,
-    layer: usize,
-    state: usize,
-) -> View {
+fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, state: usize) -> View {
     let th = theme();
     let (name, kind, states, is_entry, inputs) = {
         let s = session.borrow();
-        let machine = &s.file.machines[machine_id];
+        let Some(machine) = s.file.machines.get(machine_id) else {
+            return Box(Modifier::new().height(Dp(4.0)));
+        };
         let Some(l) = machine.layers.get(layer) else {
             return Box(Modifier::new().height(Dp(4.0)));
         };
@@ -1796,13 +1853,7 @@ fn StateInspector(
         } => {
             rows.push(labeled_row(
                 "Clip",
-                clip_dropdown(
-                    session.clone(),
-                    machine_id,
-                    layer,
-                    state,
-                    *clip,
-                ),
+                clip_dropdown(session.clone(), machine_id, layer, state, *clip),
             ));
             let speed = *speed;
             rows.push(labeled_row(
@@ -1812,8 +1863,8 @@ fn StateInspector(
                     speed,
                     0.1,
                     Rc::new(move |machine, value| {
-                        if let StateKind::Clip { speed, .. } =
-                            &mut machine.layers[layer].states[state].kind
+                        if let Some(state) = machine_state_mut(machine, layer, state)
+                            && let StateKind::Clip { speed, .. } = &mut state.kind
                         {
                             *speed = value.max(0.0);
                         }
@@ -1849,13 +1900,7 @@ fn StateInspector(
         StateKind::Blend1D { input, children } => {
             rows.push(labeled_row(
                 "Input",
-                blend_input_dropdown(
-                    session.clone(),
-                    machine_id,
-                    layer,
-                    state,
-                    *input,
-                ),
+                blend_input_dropdown(session.clone(), machine_id, layer, state, *input),
             ));
             rows.push(
                 Text("Blend children")
@@ -1895,7 +1940,9 @@ fn StateInspector(
                                 return;
                             };
                             s.edit_active_machine("Add blend child", move |machine| {
-                                let st = &mut machine.layers[layer].states[state];
+                                let Some(st) = machine_state_mut(machine, layer, state) else {
+                                    return Ok(());
+                                };
                                 if let StateKind::Blend1D { children, .. } = &mut st.kind {
                                     let thr =
                                         children.last().map(|c| c.threshold + 0.5).unwrap_or(0.0);
@@ -1976,9 +2023,13 @@ fn StateInspector(
 
     let transitions = {
         let s = session.borrow();
-        s.file.machines[machine_id].layers[layer].states[state]
-            .transitions
-            .clone()
+        s.file
+            .machines
+            .get(machine_id)
+            .and_then(|machine| machine.layers.get(layer))
+            .and_then(|layer| layer.states.get(state))
+            .map(|state| state.transitions.clone())
+            .unwrap_or_default()
     };
 
     for (index, tr) in transitions.iter().enumerate() {
@@ -2053,8 +2104,8 @@ fn blend_child_row(
             child.threshold,
             0.01,
             Rc::new(move |machine, value| {
-                if let StateKind::Blend1D { children, .. } =
-                    &mut machine.layers[layer].states[state].kind
+                if let Some(state) = machine_state_mut(machine, layer, state)
+                    && let StateKind::Blend1D { children, .. } = &mut state.kind
                 {
                     if let Some(c) = children.get_mut(index) {
                         c.threshold = value;
@@ -2076,8 +2127,8 @@ fn blend_child_row(
             move || {
                 let mut s = session.borrow_mut();
                 s.edit_active_machine("Remove blend child", move |machine| {
-                    if let StateKind::Blend1D { children, .. } =
-                        &mut machine.layers[layer].states[state].kind
+                    if let Some(state) = machine_state_mut(machine, layer, state)
+                        && let StateKind::Blend1D { children, .. } = &mut state.kind
                         && index < children.len()
                     {
                         children.remove(index);
@@ -2111,8 +2162,8 @@ fn clip_dropdown_for_blend(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Blend child clip", move |machine| {
-                        if let StateKind::Blend1D { children, .. } =
-                            &mut machine.layers[layer].states[state].kind
+                        if let Some(state) = machine_state_mut(machine, layer, state)
+                            && let StateKind::Blend1D { children, .. } = &mut state.kind
                             && let Some(c) = children.get_mut(child_index)
                         {
                             c.clip = id;
@@ -2140,7 +2191,9 @@ fn TransitionInspector(
     let th = theme();
     let (state_count, duration, exit_time, conditions, inputs, target) = {
         let s = session.borrow();
-        let machine = &s.file.machines[machine_id];
+        let Some(machine) = s.file.machines.get(machine_id) else {
+            return Box(Modifier::new().height(Dp(4.0)));
+        };
         let Some(l) = machine.layers.get(layer) else {
             return Box(Modifier::new().height(Dp(4.0)));
         };
@@ -2430,7 +2483,9 @@ fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
     let th = theme();
     let (listeners, inputs, selected_node) = {
         let s = session.borrow();
-        let machine = &s.file.machines[machine_id];
+        let Some(machine) = s.file.machines.get(machine_id) else {
+            return Box(Modifier::new());
+        };
         (
             machine.listeners.clone(),
             machine.inputs.clone(),
@@ -2490,12 +2545,7 @@ fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
 
     // Add-listener row: node comes from the editor selection.
     if let Some(node) = selected_node {
-        rows.push(AddListenerRow(
-            session.clone(),
-            machine_id,
-            node,
-            inputs,
-        ));
+        rows.push(AddListenerRow(session.clone(), machine_id, node, inputs));
     } else {
         rows.push(
             Text("Select a shape to add a listener")
@@ -2552,10 +2602,10 @@ fn AddListenerRow(
             let name = input.name.clone();
             let idx = {
                 let s = session.borrow();
-                s.file.machines[machine_id]
-                    .inputs
-                    .iter()
-                    .position(|x| x.name == name)
+                s.file
+                    .machines
+                    .get(machine_id)
+                    .and_then(|machine| machine.inputs.iter().position(|x| x.name == name))
                     .unwrap_or(0)
             };
             DropdownMenuEntry::Item(DropdownMenuItem::new(name, {
@@ -2677,21 +2727,9 @@ fn AddListenerRow(
         Text(node_name)
             .size(th.typography.label_small)
             .color(th.on_surface_variant),
-        dropdown(
-            "lst_event",
-            format!("{event_label} ▾"),
-            event_items,
-        ),
-        dropdown(
-            "lst_input",
-            format!("{input_label} ▾"),
-            input_items,
-        ),
-        dropdown(
-            "lst_action",
-            format!("{action_label} ▾"),
-            action_items,
-        ),
+        dropdown("lst_event", format!("{event_label} ▾"), event_items),
+        dropdown("lst_input", format!("{input_label} ▾"), input_items),
+        dropdown("lst_action", format!("{action_label} ▾"), action_items),
         number_editor,
         Button(
             Modifier::new(),
@@ -2796,7 +2834,10 @@ fn set_state_kind(
 ) {
     let mut s = session.borrow_mut();
     s.edit_active_machine("Change state", move |machine| {
-        let kind = machine.layers[layer].states[state].kind.clone();
+        let Some(st) = machine_state_mut(machine, layer, state) else {
+            return Ok(());
+        };
+        let kind = st.kind.clone();
         let new_kind = map(kind);
         pure_set_state_kind(machine, layer, state, new_kind)?;
         Ok(())
@@ -2847,7 +2888,9 @@ fn clip_dropdown(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Change state", move |machine| {
-                        let st = &mut machine.layers[layer].states[state];
+                        let Some(st) = machine_state_mut(machine, layer, state) else {
+                            return Ok(());
+                        };
                         let (speed, loop_mode) = match &st.kind {
                             StateKind::Clip {
                                 speed, loop_mode, ..
@@ -2879,7 +2922,13 @@ fn blend_input_dropdown(
     state: usize,
     current: usize,
 ) -> View {
-    let inputs = session.borrow().file.machines[machine_id].inputs.clone();
+    let inputs = session
+        .borrow()
+        .file
+        .machines
+        .get(machine_id)
+        .map(|machine| machine.inputs.clone())
+        .unwrap_or_default();
     let current_name = inputs
         .get(current)
         .map(|i| i.name.clone())
@@ -2894,7 +2943,9 @@ fn blend_input_dropdown(
                 move || {
                     let mut s = session.borrow_mut();
                     s.edit_active_machine("Change state", move |machine| {
-                        let st = &mut machine.layers[layer].states[state];
+                        let Some(st) = machine_state_mut(machine, layer, state) else {
+                            return Ok(());
+                        };
                         let children = match &st.kind {
                             StateKind::Blend1D { children, .. } => children.clone(),
                             _ => Vec::new(),
@@ -2926,9 +2977,13 @@ fn transition_row(
     conditions: &[Condition],
 ) -> View {
     let th = theme();
-    let target_name = session.borrow().file.machines[machine_id].layers[layer]
-        .states
-        .get(target)
+    let target_name = session
+        .borrow()
+        .file
+        .machines
+        .get(machine_id)
+        .and_then(|machine| machine.layers.get(layer))
+        .and_then(|layer| layer.states.get(target))
         .map(|st| st.name.clone())
         .unwrap_or_else(|| "-".into());
     let cond_label = if conditions.is_empty() {
@@ -3001,9 +3056,13 @@ fn transition_target_dropdown(
             TransitionSource::Any => true,
         })
         .map(|target| {
-            let target_name = session.borrow().file.machines[machine_id].layers[layer]
-                .states
-                .get(target)
+            let target_name = session
+                .borrow()
+                .file
+                .machines
+                .get(machine_id)
+                .and_then(|machine| machine.layers.get(layer))
+                .and_then(|layer| layer.states.get(target))
                 .map(|st| st.name.clone())
                 .unwrap_or_else(|| target.to_string());
             DropdownMenuEntry::Item(DropdownMenuItem::new(target_name, {
@@ -3016,17 +3075,21 @@ fn transition_target_dropdown(
                             Ok(())
                         });
                         if ok && let Some(m) = s.file.machines.get(machine_id) {
-                            let n = match source {
-                                TransitionSource::Any => m.layers[layer].any_transitions.len(),
-                                TransitionSource::State(si) => {
-                                    m.layers[layer].states[si].transitions.len()
-                                }
-                            };
-                            s.machine_selection = MachineSelection::Transition {
-                                layer,
-                                source,
-                                transition: n.saturating_sub(1),
-                            };
+                            let n = m.layers.get(layer).map(|machine_layer| match source {
+                                TransitionSource::Any => machine_layer.any_transitions.len(),
+                                TransitionSource::State(si) => machine_layer
+                                    .states
+                                    .get(si)
+                                    .map(|state| state.transitions.len())
+                                    .unwrap_or(0),
+                            });
+                            if let Some(n) = n.filter(|count| *count > 0) {
+                                s.machine_selection = MachineSelection::Transition {
+                                    layer,
+                                    source,
+                                    transition: n - 1,
+                                };
+                            }
                         }
                     }
                 }
@@ -3050,16 +3113,24 @@ fn retarget_dropdown(
     current: usize,
     state_count: usize,
 ) -> View {
-    let current_name = session.borrow().file.machines[machine_id].layers[layer]
-        .states
-        .get(current)
+    let current_name = session
+        .borrow()
+        .file
+        .machines
+        .get(machine_id)
+        .and_then(|machine| machine.layers.get(layer))
+        .and_then(|layer| layer.states.get(current))
         .map(|st| st.name.clone())
         .unwrap_or_else(|| "-".into());
     let items = (0..state_count)
         .map(|target| {
-            let target_name = session.borrow().file.machines[machine_id].layers[layer]
-                .states
-                .get(target)
+            let target_name = session
+                .borrow()
+                .file
+                .machines
+                .get(machine_id)
+                .and_then(|machine| machine.layers.get(layer))
+                .and_then(|layer| layer.states.get(target))
                 .map(|st| st.name.clone())
                 .unwrap_or_else(|| target.to_string());
             DropdownMenuEntry::Item(DropdownMenuItem::new(target_name, {
@@ -3309,11 +3380,7 @@ fn listener_draft_number_scrub(session: SessionRef, value: f64, step: f64) -> Vi
         )
 }
 
-fn dropdown(
-    key: impl Into<String>,
-    label: String,
-    items: Vec<DropdownMenuEntry>,
-) -> View {
+fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>) -> View {
     let key = key.into();
     let state: Rc<MenuState> = remember_with_key(format!("{key}_state"), MenuState::new);
     let th = theme();

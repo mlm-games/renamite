@@ -20,6 +20,25 @@ pub fn set_shared_device(device: wgpu::Device, queue: wgpu::Queue) {
     repose_render_wgpu::offscreen::set_shared_device(device, queue)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ImageFingerprint {
+    hash: u64,
+    len: usize,
+    srgb: bool,
+}
+
+fn image_fingerprint(bytes: &[u8], srgb: bool) -> ImageFingerprint {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    srgb.hash(&mut hasher);
+    ImageFingerprint {
+        hash: hasher.finish(),
+        len: bytes.len(),
+        srgb,
+    }
+}
+
 /// Build a `ViewTransform` that letterboxes `artboard` into a `wxh` frame.
 pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
     let scale = (w as f64 / artboard.0.max(1) as f64)
@@ -34,6 +53,10 @@ pub fn fit_view(artboard: (u32, u32), w: u32, h: u32) -> ViewTransform {
     }
 }
 
+fn pick_device_msaa(_device: &wgpu::Device, _format: wgpu::TextureFormat, _requested: u32) -> u32 {
+    1
+}
+
 pub struct OffscreenRenderer {
     renderer: WgpuSceneRenderer,
     texture: wgpu::Texture,
@@ -43,7 +66,7 @@ pub struct OffscreenRenderer {
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
-    uploaded_images: std::collections::HashSet<renamite_model::AssetId>,
+    uploaded_image_hashes: std::collections::HashMap<u64, ImageFingerprint>,
 }
 
 impl OffscreenRenderer {
@@ -60,7 +83,8 @@ impl OffscreenRenderer {
         msaa: u32,
     ) -> anyhow::Result<Self> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa.max(1));
+        let msaa = pick_device_msaa(&device, format, msaa);
+        let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa);
         Self::from_renderer(renderer, width, height)
     }
 
@@ -83,26 +107,64 @@ impl OffscreenRenderer {
         width: u32,
         height: u32,
     ) -> anyhow::Result<Self> {
-        renderer.resize(width, height);
+        let (width, height) = Self::validate_dimensions(&renderer.device, width, height)?;
         let (texture, view, readback, padded_bytes_per_row) =
-            Self::create_target(&renderer.device, width.max(1), height.max(1));
+            Self::create_target(&renderer.device, width, height)?;
+        renderer.resize(width, height);
         Ok(Self {
             renderer,
             texture,
             view,
             readback,
-            width: width.max(1),
-            height: height.max(1),
+            width,
+            height,
             padded_bytes_per_row,
-            uploaded_images: std::collections::HashSet::new(),
+            uploaded_image_hashes: std::collections::HashMap::new(),
         })
+    }
+
+    fn validate_dimensions(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<(u32, u32)> {
+        if width == 0 || height == 0 {
+            anyhow::bail!("offscreen dimensions must be greater than zero");
+        }
+        if width > device.limits().max_texture_dimension_2d
+            || height > device.limits().max_texture_dimension_2d
+        {
+            anyhow::bail!("offscreen target exceeds device texture limits");
+        }
+        Ok((width, height))
     }
 
     fn create_target(
         device: &wgpu::Device,
         width: u32,
         height: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32) {
+    ) -> anyhow::Result<(wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32)> {
+        if width == 0 || height == 0 {
+            anyhow::bail!("offscreen dimensions must be greater than zero");
+        }
+        let row_bytes = u64::from(width)
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("offscreen row size overflow"))?;
+        let padded_bytes_per_row = row_bytes
+            .div_ceil(256)
+            .checked_mul(256)
+            .ok_or_else(|| anyhow::anyhow!("offscreen row alignment overflow"))?;
+        let padded_bytes_per_row_u32 = u32::try_from(padded_bytes_per_row)
+            .map_err(|_| anyhow::anyhow!("offscreen row size exceeds WGPU limits"))?;
+        let buffer_size = padded_bytes_per_row
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| anyhow::anyhow!("offscreen readback size overflow"))?;
+        if buffer_size > device.limits().max_buffer_size
+            || width > device.limits().max_texture_dimension_2d
+            || height > device.limits().max_texture_dimension_2d
+        {
+            return Err(anyhow::anyhow!("offscreen target exceeds device limits"));
+        }
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("renamite offscreen target"),
             size: wgpu::Extent3d {
@@ -118,15 +180,13 @@ impl OffscreenRenderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let row_bytes = (width as u64) * 4;
-        let padded_bytes_per_row = (256 * row_bytes.div_ceil(256)) as u32;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("renamite offscreen readback"),
-            size: (padded_bytes_per_row as u64) * (height as u64),
+            size: buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        (texture, view, readback, padded_bytes_per_row)
+        Ok((texture, view, readback, padded_bytes_per_row_u32))
     }
 
     pub async fn new(width: u32, height: u32, msaa: u32) -> anyhow::Result<Self> {
@@ -148,6 +208,15 @@ impl OffscreenRenderer {
             .await
             .context("no WGPU adapter available for offscreen export")?;
 
+        if width == 0 || height == 0 {
+            anyhow::bail!("offscreen dimensions must be greater than zero");
+        }
+        if width > adapter.limits().max_texture_dimension_2d
+            || height > adapter.limits().max_texture_dimension_2d
+        {
+            anyhow::bail!("offscreen target exceeds device texture limits");
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("renamite offscreen device"),
@@ -160,13 +229,13 @@ impl OffscreenRenderer {
             .await?;
 
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let msaa = repose_render_wgpu::pick_surface_msaa(&adapter, format, msaa);
 
         let renderer = WgpuSceneRenderer::from_device(device, queue, format, msaa);
 
-        let width = width.max(1);
-        let height = height.max(1);
+        let (width, height) = Self::validate_dimensions(&renderer.device, width, height)?;
         let (texture, view, readback, padded_bytes_per_row) =
-            Self::create_target(&renderer.device, width, height);
+            Self::create_target(&renderer.device, width, height)?;
 
         Ok(Self {
             renderer,
@@ -176,7 +245,7 @@ impl OffscreenRenderer {
             width,
             height,
             padded_bytes_per_row,
-            uploaded_images: std::collections::HashSet::new(),
+            uploaded_image_hashes: std::collections::HashMap::new(),
         })
     }
 
@@ -240,7 +309,7 @@ impl OffscreenRenderer {
         drop(mapped);
         self.readback.unmap();
 
-        Ok(packed)
+        packed
     }
 
     pub async fn render_rgba_async(
@@ -298,7 +367,7 @@ impl OffscreenRenderer {
         drop(mapped);
         self.readback.unmap();
 
-        Ok(packed)
+        packed
     }
 
     pub fn render_png(
@@ -336,54 +405,70 @@ impl OffscreenRenderer {
         bytes: &[u8],
         srgb: bool,
     ) -> anyhow::Result<()> {
-        self.renderer.set_image_from_bytes(handle, bytes, srgb)
+        let fingerprint = image_fingerprint(bytes, srgb);
+        if self.uploaded_image_hashes.get(&handle) == Some(&fingerprint) {
+            return Ok(());
+        }
+        self.renderer.set_image_from_bytes(handle, bytes, srgb)?;
+        self.uploaded_image_hashes.insert(handle, fingerprint);
+        Ok(())
     }
 
     pub fn sync_document_images(
         &mut self,
         document: &renamite_model::Document,
     ) -> anyhow::Result<()> {
-        use std::collections::HashSet;
-        let mut live: HashSet<renamite_model::AssetId> = HashSet::new();
+        let mut live = std::collections::HashSet::new();
         for &id in &document.asset_order {
             let Some(image) = document.image_asset(id) else {
                 continue;
             };
-            live.insert(id);
-
-            self.set_image_encoded(
-                renamite_render_bridge::image_handle(id),
-                &image.bytes,
-                image.srgb,
-            )?;
+            let handle = renamite_render_bridge::image_handle(id);
+            live.insert(handle);
+            self.set_image_encoded(handle, &image.bytes, image.srgb)?;
         }
 
         let stale: Vec<_> = self
-            .uploaded_images
-            .iter()
+            .uploaded_image_hashes
+            .keys()
             .copied()
-            .filter(|id| !live.contains(id))
+            .filter(|handle| !live.contains(handle))
             .collect();
-        for id in stale {
-            self.renderer
-                .remove_image(renamite_render_bridge::image_handle(id));
-            self.uploaded_images.remove(&id);
+        for handle in stale {
+            self.renderer.remove_image(handle);
+            self.uploaded_image_hashes.remove(&handle);
         }
-        self.uploaded_images = live;
 
         Ok(())
     }
 }
 
-fn strip_padding(data: &[u8], width: u32, height: u32, padded_bytes_per_row: u32) -> Vec<u8> {
-    let row_bytes = (width as usize) * 4;
+fn strip_padding(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let row_bytes = (width as usize)
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("offscreen row size overflow"))?;
     let padded = padded_bytes_per_row as usize;
-    let mut out = Vec::with_capacity(row_bytes * (height as usize));
+    let total = padded
+        .checked_mul(height as usize)
+        .ok_or_else(|| anyhow::anyhow!("offscreen readback size overflow"))?;
+    if padded < row_bytes || data.len() < total {
+        anyhow::bail!("offscreen readback buffer is shorter than its target");
+    }
+    let mut out = Vec::with_capacity(
+        row_bytes
+            .checked_mul(height as usize)
+            .ok_or_else(|| anyhow::anyhow!("offscreen output size overflow"))?,
+    );
     for row in 0..(height as usize) {
         let start = row * padded;
         out.extend_from_slice(&data[start..start + row_bytes]);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

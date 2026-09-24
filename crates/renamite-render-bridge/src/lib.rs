@@ -25,6 +25,7 @@ use repose_core::{
 };
 use rustc_hash::FxHashMap;
 use slotmap::Key as _;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 struct SolidVertexCtor {
@@ -100,8 +101,12 @@ pub struct PreparedScene {
     pub clips: Vec<PreparedClip>,
 }
 
+const MESH_CACHE_CAPACITY: usize = 512;
+type MeshCacheKey = Vec<u8>;
+
 pub struct SceneRenderer {
-    cache: FxHashMap<u64, Arc<VectorMeshData>>,
+    cache: FxHashMap<MeshCacheKey, Arc<VectorMeshData>>,
+    cache_lru: VecDeque<MeshCacheKey>,
     fill_tess: FillTessellator,
     stroke_tess: StrokeTessellator,
     image_hashes: FxHashMap<renamite_model::AssetId, u64>,
@@ -117,6 +122,7 @@ impl SceneRenderer {
     pub fn new() -> Self {
         Self {
             cache: FxHashMap::default(),
+            cache_lru: VecDeque::new(),
             fill_tess: FillTessellator::new(),
             stroke_tess: StrokeTessellator::new(),
             image_hashes: FxHashMap::default(),
@@ -169,15 +175,26 @@ impl SceneRenderer {
 
     /// Tessellate `scene` once under `view` into a reusable `PreparedScene`.
     pub fn prepare(&mut self, scene: &Scene, view: &ViewTransform) -> PreparedScene {
-        let tol = (0.25 / view.scale.max(0.01)) as f32;
+        let scale = if view.scale.is_finite() && view.scale > 1e-6 {
+            view.scale
+        } else {
+            1.0
+        };
+        let offset = if view.offset.is_finite() {
+            view.offset
+        } else {
+            glam::DVec2::ZERO
+        };
+        let safe_view = ViewTransform { scale, offset };
+        let tol = quantized_tolerance((0.25 / scale) as f32);
         // world -> screen affine: out = M * p + t, [m00, m01, m10, m11, tx, ty].
         let t = [
-            view.scale as f32,
+            scale as f32,
             0.0,
             0.0,
-            view.scale as f32,
-            view.offset.x as f32,
-            view.offset.y as f32,
+            scale as f32,
+            offset.x as f32,
+            offset.y as f32,
         ];
 
         let mut clips = Vec::with_capacity(scene.clips.len());
@@ -207,7 +224,9 @@ impl SceneRenderer {
                             w: *width as f32,
                             h: *height as f32,
                         },
-                        transform: Self::affine_to_repose(Self::compose_view_affine(*affine, view)),
+                        transform: Self::affine_to_repose(Self::compose_view_affine(
+                            *affine, &safe_view,
+                        )),
                         tint: Self::model_color_to_repose(*tint, item.opacity),
                         fit: repose_core::ImageFit::Contain,
                         clips: item.clips.clone(),
@@ -247,17 +266,8 @@ impl SceneRenderer {
     /// Convert a full affine to Repose's scale/rotate/shear/translate `Transform`.
     fn affine_to_repose(affine: [f64; 6]) -> repose_core::Transform {
         let m = [affine[0], affine[2], affine[1], affine[3]];
-        let (scale_x, scale_y, rotate, shear_x, shear_y) = Self::decompose_linear(m)
-            .unwrap_or_else(|| {
-                let [a, b, c, d, _, _] = affine;
-                let scale_x = (a * a + b * b).sqrt();
-                let scale_y = if scale_x > 1e-12 {
-                    (a * d - b * c) / scale_x
-                } else {
-                    (c * c + d * d).sqrt()
-                };
-                (scale_x, scale_y, b.atan2(a), 0.0, 0.0)
-            });
+        let (scale_x, scale_y, rotate, shear_x, shear_y) =
+            Self::decompose_linear(m).unwrap_or_else(|| Self::fallback_decompose_linear(m));
 
         repose_core::Transform {
             translate_x: affine[4] as f32,
@@ -289,7 +299,7 @@ impl SceneRenderer {
         let g = b * b + d * d;
         let det_p = (e * g - f * f).max(0.0);
         let s = (e + g + 2.0 * det_p.sqrt()).sqrt();
-        if !(s > 1e-12) {
+        if !s.is_finite() || s <= 1e-12 {
             return None;
         }
         let root_det = det_p.sqrt();
@@ -308,6 +318,35 @@ impl SceneRenderer {
             return Some((-k00, k11, -rotate, -(k01 / k11), -(k10 / k00)));
         }
         Some((k00, k11, rotate, k01 / k11, k10 / k00))
+    }
+
+    fn fallback_decompose_linear(m: [f64; 4]) -> (f64, f64, f64, f64, f64) {
+        let [a, b, c, d] = m;
+        if ![a, b, c, d].iter().all(|value| value.is_finite()) {
+            return (1.0, 1.0, 0.0, 0.0, 0.0);
+        }
+        let first_length = (a * a + c * c).sqrt();
+        if first_length > 1e-12 {
+            let ux = a / first_length;
+            let uy = c / first_length;
+            let projected = ux * b + uy * d;
+            let perpendicular = (-uy * b + ux * d).abs();
+            if perpendicular > 1e-12 {
+                return (
+                    first_length,
+                    perpendicular,
+                    uy.atan2(ux),
+                    projected / perpendicular,
+                    0.0,
+                );
+            }
+            return (first_length, 0.0, uy.atan2(ux), 0.0, 0.0);
+        }
+        let second_length = (b * b + d * d).sqrt();
+        if second_length > 1e-12 {
+            return (0.0, second_length, (-b).atan2(d), 0.0, 0.0);
+        }
+        (1.0, 1.0, 0.0, 0.0, 0.0)
     }
 
     fn model_color_to_repose(color: renamite_model::Color, opacity: f64) -> repose_core::Color {
@@ -331,12 +370,14 @@ impl SceneRenderer {
                     clips,
                     blend,
                 } => {
+                    let mut pushed_clips = 0usize;
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             scope.commands.push(DrawCommand::PushVectorClip {
                                 mesh: clip.mesh.clone(),
                                 op: ClipOp::Intersect,
                             });
+                            pushed_clips += 1;
                         }
                     }
                     scope.commands.push(DrawCommand::VectorMesh {
@@ -346,7 +387,7 @@ impl SceneRenderer {
                         clip: None,
                         blend: *blend,
                     });
-                    for _ in clips.iter().rev() {
+                    for _ in 0..pushed_clips {
                         scope.commands.push(DrawCommand::PopVectorClip);
                     }
                 }
@@ -360,12 +401,14 @@ impl SceneRenderer {
                     clips,
                     blend: _,
                 } => {
+                    let mut pushed_clips = 0usize;
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             scope.commands.push(DrawCommand::PushVectorClip {
                                 mesh: clip.mesh.clone(),
                                 op: ClipOp::Intersect,
                             });
+                            pushed_clips += 1;
                         }
                     }
 
@@ -382,7 +425,7 @@ impl SceneRenderer {
 
                     scope.commands.push(DrawCommand::PopTransform);
 
-                    for _ in clips.iter().rev() {
+                    for _ in 0..pushed_clips {
                         scope.commands.push(DrawCommand::PopVectorClip);
                     }
                 }
@@ -401,12 +444,14 @@ impl SceneRenderer {
                     clips,
                     blend,
                 } => {
+                    let mut pushed_clips = 0usize;
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             out.nodes.push(SceneNode::PushVectorClip {
                                 mesh: clip.mesh.clone(),
                                 op: ClipOp::Intersect,
                             });
+                            pushed_clips += 1;
                         }
                     }
                     out.nodes.push(SceneNode::VectorMesh {
@@ -416,7 +461,7 @@ impl SceneRenderer {
                         clip: None,
                         blend: *blend,
                     });
-                    for _ in clips.iter().rev() {
+                    for _ in 0..pushed_clips {
                         out.nodes.push(SceneNode::PopVectorClip);
                     }
                 }
@@ -430,12 +475,14 @@ impl SceneRenderer {
                     clips,
                     blend: _,
                 } => {
+                    let mut pushed_clips = 0usize;
                     for &ci in clips {
                         if let Some(clip) = prepared.clips.get(ci as usize) {
                             out.nodes.push(SceneNode::PushVectorClip {
                                 mesh: clip.mesh.clone(),
                                 op: ClipOp::Intersect,
                             });
+                            pushed_clips += 1;
                         }
                     }
 
@@ -452,7 +499,7 @@ impl SceneRenderer {
 
                     out.nodes.push(SceneNode::PopTransform);
 
-                    for _ in clips.iter().rev() {
+                    for _ in 0..pushed_clips {
                         out.nodes.push(SceneNode::PopVectorClip);
                     }
                 }
@@ -552,10 +599,30 @@ impl SceneRenderer {
         );
     }
 
+    fn cache_get(&mut self, key: &MeshCacheKey) -> Option<Arc<VectorMeshData>> {
+        let mesh = self.cache.get(key).cloned()?;
+        self.cache_lru.retain(|entry| entry != key);
+        self.cache_lru.push_back(key.clone());
+        Some(mesh)
+    }
+
+    fn cache_insert(&mut self, key: MeshCacheKey, mesh: Arc<VectorMeshData>) {
+        self.cache.insert(key.clone(), mesh);
+        self.cache_lru.retain(|entry| entry != &key);
+        self.cache_lru.push_back(key);
+        while self.cache_lru.len() > MESH_CACHE_CAPACITY {
+            if let Some(oldest) = self.cache_lru.pop_front()
+                && !self.cache_lru.contains(&oldest)
+            {
+                self.cache.remove(&oldest);
+            }
+        }
+    }
+
     fn mesh_for(&mut self, item: &SceneItem, tol: f32) -> Option<Arc<VectorMeshData>> {
         let key = mesh_key(item, tol);
-        if let Some(m) = self.cache.get(&key) {
-            return Some(m.clone());
+        if let Some(m) = self.cache_get(&key) {
+            return Some(m);
         }
 
         // Convert a dashed stroke into visible open subpaths before Lyon
@@ -586,7 +653,7 @@ impl SceneRenderer {
                 colorize_mesh(m, &item.paint, item.opacity)
             }
         };
-        self.cache.insert(key, mesh.clone());
+        self.cache_insert(key, mesh.clone());
         Some(mesh)
     }
 
@@ -597,13 +664,14 @@ impl SceneRenderer {
         tol: f32,
     ) -> Option<Arc<VectorMeshData>> {
         let key = clip_key(path, rule, tol);
-        if let Some(m) = self.cache.get(&key) {
-            return Some(m.clone());
+        if let Some(m) = self.cache_get(&key) {
+            return Some(m);
         }
         let path = bez_to_lyon(path);
         let mesh = self.tessellate(&path, &PaintKind::Fill(rule), [1.0; 4], tol)?;
-        self.cache.insert(key, mesh.clone().into());
-        Some(mesh.into())
+        let mesh = Arc::new(mesh);
+        self.cache_insert(key, mesh.clone());
+        Some(mesh)
     }
 
     fn tessellate(
@@ -711,10 +779,8 @@ fn radial_fan_mesh(
         kurbo::PathEl::LineTo(p) => {
             cur.push([p.x as f32, p.y as f32]);
         }
-        kurbo::PathEl::ClosePath => {
-            if !cur.is_empty() {
-                contours.push(std::mem::take(&mut cur));
-            }
+        kurbo::PathEl::ClosePath if !cur.is_empty() => {
+            contours.push(std::mem::take(&mut cur));
         }
         _ => {}
     });
@@ -1026,174 +1092,180 @@ fn map_join(j: renamite_model::StrokeJoin) -> lyon_tessellation::LineJoin {
     }
 }
 
-fn mesh_key(item: &SceneItem, tolerance: f32) -> u64 {
-    use std::hash::{Hash, Hasher};
-
-    let mut h = rustc_hash::FxHasher::default();
-
-    tolerance.to_bits().hash(&mut h);
-    item.opacity.to_bits().hash(&mut h);
-
-    hash_paint(&item.paint, &mut h);
-
-    for element in item.path.elements() {
-        match *element {
-            kurbo::PathEl::MoveTo(p) => {
-                0u8.hash(&mut h);
-                hash_point(p, &mut h);
-            }
-            kurbo::PathEl::LineTo(p) => {
-                1u8.hash(&mut h);
-                hash_point(p, &mut h);
-            }
-            kurbo::PathEl::QuadTo(a, b) => {
-                2u8.hash(&mut h);
-                hash_point(a, &mut h);
-                hash_point(b, &mut h);
-            }
-            kurbo::PathEl::CurveTo(a, b, c) => {
-                3u8.hash(&mut h);
-                hash_point(a, &mut h);
-                hash_point(b, &mut h);
-                hash_point(c, &mut h);
-            }
-            kurbo::PathEl::ClosePath => {
-                4u8.hash(&mut h);
-            }
-        }
+fn quantized_tolerance(tolerance: f32) -> f32 {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return 0.25;
     }
-
-    match &item.kind {
-        PaintKind::Fill(rule) => {
-            0u8.hash(&mut h);
-            match rule {
-                FillRule::NonZero => 0u8.hash(&mut h),
-                FillRule::EvenOdd => 1u8.hash(&mut h),
-            }
-        }
-        PaintKind::Stroke(stroke) => {
-            1u8.hash(&mut h);
-            stroke.width.to_bits().hash(&mut h);
-            std::mem::discriminant(&stroke.cap).hash(&mut h);
-            std::mem::discriminant(&stroke.join).hash(&mut h);
-            stroke.miter_limit.to_bits().hash(&mut h);
-
-            match &stroke.dash {
-                None => {
-                    0u8.hash(&mut h);
-                }
-
-                Some(dash) => {
-                    1u8.hash(&mut h);
-                    dash.offset.to_bits().hash(&mut h);
-                    dash.dashes.len().hash(&mut h);
-
-                    for value in &dash.dashes {
-                        value.to_bits().hash(&mut h);
-                    }
-                }
-            }
-        }
+    let scaled = tolerance * 1024.0;
+    if !scaled.is_finite() {
+        return 64.0;
     }
-
-    h.finish()
+    let quantized = (scaled.round() / 1024.0).clamp(f32::MIN_POSITIVE, 64.0);
+    if quantized > 0.0 {
+        quantized
+    } else {
+        f32::MIN_POSITIVE
+    }
 }
 
-fn clip_key(path: &kurbo::BezPath, rule: FillRule, tolerance: f32) -> u64 {
-    use std::hash::{Hash, Hasher};
+fn push_u64(key: &mut MeshCacheKey, value: u64) {
+    key.extend_from_slice(&value.to_le_bytes());
+}
 
-    let mut h = rustc_hash::FxHasher::default();
+fn push_f64(key: &mut MeshCacheKey, value: f64) {
+    push_u64(key, value.to_bits());
+}
 
-    tolerance.to_bits().hash(&mut h);
+fn push_usize(key: &mut MeshCacheKey, value: usize) {
+    push_u64(key, value as u64);
+}
 
+fn push_color(key: &mut MeshCacheKey, color: renamite_model::Color) {
+    push_f64(key, color.r);
+    push_f64(key, color.g);
+    push_f64(key, color.b);
+    push_f64(key, color.a);
+}
+
+fn push_point(key: &mut MeshCacheKey, point: kurbo::Point) {
+    push_f64(key, point.x);
+    push_f64(key, point.y);
+}
+
+fn push_path(key: &mut MeshCacheKey, path: &kurbo::BezPath) {
+    push_usize(key, path.elements().len());
     for element in path.elements() {
         match *element {
-            kurbo::PathEl::MoveTo(p) => {
-                0u8.hash(&mut h);
-                hash_point(p, &mut h);
+            kurbo::PathEl::MoveTo(point) => {
+                key.push(0);
+                push_point(key, point);
             }
-            kurbo::PathEl::LineTo(p) => {
-                1u8.hash(&mut h);
-                hash_point(p, &mut h);
+            kurbo::PathEl::LineTo(point) => {
+                key.push(1);
+                push_point(key, point);
             }
             kurbo::PathEl::QuadTo(a, b) => {
-                2u8.hash(&mut h);
-                hash_point(a, &mut h);
-                hash_point(b, &mut h);
+                key.push(2);
+                push_point(key, a);
+                push_point(key, b);
             }
             kurbo::PathEl::CurveTo(a, b, c) => {
-                3u8.hash(&mut h);
-                hash_point(a, &mut h);
-                hash_point(b, &mut h);
-                hash_point(c, &mut h);
+                key.push(3);
+                push_point(key, a);
+                push_point(key, b);
+                push_point(key, c);
             }
-            kurbo::PathEl::ClosePath => {
-                4u8.hash(&mut h);
-            }
+            kurbo::PathEl::ClosePath => key.push(4),
         }
     }
-
-    0u8.hash(&mut h);
-    (rule as u8).hash(&mut h);
-
-    h.finish()
 }
 
-fn hash_point(point: kurbo::Point, h: &mut impl std::hash::Hasher) {
-    use std::hash::Hash;
-    point.x.to_bits().hash(h);
-    point.y.to_bits().hash(h);
+fn push_stops(key: &mut MeshCacheKey, stops: &GradientStops) {
+    push_usize(key, stops.0.len());
+    for stop in &stops.0 {
+        push_f64(key, stop.offset);
+        push_color(key, stop.color);
+    }
 }
 
-fn hash_paint(paint: &ScenePaint, h: &mut impl std::hash::Hasher) {
-    use std::hash::Hash;
+fn push_paint(key: &mut MeshCacheKey, paint: &ScenePaint) {
     match paint {
-        ScenePaint::Solid(c) => {
-            0u8.hash(h);
-            c.r.to_bits().hash(h);
-            c.g.to_bits().hash(h);
-            c.b.to_bits().hash(h);
-            c.a.to_bits().hash(h);
+        ScenePaint::Solid(color) => {
+            key.push(0);
+            push_color(key, *color);
         }
         ScenePaint::LinearGradient { start, end, stops } => {
-            1u8.hash(h);
-            start.x.to_bits().hash(h);
-            start.y.to_bits().hash(h);
-            end.x.to_bits().hash(h);
-            end.y.to_bits().hash(h);
-            hash_stops(stops, h);
+            key.push(1);
+            push_f64(key, start.x);
+            push_f64(key, start.y);
+            push_f64(key, end.x);
+            push_f64(key, end.y);
+            push_stops(key, stops);
         }
         ScenePaint::RadialGradient { center, end, stops } => {
-            2u8.hash(h);
-            center.x.to_bits().hash(h);
-            center.y.to_bits().hash(h);
-            end.x.to_bits().hash(h);
-            end.y.to_bits().hash(h);
-            hash_stops(stops, h);
+            key.push(2);
+            push_f64(key, center.x);
+            push_f64(key, center.y);
+            push_f64(key, end.x);
+            push_f64(key, end.y);
+            push_stops(key, stops);
         }
         ScenePaint::Image {
             asset,
             width,
             height,
-            ..
+            affine,
+            tint,
         } => {
-            3u8.hash(h);
-            use slotmap::Key;
-            asset.data().as_ffi().hash(h);
-            width.hash(h);
-            height.hash(h);
+            key.push(3);
+            push_u64(key, asset.data().as_ffi());
+            push_usize(key, *width as usize);
+            push_usize(key, *height as usize);
+            for value in affine {
+                push_f64(key, *value);
+            }
+            push_color(key, *tint);
         }
     }
 }
 
-fn hash_stops(stops: &GradientStops, h: &mut impl std::hash::Hasher) {
-    use std::hash::Hash;
-    stops.0.len().hash(h);
-    for s in &stops.0 {
-        s.offset.to_bits().hash(h);
-        s.color.r.to_bits().hash(h);
-        s.color.g.to_bits().hash(h);
-        s.color.b.to_bits().hash(h);
-        s.color.a.to_bits().hash(h);
+fn push_kind(key: &mut MeshCacheKey, kind: &PaintKind) {
+    match kind {
+        PaintKind::Fill(rule) => {
+            key.push(0);
+            key.push(match rule {
+                FillRule::NonZero => 0,
+                FillRule::EvenOdd => 1,
+            });
+        }
+        PaintKind::Stroke(stroke) => {
+            key.push(1);
+            push_f64(key, stroke.width);
+            key.push(match stroke.cap {
+                renamite_model::StrokeCap::Butt => 0,
+                renamite_model::StrokeCap::Round => 1,
+                renamite_model::StrokeCap::Square => 2,
+            });
+            key.push(match stroke.join {
+                renamite_model::StrokeJoin::Miter => 0,
+                renamite_model::StrokeJoin::Round => 1,
+                renamite_model::StrokeJoin::Bevel => 2,
+            });
+            push_f64(key, stroke.miter_limit);
+            match &stroke.dash {
+                None => key.push(0),
+                Some(dash) => {
+                    key.push(1);
+                    push_f64(key, dash.offset);
+                    push_usize(key, dash.dashes.len());
+                    for value in &dash.dashes {
+                        push_f64(key, *value);
+                    }
+                }
+            }
+        }
     }
+}
+
+fn mesh_key(item: &SceneItem, tolerance: f32) -> MeshCacheKey {
+    let mut key = Vec::new();
+    key.push(0);
+    push_f64(&mut key, tolerance as f64);
+    push_f64(&mut key, item.opacity);
+    push_paint(&mut key, &item.paint);
+    push_path(&mut key, &item.path);
+    push_kind(&mut key, &item.kind);
+    key
+}
+
+fn clip_key(path: &kurbo::BezPath, rule: FillRule, tolerance: f32) -> MeshCacheKey {
+    let mut key = Vec::new();
+    key.push(1);
+    push_f64(&mut key, tolerance as f64);
+    push_path(&mut key, path);
+    key.push(match rule {
+        FillRule::NonZero => 0,
+        FillRule::EvenOdd => 1,
+    });
+    key
 }

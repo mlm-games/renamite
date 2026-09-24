@@ -17,7 +17,11 @@ pub fn pucker_bloat_path(path: &BezPath, amount_pct: f64) -> BezPath {
 
     let mut out = BezPath::new();
     for (pts, closed) in flatten_subpaths(path) {
-        if pts.len() < 2 {
+        if pts.len() < 2
+            || pts
+                .iter()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+        {
             continue;
         }
         let center = centroid(&pts);
@@ -34,6 +38,9 @@ pub fn pucker_bloat_path(path: &BezPath, amount_pct: f64) -> BezPath {
             out.close_path();
         }
     }
+    if out.elements().is_empty() {
+        return path.clone();
+    }
     out
 }
 
@@ -41,7 +48,13 @@ pub fn pucker_bloat_path(path: &BezPath, amount_pct: f64) -> BezPath {
 pub fn pucker_bloat_vector_path(path: &crate::VectorPath, amount_pct: f64) -> crate::VectorPath {
     use crate::{Anchor, VectorPath};
 
-    if !amount_pct.is_finite() || amount_pct.abs() < 1e-9 || path.anchors.is_empty() {
+    if !amount_pct.is_finite()
+        || amount_pct.abs() < 1e-9
+        || path.anchors.is_empty()
+        || path.anchors.iter().any(|anchor| {
+            !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+        })
+    {
         return path.clone();
     }
     let k = amount_pct / 100.0;

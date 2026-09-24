@@ -27,7 +27,7 @@ use renamite_model::Document;
 use serde_json::Value;
 
 pub use export::export_with_report;
-pub use import::import_with_report;
+pub use import::{MAX_LOTTIE_BYTES, import_with_report};
 
 /// Compatibility/version marker for callers that need to label the target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,11 +70,19 @@ pub enum LottieError {
     MissingAsset(String),
     #[error("cyclic or invalid precomposition `{0}`")]
     InvalidPrecomposition(String),
+    #[error("Lottie input limit exceeded: {0}")]
+    InputLimit(&'static str),
 }
 
 /// Import Lottie JSON, discarding non-fatal warnings.
 pub fn import(json: &Value) -> Result<Document, LottieError> {
     Ok(import_with_report(json)?.value)
+}
+
+pub fn import_bytes(bytes: &[u8]) -> Result<LottieReport<Document>, LottieError> {
+    import::preflight_bytes(bytes)?;
+    let value: Value = serde_json::from_slice(bytes)?;
+    import_with_report(&value)
 }
 
 /// Export a Renamite document to Lottie JSON, discarding non-fatal warnings.

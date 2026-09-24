@@ -469,6 +469,7 @@ impl Exporter<'_> {
     /// One `ty: 2` layer for a single image child when the masked-image fast
     /// path does not apply (e.g. shapes + images coexist). Shares the host
     /// timing/blend/visibility and duplicates masks so clipping is preserved.
+    #[allow(clippy::too_many_arguments)]
     fn standalone_image_layer(
         &mut self,
         image_id: NodeId,
@@ -780,6 +781,12 @@ impl Exporter<'_> {
                 }
             }
             NodeKind::Style(style) => {
+                if style_paint_is_empty(style) {
+                    self.warnings.push(LottieWarning::new(
+                        node.name.clone(),
+                        "gradient has no stops; Lottie export uses a deterministic zero-stop fallback",
+                    ));
+                }
                 vec![style_json(&node.name, style, &node.opacity)]
             }
             NodeKind::Modifier(modifier) => {
@@ -1013,6 +1020,23 @@ fn shape_json(name: &str, shape: &ShapeKind) -> Value {
             "or": export_scalar(outer_r, 1.0),
             "os": export_scalar(roundness, 1.0)
         }),
+    }
+}
+
+fn style_paint_is_empty(style: &StyleKind) -> bool {
+    let paint = match style {
+        StyleKind::Fill { paint, .. } | StyleKind::Stroke { paint, .. } => paint,
+    };
+    match paint {
+        StylePaint::Gradient(gradient) => {
+            gradient.stops.base.0.is_empty()
+                && gradient
+                    .stops
+                    .keyframes
+                    .iter()
+                    .all(|key| key.value.0.is_empty())
+        }
+        StylePaint::Solid { .. } => false,
     }
 }
 
@@ -1403,12 +1427,12 @@ mod tests {
 
         assert_eq!(v["c"], json!(true));
         assert_eq!(v["v"], json!([[0.0, 0.0], [30.0, 0.0], [30.0, 40.0]]));
-        assert_eq!(pts(&v, "o")[0], json!([10.0, 5.0]));
-        assert_eq!(pts(&v, "i")[1], json!([-10.0, 20.0]));
-        assert_eq!(pts(&v, "i")[0], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "o")[1], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "i")[2], json!([0.0, 0.0]));
-        assert_eq!(pts(&v, "o")[2], json!([0.0, 0.0]));
+        assert_eq!(pts(v, "o")[0], json!([10.0, 5.0]));
+        assert_eq!(pts(v, "i")[1], json!([-10.0, 20.0]));
+        assert_eq!(pts(v, "i")[0], json!([0.0, 0.0]));
+        assert_eq!(pts(v, "o")[1], json!([0.0, 0.0]));
+        assert_eq!(pts(v, "i")[2], json!([0.0, 0.0]));
+        assert_eq!(pts(v, "o")[2], json!([0.0, 0.0]));
     }
 
     #[test]

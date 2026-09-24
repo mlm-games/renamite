@@ -21,6 +21,7 @@ renamite-render-offscreen.workspace = true
 renamite-model.workspace = true
 renamite-animation.workspace = true
 renamite-behavior-common.workspace = true
+renamite-platform.workspace = true
 glam.workspace = true
 repose-core.workspace = true
 clap.workspace = true

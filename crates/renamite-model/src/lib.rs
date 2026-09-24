@@ -25,39 +25,202 @@ pub type NodeMap = SlotMap<NodeId, Node>;
 pub type CompMap = SlotMap<CompId, Composition>;
 pub type AssetMap = SlotMap<AssetId, Asset>;
 
-#[derive(Clone, Serialize, Deserialize)]
+const MAX_PARENT_DEPTH: usize = 256;
+const MAX_DEPTH: u32 = 256;
+pub const MAX_REPEATER_COPIES: f64 = 1024.0;
+pub const MAX_REPEATER_OFFSET: f64 = 1_000_000.0;
+const MAX_REPEATER_PATHS: usize = 100_000;
+
+fn default_format_version() -> u32 {
+    1
+}
+
+fn default_composition_name() -> String {
+    "Main".into()
+}
+
+fn default_composition_size() -> (u32, u32) {
+    (512, 512)
+}
+
+fn default_frame_rate() -> renamite_animation::FrameRate {
+    renamite_animation::FrameRate { num: 60, den: 1 }
+}
+
+fn default_composition_range() -> (Frame, Frame) {
+    (Frame(0), Frame(180))
+}
+
+fn composition_is_valid(composition: &Composition) -> bool {
+    composition.size.0 > 0
+        && composition.size.1 > 0
+        && composition.rate.num > 0
+        && composition.rate.den > 0
+        && composition.range.1.0 > composition.range.0.0
+}
+
+fn default_node_name() -> String {
+    String::new()
+}
+
+fn default_node_transform() -> AnimatedTransform {
+    AnimatedTransform::identity()
+}
+
+fn default_node_kind() -> NodeKind {
+    NodeKind::Group
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
+}
+
+fn bounded_repeat_count(value: f64) -> usize {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    value.round().min(MAX_REPEATER_COPIES) as usize
+}
+
+fn bounded_repeat_offset(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    value
+        .round()
+        .clamp(-MAX_REPEATER_OFFSET, MAX_REPEATER_OFFSET) as i64
+}
+
+fn affine_power(base: Affine, exponent: i64) -> Option<Affine> {
+    let (mut base, mut exponent) = if exponent < 0 {
+        (base.inverse(), exponent.unsigned_abs())
+    } else {
+        (base, exponent as u64)
+    };
+    if !affine_is_finite(&base) {
+        return None;
+    }
+    let mut result = Affine::IDENTITY;
+    while exponent != 0 {
+        if exponent & 1 != 0 {
+            result *= base;
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            base *= base;
+        }
+    }
+    affine_is_finite(&result).then_some(result)
+}
+
+fn affine_is_finite(affine: &Affine) -> bool {
+    affine.as_coeffs().iter().all(|value| value.is_finite())
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Document {
+    #[serde(default = "default_format_version")]
     pub format_version: u32,
+    #[serde(default)]
     pub compositions: CompMap,
+    #[serde(default)]
     pub nodes: NodeMap,
+    #[serde(default)]
     pub assets: AssetMap,
 
     /// Live/attached assets in UI order.
     #[serde(default)]
     pub asset_order: Vec<AssetId>,
 
+    #[serde(default)]
     pub main: CompId,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for Document {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "Document")]
+        struct DocumentCompat {
+            #[serde(default = "default_format_version")]
+            format_version: u32,
+            #[serde(default)]
+            compositions: CompMap,
+            #[serde(default)]
+            nodes: NodeMap,
+            #[serde(default)]
+            assets: AssetMap,
+            #[serde(default)]
+            asset_order: Vec<AssetId>,
+            #[serde(default)]
+            main: CompId,
+        }
+
+        let value = DocumentCompat::deserialize(deserializer)?;
+        let mut document = Self {
+            format_version: value.format_version,
+            compositions: value.compositions,
+            nodes: value.nodes,
+            assets: value.assets,
+            asset_order: value.asset_order,
+            main: value.main,
+        };
+        if document.nodes.values().any(|node| {
+            matches!(&node.kind, NodeKind::Image(image) if !document.assets.contains_key(image.asset()))
+        }) {
+            return Err(DeError::custom("image node references a missing asset"));
+        }
+        document.ensure_main_composition();
+        Ok(document)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Composition {
+    #[serde(default = "default_composition_name")]
     pub name: String,
+    #[serde(default = "default_composition_size")]
     pub size: (u32, u32),
+    #[serde(default = "default_frame_rate")]
     pub rate: renamite_animation::FrameRate,
+    #[serde(default = "default_composition_range")]
     pub range: (Frame, Frame),
     /// z-order: index 0 = top of stack.
+    #[serde(default)]
     pub children: Vec<NodeId>,
+}
+
+impl Default for Composition {
+    fn default() -> Self {
+        Self {
+            name: default_composition_name(),
+            size: default_composition_size(),
+            rate: default_frame_rate(),
+            range: default_composition_range(),
+            children: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
+    #[serde(default = "default_node_name")]
     pub name: String,
+    #[serde(default)]
     pub parent: Option<NodeId>,
+    #[serde(default)]
     pub children: Vec<NodeId>,
+    #[serde(default = "default_true")]
     pub visible: bool,
+    #[serde(default)]
     pub locked: bool,
+    #[serde(default = "default_node_transform")]
     pub transform: AnimatedTransform,
+    #[serde(default = "animated_one")]
     pub opacity: Animated<f64>,
+    #[serde(default = "default_node_kind")]
     pub kind: NodeKind,
 }
 
@@ -76,8 +239,9 @@ impl Node {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub enum NodeKind {
+    #[default]
     Group,
     Layer(LayerProps),
     Shape(ShapeKind),
@@ -278,7 +442,11 @@ impl Default for GradientStops {
 impl GradientStops {
     /// Sample the gradient at normalized position `t` (clamped to 0..=1).
     pub fn sample(&self, t: f64) -> Color {
-        let t = t.clamp(0.0, 1.0);
+        let t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let stops = &self.0;
         if stops.is_empty() {
             return Color::BLACK;
@@ -509,6 +677,18 @@ fn default_miter_limit() -> Animated<f64> {
     Animated::new(4.0)
 }
 
+fn default_stroke_width() -> Animated<f64> {
+    Animated::new(1.0)
+}
+
+fn default_stroke_cap() -> StrokeCap {
+    StrokeCap::Butt
+}
+
+fn default_stroke_join() -> StrokeJoin {
+    StrokeJoin::Miter
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum StyleKind {
     Fill {
@@ -538,6 +718,13 @@ struct StyleCompatContent {
     rule: Option<FillRule>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StylePaintCompat {
+    Paint(StylePaint),
+    Color(Animated<Color>),
+}
+
 impl<'de> Deserialize<'de> for StyleKind {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -549,7 +736,9 @@ impl<'de> Deserialize<'de> for StyleKind {
             Stroke,
         }
 
-        struct StyleKindVisitor;
+        struct StyleKindVisitor {
+            human_readable: bool,
+        }
         impl<'de> Visitor<'de> for StyleKindVisitor {
             type Value = StyleKind;
 
@@ -564,6 +753,7 @@ impl<'de> Deserialize<'de> for StyleKind {
                 use serde::de::VariantAccess as _;
                 struct ContentVisitor {
                     fill: bool,
+                    human_readable: bool,
                 }
                 impl<'de> Visitor<'de> for ContentVisitor {
                     type Value = StyleCompatContent;
@@ -599,78 +789,79 @@ impl<'de> Deserialize<'de> for StyleKind {
                     where
                         A: serde::de::SeqAccess<'de>,
                     {
-                        use serde::de::Error as _;
                         // Postcard encodes struct-variant content positionally
                         // (no keys), in derived declaration order.
+                        let (paint, color) = if self.human_readable {
+                            match seq.next_element::<StylePaintCompat>()? {
+                                Some(StylePaintCompat::Paint(paint)) => (Some(paint), None),
+                                Some(StylePaintCompat::Color(color)) => (None, Some(color)),
+                                None => (None, None),
+                            }
+                        } else {
+                            (seq.next_element::<StylePaint>()?, None)
+                        };
                         let mut content = StyleCompatContent {
-                            paint: Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(0, &"paint"))?,
-                            ),
+                            paint,
+                            color,
                             ..Default::default()
                         };
                         if self.fill {
-                            content.rule = Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(1, &"rule"))?,
-                            );
+                            content.rule =
+                                Some(seq.next_element::<FillRule>()?.unwrap_or_default());
                         } else {
                             content.width = Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(1, &"width"))?,
+                                seq.next_element::<Animated<f64>>()?
+                                    .unwrap_or_else(default_stroke_width),
                             );
                             content.cap = Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(2, &"cap"))?,
+                                seq.next_element::<StrokeCap>()?
+                                    .unwrap_or_else(default_stroke_cap),
                             );
                             content.join = Some(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(3, &"join"))?,
+                                seq.next_element::<StrokeJoin>()?
+                                    .unwrap_or_else(default_stroke_join),
                             );
-                            content.dash = seq
-                                .next_element::<Option<AnimatedDash>>()?
-                                .ok_or_else(|| A::Error::invalid_length(4, &"dash"))?;
+                            content.dash =
+                                seq.next_element::<Option<AnimatedDash>>()?.unwrap_or(None);
                             // legacy encodings omit it.
-                            content.miter_limit = seq
-                                .next_element::<Animated<f64>>()?
-                                .or(Some(default_miter_limit()));
+                            content.miter_limit = Some(
+                                seq.next_element::<Animated<f64>>()?
+                                    .unwrap_or_else(default_miter_limit),
+                            );
                         }
                         Ok(content)
                     }
                 }
                 let (tag, content) = data.variant::<StyleTag>()?;
                 let content = match tag {
-                    StyleTag::Fill => {
-                        content.struct_variant(&["paint", "rule"], ContentVisitor { fill: true })?
-                    }
+                    StyleTag::Fill => content.struct_variant(
+                        &["paint", "rule"],
+                        ContentVisitor {
+                            fill: true,
+                            human_readable: self.human_readable,
+                        },
+                    )?,
                     StyleTag::Stroke => content.struct_variant(
                         &["paint", "width", "cap", "join", "dash", "miter_limit"],
-                        ContentVisitor { fill: false },
+                        ContentVisitor {
+                            fill: false,
+                            human_readable: self.human_readable,
+                        },
                     )?,
                 };
-                let paint = match content.paint {
-                    Some(p) => p,
-                    None => match content.color {
-                        Some(color) => StylePaint::Solid { color },
-                        None => return Err(A::Error::missing_field("paint")),
-                    },
-                };
+                let paint = content.paint.unwrap_or_else(|| StylePaint::Solid {
+                    color: content.color.unwrap_or_else(|| Animated::new(Color::BLACK)),
+                });
                 match tag {
                     StyleTag::Fill => Ok(StyleKind::Fill {
                         paint,
-                        rule: content
-                            .rule
-                            .ok_or_else(|| A::Error::missing_field("rule"))?,
+                        rule: content.rule.unwrap_or_default(),
                     }),
                     StyleTag::Stroke => Ok(StyleKind::Stroke {
                         paint,
-                        width: content
-                            .width
-                            .ok_or_else(|| A::Error::missing_field("width"))?,
-                        cap: content.cap.ok_or_else(|| A::Error::missing_field("cap"))?,
-                        join: content
-                            .join
-                            .ok_or_else(|| A::Error::missing_field("join"))?,
+                        width: content.width.unwrap_or_else(default_stroke_width),
+                        cap: content.cap.unwrap_or_else(default_stroke_cap),
+                        join: content.join.unwrap_or_else(default_stroke_join),
                         dash: content.dash,
                         miter_limit: content.miter_limit.unwrap_or_else(default_miter_limit),
                     }),
@@ -678,7 +869,12 @@ impl<'de> Deserialize<'de> for StyleKind {
             }
         }
 
-        deserializer.deserialize_enum("StyleKind", &["Fill", "Stroke"], StyleKindVisitor)
+        let human_readable = deserializer.is_human_readable();
+        deserializer.deserialize_enum(
+            "StyleKind",
+            &["Fill", "Stroke"],
+            StyleKindVisitor { human_readable },
+        )
     }
 }
 
@@ -1038,13 +1234,24 @@ impl<'de> serde::Deserialize<'de> for ImageNode {
                         }
                     }
                 }
+                if asset.is_some() && (idx.is_some() || version.is_some()) {
+                    return Err(DeError::custom(
+                        "ImageNode cannot contain both `asset` and legacy asset key fields",
+                    ));
+                }
                 if let Some(a) = asset {
+                    if a == AssetId::default() {
+                        return Err(DeError::custom("image asset key is null"));
+                    }
                     Ok(ImageNode {
                         asset: a,
                         tint: tint.unwrap_or_else(default_tint),
                         crop: crop.unwrap_or_else(default_crop_vec4),
                     })
                 } else if let (Some(i), Some(v)) = (idx, version) {
+                    if i == u32::MAX || v == 0 || v % 2 == 0 {
+                        return Err(DeError::custom("invalid legacy image asset key"));
+                    }
                     let kd = slotmap::KeyData::from_ffi(((v as u64) << 32) | i as u64);
                     Ok(ImageNode {
                         asset: AssetId::from(kd),
@@ -1065,6 +1272,9 @@ impl<'de> serde::Deserialize<'de> for ImageNode {
                 let Some(asset) = asset else {
                     return Err(DeError::invalid_length(0, &self));
                 };
+                if asset == AssetId::default() {
+                    return Err(DeError::custom("image asset key is null"));
+                }
                 // If there's a next element, it's tint (full struct), otherwise legacy bare.
                 if let Some(tint) = seq.next_element::<Animated<Color>>()? {
                     let crop: glam::DVec4 = seq.next_element()?.unwrap_or_else(default_crop_vec4);
@@ -1223,13 +1433,21 @@ impl ScenePaint {
             ScenePaint::Image { tint, .. } => *tint,
             ScenePaint::LinearGradient { start, end, stops } => {
                 let d = *end - *start;
-                let len2 = d.length_squared().max(1e-12);
-                let t = ((p - *start).dot(d) / len2).clamp(0.0, 1.0);
+                let len2 = d.length_squared();
+                let t = if len2.is_finite() && len2 > 1e-12 {
+                    ((p - *start).dot(d) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 stops.sample(t)
             }
             ScenePaint::RadialGradient { center, end, stops } => {
-                let r = (*end - *center).length().max(1e-12);
-                let t = ((p - *center).length() / r).clamp(0.0, 1.0);
+                let radius = (*end - *center).length();
+                let t = if radius.is_finite() && radius > 1e-12 {
+                    ((p - *center).length() / radius).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 stops.sample(t)
             }
         }
@@ -1348,7 +1566,12 @@ fn sample_transform(
 /// Children are z-ordered with index 0 = top, so the first Fill wins.
 pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
     let mut scope = doc.locate(shape).map(|(p, _)| p)?;
-    loop {
+    let mut seen = Vec::new();
+    for _ in 0..MAX_PARENT_DEPTH {
+        if seen.contains(&scope) {
+            return None;
+        }
+        seen.push(scope);
         let children: Vec<NodeId> = match scope {
             Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
             Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
@@ -1366,13 +1589,19 @@ pub fn fill_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
             Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
         }
     }
+    None
 }
 
 /// Topmost stroke style in the closest ancestor scope that has one.
 /// Children are z-ordered with index 0 = top, so the first Stroke wins.
 pub fn stroke_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
     let mut scope = doc.locate(shape).map(|(p, _)| p)?;
-    loop {
+    let mut seen = Vec::new();
+    for _ in 0..MAX_PARENT_DEPTH {
+        if seen.contains(&scope) {
+            return None;
+        }
+        seen.push(scope);
         let children: Vec<NodeId> = match scope {
             Parent::Comp(c) => doc.compositions.get(c)?.children.clone(),
             Parent::Node(p) => doc.nodes.get(p)?.children.clone(),
@@ -1390,6 +1619,7 @@ pub fn stroke_style_for(doc: &Document, shape: NodeId) -> Option<NodeId> {
             Parent::Node(p) => scope = doc.locate(p).map(|(parent, _)| parent)?,
         }
     }
+    None
 }
 
 /// The node's own transform as an affine, ignoring group/accumulated
@@ -1400,7 +1630,12 @@ pub fn node_affine(doc: &Document, id: NodeId, frame: f64) -> Affine {
     let Some(n) = doc.nodes.get(id) else {
         return Affine::IDENTITY;
     };
-    affine_of(&sample_transform(n, id, frame, &Overrides::default()))
+    let affine = affine_of(&sample_transform(n, id, frame, &Overrides::default()));
+    if affine_is_finite(&affine) {
+        affine
+    } else {
+        Affine::IDENTITY
+    }
 }
 
 fn linear_affine_of(sample: &renamite_animation::TransformSample) -> Affine {
@@ -1451,10 +1686,13 @@ pub struct NodeTransformContext {
 fn node_effective_frame(node: &Node, incoming_frame: f64) -> f64 {
     match &node.kind {
         NodeKind::Layer(layer) => {
-            (incoming_frame - layer.in_frame.0 as f64) / layer.time_stretch.max(1e-9)
-                + layer.in_frame.0 as f64
+            let stretch = if layer.time_stretch.is_finite() && layer.time_stretch > 0.0 {
+                layer.time_stretch
+            } else {
+                1e-9
+            };
+            (incoming_frame - layer.in_frame.0 as f64) / stretch + layer.in_frame.0 as f64
         }
-
         _ => incoming_frame,
     }
 }
@@ -1470,21 +1708,14 @@ pub fn node_transform_context(
     id: NodeId,
     root_frame: f64,
 ) -> Option<NodeTransformContext> {
-    let mut chain = Vec::new();
-    let mut current = id;
-
-    loop {
-        chain.push(current);
-
-        let node = doc.nodes.get(current)?;
-
-        let Some(parent) = node.parent else {
-            break;
-        };
-
-        current = parent;
+    if !root_frame.is_finite() {
+        return None;
     }
-
+    let mut chain = bounded_parent_chain(doc, id)?;
+    let root = chain.last().copied()?;
+    if root_membership_count(doc, root) > 1 || !parent_chain_consistent(doc, &chain) {
+        return None;
+    }
     chain.reverse();
 
     let mut parent_world = Affine::IDENTITY;
@@ -1493,18 +1724,34 @@ pub fn node_transform_context(
     for current in chain {
         let node = doc.nodes.get(current)?;
         let effective = node_effective_frame(node, frame);
+        if !effective.is_finite() {
+            return None;
+        }
         let sample = node.transform.sample(effective);
         let linear = linear_affine_of(&sample);
         let local = affine_of(&sample);
+        if !sample.position.is_finite()
+            || !sample.anchor.is_finite()
+            || !affine_is_finite(&linear)
+            || !affine_is_finite(&local)
+        {
+            return None;
+        }
 
         if current == id {
             let pivot = parent_world * Point::new(sample.position.x, sample.position.y);
-
+            if !pivot.x.is_finite() || !pivot.y.is_finite() {
+                return None;
+            }
+            let world = parent_world * local;
+            if !affine_is_finite(&world) {
+                return None;
+            }
             return Some(NodeTransformContext {
                 parent_world,
                 linear,
                 local,
-                world: parent_world * local,
+                world,
                 frame: effective,
                 position: sample.position,
                 anchor: sample.anchor,
@@ -1513,10 +1760,17 @@ pub fn node_transform_context(
         }
 
         parent_world *= local;
+        if !affine_is_finite(&parent_world) {
+            return None;
+        }
         frame = effective;
     }
 
     None
+}
+
+pub fn node_world_affine(doc: &Document, id: NodeId, frame: f64) -> Option<Affine> {
+    node_transform_context(doc, id, frame).map(|context| context.world)
 }
 
 const SHAPE_TOL: f64 = 0.1;
@@ -1557,17 +1811,31 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             kind,
         } => {
             let pts = clamp_shape_points(ov_f64(ov, id, "shape.points", points.value_at(frame)));
-            let outer = ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame));
+            let outer = finite_or(
+                ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
+                0.0,
+            )
+            .max(0.0);
             let inner = match kind {
                 StarKind::Burst => None,
-                StarKind::Star => Some(ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame))),
+                StarKind::Star => Some(
+                    finite_or(
+                        ov_f64(ov, id, "shape.inner_r", inner_r.value_at(frame)),
+                        0.0,
+                    )
+                    .max(0.0),
+                ),
             };
             star_path(
                 ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
                 pts,
                 inner,
                 outer,
-                ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
+                finite_or(
+                    ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)),
+                    0.0,
+                )
+                .max(0.0),
             )
         }
         ShapeKind::Polygon {
@@ -1579,8 +1847,16 @@ pub fn shape_path(kind: &ShapeKind, id: NodeId, frame: f64, ov: &Overrides) -> B
             ov_vec2(ov, id, "shape.pos", pos.value_at(frame)),
             clamp_shape_points(ov_f64(ov, id, "shape.points", points.value_at(frame))),
             None,
-            ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
-            ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)).max(0.0),
+            finite_or(
+                ov_f64(ov, id, "shape.outer_r", outer_r.value_at(frame)),
+                0.0,
+            )
+            .max(0.0),
+            finite_or(
+                ov_f64(ov, id, "shape.roundness", roundness.value_at(frame)),
+                0.0,
+            )
+            .max(0.0),
         ),
         ShapeKind::CompoundPath(compound) => compound.to_bez_path(frame),
     }
@@ -1592,7 +1868,7 @@ fn clamp_shape_points(v: f64) -> usize {
     if !v.is_finite() {
         return 3;
     }
-    (v.round().max(3.0).min(256.0)) as usize
+    v.round().clamp(3.0, 256.0) as usize
 }
 
 fn star_path(
@@ -1644,6 +1920,9 @@ fn inverted_clip_path(scope_world: &BezPath, mask_world: &BezPath) -> ClipPath {
 
 pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -> Scene {
     let mut scene = Scene::default();
+    if !frame.is_finite() {
+        return scene;
+    }
     if let Some(c) = doc.compositions.get(comp) {
         let scope = kurbo::Rect::new(0.0, 0.0, c.size.0 as f64, c.size.1 as f64);
         eval_group(
@@ -1664,27 +1943,53 @@ pub fn evaluate_with(doc: &Document, comp: CompId, frame: f64, ov: &Overrides) -
     scene
 }
 
-const MAX_DEPTH: u32 = 32; // precomp cycle guard
+fn node_opacity_value(node: &Node, id: NodeId, frame: f64, ov: &Overrides) -> f64 {
+    if !node_supports_opacity(&node.kind) {
+        return 1.0;
+    }
+    finite_or(ov_f64(ov, id, "opacity", node.opacity.value_at(frame)), 1.0).clamp(0.0, 1.0)
+}
+
+fn effective_node_opacity(
+    node: &Node,
+    id: NodeId,
+    frame: f64,
+    ov: &Overrides,
+    inherited: f64,
+) -> f64 {
+    finite_or(inherited, 1.0).clamp(0.0, 1.0) * node_opacity_value(node, id, frame, ov)
+}
 
 fn use_chain_ok(doc: &Document, use_id: NodeId, mut target: NodeId) -> bool {
-    if target == use_id {
+    if target == use_id || doc.nodes.get(target).is_none() {
         return false;
     }
-    let mut hops = 0u32;
-    while let Some(node) = doc.nodes.get(target) {
-        match &node.kind {
-            NodeKind::Use { target: next } => {
-                if *next == use_id {
-                    return false;
-                }
-                target = *next;
-                hops += 1;
-                if hops > MAX_DEPTH {
-                    return false;
-                }
-            }
-            _ => return true,
+    let Some(use_chain) = bounded_parent_chain(doc, use_id) else {
+        return false;
+    };
+    if !parent_chain_consistent(doc, &use_chain) || use_chain.contains(&target) {
+        return false;
+    }
+    match descendant_reaches(doc, use_id, target) {
+        Some(true) | None => return false,
+        Some(false) => {}
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..=MAX_DEPTH {
+        if !seen.insert(target) || target == use_id {
+            return false;
         }
+        let Some(node) = doc.nodes.get(target) else {
+            return false;
+        };
+        let NodeKind::Use { target: next } = &node.kind else {
+            return true;
+        };
+        if *next == use_id || use_chain.contains(next) {
+            return false;
+        }
+        target = *next;
     }
     false
 }
@@ -1704,7 +2009,7 @@ fn eval_group(
     inherited_clips: &[u32],
     seed_paths: &[ShapeEntry],
 ) {
-    if depth > MAX_DEPTH {
+    if depth >= MAX_DEPTH {
         return;
     }
 
@@ -1717,19 +2022,35 @@ fn eval_group(
         }
         match &n.kind {
             NodeKind::Shape(s) => {
-                let ntf = affine_of(&sample_transform(n, id, frame, ov));
-                paths.push(ShapeEntry {
-                    node: id,
-                    affine: ntf,
-                    opacity: 1.0,
-                    path: tf * ntf * shape_path(s, id, frame, ov),
-                });
+                let affine = affine_of(&sample_transform(n, id, frame, ov));
+                if !affine_is_finite(&affine) {
+                    continue;
+                }
+                let path = affine * shape_path(s, id, frame, ov);
+                if path.is_finite() {
+                    paths.push(ShapeEntry {
+                        node: id,
+                        affine,
+                        opacity: node_opacity_value(n, id, frame, ov),
+                        path,
+                    });
+                }
             }
             NodeKind::Text(t) => {
-                let ntf = affine_of(&sample_transform(n, id, frame, ov));
-                let size = ov_f64(ov, id, "text.size", t.size.value_at(frame)).max(0.1);
-                let tracking = ov_f64(ov, id, "text.tracking", t.tracking.value_at(frame));
-                let leading = ov_f64(ov, id, "text.leading", t.leading.value_at(frame));
+                let affine = affine_of(&sample_transform(n, id, frame, ov));
+                if !affine_is_finite(&affine) {
+                    continue;
+                }
+                let size =
+                    finite_or(ov_f64(ov, id, "text.size", t.size.value_at(frame)), 48.0).max(0.1);
+                let tracking = finite_or(
+                    ov_f64(ov, id, "text.tracking", t.tracking.value_at(frame)),
+                    0.0,
+                );
+                let leading = finite_or(
+                    ov_f64(ov, id, "text.leading", t.leading.value_at(frame)),
+                    0.0,
+                );
                 // Prefer an embedded project font by family.
                 let outline = if let Some((_, font)) =
                     t.font.as_deref().and_then(|f| doc.font_asset_for_family(f))
@@ -1748,12 +2069,15 @@ fn eval_group(
                 } else {
                     renamite_text::shape_text_default(&t.text, size, t.align, tracking, leading)
                 };
-                paths.push(ShapeEntry {
-                    node: id,
-                    affine: ntf,
-                    opacity: 1.0,
-                    path: tf * ntf * outline,
-                });
+                let path = affine * outline;
+                if path.is_finite() {
+                    paths.push(ShapeEntry {
+                        node: id,
+                        affine,
+                        opacity: node_opacity_value(n, id, frame, ov),
+                        path,
+                    });
+                }
             }
             NodeKind::Modifier(m) => apply_modifier(m, id, frame, ov, &mut paths),
             NodeKind::Mask(_) => {}
@@ -1773,6 +2097,9 @@ fn eval_group(
         if let NodeKind::Mask(mask) = &n.kind {
             let local = affine_of(&sample_transform(n, id, frame, ov));
             let world_mask = tf * local * mask_shape_path(&mask.shape, id, frame, ov);
+            if !world_mask.is_finite() {
+                continue;
+            }
             let clip = if mask.inverted {
                 inverted_clip_path(&(tf * scope_rect.to_path(0.1)), &world_mask)
             } else {
@@ -1793,11 +2120,7 @@ fn eval_group(
         if !n.visible {
             continue;
         }
-        let node_op = if node_supports_opacity(&n.kind) {
-            opacity * ov_f64(ov, id, "opacity", n.opacity.value_at(frame)).clamp(0.0, 1.0)
-        } else {
-            opacity
-        };
+        let node_op = effective_node_opacity(n, id, frame, ov, opacity);
         let clips = &active[i];
         match &n.kind {
             NodeKind::Mask(_) => {}
@@ -1811,7 +2134,7 @@ fn eval_group(
                     node_op,
                     blend,
                     scene,
-                    depth + 1,
+                    depth.saturating_add(1),
                     ov,
                     scope_rect,
                     clips,
@@ -1822,18 +2145,23 @@ fn eval_group(
                 if frame < lp.in_frame.0 as f64 || frame > lp.out_frame.0 as f64 {
                     continue;
                 }
-                let lf = (frame - lp.in_frame.0 as f64) / lp.time_stretch.max(1e-9)
-                    + lp.in_frame.0 as f64;
+                let stretch = if lp.time_stretch.is_finite() && lp.time_stretch > 0.0 {
+                    lp.time_stretch
+                } else {
+                    1e-9
+                };
+                let lf = (frame - lp.in_frame.0 as f64) / stretch + lp.in_frame.0 as f64;
+                let layer_opacity = effective_node_opacity(n, id, lf, ov, opacity);
                 let ntf = tf * affine_of(&sample_transform(n, id, lf, ov));
                 eval_group(
                     doc,
                     &n.children,
                     lf,
                     ntf,
-                    node_op,
+                    layer_opacity,
                     lp.blend,
                     scene,
-                    depth + 1,
+                    depth.saturating_add(1),
                     ov,
                     scope_rect,
                     clips,
@@ -1844,12 +2172,40 @@ fn eval_group(
                 let Some(asset) = doc.image_asset(image_node.asset()) else {
                     continue;
                 };
+                if asset.width == 0 || asset.height == 0 {
+                    continue;
+                }
 
                 let node_transform = affine_of(&sample_transform(n, id, frame, ov));
                 let full_transform = tf * node_transform;
+                if !affine_is_finite(&full_transform) {
+                    continue;
+                }
 
                 let tint = ov_color(ov, id, "image.tint", image_node.tint().value_at(frame));
-                let crop = image_node.crop();
+                let tint = if tint.r.is_finite()
+                    && tint.g.is_finite()
+                    && tint.b.is_finite()
+                    && tint.a.is_finite()
+                {
+                    tint
+                } else {
+                    Color::WHITE
+                };
+                let raw_crop = image_node.crop();
+                let crop = if raw_crop.is_finite() {
+                    glam::DVec4::new(
+                        raw_crop.x.clamp(-1_000_000.0, 1_000_000.0),
+                        raw_crop.y.clamp(-1_000_000.0, 1_000_000.0),
+                        raw_crop.z.clamp(0.0, 1_000_000.0),
+                        raw_crop.w.clamp(0.0, 1_000_000.0),
+                    )
+                } else {
+                    glam::DVec4::new(0.0, 0.0, 1.0, 1.0)
+                };
+                if crop.z <= 0.0 || crop.w <= 0.0 {
+                    continue;
+                }
                 let local_rect = {
                     let (cx, cy, cw, ch) = (crop.x, crop.y, crop.z, crop.w);
                     if (cw - 1.0).abs() < 1e-6
@@ -1869,11 +2225,18 @@ fn eval_group(
                 };
 
                 let world_path = full_transform * local_rect.to_path(0.1);
-                let paint_width = (asset.width as f64 * crop.z).round().max(1.0) as u32;
-                let paint_height = (asset.height as f64 * crop.w).round().max(1.0) as u32;
+                let paint_width = (asset.width as f64 * crop.z)
+                    .round()
+                    .clamp(1.0, 1_000_000.0) as u32;
+                let paint_height = (asset.height as f64 * crop.w)
+                    .round()
+                    .clamp(1.0, 1_000_000.0) as u32;
                 let crop_affine =
                     Affine::translate((asset.width as f64 * crop.x, asset.height as f64 * crop.y));
                 let paint_affine = full_transform * crop_affine;
+                if !world_path.is_finite() || !affine_is_finite(&paint_affine) {
+                    continue;
+                }
 
                 scene.items.push(SceneItem {
                     path: world_path,
@@ -1894,7 +2257,12 @@ fn eval_group(
             }
             NodeKind::Precomp { comp, time_map } => {
                 let ntf = tf * affine_of(&sample_transform(n, id, frame, ov));
-                let cf = (frame - time_map.offset.0 as f64) / time_map.stretch.max(1e-9);
+                let stretch = if time_map.stretch.is_finite() && time_map.stretch > 0.0 {
+                    time_map.stretch
+                } else {
+                    1e-9
+                };
+                let cf = (frame - time_map.offset.0 as f64) / stretch;
                 if let Some(c) = doc.compositions.get(*comp) {
                     let pre_scope = kurbo::Rect::new(0.0, 0.0, c.size.0 as f64, c.size.1 as f64);
                     eval_group(
@@ -1905,7 +2273,7 @@ fn eval_group(
                         node_op,
                         blend,
                         scene,
-                        depth + 1,
+                        depth.saturating_add(1),
                         ov,
                         pre_scope,
                         clips,
@@ -1930,22 +2298,57 @@ fn eval_group(
                 ) {
                     continue;
                 }
-                let kids: Vec<NodeId> = match &source.kind {
-                    NodeKind::Group | NodeKind::Layer(_) => source.children.clone(),
-                    _ => vec![*target],
+                let source_frame = match &source.kind {
+                    NodeKind::Layer(layer) => {
+                        if frame < layer.in_frame.0 as f64 || frame > layer.out_frame.0 as f64 {
+                            continue;
+                        }
+                        let stretch = if layer.time_stretch.is_finite() && layer.time_stretch > 0.0
+                        {
+                            layer.time_stretch
+                        } else {
+                            1e-9
+                        };
+                        (frame - layer.in_frame.0 as f64) / stretch + layer.in_frame.0 as f64
+                    }
+                    _ => frame,
+                };
+                let source_uses_children =
+                    matches!(&source.kind, NodeKind::Group | NodeKind::Layer(_));
+                let kids: Vec<NodeId> = if source_uses_children {
+                    source.children.clone()
+                } else {
+                    vec![*target]
                 };
                 if kids.is_empty() {
                     continue;
                 }
+                let (source_tf, source_opacity, source_blend) = if source_uses_children {
+                    let source_local =
+                        affine_of(&sample_transform(source, *target, source_frame, ov));
+                    let source_tf = ntf * source_local;
+                    if !affine_is_finite(&source_tf) {
+                        continue;
+                    }
+                    let source_opacity =
+                        effective_node_opacity(source, *target, source_frame, ov, node_op);
+                    let source_blend = match &source.kind {
+                        NodeKind::Layer(layer) => layer.blend,
+                        _ => blend,
+                    };
+                    (source_tf, source_opacity, source_blend)
+                } else {
+                    (ntf, node_op, blend)
+                };
                 eval_group(
                     doc,
                     &kids,
-                    frame,
-                    ntf,
-                    node_op,
-                    blend,
+                    source_frame,
+                    source_tf,
+                    source_opacity,
+                    source_blend,
                     scene,
-                    depth + 1,
+                    depth.saturating_add(1),
                     ov,
                     scope_rect,
                     clips,
@@ -1953,7 +2356,7 @@ fn eval_group(
                 );
             }
             NodeKind::Style(st) => {
-                emit_style(st, id, frame, ov, &paths, node_op, blend, clips, scene)
+                emit_style(st, id, frame, ov, tf, &paths, node_op, blend, clips, scene)
             }
             // Modifiers apply in pass 1; pass 3 only propagates their own
             // opacity to nested children, if any.
@@ -1966,7 +2369,7 @@ fn eval_group(
                     node_op,
                     blend,
                     scene,
-                    depth + 1,
+                    depth.saturating_add(1),
                     ov,
                     scope_rect,
                     clips,
@@ -1974,8 +2377,20 @@ fn eval_group(
                 );
             }
             NodeKind::Shape(_) | NodeKind::Text(_) if !n.children.is_empty() => {
-                let seeds: Vec<ShapeEntry> =
-                    paths.iter().filter(|e| e.node == id).cloned().collect();
+                let own_opacity = node_opacity_value(n, id, frame, ov);
+                let seeds: Vec<ShapeEntry> = paths
+                    .iter()
+                    .filter(|e| e.node == id)
+                    .cloned()
+                    .map(|mut entry| {
+                        entry.opacity = if own_opacity > 0.0 {
+                            entry.opacity / own_opacity
+                        } else {
+                            0.0
+                        };
+                        entry
+                    })
+                    .collect();
                 eval_group(
                     doc,
                     &n.children,
@@ -1984,7 +2399,7 @@ fn eval_group(
                     node_op,
                     blend,
                     scene,
-                    depth + 1,
+                    depth.saturating_add(1),
                     ov,
                     scope_rect,
                     clips,
@@ -1996,9 +2411,6 @@ fn eval_group(
     }
 }
 
-/// One accumulated shape path in pass 1 of group evaluation, carrying the
-/// shape's local affine (gradient folding) and a per-copy opacity factor
-/// (repeater falloff) that rides along until style emission.
 #[derive(Clone)]
 struct ShapeEntry {
     node: NodeId,
@@ -2022,19 +2434,29 @@ fn apply_modifier(
             start_opacity,
             end_opacity,
         } => {
-            let count = ov_f64(ov, id, "repeater.copies", copies.value_at(frame))
-                .round()
-                .max(0.0) as usize;
-            let off = ov_f64(ov, id, "repeater.offset", offset.value_at(frame));
-            let so = ov_f64(
-                ov,
-                id,
-                "repeater.start_opacity",
-                start_opacity.value_at(frame),
+            let count =
+                bounded_repeat_count(ov_f64(ov, id, "repeater.copies", copies.value_at(frame)));
+            if count == 0 {
+                paths.clear();
+                return;
+            }
+            let off =
+                bounded_repeat_offset(ov_f64(ov, id, "repeater.offset", offset.value_at(frame)));
+            let so = finite_or(
+                ov_f64(
+                    ov,
+                    id,
+                    "repeater.start_opacity",
+                    start_opacity.value_at(frame),
+                ),
+                1.0,
             )
             .clamp(0.0, 1.0);
-            let eo =
-                ov_f64(ov, id, "repeater.end_opacity", end_opacity.value_at(frame)).clamp(0.0, 1.0);
+            let eo = finite_or(
+                ov_f64(ov, id, "repeater.end_opacity", end_opacity.value_at(frame)),
+                1.0,
+            )
+            .clamp(0.0, 1.0);
             let mut ts = transform.sample(frame);
             ts.position = ov_vec2(ov, id, "repeater.transform.position", ts.position);
             ts.scale = ov_vec2(ov, id, "repeater.transform.scale", ts.scale);
@@ -2043,8 +2465,19 @@ fn apply_modifier(
             ts.skew = ov_f64(ov, id, "repeater.transform.skew", ts.skew);
             ts.skew_axis = ov_f64(ov, id, "repeater.transform.skew_axis", ts.skew_axis);
             let step = affine_of(&ts);
+            if !affine_is_finite(&step) {
+                return;
+            }
             let original = std::mem::take(paths);
-            let n = count.max(1);
+            if original.is_empty() {
+                return;
+            }
+            let original: Vec<ShapeEntry> = original.into_iter().take(MAX_REPEATER_PATHS).collect();
+            let n = count.min((MAX_REPEATER_PATHS / original.len()).max(1));
+            let Some(mut local_repeat) = affine_power(step, off) else {
+                paths.extend(original);
+                return;
+            };
             for i in 0..n {
                 // Linear falloff: first copy = so, last copy = eo.
                 let t = if n <= 1 {
@@ -2052,21 +2485,24 @@ fn apply_modifier(
                 } else {
                     i as f64 / (n - 1) as f64
                 };
-                let copy_opacity = so + (eo - so) * t;
-
-                let mut a = Affine::IDENTITY;
-                let reps = (i as f64 + off).max(0.0) as usize;
-                for _ in 0..reps {
-                    a *= step;
+                let copy_opacity = finite_or(so + (eo - so) * t, 1.0).clamp(0.0, 1.0);
+                let copy_local = local_repeat;
+                if !affine_is_finite(&copy_local) {
+                    break;
                 }
-                for e in &original {
+                for entry in &original {
+                    let affine = copy_local * entry.affine;
+                    if !affine_is_finite(&affine) {
+                        continue;
+                    }
                     paths.push(ShapeEntry {
-                        node: e.node,
-                        affine: e.affine,
-                        opacity: e.opacity * copy_opacity,
-                        path: a * e.path.clone(),
+                        node: entry.node,
+                        affine,
+                        opacity: entry.opacity * copy_opacity,
+                        path: copy_local * entry.path.clone(),
                     });
                 }
+                local_repeat *= step;
             }
         }
         ModifierKind::TrimPath {
@@ -2075,12 +2511,15 @@ fn apply_modifier(
             offset,
             mode,
         } => {
-            let mut s = ov_f64(ov, id, "trim.start", start.value_at(frame)).clamp(0.0, 1.0);
-            let mut e = ov_f64(ov, id, "trim.end", end.value_at(frame)).clamp(0.0, 1.0);
+            let mut s =
+                finite_or(ov_f64(ov, id, "trim.start", start.value_at(frame)), 0.0).clamp(0.0, 1.0);
+            let mut e =
+                finite_or(ov_f64(ov, id, "trim.end", end.value_at(frame)), 1.0).clamp(0.0, 1.0);
             if s > e {
                 std::mem::swap(&mut s, &mut e);
             }
-            let o = ov_f64(ov, id, "trim.offset", offset.value_at(frame)).rem_euclid(1.0);
+            let o = finite_or(ov_f64(ov, id, "trim.offset", offset.value_at(frame)), 0.0)
+                .rem_euclid(1.0);
 
             if (e - s).abs() < 1e-9 {
                 paths.clear();
@@ -2105,7 +2544,8 @@ fn apply_modifier(
                         .map(|entry| entry.path.perimeter(1e-3))
                         .collect();
                     let total: f64 = lengths.iter().sum();
-                    if total <= 1e-9 {
+                    if !total.is_finite() || total <= 1e-9 {
+                        paths.extend(originals);
                         return;
                     }
                     let s_g = s + o;
@@ -2113,22 +2553,27 @@ fn apply_modifier(
                     let mut cursor = 0.0;
                     for (entry, len) in originals.into_iter().zip(lengths) {
                         let frac = len / total;
-                        if frac > 1e-12 {
-                            let lo = cursor;
-                            let hi = cursor + frac;
-                            let mut ranges: Vec<(f64, f64)> = Vec::new();
-                            for shift in [0.0, 1.0] {
-                                let a = (s_g.max(lo + shift) - (lo + shift)) / frac;
-                                let b = (e_g.min(hi + shift) - (lo + shift)) / frac;
-                                let (a, b) = (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
-                                if b > a + 1e-9 {
-                                    ranges.push((a, b));
-                                }
+                        if !len.is_finite() || len <= 1e-12 {
+                            paths.push(entry);
+                            if len.is_finite() {
+                                cursor += frac;
                             }
-                            for (ps, pe) in ranges {
-                                if let Some(t) = trim_path(&entry.path, ps, pe, 0.0) {
-                                    paths.push(ShapeEntry { path: t, ..entry });
-                                }
+                            continue;
+                        }
+                        let lo = cursor;
+                        let hi = cursor + frac;
+                        let mut ranges: Vec<(f64, f64)> = Vec::new();
+                        for shift in [0.0, 1.0] {
+                            let a = (s_g.max(lo + shift) - (lo + shift)) / frac;
+                            let b = (e_g.min(hi + shift) - (lo + shift)) / frac;
+                            let (a, b) = (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
+                            if b > a + 1e-9 {
+                                ranges.push((a, b));
+                            }
+                        }
+                        for (ps, pe) in ranges {
+                            if let Some(t) = trim_path(&entry.path, ps, pe, 0.0) {
+                                paths.push(ShapeEntry { path: t, ..entry });
                             }
                         }
                         cursor += frac;
@@ -2146,8 +2591,20 @@ fn apply_modifier(
                 // while hard cuts (e.g. from a preceding Trim) detect as Corner
                 // and get rounded - Lottie modifier-order semantics.
                 for entry in paths.iter_mut() {
-                    let vp = renamite_geometry::VectorPath::from_bez_path(&entry.path);
-                    entry.path = vp.round_corners(r).to_bez_path();
+                    let mut rounded = kurbo::BezPath::new();
+                    for contour in renamite_geometry::split_bez_subpaths(&entry.path) {
+                        rounded.extend(
+                            contour
+                                .round_corners(r)
+                                .to_bez_path()
+                                .elements()
+                                .iter()
+                                .copied(),
+                        );
+                    }
+                    if !rounded.elements().is_empty() {
+                        entry.path = rounded;
+                    }
                 }
             }
         }
@@ -2178,9 +2635,19 @@ fn apply_modifier(
             let amt = ov_f64(ov, id, "pucker.amount", amount.value_at(frame));
             if amt.abs() > 1e-9 {
                 for entry in paths.iter_mut() {
-                    let vp = renamite_geometry::VectorPath::from_bez_path(&entry.path);
-                    entry.path =
-                        renamite_geometry::pucker_bloat_vector_path(&vp, amt).to_bez_path();
+                    let mut warped = kurbo::BezPath::new();
+                    for contour in renamite_geometry::split_bez_subpaths(&entry.path) {
+                        warped.extend(
+                            renamite_geometry::pucker_bloat_vector_path(&contour, amt)
+                                .to_bez_path()
+                                .elements()
+                                .iter()
+                                .copied(),
+                        );
+                    }
+                    if !warped.elements().is_empty() {
+                        entry.path = warped;
+                    }
                 }
             }
         }
@@ -2190,6 +2657,9 @@ fn apply_modifier(
 fn trim_path(path: &BezPath, s: f64, e: f64, offset: f64) -> Option<BezPath> {
     use kurbo::ParamCurveArclen;
 
+    if !s.is_finite() || !e.is_finite() || !offset.is_finite() {
+        return None;
+    }
     if (e - s).abs() < 1e-9 {
         return None;
     }
@@ -2200,7 +2670,7 @@ fn trim_path(path: &BezPath, s: f64, e: f64, offset: f64) -> Option<BezPath> {
     }
     let lengths: Vec<f64> = segments.iter().map(|seg| seg.arclen(1e-3)).collect();
     let total: f64 = lengths.iter().sum();
-    if total <= 1e-9 {
+    if !total.is_finite() || total <= 1e-9 {
         return None;
     }
 
@@ -2319,6 +2789,7 @@ fn emit_style(
     style_id: NodeId,
     frame: f64,
     ov: &Overrides,
+    parent_world: Affine,
     paths: &[ShapeEntry],
     opacity: f64,
     blend: BlendMode,
@@ -2338,46 +2809,52 @@ fn emit_style(
             } => (
                 paint,
                 PaintKind::Stroke(StrokeSample {
-                    width: ov_f64(ov, style_id, "stroke.width", width.value_at(frame)).max(0.0),
+                    width: finite_or(
+                        ov_f64(ov, style_id, "stroke.width", width.value_at(frame)),
+                        1.0,
+                    )
+                    .max(0.0),
                     cap: *cap,
                     join: *join,
-                    miter_limit: ov_f64(
-                        ov,
-                        style_id,
-                        "stroke.miter_limit",
-                        miter_limit.value_at(frame),
+                    miter_limit: finite_or(
+                        ov_f64(
+                            ov,
+                            style_id,
+                            "stroke.miter_limit",
+                            miter_limit.value_at(frame),
+                        ),
+                        4.0,
                     )
                     .clamp(1.0, 10.0),
-                    dash: dash.as_ref().map(|d| {
-                        let mut dashes: Vec<f64> = d
-                            .dashes
-                            .iter()
-                            .map(|x| {
-                                let v = x.value_at(frame);
-                                if !v.is_finite() || v < 0.0 { 0.0 } else { v }
-                            })
-                            .collect();
+                    dash: dash.as_ref().and_then(|d| {
+                        let dashes: Vec<f64> = d.dashes.iter().map(|x| x.value_at(frame)).collect();
                         let offset = d.offset.value_at(frame);
-                        let offset = if offset.is_finite() { offset } else { 0.0 };
-                        if renamite_geometry::normalize_dash_pattern(&dashes).is_none() {
-                            dashes.clear();
+                        let sum = dashes.iter().sum::<f64>();
+                        if !sum.is_finite() || !offset.is_finite() {
+                            return None;
                         }
-                        DashSample { dashes, offset }
+                        renamite_geometry::normalize_dash_pattern(&dashes)
+                            .map(|dashes| DashSample { dashes, offset })
                     }),
                 }),
                 true,
             ),
         };
 
-        let paint = sample_paint_world(paint, frame, &e.affine, ov, style_id, is_stroke);
+        let world_affine = parent_world * e.affine;
+        let world_path = parent_world * e.path.clone();
+        if !affine_is_finite(&world_affine) || !world_path.is_finite() {
+            continue;
+        }
+        let paint = sample_paint_world(paint, frame, &world_affine, ov, style_id, is_stroke);
 
         scene.items.push(SceneItem {
-            path: e.path.clone(),
+            path: world_path,
             node: e.node,
             style: style_id,
             paint,
             kind,
-            opacity: opacity * e.opacity,
+            opacity: finite_or(opacity * e.opacity, 0.0).clamp(0.0, 1.0),
             clips: active_clips.to_vec(),
             blend,
         });
@@ -2435,6 +2912,177 @@ pub enum Parent {
     Comp(CompId),
 }
 
+fn bounded_parent_chain(doc: &Document, id: NodeId) -> Option<Vec<NodeId>> {
+    let mut chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut current = id;
+    for _ in 0..MAX_PARENT_DEPTH {
+        if !seen.insert(current) || doc.nodes.get(current).is_none() {
+            return None;
+        }
+        chain.push(current);
+        let Some(parent) = doc.nodes.get(current)?.parent else {
+            return Some(chain);
+        };
+        current = parent;
+    }
+    None
+}
+
+fn descendant_reaches(doc: &Document, ancestor: NodeId, node: NodeId) -> Option<bool> {
+    let mut pending = vec![node];
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..MAX_PARENT_DEPTH {
+        let Some(current) = pending.pop() else {
+            return Some(false);
+        };
+        if current == ancestor {
+            return Some(true);
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        let current_node = doc.nodes.get(current)?;
+        pending.extend(current_node.children.iter().copied());
+    }
+    None
+}
+
+fn parent_chain_consistent(doc: &Document, chain: &[NodeId]) -> bool {
+    let Some(root) = chain.last().copied() else {
+        return false;
+    };
+    if doc.nodes.values().any(|node| node.children.contains(&root)) {
+        return false;
+    }
+    chain.windows(2).all(|edge| {
+        let child = edge[0];
+        let parent = edge[1];
+        doc.nodes.get(parent).is_some_and(|node| {
+            node.children
+                .iter()
+                .filter(|&&candidate| candidate == child)
+                .count()
+                == 1
+        })
+    })
+}
+
+fn node_is_listed(doc: &Document, id: NodeId) -> bool {
+    doc.nodes.values().any(|node| node.children.contains(&id))
+        || doc
+            .compositions
+            .values()
+            .any(|composition| composition.children.contains(&id))
+}
+
+fn root_membership_count(doc: &Document, id: NodeId) -> usize {
+    doc.compositions
+        .values()
+        .filter(|composition| composition.children.contains(&id))
+        .count()
+}
+
+fn chain_is_attached_to_comp(doc: &Document, comp: CompId, chain: &[NodeId]) -> bool {
+    let Some(root) = chain.last().copied() else {
+        return false;
+    };
+    doc.compositions
+        .get(comp)
+        .is_some_and(|composition| composition.children.contains(&root))
+        && root_membership_count(doc, root) == 1
+        && parent_chain_consistent(doc, chain)
+}
+
+fn root_composition(doc: &Document, root: NodeId) -> Option<Option<CompId>> {
+    let mut found = None;
+    for (id, composition) in &doc.compositions {
+        if composition.children.contains(&root) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id);
+        }
+    }
+    Some(found)
+}
+
+fn precomp_targets_in_subtree(doc: &Document, root: NodeId) -> Option<Vec<CompId>> {
+    let mut pending = vec![root];
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if seen.len() > doc.nodes.len().saturating_add(1) {
+            return None;
+        }
+        let node = doc.nodes.get(id)?;
+        if let NodeKind::Precomp { comp, .. } = &node.kind {
+            if !doc.compositions.contains_key(*comp) {
+                return None;
+            }
+            targets.push(*comp);
+        }
+        pending.extend(node.children.iter().copied());
+    }
+    Some(targets)
+}
+
+fn composition_reaches(doc: &Document, from: CompId, target: CompId) -> Option<bool> {
+    let mut comp_pending = vec![from];
+    let mut comps_seen = std::collections::HashSet::new();
+    let mut nodes_seen = std::collections::HashSet::new();
+    let limit = doc
+        .compositions
+        .len()
+        .saturating_add(doc.nodes.len())
+        .saturating_add(1);
+    while let Some(comp_id) = comp_pending.pop() {
+        if comp_id == target {
+            return Some(true);
+        }
+        if !comps_seen.insert(comp_id) {
+            continue;
+        }
+        if comps_seen.len().saturating_add(nodes_seen.len()) > limit {
+            return None;
+        }
+        let composition = doc.compositions.get(comp_id)?;
+        let mut node_pending = composition.children.to_vec();
+        while let Some(node_id) = node_pending.pop() {
+            if !nodes_seen.insert(node_id) {
+                continue;
+            }
+            if comps_seen.len().saturating_add(nodes_seen.len()) > limit {
+                return None;
+            }
+            let node = doc.nodes.get(node_id)?;
+            if let NodeKind::Precomp { comp, .. } = &node.kind {
+                if !doc.compositions.contains_key(*comp) {
+                    return None;
+                }
+                comp_pending.push(*comp);
+            }
+            node_pending.extend(node.children.iter().copied());
+        }
+    }
+    Some(false)
+}
+
+fn precomp_attachment_safe(doc: &Document, root: NodeId, host: Option<CompId>) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    let Some(targets) = precomp_targets_in_subtree(doc, root) else {
+        return false;
+    };
+    targets.into_iter().all(|target| {
+        target != host && !matches!(composition_reaches(doc, target, host), Some(true) | None)
+    })
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ModelError {
     #[error("node not found")]
@@ -2455,11 +3103,44 @@ pub enum ModelError {
     KeyframeExists(i64),
     #[error("node is not attached")]
     NotAttached,
+    #[error("node is already attached")]
+    AlreadyAttached,
+    #[error("attachment would create a cycle")]
+    AttachmentCycle,
+    #[error("malformed node tree")]
+    MalformedTree,
     #[error("asset not found")]
     MissingAsset,
 }
 
 impl Document {
+    pub fn ensure_main_composition(&mut self) {
+        if self
+            .compositions
+            .get(self.main)
+            .is_some_and(composition_is_valid)
+        {
+            return;
+        }
+        if let Some((id, _)) = self
+            .compositions
+            .iter()
+            .find(|(_, composition)| composition_is_valid(composition))
+        {
+            self.main = id;
+            return;
+        }
+        self.main = self.compositions.insert(Composition::default());
+    }
+
+    pub fn main_composition(&self) -> Option<&Composition> {
+        self.compositions.get(self.main)
+    }
+
+    pub fn main_composition_mut(&mut self) -> Option<&mut Composition> {
+        self.compositions.get_mut(self.main)
+    }
+
     pub fn empty() -> Self {
         let mut compositions = CompMap::default();
         let main = compositions.insert(Composition {
@@ -2484,50 +3165,132 @@ impl Document {
     }
 
     pub fn attach(&mut self, id: NodeId, parent: Parent, index: usize) -> Result<(), ModelError> {
-        if !self.nodes.contains_key(id) {
-            return Err(ModelError::MissingNode);
+        let node = self.nodes.get(id).ok_or(ModelError::MissingNode)?;
+        if node.parent.is_some() || node_is_listed(self, id) {
+            return Err(ModelError::AlreadyAttached);
         }
-        match parent {
+
+        let (child_index, prospective_host) = match parent {
             Parent::Node(p) => {
-                let pn = self.nodes.get_mut(p).ok_or(ModelError::MissingNode)?;
-                let i = index.min(pn.children.len());
-                pn.children.insert(i, id);
-                self.nodes[id].parent = Some(p);
+                if p == id {
+                    return Err(ModelError::AttachmentCycle);
+                }
+                let parent_node = self.nodes.get(p).ok_or(ModelError::MissingNode)?;
+                if parent_node.children.contains(&id) {
+                    return Err(ModelError::AlreadyAttached);
+                }
+                match descendant_reaches(self, id, p) {
+                    Some(true) => return Err(ModelError::AttachmentCycle),
+                    Some(false) => {}
+                    None => return Err(ModelError::MalformedTree),
+                }
+                let chain = bounded_parent_chain(self, p).ok_or(ModelError::MalformedTree)?;
+                if !parent_chain_consistent(self, &chain) || chain.contains(&id) {
+                    return Err(ModelError::MalformedTree);
+                }
+                let host = root_composition(self, *chain.last().ok_or(ModelError::MalformedTree)?)
+                    .ok_or(ModelError::MalformedTree)?;
+                (index.min(parent_node.children.len()), host)
             }
             Parent::Comp(c) => {
-                let comp = self
-                    .compositions
+                let composition = self.compositions.get(c).ok_or(ModelError::MissingComp)?;
+                if composition.children.contains(&id) {
+                    return Err(ModelError::AlreadyAttached);
+                }
+                (index.min(composition.children.len()), Some(c))
+            }
+        };
+        if !precomp_attachment_safe(self, id, prospective_host) {
+            return Err(ModelError::PrecompCycle);
+        }
+
+        match parent {
+            Parent::Node(p) => {
+                self.nodes
+                    .get_mut(p)
+                    .expect("parent checked before attach")
+                    .children
+                    .insert(child_index, id);
+                self.nodes
+                    .get_mut(id)
+                    .expect("node checked before attach")
+                    .parent = Some(p);
+            }
+            Parent::Comp(c) => {
+                self.compositions
                     .get_mut(c)
-                    .ok_or(ModelError::MissingComp)?;
-                let i = index.min(comp.children.len());
-                comp.children.insert(i, id);
-                self.nodes[id].parent = None;
+                    .expect("composition checked before attach")
+                    .children
+                    .insert(child_index, id);
+                self.nodes
+                    .get_mut(id)
+                    .expect("node checked before attach")
+                    .parent = None;
             }
         }
         Ok(())
     }
 
     pub fn detach(&mut self, id: NodeId) -> Result<(Parent, usize), ModelError> {
+        let Some(chain) = bounded_parent_chain(self, id) else {
+            return Err(ModelError::MalformedTree);
+        };
+        if !parent_chain_consistent(self, &chain) {
+            return Err(ModelError::MalformedTree);
+        }
         let (parent, index) = self.locate(id).ok_or(ModelError::NotAttached)?;
         match parent {
             Parent::Node(p) => {
-                self.nodes[p].children.remove(index);
+                let parent_node = self.nodes.get(p).ok_or(ModelError::MalformedTree)?;
+                if parent_node
+                    .children
+                    .iter()
+                    .filter(|&&child| child == id)
+                    .count()
+                    != 1
+                    || self.nodes.get(id).and_then(|node| node.parent) != Some(p)
+                {
+                    return Err(ModelError::MalformedTree);
+                }
+                self.nodes
+                    .get_mut(p)
+                    .expect("parent checked before detach")
+                    .children
+                    .remove(index);
             }
             Parent::Comp(c) => {
-                self.compositions[c].children.remove(index);
+                if root_membership_count(self, id) != 1
+                    || self.nodes.get(id).and_then(|node| node.parent).is_some()
+                {
+                    return Err(ModelError::MalformedTree);
+                }
+                self.compositions
+                    .get_mut(c)
+                    .ok_or(ModelError::MalformedTree)?
+                    .children
+                    .remove(index);
             }
         }
-        if let Some(n) = self.nodes.get_mut(id) {
-            n.parent = None;
-        }
+        self.nodes
+            .get_mut(id)
+            .ok_or(ModelError::MissingNode)?
+            .parent = None;
         Ok((parent, index))
     }
 
     pub fn locate(&self, id: NodeId) -> Option<(Parent, usize)> {
         let n = self.nodes.get(id)?;
+        let chain = bounded_parent_chain(self, id)?;
+        if !parent_chain_consistent(self, &chain) || root_membership_count(self, *chain.last()?) > 1
+        {
+            return None;
+        }
         if let Some(p) = n.parent {
             let i = self.nodes.get(p)?.children.iter().position(|&c| c == id)?;
             return Some((Parent::Node(p), i));
+        }
+        if root_membership_count(self, id) > 1 {
+            return None;
         }
         for (cid, comp) in &self.compositions {
             if let Some(i) = comp.children.iter().position(|&c| c == id) {
@@ -2539,74 +3302,177 @@ impl Document {
 
     /// Drop arena nodes not reachable from any composition (call before save).
     pub fn garbage_collect(&mut self) {
+        self.ensure_main_composition();
+
         // 1) Find compositions reachable from `main` through Precomp nodes (including nested in Groups/Layers)
         let mut live_comps = std::collections::HashSet::new();
-        live_comps.insert(self.main);
         let mut comp_stack = vec![self.main];
-        let mut visited_nodes_for_comps = std::collections::HashSet::new();
         while let Some(cid) = comp_stack.pop() {
-            let Some(comp) = self.compositions.get(cid) else {
+            if !live_comps.insert(cid) {
                 continue;
+            }
+            let Some(composition) = self.compositions.get(cid) else {
+                return;
             };
             // DFS through nodes in this composition to find Precomp targets
-            let mut node_stack: Vec<NodeId> = comp.children.clone();
-            visited_nodes_for_comps.clear();
-            while let Some(nid) = node_stack.pop() {
-                if !visited_nodes_for_comps.insert(nid) {
+            let mut node_stack = composition.children.clone();
+            let mut seen_nodes = std::collections::HashSet::new();
+            while let Some(id) = node_stack.pop() {
+                if !seen_nodes.insert(id) {
                     continue;
                 }
-                let Some(node) = self.nodes.get(nid) else {
-                    continue;
+                let Some(node) = self.nodes.get(id) else {
+                    return;
                 };
                 if let NodeKind::Precomp { comp: target, .. } = &node.kind {
+                    if !self.compositions.contains_key(*target) {
+                        return;
+                    }
                     if live_comps.insert(*target) {
                         comp_stack.push(*target);
                     }
                 }
-                if matches!(node.kind, NodeKind::Group | NodeKind::Layer(_)) {
-                    node_stack.extend(node.children.iter().copied());
-                }
+                node_stack.extend(node.children.iter().copied());
             }
         }
-        // Prune orphan compositions (keep at least main even if cycle handling above kept it)
-        self.compositions.retain(|id, _| live_comps.contains(&id));
-        // Ensure main still exists (should, but guard)
-        if !self.compositions.contains_key(self.main) {
-            // Should not happen; keep GC conservative
-            return;
+
+        let mut live_nodes = std::collections::HashSet::new();
+        let mut edges = std::collections::HashSet::new();
+        let node_comps: std::collections::HashSet<_> = self.compositions.keys().collect();
+        for cid in node_comps {
+            let Some(composition) = self.compositions.get(cid) else {
+                return;
+            };
+            let mut pending: Vec<(NodeId, Option<NodeId>)> = composition
+                .children
+                .iter()
+                .copied()
+                .map(|id| (id, None))
+                .collect();
+            while let Some((id, owner)) = pending.pop() {
+                if !edges.insert((id, owner)) {
+                    return;
+                }
+                let Some(node) = self.nodes.get(id) else {
+                    return;
+                };
+                if owner != node.parent {
+                    return;
+                }
+                live_nodes.insert(id);
+                pending.extend(node.children.iter().copied().map(|child| (child, Some(id))));
+            }
         }
 
-        let mut live = std::collections::HashSet::new();
-        fn mark(doc: &Document, id: NodeId, live: &mut std::collections::HashSet<NodeId>) {
-            if !live.insert(id) {
+        let attached_live = live_nodes.clone();
+        let mut dependency_pending = live_nodes
+            .iter()
+            .filter_map(|id| match self.nodes.get(*id).map(|node| &node.kind) {
+                Some(NodeKind::Use { target }) if self.nodes.contains_key(*target) => Some(*target),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut dependency_seen = std::collections::HashSet::new();
+        let dependency_limit = self.nodes.len().saturating_add(1);
+        while let Some(id) = dependency_pending.pop() {
+            if !dependency_seen.insert(id) {
+                continue;
+            }
+            if dependency_seen.len() > dependency_limit {
                 return;
             }
-            if let Some(n) = doc.nodes.get(id) {
-                for &c in &n.children {
-                    mark(doc, c, live);
-                }
+            let Some(node) = self.nodes.get(id) else {
+                return;
+            };
+            let children = node.children.clone();
+            let use_target = match &node.kind {
+                NodeKind::Use { target } => Some(*target),
+                _ => None,
+            };
+            live_nodes.insert(id);
+            if let Some(target) = use_target
+                && self.nodes.contains_key(target)
+            {
+                dependency_pending.push(target);
+            }
+            dependency_pending.extend(children);
+        }
+        for id in dependency_seen {
+            if attached_live.contains(&id)
+                || self
+                    .nodes
+                    .get(id)
+                    .and_then(|node| node.parent)
+                    .is_some_and(|parent| live_nodes.contains(&parent))
+            {
+                continue;
+            }
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.parent = None;
             }
         }
-        let roots: Vec<NodeId> = self
-            .compositions
-            .values()
-            .flat_map(|c| c.children.clone())
-            .collect();
-        for r in roots {
-            mark(self, r, &mut live);
+
+        for id in live_nodes.iter().copied() {
+            let Some(node) = self.nodes.get(id) else {
+                return;
+            };
+            if let NodeKind::Image(image) = &node.kind
+                && !matches!(self.assets.get(image.asset()), Some(Asset::Image(_)))
+            {
+                return;
+            }
         }
-        self.nodes.retain(|id, _| live.contains(&id));
 
         // Retain attached or node-referenced assets.
-        let mut live_assets: std::collections::HashSet<AssetId> =
-            self.asset_order.iter().copied().collect();
-        for node in self.nodes.values() {
-            if let NodeKind::Image(img) = &node.kind {
-                live_assets.insert(img.asset());
+        let mut live_assets: std::collections::HashSet<AssetId> = self
+            .asset_order
+            .iter()
+            .copied()
+            .filter(|id| self.assets.contains_key(*id))
+            .collect();
+        for id in live_nodes.iter().copied() {
+            let Some(node) = self.nodes.get(id) else {
+                return;
+            };
+            match &node.kind {
+                NodeKind::Image(image) => {
+                    live_assets.insert(image.asset());
+                }
+                NodeKind::Text(text) => {
+                    if let Some(family) = &text.font {
+                        live_assets.extend(
+                            self.assets
+                                .iter()
+                                .filter(|(_, asset)| {
+                                    matches!(asset, Asset::Font(font) if &font.family == family)
+                                })
+                                .map(|(id, _)| id),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
+
+        self.nodes.retain(|id, _| live_nodes.contains(&id));
         self.assets.retain(|id, _| live_assets.contains(&id));
-        self.asset_order.retain(|id| self.assets.contains_key(*id));
+
+        let mut order = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        self.asset_order.retain(|id| {
+            if self.assets.contains_key(*id) && live_assets.contains(id) && seen.insert(*id) {
+                order.push(*id);
+                true
+            } else {
+                false
+            }
+        });
+        for id in self.assets.keys() {
+            if live_assets.contains(&id) && seen.insert(id) {
+                order.push(id);
+            }
+        }
+        self.asset_order = order;
     }
 
     /// Rebuild `asset_order` to match the arena: every attached id must exist
@@ -2644,10 +3510,18 @@ impl Document {
     /// The font asset whose family matches `family`, if the project has one.
     /// Surfaces the `AssetId` (for removal) alongside the asset.
     pub fn font_asset_for_family(&self, family: &str) -> Option<(AssetId, &FontAsset)> {
-        self.assets.iter().find_map(|(id, asset)| match asset {
-            Asset::Font(font) if font.family == family => Some((id, font)),
-            _ => None,
-        })
+        self.asset_order
+            .iter()
+            .find_map(|id| match self.assets.get(*id) {
+                Some(Asset::Font(font)) if font.family == family => Some((*id, font)),
+                _ => None,
+            })
+            .or_else(|| {
+                self.assets.iter().find_map(|(id, asset)| match asset {
+                    Asset::Font(font) if font.family == family => Some((id, font)),
+                    _ => None,
+                })
+            })
     }
 
     /// Sorted, deduplicated family keys of every font asset in the project.
@@ -2771,26 +3645,23 @@ fn scene_item_hits(scene: &Scene, item: &SceneItem, q: Point) -> bool {
 
 /// Outermost selectable container for `picked` under `comp`.
 pub fn outer_select_target(doc: &Document, comp: CompId, picked: NodeId) -> NodeId {
-    let mut candidate: Option<NodeId> = match doc.nodes.get(picked).map(|n| &n.kind) {
+    let Some(chain) = bounded_parent_chain(doc, picked) else {
+        return picked;
+    };
+    if !parent_chain_consistent(doc, &chain) {
+        return picked;
+    }
+    let mut candidate = match doc.nodes.get(picked).map(|n| &n.kind) {
         Some(NodeKind::Group) | Some(NodeKind::Layer(_)) => Some(picked),
         _ => None,
     };
-    let mut cur = picked;
-    // Follow parent links; `attach/detach` keeps them acyclic, but guard anyway.
-    for _ in 0..256 {
-        let Some(node) = doc.nodes.get(cur) else {
-            break;
-        };
-        let Some(parent) = node.parent else {
-            break;
-        };
-        let Some(parent_node) = doc.nodes.get(parent) else {
-            break;
-        };
-        if matches!(parent_node.kind, NodeKind::Group | NodeKind::Layer(_)) {
-            candidate = Some(parent);
+    for id in chain.iter().skip(1) {
+        if matches!(
+            doc.nodes.get(*id).map(|n| &n.kind),
+            Some(NodeKind::Group) | Some(NodeKind::Layer(_))
+        ) {
+            candidate = Some(*id);
         }
-        cur = parent;
     }
     let Some(outer) = candidate else {
         return picked;
@@ -2803,41 +3674,29 @@ pub fn outer_select_target(doc: &Document, comp: CompId, picked: NodeId) -> Node
 }
 
 fn is_under_comp(doc: &Document, comp: CompId, node: NodeId) -> bool {
-    let mut cur = node;
-    for _ in 0..256 {
-        // Direct child of `comp`?
-        if let Some(c) = doc.compositions.get(comp)
-            && c.children.contains(&cur)
-        {
-            return true;
-        }
-        let Some(n) = doc.nodes.get(cur) else {
-            return false;
-        };
-        let Some(parent) = n.parent else {
-            return false;
-        };
-        cur = parent;
-    }
-    false
+    let Some(chain) = bounded_parent_chain(doc, node) else {
+        return false;
+    };
+    chain_is_attached_to_comp(doc, comp, &chain)
 }
 
 fn pick_chain_locked(doc: &Document, leaf: NodeId, outer: NodeId) -> bool {
-    let mut cur = leaf;
-    for _ in 0..256 {
-        let Some(node) = doc.nodes.get(cur) else {
+    let Some(chain) = bounded_parent_chain(doc, leaf) else {
+        return false;
+    };
+    if !parent_chain_consistent(doc, &chain) || !chain.contains(&outer) {
+        return false;
+    }
+    for id in chain.iter().rev() {
+        let Some(node) = doc.nodes.get(*id) else {
             return false;
         };
         if node.locked {
             return true;
         }
-        if cur == outer {
+        if *id == outer {
             return false;
         }
-        let Some(parent) = node.parent else {
-            return false;
-        };
-        cur = parent;
     }
     false
 }
@@ -2966,20 +3825,14 @@ pub fn world_delta_to_parent(
     result.is_finite().then_some(result)
 }
 
-pub fn node_is_ancestor(doc: &Document, ancestor: NodeId, mut node: NodeId) -> bool {
-    while let Some(current) = doc.nodes.get(node) {
-        let Some(parent) = current.parent else {
-            return false;
-        };
-
-        if parent == ancestor {
-            return true;
-        }
-
-        node = parent;
+pub fn node_is_ancestor(doc: &Document, ancestor: NodeId, node: NodeId) -> bool {
+    if ancestor == node || doc.nodes.get(ancestor).is_none() {
+        return false;
     }
-
-    false
+    let Some(chain) = bounded_parent_chain(doc, node) else {
+        return false;
+    };
+    parent_chain_consistent(doc, &chain) && chain.iter().skip(1).any(|parent| *parent == ancestor)
 }
 
 /// Single source of truth for which props a node kind honors at render,
@@ -3040,30 +3893,18 @@ pub fn prop_section_of(prop: &str) -> Option<&'static str> {
 pub fn node_supports_section(kind: &NodeKind, section: &str) -> bool {
     match section {
         "Transform" => node_supports_transform(kind) || node_supports_opacity(kind),
-        "Shape" => matches!(
-            kind,
-            NodeKind::Shape(_) | NodeKind::Mask(_) | NodeKind::Modifier(_)
-        ),
+        "Shape" => matches!(kind, NodeKind::Shape(_) | NodeKind::Mask(_)),
         "Text" => matches!(kind, NodeKind::Text(_)),
         "Image" => matches!(kind, NodeKind::Image(_)),
         "Fill" => matches!(kind, NodeKind::Style(StyleKind::Fill { .. })),
         "Stroke" => matches!(kind, NodeKind::Style(StyleKind::Stroke { .. })),
         "Mask" => matches!(kind, NodeKind::Mask(_)),
         "Trim" => matches!(kind, NodeKind::Modifier(ModifierKind::TrimPath { .. })),
-        "Round Corners" => matches!(
-            kind,
-            NodeKind::Modifier(ModifierKind::RoundCorners { .. })
-        ),
+        "Round Corners" => matches!(kind, NodeKind::Modifier(ModifierKind::RoundCorners { .. })),
         "Repeater" => matches!(kind, NodeKind::Modifier(ModifierKind::Repeater { .. })),
-        "Offset Path" => matches!(
-            kind,
-            NodeKind::Modifier(ModifierKind::OffsetPath { .. })
-        ),
+        "Offset Path" => matches!(kind, NodeKind::Modifier(ModifierKind::OffsetPath { .. })),
         "Zig Zag" => matches!(kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })),
-        "Pucker & Bloat" => matches!(
-            kind,
-            NodeKind::Modifier(ModifierKind::PuckerBloat { .. })
-        ),
+        "Pucker & Bloat" => matches!(kind, NodeKind::Modifier(ModifierKind::PuckerBloat { .. })),
         "Layer" => matches!(kind, NodeKind::Layer(_)),
         _ => false,
     }
@@ -3104,19 +3945,12 @@ pub fn node_supports_prop(kind: &NodeKind, prop: &str) -> bool {
             ),
             "shape.size" => matches!(shape, ShapeKind::Rect { .. } | ShapeKind::Ellipse { .. }),
             "shape.rounded" => matches!(shape, ShapeKind::Rect { .. }),
-            "shape.points" => matches!(
-                shape,
-                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
-            ),
+            "shape.points" => matches!(shape, ShapeKind::Star { .. } | ShapeKind::Polygon { .. }),
             "shape.inner_r" => matches!(shape, ShapeKind::Star { .. }),
-            "shape.outer_r" => matches!(
-                shape,
-                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
-            ),
-            "shape.roundness" => matches!(
-                shape,
-                ShapeKind::Star { .. } | ShapeKind::Polygon { .. }
-            ),
+            "shape.outer_r" => matches!(shape, ShapeKind::Star { .. } | ShapeKind::Polygon { .. }),
+            "shape.roundness" => {
+                matches!(shape, ShapeKind::Star { .. } | ShapeKind::Polygon { .. })
+            }
             _ => false,
         };
     }
@@ -3193,10 +4027,8 @@ pub fn node_supports_prop(kind: &NodeKind, prop: &str) -> bool {
         );
     }
     if prop.starts_with("round.") {
-        return matches!(
-            kind,
-            NodeKind::Modifier(ModifierKind::RoundCorners { .. })
-        ) && prop == "round.radius";
+        return matches!(kind, NodeKind::Modifier(ModifierKind::RoundCorners { .. }))
+            && prop == "round.radius";
     }
     if prop.starts_with("offset.") {
         return matches!(kind, NodeKind::Modifier(ModifierKind::OffsetPath { .. }))
@@ -3207,10 +4039,8 @@ pub fn node_supports_prop(kind: &NodeKind, prop: &str) -> bool {
             && matches!(prop, "zigzag.amplitude" | "zigzag.frequency");
     }
     if prop.starts_with("pucker.") {
-        return matches!(
-            kind,
-            NodeKind::Modifier(ModifierKind::PuckerBloat { .. })
-        ) && prop == "pucker.amount";
+        return matches!(kind, NodeKind::Modifier(ModifierKind::PuckerBloat { .. }))
+            && prop == "pucker.amount";
     }
     if prop.starts_with("star.") {
         let is_star = matches!(kind, NodeKind::Shape(ShapeKind::Star { .. }))
@@ -3248,18 +4078,15 @@ pub fn immediate_child_below(
     if ancestor == descendant {
         return None;
     }
-
-    let mut current = descendant;
-
-    loop {
-        let parent = doc.nodes.get(current)?.parent?;
-
-        if parent == ancestor {
-            return Some(current);
-        }
-
-        current = parent;
+    let chain = bounded_parent_chain(doc, descendant)?;
+    if !parent_chain_consistent(doc, &chain) {
+        return None;
     }
+    let position = chain.iter().position(|id| *id == ancestor)?;
+    if position == 0 {
+        return None;
+    }
+    Some(chain[position - 1])
 }
 
 /// Union bounds of selected leaf nodes and all rendered descendants of selected
@@ -4139,6 +4966,7 @@ impl Document {
             .iter()
             .filter(move |(_, n)| n.name == name)
             .map(|(id, _)| id)
+            .filter(move |id| self.locate(*id).is_some())
     }
 
     fn pm<'a>(&'a mut self, id: NodeId, prop: &PropPath) -> Result<PropMut<'a>, ModelError> {
@@ -4295,7 +5123,10 @@ mod prop_support_tests {
         assert!(node_supports_opacity(&fill.kind));
         assert!(!node_supports_prop(&fill.kind, "transform.position"));
         assert!(node_supports_prop(&fill.kind, "opacity"));
-        assert!(fill.prop_ref(&super::PropPath::new("transform.position")).is_none());
+        assert!(
+            fill.prop_ref(&super::PropPath::new("transform.position"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -4376,7 +5207,8 @@ mod prop_support_tests {
         doc.attach(fill_id, super::Parent::Node(group), 1).unwrap();
         doc.attach(group, super::Parent::Comp(doc.main), 0).unwrap();
         let use_id = doc.create_node(Node::new("Clone", NodeKind::Use { target: group }));
-        doc.attach(use_id, super::Parent::Comp(doc.main), 0).unwrap();
+        doc.attach(use_id, super::Parent::Comp(doc.main), 0)
+            .unwrap();
         let scene = super::evaluate(&doc, doc.main, 0.0);
         assert!(!scene.items.is_empty());
     }
@@ -4385,7 +5217,8 @@ mod prop_support_tests {
     fn use_self_reference_renders_nothing() {
         let mut doc = Document::empty();
         let use_id = doc.create_node(Node::new("Clone", NodeKind::Group));
-        doc.attach(use_id, super::Parent::Comp(doc.main), 0).unwrap();
+        doc.attach(use_id, super::Parent::Comp(doc.main), 0)
+            .unwrap();
         let target = use_id;
         if let Some(node) = doc.nodes.get_mut(use_id) {
             node.kind = NodeKind::Use { target };

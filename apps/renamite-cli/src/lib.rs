@@ -10,6 +10,10 @@ use renamite_render_bridge::SceneRenderer;
 use renamite_render_offscreen::OffscreenRenderer;
 use serde::Serialize;
 use serde_json::Value;
+#[cfg(target_arch = "wasm32")]
+use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -51,10 +55,10 @@ pub enum Commands {
         #[arg(long, default_value = "512")]
         height: u32,
         /// Single-frame output path
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "out_dir")]
         out: Option<PathBuf>,
         /// Sequence output directory
-        #[arg(long)]
+        #[arg(long, conflicts_with = "out")]
         out_dir: Option<PathBuf>,
         #[arg(long, default_value = "frame")]
         prefix: String,
@@ -256,10 +260,15 @@ fn dispatch(command: Commands) -> Result<()> {
 }
 
 fn cmd_bake(input: PathBuf, frames: usize, dt: Option<f64>, output: PathBuf) -> Result<()> {
+    validate_frame_count(frames, "--frames")?;
+    if let Some(dt) = dt {
+        validate_positive_duration(dt, "--dt")?;
+    }
     let file = load_file(&input).with_context(|| format!("failed to load {}", input.display()))?;
     let mut player = Player::new(file)
         .with_context(|| format!("failed to open player for {}", input.display()))?;
     let dt = dt.unwrap_or_else(|| default_dt_for(&player));
+    validate_positive_duration(dt, "--dt")?;
     let scenes = player.bake(frames, dt);
     let json = serde_json::to_string_pretty(&scenes)?;
     atomic_write(&output, json.as_bytes())?;
@@ -280,14 +289,42 @@ fn cmd_render(
     prefix: String,
     background: String,
 ) -> Result<()> {
-    if frame.is_none() && frames.is_none() {
-        bail!("specify either --frame N or --frames N");
+    match (frame, frames) {
+        (Some(_), None) if out.is_none() => {
+            bail!("--out is required with --frame")
+        }
+        (None, Some(_)) if out_dir.is_none() => {
+            bail!("--out-dir is required with --frames")
+        }
+        (Some(_), None) if out_dir.is_some() => {
+            bail!("--out-dir cannot be used with --frame")
+        }
+        (None, Some(_)) if out.is_some() => {
+            bail!("--out cannot be used with --frames")
+        }
+        (None, None) => bail!("specify either --frame N or --frames N"),
+        (Some(_), Some(_)) => bail!("specify only one of --frame or --frames"),
+        _ => {}
     }
+    validate_dimensions(width, height)?;
+    if let Some(frames) = frames {
+        validate_frame_count(frames, "--frames")?;
+    }
+    if let Some(dt) = dt {
+        validate_positive_duration(dt, "--dt")?;
+    }
+    validate_render_prefix(&prefix)?;
 
     let bg = parse_background(&background)?;
     let mut player = Player::new(load_file(&input)?)
         .with_context(|| format!("failed to open player for {}", input.display()))?;
-    let comp_size = player.project.document.compositions[player.project.document.main].size;
+    let comp_size = player
+        .project
+        .document
+        .compositions
+        .get(player.project.document.main)
+        .ok_or_else(|| anyhow!("main composition is missing"))?
+        .size;
     let view = export_view(comp_size, width, height);
     let bg_clear = bg.map(|[r, g, b, a]| {
         [
@@ -297,6 +334,18 @@ fn cmd_render(
             a as f64 / 255.0,
         ]
     });
+
+    let sequence_dir = if let Some(n) = frames {
+        let dir = out_dir
+            .clone()
+            .ok_or_else(|| anyhow!("--out-dir is required with --frames"))?;
+        std::fs::create_dir_all(&dir)?;
+        let resolved_dt = dt.unwrap_or_else(|| default_dt_for(&player));
+        validate_positive_duration(resolved_dt, "--dt")?;
+        Some((n, dir, resolved_dt))
+    } else {
+        None
+    };
 
     let mut bridge = SceneRenderer::new();
     let mut gpu = pollster::block_on(OffscreenRenderer::new(width, height, 4))?;
@@ -312,13 +361,18 @@ fn cmd_render(
             Ok(())
         }
         (None, Some(n)) => {
-            let out_dir = out_dir.ok_or_else(|| anyhow!("--out-dir is required with --frames"))?;
-            std::fs::create_dir_all(&out_dir)?;
-            let dt = dt.unwrap_or_else(|| default_dt_for(&player));
-            let scenes = player.bake(n, dt);
+            let (resolved_n, out_dir, resolved_dt) =
+                sequence_dir.ok_or_else(|| anyhow!("--out-dir is required with --frames"))?;
+            if resolved_n != n {
+                bail!("render frame count changed while preparing output");
+            }
+            let scenes = player.bake(n, resolved_dt);
             for (i, scene) in scenes.iter().enumerate() {
                 let png = rasterize_png(&mut bridge, &mut gpu, scene, &view, bg_clear)?;
                 let path = out_dir.join(format!("{prefix}_{i:05}.png"));
+                if !path.starts_with(&out_dir) || path.parent() != Some(out_dir.as_path()) {
+                    bail!("render output path escaped {}", out_dir.display());
+                }
                 atomic_write(&path, &png)?;
             }
             println!("Rendered {n} frames -> {}", out_dir.display());
@@ -364,6 +418,11 @@ fn parse_background(s: &str) -> Result<Option<[u8; 4]>> {
         "black" => Ok(Some([0, 0, 0, 255])),
         hex => {
             let hex = hex.trim_start_matches('#');
+            if !hex.is_ascii() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!(
+                    "invalid background '{s}': expected 'transparent', 'white', 'black', or hex RRGGBB[AA]"
+                );
+            }
             let bytes = match hex.len() {
                 6 => [
                     u8::from_str_radix(&hex[0..2], 16)?,
@@ -387,8 +446,7 @@ fn parse_background(s: &str) -> Result<Option<[u8; 4]>> {
 }
 
 fn cmd_pack(input: PathBuf, output: PathBuf) -> Result<()> {
-    let text = std::fs::read_to_string(&input)?;
-    let mut file: RenFile = renamite_io_ren::open(&text)?;
+    let mut file = load_file(&input)?;
     file.normalize();
     atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
     println!("Packed {} -> {}", input.display(), output.display());
@@ -396,9 +454,7 @@ fn cmd_pack(input: PathBuf, output: PathBuf) -> Result<()> {
 }
 
 fn cmd_unpack(input: PathBuf, output: PathBuf) -> Result<()> {
-    let bytes = std::fs::read(&input)?;
-    let mut file: RenFile = renamite_io_ren::open_binary(&bytes)?;
-    file.normalize();
+    let file = load_file(&input)?;
     atomic_write(&output, renamite_io_ren::save(&file)?.as_bytes())?;
     println!("Unpacked {} -> {}", input.display(), output.display());
     Ok(())
@@ -429,7 +485,11 @@ struct MainCompInfo {
 
 fn cmd_info(input: PathBuf, json: bool) -> Result<()> {
     let file = load_file(&input)?;
-    let comp = &file.document.compositions[file.document.main];
+    let comp = file
+        .document
+        .compositions
+        .get(file.document.main)
+        .ok_or_else(|| anyhow!("main composition is missing"))?;
     let summary = InfoSummary {
         path: input.display().to_string(),
         name: file.meta.name.clone(),
@@ -485,19 +545,36 @@ fn cmd_validate(
     json: bool,
     warnings_as_errors: bool,
 ) -> Result<()> {
-    let mut file = load_file(&input)?;
-    let before_json = serde_json::to_string(&file)?;
-    file.normalize();
-    file.garbage_collect();
+    let RawFile {
+        file: original,
+        format,
+    } = load_raw_file(&input)?;
+    let original_bytes = save_for_format(&original, format)?;
+    let mut normalized = original.clone();
+    normalized.normalize();
+    normalized.garbage_collect();
+    let normalized_bytes = save_for_format(&normalized, format)?;
+    let changed = original_bytes != normalized_bytes;
 
-    if deep {
-        let report = renamite_validate::validate(&file);
-
-        if json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+    let report = if deep || fix {
+        Some(renamite_validate::validate(if fix {
+            &normalized
         } else {
-            for d in &report.diagnostics {
-                println!("{:?}: {}: {}", d.severity, d.path, d.message);
+            &original
+        }))
+    } else {
+        None
+    };
+
+    if let Some(report) = &report {
+        if json {
+            println!("{}", serde_json::to_string_pretty(report)?);
+        } else if deep {
+            for diagnostic in &report.diagnostics {
+                println!(
+                    "{:?}: {}: {}",
+                    diagnostic.severity, diagnostic.path, diagnostic.message
+                );
             }
             println!(
                 "{} error(s), {} warning(s)",
@@ -505,25 +582,31 @@ fn cmd_validate(
                 report.warning_count()
             );
         }
-
-        if report.has_errors() || (warnings_as_errors && report.warning_count() > 0) {
+        if report.has_errors() || (deep && warnings_as_errors && report.warning_count() > 0) {
             bail!(
                 "validation failed: {} error(s), {} warning(s)",
                 report.error_count(),
                 report.warning_count()
             );
         }
-        return Ok(());
     }
 
     if fix {
-        let bytes = save_for_output(&file, &input)?;
-        atomic_write(&input, &bytes)?;
-        println!("Normalized and saved {}", input.display());
-    } else if serde_json::to_string(&file)? == before_json {
-        println!("{} is valid", input.display());
-    } else {
-        bail!("{} needs normalization (use --fix)", input.display());
+        if changed {
+            atomic_write(&input, &normalized_bytes)?;
+            if !json {
+                println!("Normalized and saved {}", input.display());
+            }
+        } else if !json {
+            println!("{} is already normalized", input.display());
+        }
+    } else if !deep {
+        if changed {
+            bail!("{} needs normalization (use --fix)", input.display());
+        }
+        if !json {
+            println!("{} is valid", input.display());
+        }
     }
     Ok(())
 }
@@ -671,6 +754,62 @@ fn name_from_path(p: &Path) -> String {
         .to_string()
 }
 
+fn validate_frame_count(frames: usize, flag: &str) -> Result<()> {
+    const MAX_FRAMES: usize = 1_000_000;
+    if frames == 0 || frames > MAX_FRAMES {
+        bail!("{flag} must be between 1 and {MAX_FRAMES}");
+    }
+    Ok(())
+}
+
+fn validate_dimensions(width: u32, height: u32) -> Result<()> {
+    const MAX_DIMENSION: u32 = 16_384;
+    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
+        bail!("image dimensions must be between 1 and {MAX_DIMENSION}");
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| anyhow!("image dimensions overflow"))?;
+    if pixels > MAX_PIXELS {
+        bail!("image dimensions exceed the {MAX_PIXELS}-pixel limit");
+    }
+    Ok(())
+}
+
+fn validate_positive_duration(value: f64, flag: &str) -> Result<()> {
+    if !value.is_finite() || value <= 0.0 {
+        bail!("{flag} must be finite and greater than zero");
+    }
+    Ok(())
+}
+
+fn validate_nonnegative_duration(value: f64, flag: &str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("{flag} must be finite and non-negative");
+    }
+    Ok(())
+}
+
+fn validate_render_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty()
+        || prefix == "."
+        || prefix == ".."
+        || prefix
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '\0'))
+    {
+        bail!("--prefix must be a single file-name component");
+    }
+    let path = Path::new(prefix);
+    if path.components().count() != 1
+        || path.file_name().and_then(|name| name.to_str()) != Some(prefix)
+    {
+        bail!("--prefix must be a single file-name component");
+    }
+    Ok(())
+}
+
 /// Seconds per frame derived from the composition rate.
 /// Falls back to 1/60 when the rate is zero, non-finite, or unavailable.
 fn default_dt_for(player: &Player) -> f64 {
@@ -683,9 +822,16 @@ fn default_dt_for(player: &Player) -> f64 {
 }
 
 fn cmd_play(input: PathBuf, duration: f64) -> Result<()> {
+    validate_nonnegative_duration(duration, "--duration")?;
     let mut player = Player::new(load_file(&input)?)?;
     let dt = default_dt_for(&player);
-    let ticks = (duration / dt) as usize;
+    validate_positive_duration(dt, "composition frame duration")?;
+    let tick_count = duration / dt;
+    const MAX_TICKS: f64 = 10_000_000.0;
+    if !tick_count.is_finite() || tick_count > MAX_TICKS {
+        bail!("playback duration is too large");
+    }
+    let ticks = tick_count as usize;
 
     println!("Playing {} for {duration:.1}s...", input.display());
     for _ in 0..ticks {
@@ -723,8 +869,12 @@ fn cmd_export_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
 }
 
 fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
-    let value: Value = serde_json::from_slice(&std::fs::read(&input)?)?;
-    let report = renamite_io_lottie::import_with_report(&value)?;
+    let bytes = read_limited(
+        &input,
+        renamite_io_lottie::MAX_LOTTIE_BYTES as u64,
+        "Lottie JSON",
+    )?;
+    let report = renamite_io_lottie::import_bytes(&bytes)?;
     if strict && !report.warnings.is_empty() {
         for warning in &report.warnings {
             eprintln!("warning at {}: {}", warning.path, warning.message);
@@ -739,7 +889,7 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
     }
     let file = RenFile::new(report.value, name_from_path(&input));
     match output.extension().and_then(|extension| extension.to_str()) {
-        Some("renb") => {
+        Some(extension) if extension.eq_ignore_ascii_case("renb") => {
             atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
         }
         _ => {
@@ -751,6 +901,9 @@ fn cmd_import_lottie(input: PathBuf, output: PathBuf, strict: bool) -> Result<()
 }
 
 fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> Result<()> {
+    if !frame.is_finite() {
+        bail!("--frame must be finite");
+    }
     let file = load_file(&input)?;
     let report = renamite_io_svg::export_project_with_report(
         &file.document,
@@ -782,7 +935,7 @@ fn cmd_export_svg(input: PathBuf, output: PathBuf, frame: f64, strict: bool) -> 
 }
 
 fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
-    let bytes = std::fs::read(&input)?;
+    let bytes = read_limited(&input, renamite_io_svg::MAX_INPUT_BYTES as u64, "SVG")?;
     let report = renamite_io_svg::import_with_report(&bytes)?;
     if strict && !report.warnings.is_empty() {
         for warning in &report.warnings {
@@ -798,7 +951,7 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
     }
     let file = RenFile::new(report.value, name_from_path(&input));
     match output.extension().and_then(|extension| extension.to_str()) {
-        Some("renb") => {
+        Some(extension) if extension.eq_ignore_ascii_case("renb") => {
             atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
         }
         _ => {
@@ -809,59 +962,161 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
     Ok(())
 }
 
-fn load_file(path: &Path) -> Result<RenFile> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+#[derive(Clone, Copy, Debug)]
+enum InputFormat {
+    Text,
+    Binary,
+}
 
-    // Magic wins over extension so extension-less / mislabeled .renb still open.
-    if renamite_io_ren::is_binary(&bytes) {
-        return Ok(renamite_io_ren::open_binary(&bytes)?);
+struct RawFile {
+    file: RenFile,
+    format: InputFormat,
+}
+
+fn read_limited(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        bail!("{label} input exceeds the {max_bytes}-byte limit");
     }
+    Ok(bytes)
+}
 
+fn load_raw_file(path: &Path) -> Result<RawFile> {
+    let bytes = read_limited(
+        path,
+        renamite_io_ren::MAX_TEXT_BYTES.max(renamite_io_ren::MAX_BINARY_BYTES) as u64,
+        "ren",
+    )?;
+    if renamite_io_ren::is_binary(&bytes) {
+        return Ok(RawFile {
+            file: renamite_io_ren::open_binary_unormalized(&bytes)?,
+            format: InputFormat::Binary,
+        });
+    }
     let text = std::str::from_utf8(&bytes)
         .with_context(|| format!("{} is neither valid UTF-8 .ren nor .renb", path.display()))?;
-    Ok(renamite_io_ren::open(text)?)
+    Ok(RawFile {
+        file: renamite_io_ren::open_unormalized(text)?,
+        format: InputFormat::Text,
+    })
+}
+
+fn load_file(path: &Path) -> Result<RenFile> {
+    let mut file = load_raw_file(path)?.file;
+    file.normalize();
+    Ok(file)
 }
 
 /// Atomic file write: temp + rename so a crash/power loss can't leave a
 /// truncated corrupt project (previously direct truncate+write).
+#[cfg(not(target_arch = "wasm32"))]
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    let tmp = match parent {
-        Some(dir) => {
+    renamite_platform::atomic_write(path, bytes)?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("path has no file name: {}", path.display()))?;
+
+    let (temporary, mut file) = (0..128)
+        .find_map(|_| {
             let name = format!(
-                ".{}.tmp-{}",
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("renamite"),
-                std::process::id()
+                ".{}.{}.{}.tmp",
+                file_name.to_string_lossy(),
+                std::process::id(),
+                TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
             );
-            dir.join(name)
+            let temporary = parent.join(name);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => Some(Ok((temporary, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .ok_or_else(|| anyhow!("could not allocate a unique temporary file"))??;
+
+    let result: Result<()> = (|| {
+        match fs::metadata(path) {
+            Ok(metadata) => fs::set_permissions(&temporary, metadata.permissions())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        None => std::env::temp_dir().join(format!(
-            ".{}.tmp-{}",
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("renamite"),
-            std::process::id()
-        )),
-    };
-    std::fs::write(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| {
-        let _ = std::fs::remove_file(&tmp);
-        format!(
-            "failed to replace {} (temp {})",
-            path.display(),
-            tmp.display()
-        )
-    })?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temporary.display()))?;
+        drop(file);
+        fs::rename(&temporary, path).with_context(|| {
+            format!(
+                "failed to replace {} (temp {})",
+                path.display(),
+                temporary.display()
+            )
+        })?;
+        sync_parent(parent)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(all(unix, target_arch = "wasm32"))]
+fn sync_parent(parent: &Path) -> std::io::Result<()> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(all(not(unix), target_arch = "wasm32"))]
+fn sync_parent(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
 /// Serialize a project matching the output extension (.renb = binary).
 fn save_for_output(file: &RenFile, output: &Path) -> Result<Vec<u8>> {
-    match output.extension().and_then(|s| s.to_str()) {
-        Some("renb") => Ok(renamite_io_ren::save_binary(file)?),
-        _ => Ok(renamite_io_ren::save(file)?.into_bytes()),
+    let format = match output.extension().and_then(|s| s.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("renb") => InputFormat::Binary,
+        _ => InputFormat::Text,
+    };
+    save_for_format(file, format)
+}
+
+fn save_for_format(file: &RenFile, format: InputFormat) -> Result<Vec<u8>> {
+    let (bytes, max) = match format {
+        InputFormat::Binary => (
+            renamite_io_ren::save_binary(file)?,
+            renamite_io_ren::MAX_BINARY_BYTES,
+        ),
+        InputFormat::Text => (
+            renamite_io_ren::save(file)?.into_bytes(),
+            renamite_io_ren::MAX_TEXT_BYTES,
+        ),
+    };
+    if bytes.len() > max {
+        bail!("serialized project is too large");
     }
+    Ok(bytes)
 }

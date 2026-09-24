@@ -21,10 +21,20 @@ use glam::DVec2;
 /// Mixed zero/nonzero patterns are retained. Kurbo handles odd-length
 /// patterns according to SVG semantics.
 pub fn normalize_dash_pattern(pattern: &[f64]) -> Option<Vec<f64>> {
-    if pattern.is_empty()
-        || pattern.iter().any(|x| !x.is_finite() || *x < 0.0)
-        || pattern.iter().sum::<f64>() <= 1e-9
-    {
+    if pattern.is_empty() || pattern.len() > 4096 {
+        return None;
+    }
+    let mut sum = 0.0;
+    for value in pattern {
+        if !value.is_finite() || *value < 0.0 {
+            return None;
+        }
+        sum += *value;
+        if !sum.is_finite() {
+            return None;
+        }
+    }
+    if sum <= 1e-9 {
         return None;
     }
 
@@ -41,7 +51,7 @@ pub fn normalize_dash_pattern(pattern: &[f64]) -> Option<Vec<f64>> {
 pub fn dash_bez_path(path: &BezPath, pattern: &[f64], offset: f64) -> Option<BezPath> {
     let pattern = normalize_dash_pattern(pattern)?;
 
-    if !offset.is_finite() {
+    if !offset.is_finite() || path.is_empty() || !path.is_finite() {
         return None;
     }
 
@@ -158,6 +168,8 @@ pub enum GeometryError {
     SegmentOutOfRange(usize),
     #[error("anchor index {0} out of range")]
     AnchorOutOfRange(usize),
+    #[error("path contains non-finite values")]
+    NonFinitePath,
     #[error("split parameter {0} is not finite or outside [0,1]")]
     InvalidSplitParam(f64),
 }
@@ -175,7 +187,11 @@ impl VectorPath {
     pub fn to_bez_path(&self) -> BezPath {
         let mut p = BezPath::new();
         let n = self.anchors.len();
-        if n == 0 {
+        if self.anchors.iter().any(|anchor| {
+            !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+        }) || n == 0
+            || (self.closed && n == 1)
+        {
             return p;
         }
         p.move_to(pt(self.anchors[0].pos));
@@ -191,65 +207,20 @@ impl VectorPath {
     }
 
     pub fn from_bez_path(path: &BezPath) -> Self {
-        let mut out = VectorPath::default();
-        let mut start = DVec2::ZERO;
-        for el in path.elements() {
-            match *el {
-                PathEl::MoveTo(p) => {
-                    let v = DVec2::new(p.x, p.y);
-                    start = v;
-                    out.anchors.push(Anchor::corner(v));
-                }
-                PathEl::LineTo(p) => out.anchors.push(Anchor::corner(DVec2::new(p.x, p.y))),
-                PathEl::QuadTo(q1, q2) => {
-                    // elevate quad to cubic
-                    let prev = out.anchors.last().map(|a| a.pos).unwrap_or_default();
-                    let q1 = DVec2::new(q1.x, q1.y);
-                    let end = DVec2::new(q2.x, q2.y);
-                    let c1 = prev + (q1 - prev) * (2.0 / 3.0);
-                    let c2 = end + (q1 - end) * (2.0 / 3.0);
-                    if let Some(last) = out.anchors.last_mut() {
-                        last.tan_out = c1 - last.pos;
-                    }
-                    let mut a = Anchor::corner(end);
-                    a.tan_in = c2 - end;
-                    out.anchors.push(a);
-                }
-                PathEl::CurveTo(c1, c2, p) => {
-                    let (c1, c2, end) = (
-                        DVec2::new(c1.x, c1.y),
-                        DVec2::new(c2.x, c2.y),
-                        DVec2::new(p.x, p.y),
-                    );
-                    if let Some(last) = out.anchors.last_mut() {
-                        last.tan_out = c1 - last.pos;
-                    }
-                    let mut a = Anchor::corner(end);
-                    a.tan_in = c2 - end;
-                    out.anchors.push(a);
-                }
-                PathEl::ClosePath => {
-                    out.closed = true;
-                    // merge duplicated endpoint back into the first anchor
-                    if out.anchors.len() >= 2 {
-                        let last = *out.anchors.last().unwrap();
-                        if (last.pos - start).length_squared() < 1e-12 {
-                            out.anchors[0].tan_in = last.tan_in;
-                            out.anchors.pop();
-                        }
-                    }
-                }
-            }
-        }
-        for a in &mut out.anchors {
-            a.mode = detect_mode(a.tan_in, a.tan_out);
-        }
-        out
+        split_bez_subpaths(path)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     /// Return `(segment_index, t_param, distance)` for the nearest cubic segment.
     pub fn nearest_segment(&self, point: DVec2) -> Option<(usize, f64, f64)> {
-        if self.anchors.len() < 2 {
+        if !point.is_finite()
+            || self.anchors.len() < 2
+            || self.anchors.iter().any(|anchor| {
+                !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+            })
+        {
             return None;
         }
 
@@ -283,6 +254,9 @@ impl VectorPath {
     }
 
     pub fn hit_test(&self, p: DVec2, tol: f64) -> Option<PathHit> {
+        if !p.is_finite() || !tol.is_finite() || tol < 0.0 {
+            return None;
+        }
         let path = self.to_bez_path();
         let q = pt(p);
         let mut best_sq = f64::MAX;
@@ -305,6 +279,11 @@ impl VectorPath {
         }
         if !t.is_finite() || t < 0.0 || t > 1.0 {
             return Err(GeometryError::InvalidSplitParam(t));
+        }
+        if self.anchors.iter().any(|anchor| {
+            !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+        }) {
+            return Err(GeometryError::NonFinitePath);
         }
         let n = self.anchors.len();
         let (i, j) = (seg, (seg + 1) % n);
@@ -331,14 +310,20 @@ impl VectorPath {
         Ok(())
     }
 
-    /// Round every Corner anchor by pulling back `radius` along both adjacent
-    /// edges and joining with a smooth curve (quarter-circle-ish cubic
-    /// approximation, k=0.5523 scaled by the pullback distance).
     pub fn round_corners(&self, radius: f64) -> VectorPath {
-        if radius <= 1e-9 || self.anchors.len() < 3 {
+        if !radius.is_finite()
+            || radius <= 1e-9
+            || self.anchors.len() < 3
+            || self.anchors.iter().any(|anchor| {
+                !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+            })
+        {
             return self.clone();
         }
         let n = self.anchors.len();
+        if self.closed && n < 3 {
+            return self.clone();
+        }
         let seg_count = if self.closed { n } else { n.saturating_sub(1) };
         if seg_count < 2 {
             return self.clone();
@@ -364,7 +349,8 @@ impl VectorPath {
             let to_prev = prev.pos - a.pos;
             let to_next = next.pos - a.pos;
             let (len_prev, len_next) = (to_prev.length(), to_next.length());
-            if len_prev < 1e-9 || len_next < 1e-9 {
+            if !len_prev.is_finite() || !len_next.is_finite() || len_prev < 1e-9 || len_next < 1e-9
+            {
                 out.push(a);
                 continue;
             }
@@ -373,22 +359,28 @@ impl VectorPath {
             let r = radius.min(len_prev * 0.45).min(len_next * 0.45);
             let dir_prev = to_prev / len_prev;
             let dir_next = to_next / len_next;
+            let cosine = (-dir_prev).dot(dir_next).clamp(-1.0, 1.0);
+            let angle = cosine.acos();
+            if !angle.is_finite() || angle <= 1e-6 || (std::f64::consts::PI - angle).abs() <= 1e-6 {
+                out.push(a);
+                continue;
+            }
 
-            let p_in = a.pos + dir_prev * r; // pullback toward prev
-            let p_out = a.pos + dir_next * r; // pullback toward next
+            let p_in = a.pos + dir_prev * r;
+            let p_out = a.pos + dir_next * r;
 
             // Cubic handle length for a circular-ish arc (standard
             // 4/3*tan(θ/4) ≈ 0.5523 for a quarter turn).
-            const K: f64 = 0.5523;
+            let handle = (r * 4.0 / 3.0 * (angle * 0.25).tan()).min(r * 1.5);
             out.push(Anchor {
                 pos: p_in,
                 tan_in: DVec2::ZERO, // outer side of the corner stays sharp
-                tan_out: -dir_prev * (r * K),
+                tan_out: -dir_prev * handle,
                 mode: TangentMode::Smooth,
             });
             out.push(Anchor {
                 pos: p_out,
-                tan_in: -dir_next * (r * K),
+                tan_in: -dir_next * handle,
                 tan_out: DVec2::ZERO,
                 mode: TangentMode::Smooth,
             });
@@ -402,7 +394,11 @@ impl VectorPath {
 
     /// Reverse direction (Trim Path needs this). Swaps in/out tangents.
     pub fn reverse(&mut self) {
-        self.anchors.reverse();
+        if self.closed && self.anchors.len() > 1 {
+            self.anchors[1..].reverse();
+        } else {
+            self.anchors.reverse();
+        }
         for a in &mut self.anchors {
             std::mem::swap(&mut a.tan_in, &mut a.tan_out);
         }
@@ -543,7 +539,10 @@ fn map_boolean_op(op: BooleanOp) -> linesweeper::BinaryOp {
 pub fn contours_to_bez(contours: &[VectorPath]) -> BezPath {
     let mut out = BezPath::new();
     for contour in contours {
-        out.extend(contour.to_bez_path().elements().iter().copied());
+        let path = contour.to_bez_path();
+        if !path.is_empty() {
+            out.extend(path.elements().iter().copied());
+        }
     }
     out
 }
@@ -561,13 +560,18 @@ pub fn boolean_bez(
     let contours =
         linesweeper::binary_op(a, b, linesweeper::FillRule::NonZero, map_boolean_op(op))?;
 
-    Ok(contours
+    let result = contours
         .contours()
         .filter_map(|contour| {
             let path = VectorPath::from_bez_path(&contour.path);
-            (path.closed && path.anchors.len() >= 3).then_some(path)
+            (path.closed && path.anchors.len() >= 2).then_some(path)
         })
-        .collect())
+        .collect::<Vec<_>>();
+    if result.is_empty() {
+        Err(PathOpError::Empty)
+    } else {
+        Ok(result)
+    }
 }
 
 /// Boolean op between two single-contour paths. Multi-contour inputs should
@@ -583,6 +587,73 @@ pub fn boolean_op(
     boolean_bez(&a.to_bez_path(), &b.to_bez_path(), op)
 }
 
+fn vector_path_from_subpath(path: &BezPath) -> VectorPath {
+    let mut out = VectorPath::default();
+    let mut start = DVec2::ZERO;
+    for element in path.elements() {
+        match *element {
+            PathEl::MoveTo(p) => {
+                if !out.anchors.is_empty() {
+                    break;
+                }
+                start = DVec2::new(p.x, p.y);
+                out.anchors.push(Anchor::corner(start));
+            }
+            PathEl::LineTo(p) => out.anchors.push(Anchor::corner(DVec2::new(p.x, p.y))),
+            PathEl::QuadTo(q1, q2) => {
+                let prev = out.anchors.last().map(|a| a.pos).unwrap_or_default();
+                let q1 = DVec2::new(q1.x, q1.y);
+                let end = DVec2::new(q2.x, q2.y);
+                let c1 = prev + (q1 - prev) * (2.0 / 3.0);
+                let c2 = end + (q1 - end) * (2.0 / 3.0);
+                if let Some(last) = out.anchors.last_mut() {
+                    last.tan_out = c1 - last.pos;
+                }
+                let mut a = Anchor::corner(end);
+                a.tan_in = c2 - end;
+                out.anchors.push(a);
+            }
+            PathEl::CurveTo(c1, c2, p) => {
+                let c1 = DVec2::new(c1.x, c1.y);
+                let c2 = DVec2::new(c2.x, c2.y);
+                let end = DVec2::new(p.x, p.y);
+                if let Some(last) = out.anchors.last_mut() {
+                    last.tan_out = c1 - last.pos;
+                }
+                let mut a = Anchor::corner(end);
+                a.tan_in = c2 - end;
+                out.anchors.push(a);
+            }
+            PathEl::ClosePath => {
+                out.closed = true;
+                if out.anchors.len() >= 2 {
+                    let last = *out.anchors.last().unwrap();
+                    if (last.pos - start).length_squared() < 1e-12 {
+                        out.anchors[0].tan_in = last.tan_in;
+                        out.anchors.pop();
+                    }
+                }
+                break;
+            }
+        }
+    }
+    for anchor in &mut out.anchors {
+        anchor.mode = detect_mode(anchor.tan_in, anchor.tan_out);
+    }
+    out
+}
+
+fn usable_subpath(path: VectorPath) -> Option<VectorPath> {
+    if path.anchors.is_empty()
+        || path.anchors.iter().any(|anchor| {
+            !anchor.pos.is_finite() || !anchor.tan_in.is_finite() || !anchor.tan_out.is_finite()
+        })
+    {
+        return None;
+    }
+    Some(path)
+}
+
 /// Split a multi-subpath `BezPath` into one [`VectorPath`] per subpath
 /// (`MoveTo` .. next `MoveTo`). Subpaths with fewer than two anchors are
 /// dropped; open subpaths stay open.
@@ -591,9 +662,8 @@ pub fn split_bez_subpaths(path: &BezPath) -> Vec<VectorPath> {
     let mut current = BezPath::new();
 
     for element in path.elements().iter().copied() {
-        if matches!(element, PathEl::MoveTo(_)) && !current.is_empty() {
-            let sub = VectorPath::from_bez_path(&current);
-            if sub.anchors.len() >= 2 {
+        if matches!(element, PathEl::MoveTo(_)) && !current.elements().is_empty() {
+            if let Some(sub) = usable_subpath(vector_path_from_subpath(&current)) {
                 output.push(sub);
             }
             current = BezPath::new();
@@ -601,11 +671,10 @@ pub fn split_bez_subpaths(path: &BezPath) -> Vec<VectorPath> {
         current.push(element);
     }
 
-    if !current.is_empty() {
-        let sub = VectorPath::from_bez_path(&current);
-        if sub.anchors.len() >= 2 {
-            output.push(sub);
-        }
+    if !current.is_empty()
+        && let Some(sub) = usable_subpath(vector_path_from_subpath(&current))
+    {
+        output.push(sub);
     }
 
     output
@@ -624,7 +693,7 @@ pub fn stroke_to_paths(
     dash: Option<(&[f64], f64)>,
     tolerance: f64,
 ) -> Result<Vec<VectorPath>, PathOpError> {
-    if !width.is_finite() || width <= 0.0 {
+    if !width.is_finite() || width <= 0.0 || !miter_limit.is_finite() || miter_limit < 1.0 {
         return Err(PathOpError::Empty);
     }
 
@@ -678,7 +747,7 @@ pub fn simplify_path(path: &VectorPath, tolerance: f64) -> VectorPath {
 /// This is a deterministic flattened-polyline offset. Exact cubic offset curves
 /// are not generally cubic Béziers (v1).
 pub fn offset_bez_path(path: &BezPath, amount: f64, tolerance: f64) -> Option<BezPath> {
-    if !amount.is_finite() {
+    if !amount.is_finite() || !path.is_finite() {
         return None;
     }
 
@@ -729,6 +798,11 @@ struct FlatContour {
 fn flatten_to_contours(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {
     use kurbo::{ParamCurve, ParamCurveArclen};
 
+    let tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+        tolerance
+    } else {
+        0.01
+    };
     let mut contours = Vec::new();
     let mut current: Vec<DVec2> = Vec::new();
     let mut cursor = DVec2::ZERO;
@@ -765,7 +839,11 @@ fn flatten_to_contours(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {
                 let seg = kurbo::QuadBez::new(pt(cursor), c, p);
 
                 let len = seg.arclen(tolerance);
-                let steps = (len / tolerance).ceil().max(2.0) as usize;
+                let steps = if len.is_finite() {
+                    (len / tolerance).ceil().clamp(2.0, 100_000.0) as usize
+                } else {
+                    2
+                };
 
                 for i in 1..=steps {
                     let t = i as f64 / steps as f64;
@@ -780,7 +858,11 @@ fn flatten_to_contours(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {
                 let seg = CubicBez::new(pt(cursor), c1, c2, p);
 
                 let len = seg.arclen(tolerance);
-                let steps = (len / tolerance).ceil().max(3.0) as usize;
+                let steps = if len.is_finite() {
+                    (len / tolerance).ceil().clamp(3.0, 100_000.0) as usize
+                } else {
+                    3
+                };
 
                 for i in 1..=steps {
                     let t = i as f64 / steps as f64;

@@ -354,7 +354,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             let surface = s.viewport.surface_size();
                             let pos = pe_pos(&pe);
                             if s.viewport.end_guide_drag(pos, surface) {
-                                s.dirty = true;
+                                s.repaint();
                             }
                             pe.consume();
                             request_frame();
@@ -818,7 +818,7 @@ fn TemplateCard(
                 s.replace_file(file);
                 s.welcome = false;
                 s.current_path = None;
-                s.dirty = true;
+                s.mark_dirty();
                 s.status = Some(format!("Created from \"{}\"", id.display_name()));
             }
         }))

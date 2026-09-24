@@ -115,7 +115,9 @@ pub fn AssetsPanel(session: SessionRef) -> View {
     for id in clips {
         let (name, range) = {
             let s = session.borrow();
-            let c = &s.file.clips[id];
+            let Some(c) = s.file.clips.get(id) else {
+                continue;
+            };
             (c.name.clone(), c.range)
         };
         children.push(
@@ -208,7 +210,9 @@ fn ImageRow(session: SessionRef, row: renamite_behavior_common::assets::ImageAss
 
                 let comp = session.file.document.main;
 
-                let composition = &session.file.document.compositions[comp];
+                let Some(composition) = session.file.document.compositions.get(comp) else {
+                    return;
+                };
 
                 let position = glam::DVec2::new(
                     composition.size.0 as f64 * 0.5,
@@ -259,11 +263,13 @@ fn FontRow(
     let active = selected_text.is_some_and(|id| {
         let session = session.borrow();
 
-        matches!(
-            &session.file.document.nodes[id].kind,
-            renamite_model::NodeKind::Text(text)
-                if text.font.as_deref().unwrap_or("default") == row.family
-        )
+        session.file.document.nodes.get(id).is_some_and(|node| {
+            matches!(
+                &node.kind,
+                renamite_model::NodeKind::Text(text)
+                    if text.font.as_deref().unwrap_or("default") == row.family
+            )
+        })
     });
 
     Row(Modifier::new()
@@ -320,23 +326,22 @@ fn FontRow(
         } else {
             Box(Modifier::new().width(Dp(40.0)))
         },
-        if !row.bundled && row.usage_count == 0 {
-            CompactIconAction(Symbols::delete, "Remove font asset", {
-                let session = session.clone();
-                let asset_id = row.id.unwrap();
-
-                move || {
-                    session.borrow_mut().apply_outputs(smallvec![
-                        ToolOutput::BeginTransaction("Remove font".into()),
-                        ToolOutput::Commands(smallvec![EditorCommand::DetachAsset {
-                            id: asset_id,
-                        }]),
-                        ToolOutput::CommitTransaction,
-                    ]);
-                }
-            })
-        } else {
-            Box(Modifier::new().width(Dp(40.0)))
+        match row.id {
+            Some(asset_id) if !row.bundled && row.usage_count == 0 => {
+                CompactIconAction(Symbols::delete, "Remove font asset", {
+                    let session = session.clone();
+                    move || {
+                        session.borrow_mut().apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Remove font".into()),
+                            ToolOutput::Commands(smallvec![EditorCommand::DetachAsset {
+                                id: asset_id,
+                            }]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                })
+            }
+            _ => Box(Modifier::new().width(Dp(40.0))),
         },
     ))
 }
