@@ -1304,6 +1304,43 @@ mod tests {
     }
 
     #[test]
+    fn blend_events_from_distinct_clips_are_not_collapsed() {
+        let (mut clips, mut machine, _) = world();
+        let down = clips
+            .iter()
+            .find(|(_, clip)| clip.name == "down")
+            .unwrap()
+            .0;
+        let up = clips.iter().find(|(_, clip)| clip.name == "up").unwrap().0;
+        clips.get_mut(down).unwrap().events.push(EventKey {
+            frame: Frame(30),
+            name: "half".into(),
+        });
+        machine.inputs.push(InputDef {
+            name: "blend".into(),
+            kind: InputKind::Number { default: 0.5 },
+        });
+        machine.layers[0].states[0].kind = StateKind::Blend1D {
+            input: 1,
+            children: vec![
+                BlendChild {
+                    threshold: 0.0,
+                    clip: down,
+                },
+                BlendChild {
+                    threshold: 1.0,
+                    clip: up,
+                },
+            ],
+        };
+        let mut instance = MachineInstance::new(&machine);
+        let mut overrides = Overrides::default();
+        instance.set_number(1, 0.5);
+        let events = instance.tick(&machine, &clips, 31.0, &mut overrides).events;
+        assert_eq!(events.iter().filter(|event| *event == "half").count(), 2);
+    }
+
+    #[test]
     fn crossfade_tweens_overlapping_props() {
         let (clips, m, node) = world();
         let mut inst = MachineInstance::new(&m);

@@ -2,7 +2,7 @@ mod common;
 
 use renamite_animation::Frame;
 use renamite_geometry::KurboShape;
-use renamite_io_svg::{import, import_with_report};
+use renamite_io_svg::{SvgError, import, import_with_report};
 use renamite_model::{
     FillRule, GradientKind, NodeKind, ShapeKind, StrokeCap, StrokeJoin, StyleKind, StylePaint,
 };
@@ -360,4 +360,17 @@ fn clip_path_evenodd_rule_produces_warning() {
     );
     let masks = find_all(&report.value, |n| matches!(n.kind, NodeKind::Mask(_)));
     assert_eq!(masks.len(), 1, "content still imports");
+}
+
+#[test]
+fn import_rejects_excessive_svg_nesting() {
+    let input = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\">{}{}</svg>",
+        "<g>".repeat(300),
+        "</g>".repeat(300)
+    );
+    assert!(matches!(
+        import(input.as_bytes()),
+        Err(SvgError::InputLimit(_))
+    ));
 }

@@ -471,6 +471,15 @@ mod tests {
     }
 
     #[test]
+    fn import_bytes_rejects_excessive_json_nesting() {
+        let input = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        assert!(matches!(
+            import_bytes(input.as_bytes()),
+            Err(LottieError::InputLimit(_))
+        ));
+    }
+
+    #[test]
     fn static_compound_warns_and_splits_to_paths() {
         use kurbo::Shape as _;
         let contour = |x0: f64, y0: f64, x1: f64, y1: f64| {

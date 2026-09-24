@@ -383,3 +383,134 @@ impl LegacyModifierKind {
 pub(crate) fn decode(bytes: &[u8]) -> Result<RenFile, postcard::Error> {
     postcard::from_bytes::<LegacyRenFile>(bytes).map(LegacyRenFile::into_current)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct FixtureFile {
+        format_version: u32,
+        meta: Meta,
+        document: FixtureDocument,
+        clips: ClipMap,
+        machines: MachineMap,
+        start_machine: Option<MachineId>,
+        clip_order: Vec<ClipId>,
+        machine_order: Vec<MachineId>,
+    }
+
+    #[derive(Serialize)]
+    struct FixtureDocument {
+        format_version: u32,
+        compositions: SlotMap<CompId, Composition>,
+        nodes: SlotMap<NodeId, FixtureNode>,
+        assets: SlotMap<AssetId, FixtureAsset>,
+        main: CompId,
+    }
+
+    #[derive(Serialize)]
+    struct FixtureNode {
+        name: String,
+        parent: Option<NodeId>,
+        children: Vec<NodeId>,
+        visible: bool,
+        locked: bool,
+        transform: AnimatedTransform,
+        opacity: Animated<f64>,
+        kind: FixtureNodeKind,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Serialize)]
+    enum FixtureNodeKind {
+        Group,
+        Layer(()),
+        Shape(()),
+        Style(FixtureStyleKind),
+        Modifier(()),
+        Text(()),
+        Image(()),
+        Precomp { comp: CompId, time_map: TimeMap },
+        Mask(()),
+    }
+
+    #[allow(dead_code)]
+    #[derive(Serialize)]
+    enum FixtureStyleKind {
+        Fill {
+            color: Animated<renamite_model::Color>,
+            rule: FillRule,
+        },
+        Stroke {
+            color: Animated<renamite_model::Color>,
+            width: Animated<f64>,
+            cap: StrokeCap,
+            join: StrokeJoin,
+            dash: Option<renamite_model::AnimatedDash>,
+            miter_limit: Animated<f64>,
+        },
+    }
+
+    #[allow(dead_code)]
+    #[derive(Serialize)]
+    enum FixtureAsset {
+        Image,
+    }
+
+    #[test]
+    fn decodes_legacy_style_payload() {
+        let mut compositions = SlotMap::<CompId, Composition>::with_key();
+        let main = compositions.insert(Composition::default());
+        let mut nodes = SlotMap::<NodeId, FixtureNode>::with_key();
+        let node = nodes.insert(FixtureNode {
+            name: "legacy fill".into(),
+            parent: None,
+            children: Vec::new(),
+            visible: true,
+            locked: false,
+            transform: AnimatedTransform::identity(),
+            opacity: Animated::new(1.0),
+            kind: FixtureNodeKind::Style(FixtureStyleKind::Fill {
+                color: Animated::new(renamite_model::Color::BLACK),
+                rule: FillRule::NonZero,
+            }),
+        });
+        compositions.get_mut(main).unwrap().children.push(node);
+        let payload = postcard::to_stdvec(&FixtureFile {
+            format_version: 0,
+            meta: Meta {
+                name: "legacy".into(),
+                ..Meta::default()
+            },
+            document: FixtureDocument {
+                format_version: 0,
+                compositions,
+                nodes,
+                assets: SlotMap::<AssetId, FixtureAsset>::with_key(),
+                main,
+            },
+            clips: ClipMap::default(),
+            machines: MachineMap::default(),
+            start_machine: None,
+            clip_order: Vec::new(),
+            machine_order: Vec::new(),
+        })
+        .unwrap();
+        let mut bytes = b"RENB".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend(payload);
+
+        let decoded = super::super::open_binary_unormalized(&bytes).unwrap();
+        assert_eq!(decoded.meta.name, "legacy");
+        let decoded_node = decoded.document.nodes.values().next().unwrap();
+        let NodeKind::Style(StyleKind::Fill { paint, .. }) = &decoded_node.kind else {
+            panic!("expected legacy fill");
+        };
+        let StylePaint::Solid { color } = paint else {
+            panic!("expected solid paint");
+        };
+        assert_eq!(color.base, renamite_model::Color::BLACK);
+    }
+}
