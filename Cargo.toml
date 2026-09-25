@@ -92,7 +92,6 @@ renamite-player = { path = "crates/renamite-player", version = "0.3.3" }
 renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.3.3" }
 
 # [patch.crates-io]
-# web-workers = { path = "../web-workers" }
 # repose-core = { path = "../repose/crates/repose-core" }
 # repose-render-wgpu = { path = "../repose/crates/repose-render-wgpu" }
 # repose-canvas = { path = "../repose/crates/repose-canvas" }
@@ -103,6 +102,7 @@ renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.3.3" }
 # repose-text = { path = "../repose/crates/repose-text" }
 # repose-app = { path = "../repose/crates/repose-app" }
 # repose-tree = { path = "../repose/crates/repose-tree" }
+# web-workers = { path = "../web-workers" }
 
 [profile.release]
 lto = "thin"
