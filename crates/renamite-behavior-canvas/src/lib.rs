@@ -92,7 +92,7 @@ pub enum ToolOverlay {
         rotate: DVec2,
         scale: DVec2,
 
-        /// Pivot location in world coordinates for one selected node.
+        /// Exact transform anchor in world coordinates for one selected node.
         /// Multi-selection has no editable shared pivot in v1.
         pivot: Option<DVec2>,
     },
@@ -312,7 +312,9 @@ impl SelectTool {
         let (rotate, scale) = handles(ctx, min, max);
 
         let pivot = match ctx.selection.nodes.as_slice() {
-            [node] => selection_pivot(ctx, *node, min, max),
+            [node] => node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64)
+                .map(|context| context.pivot_world),
+
             _ => None,
         };
 
@@ -393,12 +395,10 @@ impl SelectTool {
         {
             let tolerance = ctx.view.world_tolerance(HANDLE_PX);
             let transform = node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64);
-            let display_pivot = selection_pivot(ctx, *node, min, max);
-            let pivot_hit = display_pivot.is_some_and(|pivot| (pos - pivot).length() <= tolerance)
-                || transform
-                    .is_some_and(|context| (pos - context.pivot_world).length() <= tolerance);
 
-            if pivot_hit && let Some(transform) = transform {
+            if let Some(transform) = transform
+                && (pos - transform.pivot_world).length() <= tolerance
+            {
                 let parent_det = determinant(transform.parent_world);
                 let linear_det = determinant(transform.linear);
 
@@ -866,17 +866,7 @@ impl SelectTool {
 fn handles(ctx: &ToolContext, min: DVec2, max: DVec2) -> (DVec2, DVec2) {
     let cx = (min.x + max.x) * 0.5;
     let rot = DVec2::new(cx, min.y - ctx.view.world_tolerance(ROTATE_OFFSET_PX));
-    (rot, max)
-}
-
-fn selection_pivot(ctx: &ToolContext, node: NodeId, min: DVec2, max: DVec2) -> Option<DVec2> {
-    let center = (min + max) * 0.5;
-    let Some(transform) = node_transform_context(ctx.doc, node, ctx.playhead.0 as f64) else {
-        return Some(center);
-    };
-    let pivot = transform.pivot_world;
-    let inside = pivot.x >= min.x && pivot.x <= max.x && pivot.y >= min.y && pivot.y <= max.y;
-    if inside { Some(pivot) } else { Some(center) }
+    (rot, max) // scale handle = bottom-right corner
 }
 
 fn rotation_deg(ctx: &ToolContext, node: NodeId) -> f64 {
@@ -1880,12 +1870,12 @@ impl PenTool {
             return smallvec![];
         }
 
+        let path = VectorPath { anchors, closed };
+        let bounds = path.to_bez_path().bounding_box();
+        let center = DVec2::new((bounds.x0 + bounds.x1) * 0.5, (bounds.y0 + bounds.y1) * 0.5);
         let shape = Node::new(
             "Shape",
-            NodeKind::Shape(ShapeKind::Path(Animated::new(VectorPath {
-                anchors,
-                closed,
-            }))),
+            NodeKind::Shape(ShapeKind::Path(Animated::new(path))),
         );
         let fill = Node::new(
             "Fill",
@@ -1896,7 +1886,7 @@ impl PenTool {
         );
 
         let tree = NodeTree::with_children(
-            Node::new("Path", NodeKind::Group),
+            centered_group("Path", center),
             vec![NodeTree::leaf(shape), NodeTree::leaf(fill)],
         );
 

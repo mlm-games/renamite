@@ -2513,6 +2513,7 @@ impl Session {
     }
 
     pub fn add_ellipse_layer(&mut self) {
+        use renamite_animation::Animated;
         use renamite_history::NodeTree;
         use renamite_model::{FillRule, Node, NodeKind, Parent, ShapeKind, StyleKind};
 
@@ -2526,13 +2527,15 @@ impl Session {
             return;
         };
         let center = DVec2::new(w as f64 * 0.5, h as f64 * 0.5);
-        let shape = Node::new(
+        let mut shape = Node::new(
             "Ellipse",
             NodeKind::Shape(ShapeKind::Ellipse {
-                pos: renamite_animation::Animated::new(center),
-                size: renamite_animation::Animated::new(DVec2::new(120.0, 120.0)),
+                pos: Animated::new(center),
+                size: Animated::new(DVec2::new(120.0, 120.0)),
             }),
         );
+        shape.transform.position = Animated::new(center);
+        shape.transform.anchor = Animated::new(center);
         let fill = Node::new(
             "Fill",
             NodeKind::Style(StyleKind::Fill {
