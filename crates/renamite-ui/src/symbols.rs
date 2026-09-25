@@ -12,19 +12,20 @@ repose_material::material_symbols! {
     pause:               '\u{e034}',
     skip_previous:       '\u{e045}',
     save:                '\u{e161}',
-    save_as:             '\u{e171}',
+    save_as:             '\u{eb60}',
     folder_open:         '\u{e2c8}',
     more_vert:           '\u{e5d4}',
     add:                 '\u{e145}',
-    file_upload:         '\u{e2c6}',
-    file_download:       '\u{e2c4}',
+    file_upload:         '\u{f09b}',
+    file_download:       '\u{f090}',
     image:               '\u{e3f4}',
     font_download:       '\u{e167}',
     check:               '\u{e5ca}',
 
     arrow_selector_tool: '\u{f82f}',
-    magnet:              '\u{eb5c}',
-    grid_on:             '\u{e3eb}',
+    gps_fixed:            '\u{e55c}',
+    grid_on:             '\u{e3ec}',
+    grid_guides:         '\u{f76f}',
     edit:                '\u{f097}',
     transform:           '\u{e428}',
     draw:                '\u{e746}',
@@ -36,7 +37,7 @@ repose_material::material_symbols! {
     format_color_fill:   '\u{e23a}',
     colorize:            '\u{e3b8}',
     palette:             '\u{e40a}',
-    content_cut:         '\u{e0d1}',
+    content_cut:         '\u{e14e}',
     content_copy:        '\u{e14d}',
 
     fit_screen:          '\u{ea10}',
@@ -52,7 +53,7 @@ repose_material::material_symbols! {
 
     visibility:          '\u{e8f4}',
     visibility_off:      '\u{e8f5}',
-    lock:                '\u{e897}',
+    lock:                '\u{e899}',
     lock_open:           '\u{e898}',
     expand_more:         '\u{e5cf}',
     expand_less:         '\u{e5ce}',
@@ -63,7 +64,7 @@ repose_material::material_symbols! {
 
     radio_button_unchecked: '\u{e836}',
     stop_circle:            '\u{ef71}',
-    fiber_manual_record:    '\u{eb61}',
+    fiber_manual_record:    '\u{e061}',
 
     fast_rewind:            '\u{e020}',
     fast_forward:           '\u{e01f}',
@@ -73,7 +74,7 @@ repose_material::material_symbols! {
     arrow_right_alt:        '\u{e941}',
 
     remove:                '\u{e15b}',
-    delete:                '\u{e872}',
+    delete:                '\u{e92e}',
     account_tree:          '\u{e97a}',
 }
 

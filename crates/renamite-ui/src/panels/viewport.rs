@@ -6,8 +6,8 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Px, View,
-    remember, remember_with_key, request_frame, theme,
+    AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
+    View, remember, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -116,6 +116,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
             Modifier::new()
                 .fill_max_size()
                 .background(theme().surface_container_lowest)
+                .overflow(Overflow::Clip)
                 .focusable(true)
                 .focus_requester((*focus).clone())
                 .cursor(if panning {
@@ -1046,11 +1047,11 @@ fn ViewportControls(session: SessionRef) -> View {
             .padding(Dp(4.0)))
         .child((
             crate::components::ToolAction(
-                Symbols::magnet,
+                Symbols::gps_fixed,
                 if snapping {
-                    "Snapping on (%)"
+                    "Snapping on"
                 } else {
-                    "Snapping off (%)"
+                    "Snapping off"
                 },
                 snapping,
                 {
@@ -1080,7 +1081,7 @@ fn ViewportControls(session: SessionRef) -> View {
                 },
             ),
             crate::components::ToolAction(
-                Symbols::arrow_selector_tool,
+                Symbols::grid_guides,
                 if snap_guides {
                     "Snap to guides on (Shift+I)"
                 } else {

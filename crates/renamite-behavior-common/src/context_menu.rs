@@ -614,6 +614,13 @@ enum Prim {
     Text,
 }
 
+fn centered_group(name: impl Into<String>, center: DVec2) -> Node {
+    let mut group = Node::new(name, NodeKind::Group);
+    group.transform.position = Animated::new(center);
+    group.transform.anchor = Animated::new(center);
+    group
+}
+
 fn create_primitive(ctx: &MenuContext, prim: Prim) -> Vec<ToolOutput> {
     let pos = ctx.world_pos.unwrap_or(DVec2::new(180.0, 180.0));
     let paint = ctx.current_paint.snapshot(0.0);
@@ -653,7 +660,7 @@ fn create_primitive(ctx: &MenuContext, prim: Prim) -> Vec<ToolOutput> {
             parent: Parent::Comp(ctx.comp),
             index: 0,
             tree: NodeTree::with_children(
-                Node::new(name, NodeKind::Group),
+                centered_group(name, pos),
                 vec![
                     NodeTree::leaf(Node::new("Shape", NodeKind::Shape(shape))),
                     NodeTree::leaf(Node::new(
@@ -685,7 +692,7 @@ fn create_text(ctx: &MenuContext, pos: DVec2, paint: StylePaint) -> Vec<ToolOutp
     );
     text_node.transform.position = Animated::new(pos);
     let tree = NodeTree::with_children(
-        Node::new("Text", NodeKind::Group),
+        centered_group("Text", pos),
         vec![
             NodeTree::leaf(text_node),
             NodeTree::leaf(Node::new(

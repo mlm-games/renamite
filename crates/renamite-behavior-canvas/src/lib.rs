@@ -92,7 +92,7 @@ pub enum ToolOverlay {
         rotate: DVec2,
         scale: DVec2,
 
-        /// Exact transform anchor in world coordinates for one selected node.
+        /// Pivot location in world coordinates for one selected node.
         /// Multi-selection has no editable shared pivot in v1.
         pivot: Option<DVec2>,
     },
@@ -312,9 +312,7 @@ impl SelectTool {
         let (rotate, scale) = handles(ctx, min, max);
 
         let pivot = match ctx.selection.nodes.as_slice() {
-            [node] => node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64)
-                .map(|context| context.pivot_world),
-
+            [node] => selection_pivot(ctx, *node, min, max),
             _ => None,
         };
 
@@ -395,10 +393,12 @@ impl SelectTool {
         {
             let tolerance = ctx.view.world_tolerance(HANDLE_PX);
             let transform = node_transform_context(ctx.doc, *node, ctx.playhead.0 as f64);
+            let display_pivot = selection_pivot(ctx, *node, min, max);
+            let pivot_hit = display_pivot.is_some_and(|pivot| (pos - pivot).length() <= tolerance)
+                || transform
+                    .is_some_and(|context| (pos - context.pivot_world).length() <= tolerance);
 
-            if let Some(transform) = transform
-                && (pos - transform.pivot_world).length() <= tolerance
-            {
+            if pivot_hit && let Some(transform) = transform {
                 let parent_det = determinant(transform.parent_world);
                 let linear_det = determinant(transform.linear);
 
@@ -866,7 +866,17 @@ impl SelectTool {
 fn handles(ctx: &ToolContext, min: DVec2, max: DVec2) -> (DVec2, DVec2) {
     let cx = (min.x + max.x) * 0.5;
     let rot = DVec2::new(cx, min.y - ctx.view.world_tolerance(ROTATE_OFFSET_PX));
-    (rot, max) // scale handle = bottom-right corner
+    (rot, max)
+}
+
+fn selection_pivot(ctx: &ToolContext, node: NodeId, min: DVec2, max: DVec2) -> Option<DVec2> {
+    let center = (min + max) * 0.5;
+    let Some(transform) = node_transform_context(ctx.doc, node, ctx.playhead.0 as f64) else {
+        return Some(center);
+    };
+    let pivot = transform.pivot_world;
+    let inside = pivot.x >= min.x && pivot.x <= max.x && pivot.y >= min.y && pivot.y <= max.y;
+    if inside { Some(pivot) } else { Some(center) }
 }
 
 fn rotation_deg(ctx: &ToolContext, node: NodeId) -> f64 {
@@ -1408,6 +1418,13 @@ fn style_targets(doc: &Document, selection: &[NodeId], want_stroke: bool) -> Vec
     out
 }
 
+fn centered_group(name: impl Into<String>, center: DVec2) -> Node {
+    let mut group = Node::new(name, NodeKind::Group);
+    group.transform.position = Animated::new(center);
+    group.transform.anchor = Animated::new(center);
+    group
+}
+
 /// Click-to-place text. Creates a Text node + sibling Fill in a group, with
 /// the click point as the text baseline via the node's own transform.
 #[derive(Default)]
@@ -1440,7 +1457,7 @@ impl TextTool {
         // Place the baseline at the click point via the node's own transform.
         text_node.transform.position = Animated::new(pos);
         let tree = NodeTree::with_children(
-            Node::new("Text", NodeKind::Group),
+            centered_group("Text", pos),
             vec![
                 NodeTree::leaf(text_node),
                 NodeTree::leaf(Node::new(
@@ -1599,7 +1616,7 @@ impl ShapeTool {
                     ),
                 };
                 let tree = NodeTree::with_children(
-                    Node::new(name, NodeKind::Group),
+                    centered_group(name, center),
                     vec![
                         NodeTree::leaf(Node::new("Shape", NodeKind::Shape(shape))),
                         NodeTree::leaf(Node::new(
