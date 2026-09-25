@@ -1,7 +1,7 @@
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Dp, Modifier, PaddingValues, TextFieldLineLimits, UnitExt, View, remember,
-    remember_state_with_key, remember_with_key, request_frame, theme,
+    AlignItems, Dp, Modifier, MutableInteractionSource, PaddingValues, TextFieldLineLimits,
+    UnitExt, View, remember_auto, remember_state_with_key, remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
@@ -133,46 +133,39 @@ pub fn CollapsibleSection(
     )
 }
 
+#[track_caller]
 pub fn CompactIconAction(
     symbol: Symbol,
     tooltip: &'static str,
     on_click: impl Fn() + 'static,
 ) -> View {
-    let tooltip_state = remember(TooltipState::new);
-
-    TooltipBox(
-        tooltip,
-        tooltip_state.clone(),
-        Modifier::new(),
-        IconButton(
-            AppIcon(symbol, 22.0),
-            on_click,
-            IconButtonConfig {
-                container_size: Some(40.0.dp()),
-                ..Default::default()
-            },
-        ),
-        TooltipConfig::default(),
-    )
+    compact_icon_action(symbol, tooltip, on_click)
 }
 
+#[track_caller]
 pub fn CompactIconActionWithKey(
     key: impl Into<String>,
     symbol: Symbol,
     tooltip: &'static str,
     on_click: impl Fn() + 'static,
 ) -> View {
-    let tooltip_state = remember_with_key(key, TooltipState::new);
+    let key = key.into();
+    let tooltip_state = remember_with_key(format!("compact_tooltip:{key}"), TooltipState::new);
+    let interaction_source = remember_with_key(
+        format!("compact_interaction:{key}"),
+        MutableInteractionSource::new,
+    );
 
     TooltipBox(
         tooltip,
-        tooltip_state.clone(),
+        tooltip_state,
         Modifier::new(),
         IconButton(
             AppIcon(symbol, 22.0),
             on_click,
             IconButtonConfig {
                 container_size: Some(40.0.dp()),
+                interaction_source: Some(interaction_source.as_ref().clone()),
                 ..Default::default()
             },
         ),
@@ -180,17 +173,46 @@ pub fn CompactIconActionWithKey(
     )
 }
 
+#[track_caller]
+fn compact_icon_action(
+    symbol: Symbol,
+    tooltip: &'static str,
+    on_click: impl Fn() + 'static,
+) -> View {
+    let tooltip_state = remember_auto("tooltip", TooltipState::new);
+    let interaction_source = remember_auto("interaction", MutableInteractionSource::new);
+
+    TooltipBox(
+        tooltip,
+        tooltip_state,
+        Modifier::new(),
+        IconButton(
+            AppIcon(symbol, 22.0),
+            on_click,
+            IconButtonConfig {
+                container_size: Some(40.0.dp()),
+                interaction_source: Some(interaction_source.as_ref().clone()),
+                ..Default::default()
+            },
+        ),
+        TooltipConfig::default(),
+    )
+}
+
+#[track_caller]
 pub fn ToolAction(
     symbol: Symbol,
     label: &'static str,
     selected: bool,
     on_click: impl Fn() + 'static,
 ) -> View {
-    let tooltip_state = remember_with_key(format!("tool_tip_{label}"), TooltipState::new);
+    let tooltip_state = remember_auto("tooltip", TooltipState::new);
+    let interaction_source = remember_auto("interaction", MutableInteractionSource::new);
 
     let config = IconButtonConfig {
         container_size: Some(48.0.dp()),
         shape_radius: Some(16.0.dp()),
+        interaction_source: Some(interaction_source.as_ref().clone()),
         ..Default::default()
     };
 

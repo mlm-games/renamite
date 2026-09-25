@@ -954,6 +954,7 @@ fn scrub_f64_w(
                     .on_focus_changed(crate::shortcuts::note_text_focus)
                     .text_input(TextInputConfig {
                         hint: String::new(),
+                        sensitive: false,
                         multiline: false,
                         on_change: Some({
                             let draft = draft.clone();

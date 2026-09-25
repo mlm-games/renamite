@@ -7,7 +7,7 @@ use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
     AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
-    View, remember, remember_with_key, request_frame, theme,
+    View, remember_auto, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -23,7 +23,7 @@ use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
 
 pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
-    let focus = remember(FocusRequester::new);
+    let focus = remember_auto("focus", FocusRequester::new);
 
     let _gesture_handler = remember_with_key("viewport_gesture_handler", || {
         let session = session.clone();

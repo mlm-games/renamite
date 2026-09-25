@@ -7,7 +7,7 @@ use renamite_behavior_common::layers::{
 use renamite_history::ToolOutput;
 use repose_core::input::{Key, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Dp, Modifier, PaddingValues, View, remember_with_key, request_frame, theme,
+    AlignItems, Dp, Modifier, PaddingValues, View, keyed, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
@@ -16,7 +16,7 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::components::{CompactIconAction, CompactIconActionWithKey, PanelHeader};
+use crate::components::{CompactIconAction, PanelHeader};
 use crate::session::{
     ContextMenuSource, ContextMenuState, LayerDragState, SessionRef, overlay_anchor,
 };
@@ -72,32 +72,34 @@ pub fn LayersPanel(session: SessionRef) -> View {
         rows.iter()
             .enumerate()
             .map(|(i, row)| {
-                LayerRowView(
-                    session.clone(),
-                    row.clone(),
-                    LayerRowState {
-                        index: i,
-                        is_selected: selected.contains(&row.id),
-                        is_expanded: expanded.contains(&row.id),
-                        is_drop_target: drag
-                            .as_ref()
-                            .map(|d| d.hover_row == i && d.id != row.id)
-                            .unwrap_or(false),
-                        drop_as_child: drag
-                            .as_ref()
-                            .map(|d| {
-                                d.as_child
-                                    && (row.kind == LayerKind::Group
-                                        || row.kind == LayerKind::Shape)
-                            })
-                            .unwrap_or(false),
-                        drop_before: drag.as_ref().map(|d| d.before).unwrap_or(true),
-                        rename_draft: renaming
-                            .as_ref()
-                            .filter(|(id, _)| *id == row.id)
-                            .map(|(_, t)| t.clone()),
-                    },
-                )
+                keyed(format!("{:?}", row.id), || {
+                    LayerRowView(
+                        session.clone(),
+                        row.clone(),
+                        LayerRowState {
+                            index: i,
+                            is_selected: selected.contains(&row.id),
+                            is_expanded: expanded.contains(&row.id),
+                            is_drop_target: drag
+                                .as_ref()
+                                .map(|d| d.hover_row == i && d.id != row.id)
+                                .unwrap_or(false),
+                            drop_as_child: drag
+                                .as_ref()
+                                .map(|d| {
+                                    d.as_child
+                                        && (row.kind == LayerKind::Group
+                                            || row.kind == LayerKind::Shape)
+                                })
+                                .unwrap_or(false),
+                            drop_before: drag.as_ref().map(|d| d.before).unwrap_or(true),
+                            rename_draft: renaming
+                                .as_ref()
+                                .filter(|(id, _)| *id == row.id)
+                                .map(|(_, t)| t.clone()),
+                        },
+                    )
+                })
             })
             .collect::<Vec<_>>(),
     );
@@ -107,33 +109,18 @@ pub fn LayersPanel(session: SessionRef) -> View {
             Symbols::layers,
             "Layers",
             vec![
-                CompactIconActionWithKey(
-                    "layers_header_add_ellipse",
-                    Symbols::add,
-                    "Add ellipse layer",
-                    {
-                        let session = session.clone();
-                        move || session.borrow_mut().add_ellipse_layer()
-                    },
-                ),
-                CompactIconActionWithKey(
-                    "layers_header_expand_all",
-                    Symbols::unfold_more,
-                    "Expand all layers",
-                    {
-                        let session = session.clone();
-                        move || session.borrow_mut().set_all_expanded(true)
-                    },
-                ),
-                CompactIconActionWithKey(
-                    "layers_header_collapse_all",
-                    Symbols::unfold_less,
-                    "Collapse all layers",
-                    {
-                        let session = session.clone();
-                        move || session.borrow_mut().set_all_expanded(false)
-                    },
-                ),
+                CompactIconAction(Symbols::add, "Add ellipse layer", {
+                    let session = session.clone();
+                    move || session.borrow_mut().add_ellipse_layer()
+                }),
+                CompactIconAction(Symbols::unfold_more, "Expand all layers", {
+                    let session = session.clone();
+                    move || session.borrow_mut().set_all_expanded(true)
+                }),
+                CompactIconAction(Symbols::unfold_less, "Collapse all layers", {
+                    let session = session.clone();
+                    move || session.borrow_mut().set_all_expanded(false)
+                }),
             ],
         ),
         ScrollArea(
@@ -363,8 +350,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     .child((
         // Expand chevron: any row with children (matches `is_expandable`).
         if child_count > 0 {
-            CompactIconActionWithKey(
-                format!("layers_{:?}_expand", id),
+            CompactIconAction(
                 if st.is_expanded {
                     Symbols::expand_more
                 } else {
@@ -413,8 +399,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 .modifier(Modifier::new().flex_grow(1.0))
         },
         // Visibility
-        CompactIconActionWithKey(
-            format!("layers_{:?}_visibility", id),
+        CompactIconAction(
             if visible {
                 Symbols::visibility
             } else {
@@ -433,8 +418,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             },
         ),
         // Lock
-        CompactIconActionWithKey(
-            format!("layers_{:?}_lock", id),
+        CompactIconAction(
             if locked {
                 Symbols::lock
             } else {
