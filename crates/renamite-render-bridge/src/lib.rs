@@ -21,7 +21,8 @@ use renamite_model::{
 };
 use repose_canvas::{DrawCommand, DrawScope};
 use repose_core::{
-    BlendMode, ClipOp, PaintDesc, Scene as ReposeScene, SceneNode, VectorMeshData, VectorVertex,
+    BlendMode, ClipOp, ImageAlignment, ImageFilter, PaintDesc, Scene as ReposeScene, SceneNode,
+    VectorMeshData, VectorVertex,
 };
 use rustc_hash::FxHashMap;
 use slotmap::Key as _;
@@ -421,6 +422,8 @@ impl SceneRenderer {
                         handle: *handle,
                         tint: *tint,
                         fit: *fit,
+                        filter: ImageFilter::Linear,
+                        source_rect: None,
                     });
 
                     scope.commands.push(DrawCommand::PopTransform);
@@ -495,6 +498,9 @@ impl SceneRenderer {
                         handle: *handle,
                         tint: *tint,
                         fit: *fit,
+                        filter: ImageFilter::Linear,
+                        source_rect: None,
+                        alignment: ImageAlignment::Center,
                     });
 
                     out.nodes.push(SceneNode::PopTransform);
