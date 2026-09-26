@@ -25,7 +25,7 @@ on:
         type: boolean
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: renamite-crate-publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
