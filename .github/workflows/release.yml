@@ -52,5 +52,7 @@ jobs:
       prerelease: ${{ inputs.mark_prerelease }}
       generate-release-notes: true
       changelog-path: "CHANGELOG.md"
+      metainfo-path: "./others/flathub/io.github.mlm_games.renamite.metainfo.xml"
+      version-file-path: "./fastlane/metadata/android/en-US/changelogs/{{version_code}}.txt"
       dispatch-on-release: '["aur-upload.yml"]'
     secrets: inherit
