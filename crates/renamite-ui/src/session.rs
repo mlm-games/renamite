@@ -27,7 +27,7 @@ use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::geometry::Rect;
 use repose_core::input::{PointerEvent, PointerEventKind};
-use repose_core::{animation_driver, remember_state_with_key, remember_with_key, request_frame};
+use repose_core::{animation_driver, remember_with_key, request_frame};
 use repose_material::material3::DialogState;
 use smallvec::{SmallVec, smallvec};
 use web_time::Instant;
@@ -5411,23 +5411,31 @@ pub fn seeded_demo_file() -> RenFile {
     RenFile::new(doc, "Untitled")
 }
 
+pub const PLAYBACK_DRIVER: &str = "renamite_playback";
+
 pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
     let rc = render_context.clone();
     let session = remember_with_key("session", || {
         RefCell::new(Session::with_render_context(blank_file(), rc))
     });
 
-    let registered = remember_state_with_key("pb_reg", || false);
-    if !*registered.borrow() {
+    // A driver whose tick returns false is unregistered by the driver itself, so
+    // registration is re-armed from the live playback state on every compose.
+    // A one-shot "already registered" flag strands the driver unregistered after
+    // the first idle tick and the playhead never advances again.
+    let wants_ticks = {
+        let s = session.borrow();
+        s.playing || s.machine_preview_enabled
+    };
+    if wants_ticks && !animation_driver::is_registered(PLAYBACK_DRIVER) {
         let sess = session.clone();
         animation_driver::register(
-            "renamite_playback".into(),
+            PLAYBACK_DRIVER.to_string(),
             Rc::new(RefCell::new(move || sess.borrow_mut().tick_playback())),
         );
-        *registered.borrow_mut() = true;
     }
 
-    animation_driver::touch("renamite_playback");
+    animation_driver::touch(PLAYBACK_DRIVER);
 
     let _rev = session.borrow().revision;
     session
