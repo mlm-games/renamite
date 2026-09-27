@@ -84,6 +84,15 @@ pub enum TimelineEvent {
 pub enum TimelineKey {
     Delete,
     Escape,
+    SelectAll,
+    Duplicate,
+    Copy,
+    Cut,
+    Paste,
+    /// Shift the selected keys in time; the host resolves the step size.
+    Nudge {
+        frames: i64,
+    },
 }
 
 /// Screen-space overlay for the host to draw.
@@ -163,9 +172,19 @@ enum KeyState {
     },
 }
 
+/// Keys captured by Copy, kept with full interpolation/easing so a paste
+/// reproduces them exactly. `anchor` is the earliest copied frame: pastes are
+/// offset by `playhead - anchor`, preserving the copied spacing.
+#[derive(Clone, Debug, Default)]
+struct KeyClipboard {
+    entries: Vec<(KeyRef, KeyframeData)>,
+    anchor: Frame,
+}
+
 pub struct TimelineKeyframeBehavior {
     state: KeyState,
     selected: Vec<KeyRef>,
+    clipboard: KeyClipboard,
 }
 
 const DRAG_THRESHOLD_PX: f64 = 3.0;
@@ -175,6 +194,7 @@ impl Default for TimelineKeyframeBehavior {
         Self {
             state: KeyState::Idle,
             selected: Vec::new(),
+            clipboard: KeyClipboard::default(),
         }
     }
 }
@@ -418,34 +438,181 @@ impl TimelineKeyframeBehavior {
                 KeyState::Dragging { txn: true, .. } => smallvec![ToolOutput::CancelTransaction],
                 _ => smallvec![],
             },
-            TimelineKey::Delete => {
-                if self.selected.is_empty() {
-                    return smallvec![];
-                }
-                let cmds: smallvec::SmallVec<[EditorCommand; 4]> = self
-                    .selected
-                    .drain(..)
-                    .map(|r| match ctx.target {
-                        TimelineTarget::Doc => EditorCommand::RemoveKeyframe {
-                            id: r.node,
-                            prop: r.prop,
-                            frame: r.frame,
-                        },
-                        TimelineTarget::Clip(cid) => EditorCommand::RemoveClipKey {
-                            clip: cid,
-                            node: r.node,
-                            prop: r.prop,
-                            frame: r.frame,
-                        },
+            TimelineKey::Delete => self.delete_selected(ctx),
+            TimelineKey::SelectAll => {
+                self.selected = ctx
+                    .rows
+                    .iter()
+                    .flat_map(|row| {
+                        row_key_frames(ctx, row)
+                            .into_iter()
+                            .map(move |frame| KeyRef {
+                                node: row.node,
+                                prop: row.prop.clone(),
+                                frame,
+                            })
                     })
                     .collect();
-                smallvec![
-                    ToolOutput::BeginTransaction("Delete keyframes".into()),
-                    ToolOutput::Commands(cmds),
-                    ToolOutput::CommitTransaction,
-                ]
+                smallvec![]
             }
+            TimelineKey::Copy | TimelineKey::Cut => {
+                let cut = matches!(k, TimelineKey::Cut);
+                self.copy_selection(ctx);
+                if cut {
+                    self.delete_selected(ctx)
+                } else {
+                    smallvec![]
+                }
+            }
+            TimelineKey::Paste => self.paste(ctx),
+            TimelineKey::Duplicate => self.duplicate(ctx),
+            TimelineKey::Nudge { frames } => self.nudge(ctx, frames),
         }
+    }
+
+    fn copy_selection(&mut self, ctx: &TimelineCtx) {
+        let mut entries: Vec<(KeyRef, KeyframeData)> = self
+            .selected
+            .iter()
+            .filter_map(|r| key_data(ctx, r).map(|k| (r.clone(), k)))
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        entries.sort_by_key(|(r, _)| r.frame.0);
+        let anchor = entries.first().map(|(r, _)| r.frame).unwrap_or(Frame(0));
+        self.clipboard = KeyClipboard { entries, anchor };
+    }
+
+    fn delete_selected(&mut self, ctx: &TimelineCtx) -> OutputVec {
+        if self.selected.is_empty() {
+            return smallvec![];
+        }
+        let cmds: smallvec::SmallVec<[EditorCommand; 4]> = self
+            .selected
+            .drain(..)
+            .map(|r| match ctx.target {
+                TimelineTarget::Doc => EditorCommand::RemoveKeyframe {
+                    id: r.node,
+                    prop: r.prop,
+                    frame: r.frame,
+                },
+                TimelineTarget::Clip(cid) => EditorCommand::RemoveClipKey {
+                    clip: cid,
+                    node: r.node,
+                    prop: r.prop,
+                    frame: r.frame,
+                },
+            })
+            .collect();
+        smallvec![
+            ToolOutput::BeginTransaction("Delete keyframes".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]
+    }
+
+    /// Emit insert-or-replace commands for `entries` shifted by `delta`,
+    /// skipping any destination that is already occupied, and select what
+    /// actually landed.
+    fn insert_keys(
+        &mut self,
+        ctx: &TimelineCtx,
+        entries: &[(KeyRef, KeyframeData)],
+        delta: i64,
+    ) -> OutputVec {
+        let mut cmds: smallvec::SmallVec<[EditorCommand; 4]> = smallvec![];
+        let mut placed: Vec<KeyRef> = Vec::new();
+        for (r, k) in entries {
+            let frame = Frame(r.frame.0 + delta);
+            if frame < ctx.range.0 || frame > ctx.range.1 {
+                continue;
+            }
+            let dest = KeyRef {
+                node: r.node,
+                prop: r.prop.clone(),
+                frame,
+            };
+            if key_data(ctx, &dest).is_some() {
+                continue;
+            }
+            let cmd = match ctx.target {
+                TimelineTarget::Doc => EditorCommand::RestoreKeyframe {
+                    id: dest.node,
+                    prop: dest.prop.clone(),
+                    key: KeyframeData { frame, ..k.clone() },
+                },
+                TimelineTarget::Clip(cid) => EditorCommand::AddClipKey {
+                    clip: cid,
+                    node: dest.node,
+                    prop: dest.prop.clone(),
+                    key: KeyframeData { frame, ..k.clone() },
+                },
+            };
+            cmds.push(cmd);
+            placed.push(dest);
+        }
+        if cmds.is_empty() {
+            return smallvec![];
+        }
+        self.selected = placed;
+        smallvec![
+            ToolOutput::BeginTransaction("Add keyframes".into()),
+            ToolOutput::Commands(cmds),
+            ToolOutput::CommitTransaction,
+        ]
+    }
+
+    fn paste(&mut self, ctx: &TimelineCtx) -> OutputVec {
+        if self.clipboard.entries.is_empty() {
+            return smallvec![];
+        }
+        let delta = ctx.playhead.round() as i64 - self.clipboard.anchor.0;
+        let entries = self.clipboard.entries.clone();
+        self.insert_keys(ctx, &entries, delta)
+    }
+
+    /// Offset the selection by its own width, the usual editor feel: a lone key
+    /// lands one frame later, a span lands immediately after itself.
+    fn duplicate(&mut self, ctx: &TimelineCtx) -> OutputVec {
+        if self.selected.is_empty() {
+            return smallvec![];
+        }
+        let entries: Vec<(KeyRef, KeyframeData)> = self
+            .selected
+            .iter()
+            .filter_map(|r| key_data(ctx, r).map(|k| (r.clone(), k)))
+            .collect();
+        if entries.is_empty() {
+            return smallvec![];
+        }
+        let min = entries.iter().map(|(r, _)| r.frame.0).min().unwrap_or(0);
+        let max = entries.iter().map(|(r, _)| r.frame.0).max().unwrap_or(0);
+        self.insert_keys(ctx, &entries, (max - min).max(1))
+    }
+
+    fn nudge(&mut self, ctx: &TimelineCtx, frames: i64) -> OutputVec {
+        if self.selected.is_empty() || frames == 0 {
+            return smallvec![];
+        }
+        let origins = self.selected.clone();
+        let want = snap_valid_delta(ctx, &origins, 0, clamp_delta(ctx, &origins, frames));
+        if want == 0 {
+            return smallvec![];
+        }
+        self.selected = origins
+            .iter()
+            .map(|r| KeyRef {
+                node: r.node,
+                prop: r.prop.clone(),
+                frame: Frame(r.frame.0 + want),
+            })
+            .collect();
+        smallvec![
+            ToolOutput::BeginTransaction("Move keyframes".into()),
+            ToolOutput::Commands(smallvec![move_cmd(ctx, &origins, 0, want)]),
+            ToolOutput::CommitTransaction,
+        ]
     }
 }
 
