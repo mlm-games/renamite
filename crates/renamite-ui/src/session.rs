@@ -27,7 +27,7 @@ use renamite_player::Engine;
 use renamite_render_bridge::SceneRenderer;
 use repose_core::geometry::Rect;
 use repose_core::input::{PointerEvent, PointerEventKind};
-use repose_core::{animation_driver, remember_with_key, request_frame};
+use repose_core::{animation_driver, remember_state_auto, request_frame};
 use repose_material::material3::DialogState;
 use smallvec::{SmallVec, smallvec};
 use web_time::Instant;
@@ -108,6 +108,12 @@ pub struct Session {
     pub swatches: renamite_behavior_common::color::SwatchHistory,
     pub open_picker: Option<OpenPicker>,
     pub context_menu: Option<ContextMenuState>,
+    /// Bumped on every `open_context_menu`. The overlay keys "should I call
+    /// `open_at`?" off this rather than off `context_menu.is_some()`: a
+    /// dismissal that only touches the `MenuState` (click-away scrim, disabled
+    /// entry, submenu back) leaves the session field set, so an `is_some()`
+    /// edge never occurs again and the menu can never reopen.
+    pub context_menu_seq: u64,
     pub exporting_png: bool,
     pub welcome: bool,
     pub clipboard: Option<ClipboardPayload>,
@@ -377,6 +383,7 @@ impl Session {
             swatches: renamite_behavior_common::color::SwatchHistory::new(12),
             open_picker: None,
             context_menu: None,
+            context_menu_seq: 0,
             exporting_png: false,
             welcome: true,
             clipboard: None,
@@ -517,6 +524,7 @@ impl Session {
     pub fn open_context_menu(&mut self, menu: ContextMenuState) {
         self.cancel_open_picker_state();
         self.open_picker = None;
+        self.context_menu_seq = self.context_menu_seq.wrapping_add(1);
         self.context_menu = Some(menu);
         self.repaint();
     }
@@ -528,6 +536,18 @@ impl Session {
         self.context_menu = None;
         self.revision = self.revision.wrapping_add(1);
         request_frame();
+    }
+
+    /// Reconcile the session with a `MenuState` the overlay has already
+    /// closed. The click-away scrim, a disabled entry (no `on_click` wired, so
+    /// the click falls through to the scrim) and the submenu back button all
+    /// dismiss only the `MenuState`, leaving `context_menu` set. Called after
+    /// the overlay has opened the menu, so a set menu plus a closed state can
+    /// only mean an external dismissal. Idempotent.
+    pub fn sync_context_menu_visibility(&mut self, menu_visible: bool) {
+        if !menu_visible {
+            self.close_context_menu();
+        }
     }
 
     pub fn run_menu_action(&mut self, action: renamite_behavior_common::context_menu::MenuAction) {
@@ -2831,13 +2851,20 @@ impl Session {
     }
 
     pub fn step_frames(&mut self, delta: f64) {
+        let head = self.playback.head + delta;
+        self.set_playhead(head);
+    }
+
+    /// Move the playhead to an absolute frame, clamped to the composition
+    /// range, and re-evaluate the engine at it.
+    pub fn set_playhead(&mut self, frame: f64) {
         let range = self
             .file
             .document
             .main_composition()
             .map(|composition| composition.range)
             .unwrap_or((Frame(0), Frame(180)));
-        self.playback.head = (self.playback.head + delta).clamp(range.0.0 as f64, range.1.0 as f64);
+        self.playback.head = frame.clamp(range.0.0 as f64, range.1.0 as f64);
         let crate::session::Session {
             file,
             engine,
@@ -5415,9 +5442,7 @@ pub const PLAYBACK_DRIVER: &str = "renamite_playback";
 
 pub fn init_session(render_context: &repose_core::RenderContext) -> Rc<RefCell<Session>> {
     let rc = render_context.clone();
-    let session = remember_with_key("session", || {
-        RefCell::new(Session::with_render_context(blank_file(), rc))
-    });
+    let session = remember_state_auto("session", || Session::with_render_context(blank_file(), rc));
 
     // A driver whose tick returns false is unregistered by the driver itself, so
     // registration is re-armed from the live playback state on every compose.

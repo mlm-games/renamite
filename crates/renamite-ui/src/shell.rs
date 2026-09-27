@@ -1,7 +1,7 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType};
 use repose_core::{
-    Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_with_key, request_frame,
-    theme,
+    Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_auto, remember_state_auto,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, DropdownMenu, DropdownMenuConfig,
@@ -21,7 +21,7 @@ use crate::components::{PanelSurface, PillButton, ToolAction};
 use crate::panels::{
     AssetsPanel, InteractivityPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel,
 };
-use crate::session::{EditorMode, PanelPage, SessionRef};
+use crate::session::{ContextMenuState, EditorMode, PanelPage, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::MenuEntry;
 
@@ -46,7 +46,7 @@ pub fn EditorShell(session: SessionRef) -> View {
     let class = platform_shell_class();
     let session_body = session.clone();
 
-    let snackbar = remember_with_key("shell_snackbar", SnackbarController::ambient);
+    let snackbar = remember_auto("snackbar", SnackbarController::ambient);
     {
         let mut s = session.borrow_mut();
         if s.status.is_some() {
@@ -229,21 +229,54 @@ fn install_global_shortcuts(session: SessionRef) {
 }
 
 fn context_menu_overlay(session: SessionRef) -> View {
-    let Some(menu) = session.borrow().context_menu.clone() else {
-        return ZStack(Modifier::new());
+    let state = remember_auto("menu", MenuState::new);
+    // Keep the last menu composed after it closes.
+    //
+    // `DropdownMenu` ties its overlay entry to a remembered `OverlayGuard` and
+    // releases it from an `else` branch, so unmounting the component used to
+    // strand the entry (menu plus its full-screen scrim). Repose 0.31.1 fixes
+    // the leak at the root - the keyed-slot GC is per key now, so an unread
+    // guard gets collected and drops itself. Staying mounted is still worth it:
+    // it lets `DropdownMenu` advance its exit animation, which it can only do
+    // while composed. Drop this once overlay entries reconcile per frame;
+    // bottom_sheet, dialog, search_bar and tooltip share the same pattern.
+    let last_menu = remember_state_auto("last_menu", || None::<ContextMenuState>);
+    let (live, seq) = {
+        let s = session.borrow();
+        (s.context_menu.clone(), s.context_menu_seq)
     };
-    let state = remember_with_key("shell_context_menu", MenuState::new);
+    let (menu, is_live) = match live {
+        Some(menu) => {
+            *last_menu.borrow_mut() = Some(menu.clone());
+            (menu, true)
+        }
+        None => match last_menu.borrow().clone() {
+            Some(menu) => (menu, false),
+            None => return ZStack(Modifier::new()),
+        },
+    };
+    // Fire `open_at` once per open *request*, keyed on the session's monotonic
+    // counter. Neither of the obvious alternatives works: a content hash cannot
+    // tell two opens at the same spot apart, and `context_menu.is_some()` never
+    // goes false when the menu was dismissed by the click-away scrim, a
+    // disabled entry, or the submenu back button - those only touch MenuState.
     let anchor = Vec2 {
         x: menu.screen_pos.x as f32,
         y: menu.screen_pos.y as f32,
     };
-    let menu_id = (anchor.x.to_bits(), anchor.y.to_bits(), menu.entries.len());
-    let last_menu_id = remember_with_key("shell_context_menu_id", || {
-        Cell::new(None::<(u32, u32, usize)>)
-    });
-    if last_menu_id.get() != Some(menu_id) {
-        last_menu_id.set(Some(menu_id));
+    let last_seq = remember_auto("open_seq", || Cell::new(None::<u64>));
+    if is_live && last_seq.get() != Some(seq) {
+        last_seq.set(Some(seq));
         state.open_at(anchor);
+    }
+    // Dismissals that only reach the `MenuState` (click-away scrim, disabled
+    // entry, submenu back) leave the session thinking a menu is open. Reconcile
+    // after any `open_at` above. Repose exposes no scrim-dismiss callback, so
+    // this is the hook.
+    if is_live {
+        session
+            .borrow_mut()
+            .sync_context_menu_visibility(state.is_open());
     }
 
     DropdownMenu(

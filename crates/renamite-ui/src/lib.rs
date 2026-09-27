@@ -17,7 +17,7 @@ pub mod symbols;
 
 use renamite_animation::PlayState;
 use renamite_history::ToolId;
-use repose_core::{Color, Dp, Modifier, Scheduler, View, remember_with_key, request_frame, theme};
+use repose_core::{Color, Dp, Modifier, Scheduler, View, remember_auto, request_frame, theme};
 use repose_material::material3::{
     CenterAlignedTopAppBar, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
     MenuState, TopAppBarConfig,
@@ -152,7 +152,7 @@ pub fn AppTopBar(session: SessionRef) -> View {
 }
 
 pub fn FileMenu(session: SessionRef) -> View {
-    let state = remember_with_key("renamite_file_menu", MenuState::new);
+    let state = remember_auto("menu", MenuState::new);
 
     let trigger = CompactIconAction(Symbols::menu, "File", {
         let state = state.clone();

@@ -4,10 +4,10 @@ use renamite_behavior_timeline::{
 };
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::{Key, KeyEvent, PointerEvent, PointerEventKind};
+use repose_core::input::{Key, KeyEvent, KeyEventType, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Color, Dp, JustifyContent, Modifier, Px, TextFieldLineLimits, Vec2, View,
-    remember_with_key, theme,
+    AlignItems, Color, Dp, FocusRequester, JustifyContent, Modifier, Px, TextFieldLineLimits, Vec2,
+    View, remember_auto, remember_state_auto, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
@@ -179,24 +179,21 @@ fn RangeEditor(
     session: SessionRef,
     range: (renamite_animation::Frame, renamite_animation::Frame),
 ) -> View {
-    let committed = remember_with_key("timeline_range_committed", || {
-        RefCell::new((range.0.0, range.1.0))
-    });
-    let start_state = remember_with_key("timeline_range_start", || {
+    let committed = remember_state_auto("committed", || (range.0.0, range.1.0));
+    let start_state = remember_state_auto("start", || {
         let mut st = TextFieldState::new();
         st.text = range.0.0.to_string();
-        RefCell::new(st)
+        st
     });
-    let end_state = remember_with_key("timeline_range_end", || {
+    let end_state = remember_state_auto("end", || {
         let mut st = TextFieldState::new();
         st.text = range.1.0.to_string();
-        RefCell::new(st)
+        st
     });
-    let start_focus =
-        remember_with_key("timeline_range_start_focus", || std::cell::Cell::new(false));
-    let end_focus = remember_with_key("timeline_range_end_focus", || std::cell::Cell::new(false));
-    let was_start = remember_with_key("timeline_range_start_was", || std::cell::Cell::new(false));
-    let was_end = remember_with_key("timeline_range_end_was", || std::cell::Cell::new(false));
+    let start_focus = remember_auto("start_focus", || std::cell::Cell::new(false));
+    let end_focus = remember_auto("end_focus", || std::cell::Cell::new(false));
+    let was_start = remember_auto("was_start", || std::cell::Cell::new(false));
+    let was_end = remember_auto("was_end", || std::cell::Cell::new(false));
     let th = theme();
 
     {
@@ -344,15 +341,77 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
     ))
 }
 
+/// Map one timeline key event onto a semantic [`TimelineKey`] and dispatch it.
+/// Returns true when the event was consumed. `Home`/`End` move the playhead
+/// rather than the selection, so they are resolved here instead of in the
+/// behavior crate.
+fn handle_timeline_key(session: &SessionRef, event: KeyEvent) -> bool {
+    if event.event_type != KeyEventType::Down {
+        return false;
+    }
+    let cmd = event.modifiers.command;
+    let shift = event.modifiers.shift;
+    let step = |frames: i64| {
+        if cmd {
+            None
+        } else {
+            Some(TimelineKey::Nudge { frames })
+        }
+    };
+    if !cmd {
+        let range = match event.key {
+            Key::Home => Some(true),
+            Key::End => Some(false),
+            _ => None,
+        };
+        if let Some(to_start) = range {
+            let mut s = session.borrow_mut();
+            let (start, end) = s
+                .file
+                .document
+                .main_composition()
+                .map(|c| (c.range.0.0, c.range.1.0))
+                .unwrap_or((0, 180));
+            s.set_playhead(if to_start { start as f64 } else { end as f64 });
+            return true;
+        }
+    }
+    let key = match event.key {
+        Key::Delete => Some(TimelineKey::Delete),
+        Key::Backspace if !cmd => Some(TimelineKey::Delete),
+        Key::Escape => Some(TimelineKey::Escape),
+        Key::Character('a') | Key::Character('A') if cmd => Some(TimelineKey::SelectAll),
+        Key::Character('d') | Key::Character('D') if cmd => Some(TimelineKey::Duplicate),
+        Key::Character('c') | Key::Character('C') if cmd => Some(TimelineKey::Copy),
+        Key::Character('x') | Key::Character('X') if cmd => Some(TimelineKey::Cut),
+        Key::Character('v') | Key::Character('V') if cmd => Some(TimelineKey::Paste),
+        Key::ArrowLeft => step(if shift { -10 } else { -1 }),
+        Key::ArrowRight => step(if shift { 10 } else { 1 }),
+        _ => None,
+    };
+    let Some(key) = key else {
+        return false;
+    };
+    let mut s = session.borrow_mut();
+    dispatch_timeline(&mut s, TimelineEvent::KeyDown(key));
+    true
+}
+
 fn TimelineCanvas(session: SessionRef) -> View {
     let sess_draw = session.clone();
     let last_click: Rc<RefCell<Option<(DVec2, web_time::Instant)>>> = Rc::new(RefCell::new(None));
     let press_moved: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let down_pos: Rc<RefCell<DVec2>> = Rc::new(RefCell::new(DVec2::ZERO));
+    let focus = remember_auto("timeline_canvas_focus", FocusRequester::new);
 
     Canvas(
         Modifier::new()
             .fill_max_size()
+            .focusable(true)
+            .on_key_event({
+                let session = session.clone();
+                move |ke: KeyEvent| handle_timeline_key(&session, ke)
+            })
             .on_scroll({
                 let session = session.clone();
                 move |delta: repose_core::Vec2| {
@@ -372,6 +431,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let last_click = last_click.clone();
                 let press_moved = press_moved.clone();
                 let down_pos = down_pos.clone();
+                let focus = focus.clone();
                 move |pe: PointerEvent| {
                     if !matches!(pe.event, PointerEventKind::Down(_)) {
                         return;
@@ -387,6 +447,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     let now = web_time::Instant::now();
                     *down_pos.borrow_mut() = pos;
                     *press_moved.borrow_mut() = false;
+                    focus.request_focus();
                     let gesture_active = {
                         let s = session.borrow();
                         s.scrub.is_dragging() || s.keys.is_active()

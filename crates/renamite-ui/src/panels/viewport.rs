@@ -7,7 +7,7 @@ use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
 use repose_core::{
     AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
-    View, remember_auto, remember_with_key, request_frame, theme,
+    View, remember_auto, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -25,7 +25,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember_auto("focus", FocusRequester::new);
 
-    let _gesture_handler = remember_with_key("viewport_gesture_handler", || {
+    let _gesture_handler = remember_auto("gesture_handler", || {
         let session = session.clone();
         repose_core::shortcuts::InstallShortcutHandler(std::rc::Rc::new(move |action| {
             use repose_core::shortcuts::{Action, Gesture};
@@ -641,7 +641,7 @@ fn ViewportHint(session: SessionRef) -> View {
 /// Empty-composition launcher: quick-start actions plus template cards.
 fn TemplatePicker(session: SessionRef) -> View {
     let th = theme();
-    let panel_w = remember_with_key("welcome_panel_w", || Cell::new(0.0f32));
+    let panel_w = remember_auto("panel_w", || Cell::new(0.0f32));
 
     let available = welcome_available_width(panel_w.get());
     let content_w = (available - 48.0).max(0.0);

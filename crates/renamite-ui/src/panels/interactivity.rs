@@ -26,8 +26,8 @@ use repose_core::geometry::Rect;
 use repose_core::input::PointerEvent;
 use repose_core::input::{PointerButton, PointerEventKind as UiPointerEventKind};
 use repose_core::{
-    AlignItems, Color, Dp, Modifier, PaddingValues, Px, Vec2, View, remember_with_key,
-    request_frame, theme,
+    AlignItems, Color, Dp, Modifier, PaddingValues, Px, Vec2, View, remember_state_auto,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, DropdownMenu, DropdownMenuConfig, DropdownMenuEntry, DropdownMenuItem,
@@ -698,9 +698,7 @@ fn InputRow(
 fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
     let draw_session = session.clone();
     let last_click: Rc<RefCell<Option<(DVec2, Instant)>>> =
-        remember_with_key("machine_graph_last_click", || {
-            RefCell::new(None::<(DVec2, Instant)>)
-        });
+        remember_state_auto("last_click", || None::<(DVec2, Instant)>);
     let view = graph_view(machine_id);
     let graph_rect = graph_screen_rect(machine_id);
     let last_pointer: Rc<RefCell<DVec2>> =
