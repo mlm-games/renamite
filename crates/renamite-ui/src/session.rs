@@ -3113,9 +3113,13 @@ impl Session {
     /// load time and the panel picks it up with no further wiring.
     pub fn sort_property_sections(&mut self, ids: &mut [String]) {
         self.property_section_order.retain(|id| ids.contains(id));
-        for id in ids.iter() {
+        // Insert a newly seen id at its discovery index rather than at the end,
+        // so a section that only appears on a later selection still lands where
+        // the panel would have rendered it without any reordering.
+        for (i, id) in ids.iter().enumerate() {
             if !self.property_section_order.contains(id) {
-                self.property_section_order.push(id.clone());
+                let at = i.min(self.property_section_order.len());
+                self.property_section_order.insert(at, id.clone());
             }
         }
         ids.sort_by_key(|id| {

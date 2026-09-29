@@ -136,7 +136,9 @@ pub fn CollapsibleSection(
             .on_globally_positioned(move |r| rect_for_pos.set(r))
             .on_drop_typed::<SectionDragPayload>(move |ev, payload| {
                 let r = card_rect.get();
-                let y = dp_to_px(Dp(ev.position.y)).0;
+                // NOTE: `DropEvent.position` is already window px; only the Dp rect
+                // needs converting before the two can be compared.
+                let y = ev.position.y;
                 let mid = dp_to_px(Dp(r.y + r.h * 0.5)).0;
                 on_drop(&payload.id, y > mid);
                 true

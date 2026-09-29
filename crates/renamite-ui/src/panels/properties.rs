@@ -423,13 +423,15 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
 
     let mut sections: Vec<(&str, Vec<PropRow>)> = Vec::new();
     for row in rows {
-        if let Some(last) = sections.last_mut()
-            && last.0 == row.desc.section
+        // Merge by name, not just against the tail: a section order key must be
+        // unique or two cards end up welded together when reordering.
+        match sections
+            .iter_mut()
+            .find(|(name, _)| *name == row.desc.section)
         {
-            last.1.push(row);
-            continue;
+            Some((_, props)) => props.push(row),
+            None => sections.push((row.desc.section, vec![row])),
         }
-        sections.push((row.desc.section, vec![row]));
     }
 
     let mut header_actions: Vec<View> = vec![crate::CompactSwatchButton(session.clone())];
@@ -509,14 +511,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         };
         if let Some(app) = app_opt {
             if let Some(fill_id) = app.fill {
-                if let Some(v) = paint_section_for_style(
+                if let Some((paint_id, v)) = paint_section_for_style(
                     session.clone(),
                     app.shape_for_axis,
                     fill_id,
                     playhead,
                     record,
                 ) {
-                    appearance.push(("paint".into(), v));
+                    appearance.push((paint_id, v));
                 }
                 if let Some(v) = style_prop_rows(
                     session.clone(),
@@ -530,14 +532,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 }
             }
             if let Some(stroke_id) = app.stroke {
-                if let Some(v) = paint_section_for_style(
+                if let Some((paint_id, v)) = paint_section_for_style(
                     session.clone(),
                     app.shape_for_axis,
                     stroke_id,
                     playhead,
                     record,
                 ) {
-                    appearance.push(("paint".into(), v));
+                    appearance.push((paint_id, v));
                 }
                 if let Some(v) = style_prop_rows(
                     session.clone(),
@@ -602,8 +604,10 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     section_drag(session.clone(), "style_actions", "Appearance"),
                 ),
             ));
-        } else if let Some(v) = paint_section(session.clone(), &[inspect_id], playhead, record) {
-            appearance.push(("paint".into(), v));
+        } else if let Some((paint_id, v)) =
+            paint_section(session.clone(), &[inspect_id], playhead, record)
+        {
+            appearance.push((paint_id, v));
             if let Some(section) =
                 stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
             {
@@ -1573,7 +1577,7 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             FlowRowConfig::default(),
         )
         .child(buttons),
-        section_drag(session.clone(), "modifier_actions", "Modifiers"),
+        None,
     ))
 }
 
@@ -3804,7 +3808,7 @@ fn paint_section_for_style(
     style_id: NodeId,
     playhead: Frame,
     record: bool,
-) -> Option<View> {
+) -> Option<(String, View)> {
     let (paint, section_label, solid_path) = {
         let session = session.borrow();
         let node = session.file.document.nodes.get(style_id)?;
@@ -4014,12 +4018,19 @@ fn paint_section_for_style(
                 .color(th.on_surface_variant),
         )),
     );
-    Some(crate::components::CollapsibleSection(
-        format!("paint_section_{:?}", style_id),
-        section_label.clone(),
-        vec![],
-        Column(Modifier::new().fill_max_width()).child(children),
-        section_drag(session.clone(), "paint", section_label),
+    Some((
+        format!("paint:{section_label}"),
+        crate::components::CollapsibleSection(
+            format!("paint_section_{:?}", style_id),
+            section_label.clone(),
+            vec![],
+            Column(Modifier::new().fill_max_width()).child(children),
+            section_drag(
+                session.clone(),
+                format!("paint:{section_label}"),
+                section_label,
+            ),
+        ),
     ))
 }
 
@@ -4046,7 +4057,7 @@ fn paint_section(
     ids: &[NodeId],
     playhead: Frame,
     record: bool,
-) -> Option<View> {
+) -> Option<(String, View)> {
     if ids.len() != 1 {
         return None;
     }
