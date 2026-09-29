@@ -232,28 +232,38 @@ fn RangeEditor(
         let end_state = end_state.clone();
         BasicTextField(
             state,
-            Modifier::new()
-                .width(Dp(48.0))
-                .height(Dp(28.0))
-                .on_focus_changed(crate::shortcuts::note_text_focus)
-                .on_key_event({
-                    let committed = committed.clone();
-                    let start_state = start_state.clone();
-                    let end_state = end_state.clone();
-                    move |ke: KeyEvent| {
-                        if matches!(ke.key, Key::Escape) {
-                            let c = committed.borrow();
-                            start_state.borrow_mut().text = c.0.to_string();
-                            end_state.borrow_mut().text = c.1.to_string();
-                            return true;
-                        }
-                        false
+            crate::components::field_container(
+                Modifier::new()
+                    .width(Dp(48.0))
+                    .height(Dp(28.0))
+                    .padding_values(repose_core::PaddingValues {
+                        left: Dp(6.0),
+                        right: Dp(6.0),
+                        top: Dp(2.0),
+                        bottom: Dp(2.0),
+                    }),
+                focus.get(),
+            )
+            .on_focus_changed(crate::shortcuts::note_text_focus)
+            .on_key_event({
+                let committed = committed.clone();
+                let start_state = start_state.clone();
+                let end_state = end_state.clone();
+                move |ke: KeyEvent| {
+                    if matches!(ke.key, Key::Escape) {
+                        let c = committed.borrow();
+                        start_state.borrow_mut().text = c.0.to_string();
+                        end_state.borrow_mut().text = c.1.to_string();
+                        return true;
                     }
-                }),
+                    false
+                }
+            }),
             "",
             TextFieldConfig {
                 line_limits: TextFieldLineLimits::SingleLine,
                 focus_tracker: Some(focus),
+                cursor_brush: Some(crate::components::field_cursor_brush()),
                 on_submit: Some(Rc::new(move |_| {
                     let start = start_state
                         .borrow()

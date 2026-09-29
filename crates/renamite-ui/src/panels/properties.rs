@@ -40,11 +40,33 @@ use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, FlowRow, FlowRowConfig, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
 
-use crate::components::{CompactIconAction, PanelHeader};
+use crate::components::{CompactIconAction, PanelHeader, SectionDrag};
 use crate::session::{
     EditorMode, InspectorDrag, PickerTarget, Session, SessionRef, overlay_anchor,
 };
 use crate::symbols::{AppIcon, Symbols};
+
+/// Opt a section card into the panel's drag-to-reorder list.
+///
+/// `id` is the order key. It must be stable across selections, so it cannot
+/// embed a `NodeId` the way the collapse-state key does.
+fn section_drag(
+    session: SessionRef,
+    id: impl Into<String>,
+    label: impl Into<String>,
+) -> Option<SectionDrag> {
+    let id = id.into();
+    let label = label.into();
+    Some(SectionDrag {
+        id: id.clone(),
+        label,
+        on_drop: Rc::new(move |dragged, after| {
+            session
+                .borrow_mut()
+                .move_property_section(dragged, &id, after);
+        }),
+    })
+}
 
 pub fn PropertiesPanel(session: SessionRef) -> View {
     let th = theme();
@@ -364,6 +386,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                             .color(th.on_surface_variant),
                     )),
                 )),
+                None,
             )
         };
         return Column(Modifier::new().fill_max_size()).child((
@@ -450,8 +473,9 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     } else {
         ids.clone()
     };
-    let build_prop_section = |section: &str, props: &[PropRow]| -> View {
-        crate::components::CollapsibleSection(
+    let build_prop_section = |section: &str, props: &[PropRow]| -> (String, View) {
+        let id = format!("props:{section}");
+        let view = crate::components::CollapsibleSection(
             format!("props_section_{section}"),
             section,
             vec![],
@@ -470,13 +494,14 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     })
                     .collect::<Vec<_>>(),
             ),
-        )
+            section_drag(session.clone(), id.clone(), section),
+        );
+        (id, view)
     };
-    let mut transform_views: Vec<View> = Vec::new();
-    let mut content_views: Vec<View> = Vec::new();
-    let mut appearance_views: Vec<View> = Vec::new();
-    let mut modifier_views: Vec<View> = Vec::new();
-    let mut meta_views: Vec<View> = Vec::new();
+    let mut transform: Vec<(String, View)> = Vec::new();
+    let mut content: Vec<(String, View)> = Vec::new();
+    let mut appearance: Vec<(String, View)> = Vec::new();
+    let mut modifier: Vec<(String, View)> = Vec::new();
     if let Some(inspect_id) = inspect_id_opt {
         let app_opt = {
             let s = session.borrow();
@@ -491,7 +516,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     playhead,
                     record,
                 ) {
-                    appearance_views.push(v);
+                    appearance.push(("paint".into(), v));
                 }
                 if let Some(v) = style_prop_rows(
                     session.clone(),
@@ -501,7 +526,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     diamond_quiet,
                     "Fill",
                 ) {
-                    appearance_views.push(v);
+                    appearance.push(("style:Fill".into(), v));
                 }
             }
             if let Some(stroke_id) = app.stroke {
@@ -512,7 +537,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     playhead,
                     record,
                 ) {
-                    appearance_views.push(v);
+                    appearance.push(("paint".into(), v));
                 }
                 if let Some(v) = style_prop_rows(
                     session.clone(),
@@ -522,12 +547,12 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     diamond_quiet,
                     "Stroke",
                 ) {
-                    appearance_views.push(v);
+                    appearance.push(("style:Stroke".into(), v));
                 }
                 if let Some(v) =
                     stroke_dash_section(session.clone(), stroke_id, playhead, record, diamond_quiet)
                 {
-                    appearance_views.push(v);
+                    appearance.push(("dash".into(), v));
                 }
             }
             let mut chips: Vec<View> = Vec::new();
@@ -555,42 +580,46 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     StyleAction::Remove(StyleAdd::Stroke),
                 )),
             }
-            appearance_views.push(crate::components::CollapsibleSection(
-                "add_style_section",
-                "Appearance",
-                vec![],
-                FlowRow(
-                    Modifier::new()
-                        .fill_max_width()
-                        .padding_values(PaddingValues {
-                            left: Dp(12.0),
-                            right: Dp(12.0),
-                            top: Dp(8.0),
-                            bottom: Dp(8.0),
-                        })
-                        .gap(Dp(8.0)),
-                    FlowRowConfig::default(),
-                )
-                .child(chips),
+            appearance.push((
+                "style_actions",
+                crate::components::CollapsibleSection(
+                    "add_style_section",
+                    "Appearance",
+                    vec![],
+                    FlowRow(
+                        Modifier::new()
+                            .fill_max_width()
+                            .padding_values(PaddingValues {
+                                left: Dp(12.0),
+                                right: Dp(12.0),
+                                top: Dp(8.0),
+                                bottom: Dp(8.0),
+                            })
+                            .gap(Dp(8.0)),
+                        FlowRowConfig::default(),
+                    )
+                    .child(chips),
+                    section_drag(session.clone(), "style_actions", "Appearance"),
+                ),
             ));
         } else if let Some(v) = paint_section(session.clone(), &[inspect_id], playhead, record) {
-            appearance_views.push(v);
+            appearance.push(("paint".into(), v));
             if let Some(section) =
                 stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
             {
-                appearance_views.push(section);
+                appearance.push(("dash".into(), section));
             }
         } else if let Some(section) =
             stroke_dash_section(session.clone(), inspect_id, playhead, record, diamond_quiet)
         {
-            appearance_views.push(section);
+            appearance.push(("dash".into(), section));
         }
     }
 
     let showed_text_section = if let Some(inspect_id) = inspect_id_opt {
         match text_section(session.clone(), inspect_id) {
             Some(section) => {
-                content_views.push(section);
+                content.push(("text".into(), section));
                 true
             }
             None => false,
@@ -602,30 +631,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
     if let Some(inspect_id) = inspect_id_opt
         && let Some(section) = image_meta_section(session.clone(), inspect_id)
     {
-        content_views.push(section);
-    }
-
-    if let Some(inspect_id) = inspect_id_opt {
-        if let Some(v) = layer_section(session.clone(), inspect_id) {
-            meta_views.push(v);
-        }
-        if let Some(v) = precomp_section(session.clone(), inspect_id) {
-            meta_views.push(v);
-        }
-        if let Some(v) = use_section(session.clone(), inspect_id) {
-            meta_views.push(v);
-        }
-        if inspect_id != ids[0] {
-            if let Some(v) = layer_section(session.clone(), ids[0]) {
-                meta_views.push(v);
-            }
-            if let Some(v) = precomp_section(session.clone(), ids[0]) {
-                meta_views.push(v);
-            }
-            if let Some(v) = use_section(session.clone(), ids[0]) {
-                meta_views.push(v);
-            }
-        }
+        content.push(("image".into(), section));
     }
 
     for (section, props) in sections {
@@ -646,25 +652,32 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         if skip_duplicate {
             continue;
         }
-        let view = build_prop_section(section, &props);
+        let (id, view) = build_prop_section(section, &props);
+        // Same grouping the panel has always shipped, so an untouched session
+        // renders byte-for-byte the layout it did before.
         match section {
-            "Transform" => transform_views.push(view),
-            "Shape" | "Text" | "Image" | "Mask" => content_views.push(view),
-            "Fill" | "Stroke" => appearance_views.push(view),
-            _ => modifier_views.push(view),
+            "Transform" => transform.push((id, view)),
+            "Shape" | "Text" | "Image" | "Mask" => content.push((id, view)),
+            "Fill" | "Stroke" => appearance.push((id, view)),
+            _ => modifier.push((id, view)),
         }
     }
-    for v in transform_views {
-        children.push(v);
+
+    let mut cards: Vec<(String, View)> = Vec::new();
+    cards.append(&mut transform);
+    cards.append(&mut content);
+    cards.append(&mut appearance);
+    cards.append(&mut modifier);
+
+    {
+        let mut order: Vec<String> = cards.iter().map(|(id, _)| id.clone()).collect();
+        session.borrow_mut().sort_property_sections(&mut order);
+        let rank = |id: &String| order.iter().position(|k| k == id).unwrap_or(usize::MAX);
+        cards.sort_by_key(|(id, _)| rank(id));
     }
-    for v in content_views {
-        children.push(v);
-    }
-    for v in appearance_views {
-        children.push(v);
-    }
-    for v in modifier_views {
-        children.push(v);
+
+    for (_, view) in cards {
+        children.push(view);
     }
 
     if let Some(inspect_id) = inspect_id_opt
@@ -678,8 +691,27 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
         children.push(canvas_section(session.clone()));
     }
 
-    for v in meta_views {
-        children.push(v);
+    if let Some(inspect_id) = inspect_id_opt {
+        if let Some(v) = layer_section(session.clone(), inspect_id) {
+            children.push(v);
+        }
+        if let Some(v) = precomp_section(session.clone(), inspect_id) {
+            children.push(v);
+        }
+        if let Some(v) = use_section(session.clone(), inspect_id) {
+            children.push(v);
+        }
+        if inspect_id != ids[0] {
+            if let Some(v) = layer_section(session.clone(), ids[0]) {
+                children.push(v);
+            }
+            if let Some(v) = precomp_section(session.clone(), ids[0]) {
+                children.push(v);
+            }
+            if let Some(v) = use_section(session.clone(), ids[0]) {
+                children.push(v);
+            }
+        }
     }
 
     let header = children.remove(0);
@@ -949,42 +981,51 @@ fn scrub_f64_w(
         }
         return Box(Modifier::new().width(Dp(min_width))).child(
             View::new(0, ViewKind::Box).modifier(
-                Modifier::new()
-                    .focus_requester(focus_requester.as_ref().clone())
-                    .on_focus_changed(crate::shortcuts::note_text_focus)
-                    .text_input(TextInputConfig {
-                        hint: String::new(),
-                        sensitive: false,
-                        multiline: false,
-                        on_change: Some({
-                            let draft = draft.clone();
-                            Rc::new(move |text: String| {
-                                *draft.borrow_mut() = text;
-                            }) as Rc<dyn Fn(String)>
+                crate::components::field_container(
+                    Modifier::new()
+                        .focus_requester(focus_requester.as_ref().clone())
+                        .padding_values(PaddingValues {
+                            left: Dp(4.0),
+                            right: Dp(4.0),
+                            top: Dp(2.0),
+                            bottom: Dp(2.0),
                         }),
-                        on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
-                        focus_tracker: Some(focus.clone()),
-                        value: draft.borrow().clone(),
-                        visual_transformation: None,
-                        keyboard_type: KeyboardType::Decimal,
-                        capitalization: KeyboardCapitalization::None,
-                        ime_action: ImeAction::Done,
-                        auto_correct_enabled: Some(false),
-                        enabled: true,
-                        read_only: false,
-                        max_lines: Some(1),
-                        min_lines: 1,
-                        cursor_color: Some(th.primary),
-                        on_text_layout: None,
-                        text_style: Some(repose_core::TextStyle {
-                            font_size: 14.0.sp(),
-                            color: Some(th.primary),
-                            ..Default::default()
-                        }),
-                        keyboard_actions: None,
-                        interaction_source: None,
-                        line_limits: Some(TextFieldLineLimits::SingleLine),
+                    focus.get(),
+                )
+                .on_focus_changed(crate::shortcuts::note_text_focus)
+                .text_input(TextInputConfig {
+                    hint: String::new(),
+                    sensitive: false,
+                    multiline: false,
+                    on_change: Some({
+                        let draft = draft.clone();
+                        Rc::new(move |text: String| {
+                            *draft.borrow_mut() = text;
+                        }) as Rc<dyn Fn(String)>
                     }),
+                    on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
+                    focus_tracker: Some(focus.clone()),
+                    value: draft.borrow().clone(),
+                    visual_transformation: None,
+                    keyboard_type: KeyboardType::Decimal,
+                    capitalization: KeyboardCapitalization::None,
+                    ime_action: ImeAction::Done,
+                    auto_correct_enabled: Some(false),
+                    enabled: true,
+                    read_only: false,
+                    max_lines: Some(1),
+                    min_lines: 1,
+                    cursor_color: Some(th.primary),
+                    on_text_layout: None,
+                    text_style: Some(repose_core::TextStyle {
+                        font_size: 14.0.sp(),
+                        color: Some(th.primary),
+                        ..Default::default()
+                    }),
+                    keyboard_actions: None,
+                    interaction_source: None,
+                    line_limits: Some(TextFieldLineLimits::SingleLine),
+                }),
             ),
         );
     }
@@ -995,6 +1036,7 @@ fn scrub_f64_w(
         .modifier(
             Modifier::new()
                 .min_width(Dp(min_width))
+                .cursor(repose_core::CursorIcon::EwResize)
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
@@ -1531,6 +1573,7 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             FlowRowConfig::default(),
         )
         .child(buttons),
+        section_drag(session.clone(), "modifier_actions", "Modifiers"),
     ))
 }
 
@@ -1812,6 +1855,7 @@ fn bool_toggle_segment(
                 } else {
                     th.surface
                 })
+                .clip_rounded(Dp(6.0))
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
@@ -1874,6 +1918,7 @@ fn enum2_segment(
                 } else {
                     th.surface
                 })
+                .clip_rounded(Dp(6.0))
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
@@ -1936,6 +1981,7 @@ fn enum3_segment(
                 } else {
                     th.surface
                 })
+                .clip_rounded(Dp(6.0))
                 .on_pointer_down({
                     let session = session.clone();
                     let ids = ids.clone();
@@ -2100,6 +2146,7 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                     })
                     .collect::<Vec<_>>(),
             ),
+            section_drag(session.clone(), "text", "Text"),
         )),
     ))
 }
@@ -2316,6 +2363,7 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
         "Align & Arrange",
         vec![],
         Column(Modifier::new().fill_max_width()).child(rows),
+        None,
     )
 }
 
@@ -2475,6 +2523,7 @@ fn canvas_section(session: SessionRef) -> View {
         "Canvas & Guides",
         vec![],
         Column(Modifier::new().fill_max_width()).child(rows),
+        None,
     )
 }
 
@@ -2589,6 +2638,7 @@ fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
                 )),
             )),
         ),
+        None,
     ))
 }
 
@@ -2894,6 +2944,7 @@ fn image_meta_section(session: SessionRef, id: NodeId) -> Option<View> {
         "Image Info",
         vec![],
         Column(Modifier::new().fill_max_width()).child(children),
+        section_drag(session.clone(), "image", "Image Info"),
     ))
 }
 
@@ -3130,6 +3181,7 @@ fn layer_section(session: SessionRef, id: NodeId) -> Option<View> {
                 chips
             }),
         )),
+        None,
     ))
 }
 
@@ -3333,6 +3385,7 @@ fn precomp_section(session: SessionRef, id: NodeId) -> Option<View> {
                 chips
             }),
         )),
+        None,
     ))
 }
 
@@ -3410,6 +3463,7 @@ fn use_section(session: SessionRef, id: NodeId) -> Option<View> {
                     })),
             )),
         )),
+        None,
     ))
 }
 
@@ -3739,6 +3793,7 @@ fn style_prop_rows(
                     )
                 })
                 .collect::<Vec<_>>(),
+            section_drag(session.clone(), format!("style:{section}"), section),
         ),
     ))
 }
@@ -3961,9 +4016,10 @@ fn paint_section_for_style(
     );
     Some(crate::components::CollapsibleSection(
         format!("paint_section_{:?}", style_id),
-        section_label,
+        section_label.clone(),
         vec![],
         Column(Modifier::new().fill_max_width()).child(children),
+        section_drag(session.clone(), "paint", section_label),
     ))
 }
 
@@ -4357,6 +4413,7 @@ fn stroke_dash_section(
             "Dash",
             vec![],
             Column(Modifier::new().fill_max_width()).child(children),
+            section_drag(session.clone(), "dash", "Dash"),
         ));
     };
 
@@ -4447,6 +4504,7 @@ fn stroke_dash_section(
         "Dash",
         vec![],
         Column(Modifier::new().fill_max_width()).child(children),
+        section_drag(session.clone(), "dash", "Dash"),
     ))
 }
 

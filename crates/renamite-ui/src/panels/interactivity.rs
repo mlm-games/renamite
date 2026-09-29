@@ -346,6 +346,7 @@ fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
             "Inputs",
             vec![],
             InputsSection(session.clone(), machine_id),
+            None,
         ),
         CollapsibleSection(
             "sm_graph",
@@ -376,18 +377,21 @@ fn MachineBody(session: SessionRef, machine_id: MachineId) -> View {
                 }),
             ],
             MachineGraph(session.clone(), machine_id),
+            None,
         ),
         CollapsibleSection(
             "sm_inspector",
             "Selection",
             vec![],
             SelectionInspector(session.clone(), machine_id),
+            None,
         ),
         CollapsibleSection(
             "sm_listeners",
             "Listeners",
             vec![],
             ListenersSection(session, machine_id),
+            None,
         ),
     ))
 }

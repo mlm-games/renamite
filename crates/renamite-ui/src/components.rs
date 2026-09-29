@@ -1,7 +1,9 @@
+use repose_core::dnd::{DragDropModifierExt, drag_preview_chip, provide_drag_preview};
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Dp, Modifier, MutableInteractionSource, PaddingValues, TextFieldLineLimits,
-    UnitExt, View, remember_auto, remember_state_with_key, remember_with_key, request_frame, theme,
+    AlignItems, Brush, Dp, Modifier, MutableInteractionSource, PaddingValues, Rect,
+    TextFieldLineLimits, UnitExt, View, dp_to_px, remember_auto, remember_state_with_key,
+    remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
@@ -10,7 +12,7 @@ use repose_material::material3::{
 };
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::symbols::AppIcon;
@@ -53,17 +55,42 @@ pub fn PanelHeader(symbol: Symbol, title: impl Into<String>, actions: Vec<View>)
     ))
 }
 
+/// Payload moved while a section card is dragged to a new slot.
+pub struct SectionDragPayload {
+    pub id: String,
+}
+
+/// Opt-in drag-to-reorder wiring for a [`CollapsibleSection`].
+///
+/// Repose arbitrates click vs drag itself: `on_drag_start` only fires past the
+/// pointer slop, and a drag that started suppresses the trailing click, so the
+/// header stays a plain collapse toggle until the pointer actually moves.
+///
+/// `on_drop` receives the dragged id and whether the drop landed in the lower
+/// half of the target card (`true` = insert after, `false` = insert before).
+#[derive(Clone)]
+pub struct SectionDrag {
+    pub id: String,
+    pub label: String,
+    pub on_drop: Rc<dyn Fn(&str, bool)>,
+}
+
 /// A Material-style collapsible card: a tappable section header with a chevron
 /// that expands/collapses the body underneath. Collapse state is remembered
 /// per `key` so it survives recomposition (but resets across sessions).
+///
+/// `drag` opts the card into the owning panel's drag-to-reorder list; pass
+/// `None` to leave it fixed.
 pub fn CollapsibleSection(
     key: impl Into<String>,
     title: impl Into<String>,
     actions: Vec<View>,
     body: View,
+    drag: Option<SectionDrag>,
 ) -> View {
+    let key = key.into();
     let title = title.into();
-    let open = remember_state_with_key(key, || true);
+    let open = remember_state_with_key(key.clone(), || true);
     let is_open = *open.borrow();
     let th = theme();
     let toggle_open = {
@@ -75,9 +102,58 @@ pub fn CollapsibleSection(
         }
     };
 
+    let mut card = Modifier::new().fill_max_width();
+    let mut header = Modifier::new()
+        .height(Dp(40.0))
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: Dp(12.0),
+            right: Dp(8.0),
+            top: Dp(0.0),
+            bottom: Dp(0.0),
+        })
+        .align_items(AlignItems::CENTER)
+        .gap(Dp(4.0))
+        .clickable()
+        .cursor(repose_core::CursorIcon::Pointer)
+        .on_pointer_down(toggle_open);
+
+    if let Some(d) = drag {
+        let SectionDrag {
+            id: drag_id,
+            label: drag_label,
+            on_drop,
+        } = d;
+        // Keyed on the card's own collapse key, not `remember_auto`: the panel
+        // emits a varying number of cards per selection, and an auto slot is
+        // positional, so the rect would migrate between cards when the set
+        // changes.
+        let card_rect: Rc<Cell<Rect>> =
+            remember_with_key(format!("card_rect:{key}"), || Cell::new(Rect::default));
+        let accent = th.primary;
+        let rect_for_pos = card_rect.clone();
+        card = card
+            .on_globally_positioned(move |r| rect_for_pos.set(r))
+            .on_drop_typed::<SectionDragPayload>(move |ev, payload| {
+                let r = card_rect.get();
+                let y = dp_to_px(Dp(ev.position.y)).0;
+                let mid = dp_to_px(Dp(r.y + r.h * 0.5)).0;
+                on_drop(&payload.id, y > mid);
+                true
+            });
+        header = header
+            .cursor(repose_core::CursorIcon::Grab)
+            .drag_source(move |_| {
+                provide_drag_preview(drag_preview_chip(drag_label.clone(), accent));
+                Some(SectionDragPayload {
+                    id: drag_id.clone(),
+                })
+            });
+    }
+
     Surface(
         SurfaceConfig {
-            modifier: Modifier::new().fill_max_width(),
+            modifier: card,
             color: th.surface_container_low,
             content_color: th.on_surface,
             shape_radius: 12.0.dp(),
@@ -86,21 +162,7 @@ pub fn CollapsibleSection(
         },
         move || {
             Column(Modifier::new().fill_max_width()).child((
-                Row(Modifier::new()
-                    .height(Dp(40.0))
-                    .fill_max_width()
-                    .padding_values(PaddingValues {
-                        left: Dp(12.0),
-                        right: Dp(8.0),
-                        top: Dp(0.0),
-                        bottom: Dp(0.0),
-                    })
-                    .align_items(AlignItems::CENTER)
-                    .gap(Dp(4.0))
-                    .clickable()
-                    .cursor(repose_core::CursorIcon::Pointer)
-                    .on_pointer_down(toggle_open))
-                .child((
+                Row(header).child((
                     Text(title.clone())
                         .size(th.typography.title_small)
                         .color(th.on_surface)
@@ -297,6 +359,40 @@ pub fn PillIconButton(
     })
 }
 
+pub const FIELD_RADIUS: Dp = Dp(8.0);
+
+pub fn field_padding() -> PaddingValues {
+    PaddingValues {
+        left: Dp(8.0),
+        right: Dp(8.0),
+        top: Dp(6.0),
+        bottom: Dp(6.0),
+    }
+}
+
+/// Container chrome for the editor's compact text inputs. `focused` comes from
+/// the field's `focus_tracker`, which the layout pass writes, so the accent
+/// lands one frame after the click - the same trade the M3 text field makes for
+/// its floating label.
+pub fn field_container(m: Modifier, focused: bool) -> Modifier {
+    let th = theme();
+    m.background(th.surface_container_highest)
+        .clip_rounded(FIELD_RADIUS)
+        .border(
+            if focused { Dp(2.0) } else { Dp(1.0) },
+            if focused {
+                th.primary
+            } else {
+                th.outline_variant
+            },
+            FIELD_RADIUS,
+        )
+}
+
+pub fn field_cursor_brush() -> Brush {
+    Brush::Solid(theme().primary)
+}
+
 /// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).
 ///
 /// The model `value` is synced into the field state on recomposition. Edits flow
@@ -312,7 +408,8 @@ pub fn AppTextField(
 ) -> View {
     let key = key.into();
     let hint = hint.into();
-    let tf_state = remember_with_key(key, || RefCell::new(TextFieldState::new()));
+    let tf_state = remember_with_key(key.clone(), || RefCell::new(TextFieldState::new()));
+    let focused: Rc<Cell<bool>> = remember_with_key(format!("{key}_focus"), || Cell::new(false));
     {
         let mut st = tf_state.borrow_mut();
         if st.text != value {
@@ -324,18 +421,14 @@ pub fn AppTextField(
     let th = theme();
     BasicTextField(
         tf_state,
-        Modifier::new()
-            .fill_max_width()
-            .height(Dp(min_height))
-            .padding_values(PaddingValues {
-                left: Dp(8.0),
-                right: Dp(8.0),
-                top: Dp(6.0),
-                bottom: Dp(6.0),
-            })
-            .background(th.surface_container_highest)
-            .clip_rounded(Dp(8.0))
-            .on_focus_changed(crate::shortcuts::note_text_focus),
+        field_container(
+            Modifier::new()
+                .fill_max_width()
+                .height(Dp(min_height))
+                .padding_values(field_padding()),
+            focused.get(),
+        )
+        .on_focus_changed(crate::shortcuts::note_text_focus),
         hint,
         TextFieldConfig {
             line_limits: if single_line {
@@ -347,6 +440,8 @@ pub fn AppTextField(
                 }
             },
             on_change: Some(Rc::new(on_change)),
+            focus_tracker: Some(focused),
+            cursor_brush: Some(field_cursor_brush()),
             text_style: repose_core::TextStyle {
                 font_size: th.typography.body_medium,
                 color: Some(th.on_surface),
@@ -372,8 +467,7 @@ pub fn name_field(
     let hint = hint.into();
     let draft: Rc<RefCell<String>> =
         remember_with_key(format!("{key}_draft"), || RefCell::new(String::new()));
-    let focused: Rc<std::cell::Cell<bool>> =
-        remember_with_key(format!("{key}_focused"), || std::cell::Cell::new(false));
+    let focused: Rc<Cell<bool>> = remember_with_key(format!("{key}_focused"), || Cell::new(false));
 
     // Sync the draft from the model value whenever the field is not focused.
     if !focused.get() && *draft.borrow() != value {
@@ -394,25 +488,21 @@ pub fn name_field(
     let focus = focused.clone();
     BasicTextField(
         tf_state,
-        Modifier::new()
-            .fill_max_width()
-            .height(Dp(min_height))
-            .padding_values(PaddingValues {
-                left: Dp(8.0),
-                right: Dp(8.0),
-                top: Dp(6.0),
-                bottom: Dp(6.0),
-            })
-            .background(th.surface_container_highest)
-            .clip_rounded(Dp(8.0))
-            .on_focus_changed(crate::shortcuts::note_text_focus)
-            .on_key_event(move |ek: KeyEvent| {
-                if matches!(ek.key, Key::Escape) {
-                    focused.set(false);
-                    return true;
-                }
-                false
-            }),
+        field_container(
+            Modifier::new()
+                .fill_max_width()
+                .height(Dp(min_height))
+                .padding_values(field_padding()),
+            focused.get(),
+        )
+        .on_focus_changed(crate::shortcuts::note_text_focus)
+        .on_key_event(move |ek: KeyEvent| {
+            if matches!(ek.key, Key::Escape) {
+                focused.set(false);
+                return true;
+            }
+            false
+        }),
         hint,
         TextFieldConfig {
             line_limits: TextFieldLineLimits::SingleLine,
@@ -425,6 +515,7 @@ pub fn name_field(
                 let trimmed = draft.borrow().trim().to_owned();
                 commit(trimmed);
             })),
+            cursor_brush: Some(field_cursor_brush()),
             text_style: repose_core::TextStyle {
                 font_size: th.typography.body_medium,
                 color: Some(th.on_surface),

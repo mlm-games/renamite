@@ -96,7 +96,8 @@ pub struct Session {
     pub last_tick: Instant,
     pub revision: u64,
     pub expanded_layers: HashSet<renamite_model::NodeId>,
-    pub layer_drag: Option<LayerDragState>,
+    pub property_section_order: Vec<String>,
+    pub layer_drop_hover: Option<LayerDropHover>,
     pub renaming: Option<(renamite_model::NodeId, String)>,
     pub record: bool,
     pub inspector_drag: Option<InspectorDrag>,
@@ -250,18 +251,15 @@ pub struct InspectorDrag {
     pub txn: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct LayerDragState {
-    pub id: renamite_model::NodeId,
-    pub hover_row: usize,
+/// Live drop feedback for the layers list while a reorder drag is in flight.
+/// Repose dispatches the drag; this only records what the hovered row resolved
+/// to so the list can draw its indicator.
+#[derive(Clone, Copy, Debug)]
+pub struct LayerDropHover {
+    pub dragged: renamite_model::NodeId,
+    pub target: renamite_model::NodeId,
     pub before: bool,
     pub as_child: bool,
-    /// Window Y (px) at press, for index math that survives scrolling.
-    pub press_window_y: f32,
-    /// Index of the dragged row at press.
-    pub press_index: usize,
-    /// Y within the pressed row at press (px, row-local).
-    pub grab_offset_y: f32,
 }
 
 #[derive(Clone)]
@@ -369,7 +367,8 @@ impl Session {
             last_tick: Instant::now(),
             revision: 0,
             expanded_layers: HashSet::new(),
-            layer_drag: None,
+            property_section_order: Vec::new(),
+            layer_drop_hover: None,
             renaming: None,
             record: false,
             inspector_drag: None,
@@ -785,7 +784,7 @@ impl Session {
         }
 
         self.inspector_drag = None;
-        self.layer_drag = None;
+        self.layer_drop_hover = None;
         self.machine_drag = None;
         self.machine_graph_gesture = None;
         self.viewport.guide_drag = None;
@@ -799,7 +798,7 @@ impl Session {
         self.context_menu = None;
         self.renaming = None;
         self.inspector_drag = None;
-        self.layer_drag = None;
+        self.layer_drop_hover = None;
         self.machine_drag = None;
         self.machine_graph_gesture = None;
         self.viewport.guide_drag = None;
@@ -2608,41 +2607,64 @@ impl Session {
         self.repaint();
     }
 
-    pub fn finish_layer_drag(&mut self) {
-        let Some(drag) = self.layer_drag.take() else {
+    /// Record where a layers reorder drag currently points, for the list's
+    /// drop indicator. Ignored when the drag is over the dragged row itself.
+    pub fn hover_layer_drop(
+        &mut self,
+        dragged: renamite_model::NodeId,
+        target: renamite_model::NodeId,
+        before: bool,
+        as_child: bool,
+    ) {
+        if dragged == target {
             return;
+        }
+        let next = LayerDropHover {
+            dragged,
+            target,
+            before,
+            as_child,
         };
-        let rows = renamite_behavior_common::layers::flatten_layers(
-            &self.file.document,
-            self.file.document.main,
-            &self.expanded_layers,
-        );
-        let Some(target) = rows.get(drag.hover_row) else {
+        if self.layer_drop_hover == Some(next) {
+            return;
+        }
+        self.layer_drop_hover = Some(next);
+        self.repaint();
+    }
+
+    pub fn clear_layer_drop(&mut self) {
+        if self.layer_drop_hover.take().is_some() {
             self.repaint();
-            return;
-        };
-        if drag.id == target.id {
+        }
+    }
+
+    pub fn apply_layer_drop(
+        &mut self,
+        dragged: renamite_model::NodeId,
+        target: &renamite_behavior_common::layers::LayerRow,
+        before: bool,
+        as_child: bool,
+    ) {
+        self.layer_drop_hover = None;
+        if dragged == target.id {
             self.repaint();
             return;
         }
-        if renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, target.id) {
+        if renamite_behavior_common::layers::is_ancestor(&self.file.document, dragged, target.id) {
             self.repaint();
             return;
         }
         if let renamite_model::Parent::Node(p) = target.parent
-            && (p == drag.id
-                || renamite_behavior_common::layers::is_ancestor(&self.file.document, drag.id, p))
+            && (p == dragged
+                || renamite_behavior_common::layers::is_ancestor(&self.file.document, dragged, p))
         {
             self.repaint();
             return;
         }
 
-        let Some(cmd) = renamite_behavior_common::layers::drop_command(
-            drag.id,
-            target,
-            drag.before,
-            drag.as_child,
-        ) else {
+        let Some(cmd) =
+            renamite_behavior_common::layers::drop_command(dragged, target, before, as_child)
+        else {
             self.repaint();
             return;
         };
@@ -2650,7 +2672,7 @@ impl Session {
             self.repaint();
             return;
         }
-        if drag.as_child {
+        if as_child {
             self.expanded_layers.insert(target.id);
         }
         self.apply_outputs(smallvec![
@@ -2976,12 +2998,11 @@ impl Session {
         {
             self.renaming = None;
         }
-        if self
-            .layer_drag
-            .as_ref()
-            .is_some_and(|drag| !node_is_attached(&self.file.document, drag.id))
-        {
-            self.layer_drag = None;
+        if self.layer_drop_hover.as_ref().is_some_and(|hover| {
+            !node_is_attached(&self.file.document, hover.dragged)
+                || !node_is_attached(&self.file.document, hover.target)
+        }) {
+            self.layer_drop_hover = None;
         }
         if self.inspector_drag.as_ref().is_some_and(|drag| {
             drag.ids
@@ -3077,6 +3098,53 @@ impl Session {
         }
         self.history.commit();
         self.engine.reevaluate(&self.file);
+        self.repaint();
+    }
+
+    /// Reorder the properties panel's section cards.
+    ///
+    /// `ids` is the panel's discovery order for the current selection. The
+    /// stored order is reconciled against it, so ids that vanished with the
+    /// selection are dropped and ids introduced by a later release are appended
+    /// instead of jumping to the top. Until the user drags anything the stored
+    /// order is exactly the discovery order, so the default panel is unchanged.
+    ///
+    /// Session state only; a prefs backend can seed `property_section_order` at
+    /// load time and the panel picks it up with no further wiring.
+    pub fn sort_property_sections(&mut self, ids: &mut [String]) {
+        self.property_section_order.retain(|id| ids.contains(id));
+        for id in ids.iter() {
+            if !self.property_section_order.contains(id) {
+                self.property_section_order.push(id.clone());
+            }
+        }
+        ids.sort_by_key(|id| {
+            self.property_section_order
+                .iter()
+                .position(|k| k == id)
+                .unwrap_or(usize::MAX)
+        });
+    }
+
+    /// Move `dragged` next to `target`, after it when `after` is set.
+    pub fn move_property_section(&mut self, dragged: &str, target: &str, after: bool) {
+        if dragged == target {
+            return;
+        }
+        let Some(from) = self
+            .property_section_order
+            .iter()
+            .position(|k| k == dragged)
+        else {
+            return;
+        };
+        let Some(to) = self.property_section_order.iter().position(|k| k == target) else {
+            return;
+        };
+        self.property_section_order.remove(from);
+        let to = to - usize::from(from < to);
+        self.property_section_order
+            .insert(to + usize::from(after), dragged.to_owned());
         self.repaint();
     }
 
@@ -3290,7 +3358,7 @@ impl Session {
         self.scrub = Default::default();
         self.record = false;
         self.expanded_layers.clear();
-        self.layer_drag = None;
+        self.layer_drop_hover = None;
         self.renaming = None;
         self.inspector_drag = None;
         self.active_machine = self
