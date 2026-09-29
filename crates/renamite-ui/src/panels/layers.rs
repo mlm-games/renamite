@@ -88,13 +88,13 @@ fn layer_drag_handlers(
         })
         .on_drag_end(move |_| end_session.borrow_mut().clear_layer_drop())
         .on_globally_positioned(move |r| row_rect.set(r))
-        .on_drag_over_typed(move |ev, p| {
+        .on_drag_over_typed::<LayerDragPayload>(move |ev, p| {
             let (before, as_child) = layer_drop_slot(&over_rect, &over_row, ev.position);
             over_session
                 .borrow_mut()
                 .hover_layer_drop(p.id, over_row.id, before, as_child);
         })
-        .on_drag_leave_typed(move |_, p| {
+        .on_drag_leave_typed::<LayerDragPayload>(move |_, p| {
             let mut s = leave_session.borrow_mut();
             if s.layer_drop_hover
                 .is_some_and(|h| h.dragged == p.id && h.target == leave_row.id)
@@ -102,7 +102,7 @@ fn layer_drag_handlers(
                 s.clear_layer_drop();
             }
         })
-        .on_drop_typed(move |ev, p| {
+        .on_drop_typed::<LayerDragPayload>(move |ev, p| {
             let (before, as_child) = layer_drop_slot(&drop_rect, &drop_row, ev.position);
             drop_session
                 .borrow_mut()
@@ -233,7 +233,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     // changes with expand/collapse, and an auto slot is positional.
     let row_rect: Rc<std::cell::Cell<Rect>> =
         remember_with_key(format!("layer_row_rect:{id:?}"), || {
-            std::cell::Cell::new(Rect::default)
+            std::cell::Cell::new(Rect::default())
         });
     let row_view = Row(layer_drag_handlers(
         Modifier::new()

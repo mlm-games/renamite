@@ -254,7 +254,7 @@ pub struct InspectorDrag {
 /// Live drop feedback for the layers list while a reorder drag is in flight.
 /// Repose dispatches the drag; this only records what the hovered row resolved
 /// to so the list can draw its indicator.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerDropHover {
     pub dragged: renamite_model::NodeId,
     pub target: renamite_model::NodeId,

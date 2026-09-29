@@ -581,7 +581,7 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 )),
             }
             appearance.push((
-                "style_actions",
+                "style_actions".to_owned(),
                 crate::components::CollapsibleSection(
                     "add_style_section",
                     "Appearance",
@@ -2146,8 +2146,8 @@ fn text_section(session: SessionRef, id: NodeId) -> Option<View> {
                     })
                     .collect::<Vec<_>>(),
             ),
-            section_drag(session.clone(), "text", "Text"),
         )),
+        section_drag(session.clone(), "text", "Text"),
     ))
 }
 
@@ -3793,8 +3793,8 @@ fn style_prop_rows(
                     )
                 })
                 .collect::<Vec<_>>(),
-            section_drag(session.clone(), format!("style:{section}"), section),
         ),
+        section_drag(session.clone(), format!("style:{section}"), section),
     ))
 }
 

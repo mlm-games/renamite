@@ -129,7 +129,7 @@ pub fn CollapsibleSection(
         // positional, so the rect would migrate between cards when the set
         // changes.
         let card_rect: Rc<Cell<Rect>> =
-            remember_with_key(format!("card_rect:{key}"), || Cell::new(Rect::default));
+            remember_with_key(format!("card_rect:{key}"), || Cell::new(Rect::default()));
         let accent = th.primary;
         let rect_for_pos = card_rect.clone();
         card = card
