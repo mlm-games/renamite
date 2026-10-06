@@ -29,6 +29,13 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         ),
     );
 
+    rlobkit_app_events::system_bars::set_system_bars_visible(
+        rlobkit_app_events::system_bars::SystemBars {
+            status: false,
+            navigation: true,
+        },
+    );
+
     rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {
         let r = repose_core::locals::WindowInsets {
             top: insets.top,
