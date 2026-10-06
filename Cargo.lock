@@ -3229,6 +3229,7 @@ version = "0.3.6"
 dependencies = [
  "anyhow",
  "env_logger",
+ "renamite-platform",
  "renamite-ui",
  "repose-core",
  "repose-platform",

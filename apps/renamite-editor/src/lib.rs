@@ -29,6 +29,8 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         ),
     );
 
+    renamite_platform::dialogs::init();
+
     rlobkit_app_events::system_bars::set_system_bars_visible(
         rlobkit_app_events::system_bars::SystemBars {
             status: false,

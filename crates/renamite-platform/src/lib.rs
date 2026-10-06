@@ -182,12 +182,19 @@ pub mod dialogs {
         {
             std::thread::spawn(move || {
                 let opts = save_options(title, &suggested_name, extensions);
-                let ok = futures_lite::future::block_on(rlobkit_dialogs::RlobKit::save_bytes(
+                let ok = match futures_lite::future::block_on(rlobkit_dialogs::RlobKit::save_bytes(
                     opts, &data,
-                ))
-                .ok()
-                .flatten()
-                .is_some();
+                )) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => {
+                        log::warn!("save_bytes: picker dismissed, nothing written");
+                        false
+                    }
+                    Err(e) => {
+                        log::error!("save_bytes failed: {e:?}");
+                        false
+                    }
+                };
                 on_done(SaveOutcome { ok, path: None });
             });
         }
