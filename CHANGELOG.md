@@ -1,3 +1,9 @@
+## v0.3.7
+
+- add rlobkit init line (missed)
+- hide status bar
+
+
 # Changelog
 
 ## v0.3.6

@@ -58,6 +58,14 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.7" date="2026-10-06" type="stable">
+      <description>
+        <ul>
+          <li>add rlobkit init line (missed)</li>
+          <li>hide status bar</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.6" date="2026-10-06" type="stable">
       <description>
         <ul>

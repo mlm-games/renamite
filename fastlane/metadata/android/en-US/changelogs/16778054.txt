@@ -1,0 +1,2 @@
+- add rlobkit init line (missed)
+- hide status bar
