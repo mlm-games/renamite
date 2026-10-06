@@ -58,6 +58,21 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.6" date="2026-10-06" type="stable">
+      <description>
+        <ul>
+          <li>cargo update</li>
+          <li>fmt</li>
+          <li>web: fix</li>
+          <li>cargo update</li>
+          <li>use the better textfield properties already in repose, and dnd for collapsable containers</li>
+          <li>fix dropdown issue</li>
+          <li>partial timeline shortcuts</li>
+          <li>fix(ci): namespace the crate-publish concurrency group</li>
+          <li>to preserve tooltip pos after recomp.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-01" type="stable">
       <description>
         <ul>

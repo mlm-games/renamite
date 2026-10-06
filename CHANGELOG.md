@@ -1,0 +1,14 @@
+# Changelog
+
+## v0.3.6
+
+- cargo update
+- fmt
+- web: fix
+- cargo update
+- use the better textfield properties already in repose, and dnd for collapsable containers
+- fix dropdown issue
+- partial timeline shortcuts
+- fix(ci): namespace the crate-publish concurrency group
+- to preserve tooltip pos after recomp.
+
