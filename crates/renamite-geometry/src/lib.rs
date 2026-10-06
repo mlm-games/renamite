@@ -547,6 +547,36 @@ pub fn contours_to_bez(contours: &[VectorPath]) -> BezPath {
     out
 }
 
+/// Add a `ClosePath` to every subpath of `path` that does not end with one.
+///
+/// Add a `ClosePath` to every subpath of `path` that does not end with one.
+///
+/// An outline the user left open (a pen path that does not meet its start) still
+/// paints as a filled region, because filling closes it implicitly. Booleans have
+/// to read that same region; linesweeper rejects open input outright rather than
+/// guessing.
+fn close_open_subpaths(path: &BezPath) -> BezPath {
+    let mut out = BezPath::new();
+    let mut open = false;
+    for element in path.elements() {
+        match element {
+            PathEl::MoveTo(_) => {
+                if open {
+                    out.push(PathEl::ClosePath);
+                }
+                open = true;
+            }
+            PathEl::ClosePath => open = false,
+            _ => {}
+        }
+        out.push(*element);
+    }
+    if open {
+        out.push(PathEl::ClosePath);
+    }
+    out
+}
+
 /// Linesweeper-backed boolean op on raw Bézier outlines.
 ///
 /// Unlike [`boolean_op`], both sides may already be compound (multi-subpath)
@@ -557,8 +587,10 @@ pub fn boolean_bez(
     b: &BezPath,
     op: BooleanOp,
 ) -> Result<Vec<VectorPath>, PathOpError> {
+    let a = close_open_subpaths(a);
+    let b = close_open_subpaths(b);
     let contours =
-        linesweeper::binary_op(a, b, linesweeper::FillRule::NonZero, map_boolean_op(op))?;
+        linesweeper::binary_op(&a, &b, linesweeper::FillRule::NonZero, map_boolean_op(op))?;
 
     let result = contours
         .contours()
@@ -585,6 +617,24 @@ pub fn boolean_op(
         return Err(PathOpError::OpenPath);
     }
     boolean_bez(&a.to_bez_path(), &b.to_bez_path(), op)
+}
+
+/// Fold a trailing anchor that lands back on `start` into the first anchor,
+/// which is what an explicit `ClosePath` means. Reports whether it folded.
+fn fold_onto_start(out: &mut VectorPath, start: DVec2) -> bool {
+    if out.anchors.len() < 2 {
+        return false;
+    }
+    let tail = out.anchors[out.anchors.len() - 1].pos;
+    if (tail - start).length_squared() >= 1e-12 {
+        return false;
+    }
+    if let Some(last) = out.anchors.pop() {
+        out.anchors[0].tan_in = last.tan_in;
+        true
+    } else {
+        false
+    }
 }
 
 fn vector_path_from_subpath(path: &BezPath) -> VectorPath {
@@ -626,16 +676,20 @@ fn vector_path_from_subpath(path: &BezPath) -> VectorPath {
             }
             PathEl::ClosePath => {
                 out.closed = true;
-                if out.anchors.len() >= 2 {
-                    let last = *out.anchors.last().unwrap();
-                    if (last.pos - start).length_squared() < 1e-12 {
-                        out.anchors[0].tan_in = last.tan_in;
-                        out.anchors.pop();
-                    }
-                }
+                fold_onto_start(&mut out, start);
                 break;
             }
         }
+    }
+    // A kurbo open primitive returns to its start point without saying so:
+    // `Ellipse` is built on `Arc`, and `Arc::path_elements` emits only MoveTo +
+    // CurveTo (kurbo arc.rs notes "shape isn't closed so area is not well
+    // defined"). Filling closes such a subpath implicitly, so closure has to be
+    // recovered from the geometry here - otherwise every ellipse round-trips as
+    // an open outline, and fills, hit tests and booleans all disagree with what
+    // is on screen.
+    if !out.closed && fold_onto_start(&mut out, start) {
+        out.closed = true;
     }
     for anchor in &mut out.anchors {
         anchor.mode = detect_mode(anchor.tan_in, anchor.tan_out);

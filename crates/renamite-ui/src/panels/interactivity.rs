@@ -1,7 +1,7 @@
 //! Interactivity panel: author state machines (inputs, states, transitions,
 //! listeners) and run them live against the editor `Engine`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use web_time::Instant;
 
@@ -3385,6 +3385,12 @@ fn listener_draft_number_scrub(session: SessionRef, value: f64, step: f64) -> Vi
 fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>) -> View {
     let key = key.into();
     let state: Rc<MenuState> = remember_with_key(format!("{key}_state"), MenuState::new);
+    // `DropdownMenu` re-anchors its popup to the trigger on every layout pass,
+    // so scrolling this panel slides an open menu (and its flip/clamp decision)
+    // around. Open it at the trigger's position instead, which pins the popup
+    // for the life of the menu.
+    let anchor: Rc<Cell<Option<Vec2>>> =
+        remember_with_key(format!("{key}_anchor"), || Cell::new(None));
     let th = theme();
 
     let trigger = Text(label)
@@ -3400,9 +3406,17 @@ fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>
                 })
                 .background(th.surface_container)
                 .clip_rounded(Dp(6.0))
+                .on_globally_positioned({
+                    let anchor = anchor.clone();
+                    move |rect| anchor.set(Some(Vec2 { x: rect.x, y: rect.y + rect.h }))
+                })
                 .on_pointer_down({
                     let state = state.clone();
-                    move |_| state.open()
+                    let anchor = anchor.clone();
+                    move |_| match anchor.get() {
+                        Some(pos) => state.open_at(pos),
+                        None => state.open(),
+                    }
                 }),
         );
 
