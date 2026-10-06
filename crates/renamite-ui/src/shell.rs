@@ -457,6 +457,8 @@ fn discard_dialog(session: SessionRef) -> View {
 }
 
 fn ExpandedWorkspace(session: SessionRef) -> View {
+    // Read the mode out of the session before building the tree a `borrow()`
+    let mode = session.borrow().mode;
     Row(Modifier::new()
         .fill_max_size()
         .padding(Dp(8.0))
@@ -464,7 +466,7 @@ fn ExpandedWorkspace(session: SessionRef) -> View {
     .child((
         crate::ToolRail(session.clone()),
         Box(Modifier::new().weight(1.0).fill_max_height())
-            .child(DockWorkspace(session.clone(), session.borrow().mode)),
+            .child(DockWorkspace(session.clone(), mode)),
     ))
 }
 
