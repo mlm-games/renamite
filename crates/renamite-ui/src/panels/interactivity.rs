@@ -3408,7 +3408,12 @@ fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>
                 .clip_rounded(Dp(6.0))
                 .on_globally_positioned({
                     let anchor = anchor.clone();
-                    move |rect| anchor.set(Some(Vec2 { x: rect.x, y: rect.y + rect.h }))
+                    move |rect| {
+                        anchor.set(Some(Vec2 {
+                            x: rect.x,
+                            y: rect.y + rect.h,
+                        }))
+                    }
                 })
                 .on_pointer_down({
                     let state = state.clone();

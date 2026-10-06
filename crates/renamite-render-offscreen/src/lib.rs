@@ -98,14 +98,9 @@ impl OffscreenRenderer {
         msaa: u32,
     ) -> anyhow::Result<Self> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let renderer = WgpuSceneRenderer::try_from_device_with_adapter(
-            adapter,
-            device,
-            queue,
-            format,
-            msaa,
-        )
-        .context("failed to build the offscreen scene renderer")?;
+        let renderer =
+            WgpuSceneRenderer::try_from_device_with_adapter(adapter, device, queue, format, msaa)
+                .context("failed to build the offscreen scene renderer")?;
         Self::from_renderer(renderer, width, height)
     }
 
@@ -236,14 +231,9 @@ impl OffscreenRenderer {
             .await?;
 
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let renderer = WgpuSceneRenderer::try_from_device_with_adapter(
-            &adapter,
-            device,
-            queue,
-            format,
-            msaa,
-        )
-        .context("failed to build the offscreen scene renderer")?;
+        let renderer =
+            WgpuSceneRenderer::try_from_device_with_adapter(&adapter, device, queue, format, msaa)
+                .context("failed to build the offscreen scene renderer")?;
 
         let (width, height) = Self::validate_dimensions(&renderer.device, width, height)?;
         let (texture, view, readback, padded_bytes_per_row) =
