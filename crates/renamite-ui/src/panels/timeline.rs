@@ -426,8 +426,14 @@ fn cancel_timeline_long_press(state: &LongPressState) {
 /// Arm the touch long press. Only touch arms it: a mouse already has the
 /// right-click path, and arming there would double-fire on press-and-hold.
 fn arm_timeline_long_press(state: &LongPressState, session: &SessionRef, pe: &PointerEvent) {
-    cancel_timeline_long_press(state);
     if pe.kind != repose_core::input::PointerKind::Touch {
+        cancel_timeline_long_press(state);
+        return;
+    }
+    // A second finger means pan/zoom: drop the first finger's pending press
+    // instead of re-arming the timer under the new one.
+    if state.borrow().is_some() {
+        cancel_timeline_long_press(state);
         return;
     }
     let pos = pe_pos(pe);
@@ -512,25 +518,27 @@ fn open_timeline_context_menu(session: &mut crate::session::Session, pos: DVec2,
 /// over the global viewport gesture handler, which would otherwise pan and zoom
 /// the *canvas* when the fingers land here.
 ///
-/// Both gestures yield while a key drag or a scrub owns the pointer, so a
-/// one-finger drag that became a key move is not then panned sideways.
+/// A key drag or scrub holds the pointer against a gesture, so a one-finger
+/// drag that became a key move is not then panned sideways - unless a finger
+/// started it, in which case the gesture takes over (see
+/// [`claim_timeline_for_gesture`]).
 fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts::Action) -> bool {
     use repose_core::shortcuts::{Action, Gesture};
     match action {
         Action::Gesture(Gesture::Pan { delta, .. }) => {
-            let mut s = session.borrow_mut();
-            if s.keys.is_active() || s.scrub.is_dragging() {
+            if !claim_timeline_for_gesture(session) {
                 return false;
             }
+            let mut s = session.borrow_mut();
             s.pan_timeline(delta.x as f64);
             true
         }
         Action::Gesture(Gesture::Pinch { delta_scale })
         | Action::Gesture(Gesture::PinchWithCenter { delta_scale, .. }) => {
-            let mut s = session.borrow_mut();
-            if s.keys.is_active() || s.scrub.is_dragging() {
+            if !claim_timeline_for_gesture(session) {
                 return false;
             }
+            let mut s = session.borrow_mut();
             // Zoom about the pinch centre in canvas-local x. A plain `Pinch`
             // carries no centre, so it anchors at the left edge.
             let local_x = match (action, s.timeline_rect) {
@@ -544,6 +552,27 @@ fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts
         }
         _ => false,
     }
+}
+
+/// Decide whether a two-finger gesture may drive the timeline, taking the
+/// pointer from a drag that only the first finger's own press started.
+///
+/// Every finger dispatches its own press, so by the time a gesture arrives the
+/// first finger has usually armed a scrub or a key drag. Two fingers mean
+/// navigate: cancel it - rolling back the transaction a key drag opened - and
+/// let the gesture through. A mouse- or stylus-started drag keeps priority.
+fn claim_timeline_for_gesture(session: &SessionRef) -> bool {
+    let mut s = session.borrow_mut();
+    let held = s.keys.is_active() || s.scrub.is_dragging() || s.timeline_pan_last.is_some();
+    if !held || !s.timeline_touch_press {
+        return !held;
+    }
+    let outs = s.keys.cancel();
+    s.apply_outputs(outs);
+    let outs = s.scrub.cancel();
+    s.apply_outputs(outs);
+    s.timeline_pan_last = None;
+    true
 }
 
 fn TimelineCanvas(session: SessionRef) -> View {
@@ -614,6 +643,8 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     if !matches!(pe.event, PointerEventKind::Down(_)) {
                         return;
                     }
+                    session.borrow_mut().timeline_touch_press =
+                        pe.kind == repose_core::input::PointerKind::Touch;
                     if let PointerEventKind::Down(b) = pe.event {
                         use repose_core::input::PointerButton as RB;
                         match b {
@@ -721,6 +752,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let press_moved = press_moved.clone();
                 let long_press = long_press.clone();
                 move |pe: PointerEvent| {
+                    session.borrow_mut().timeline_touch_press = false;
                     // A middle drag or a long press owns the lift: the former
                     // ends the pan, the latter already opened the menu and must
                     // not also register as a click (which would scrub).
@@ -761,7 +793,11 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 move |pe: PointerEvent| {
                     pe.consume();
                     cancel_timeline_long_press(&long_press);
-                    session.borrow_mut().timeline_pan_last = None;
+                    {
+                        let mut s = session.borrow_mut();
+                        s.timeline_pan_last = None;
+                        s.timeline_touch_press = false;
+                    }
                     *last_click.borrow_mut() = None;
                     *press_moved.borrow_mut() = false;
                     let mut s = session.borrow_mut();

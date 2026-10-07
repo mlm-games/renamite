@@ -139,6 +139,10 @@ pub struct Session {
     pub timeline_rect: Option<Rect>,
     /// Anchor for a middle-button / Space drag pan of the timeline.
     pub timeline_pan_last: Option<DVec2>,
+    /// The timeline press in flight came from a finger. Lets a two-finger
+    /// gesture take the pointer back instead of yielding to a drag that the
+    /// first finger's own press started.
+    pub timeline_touch_press: bool,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     autosave_last_ms: f64,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -417,6 +421,7 @@ impl Session {
             touch_active: false,
             timeline_rect: None,
             timeline_pan_last: None,
+            timeline_touch_press: false,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             autosave_last_ms: 0.0,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -4591,6 +4596,10 @@ pub struct ViewportState {
     /// `Some(true)` = route to engine, `Some(false)` = route to canvas tools.
     /// Prevents mid-drag Alt toggling from tearing the gesture.
     pub pointer_route: Option<bool>,
+    /// The canvas press in flight came from a finger. A two-finger gesture
+    /// only ever arrives while a touch press is open, so this tells a drag
+    /// the user meant from one the fingers merely started on their way down.
+    pub touch_drag: bool,
     pub last_pointer: DVec2,
     /// Whether `last_pointer` has been set by a real pointer event yet.
     /// Guards wheel-zoom anchoring before the first pointer move.
@@ -4641,6 +4650,7 @@ impl Default for ViewportState {
             space_held: false,
             pointer_down: false,
             pointer_route: None,
+            touch_drag: false,
             last_pointer: DVec2::ZERO,
             has_pointer: false,
             screen_rect: None,

@@ -51,8 +51,15 @@ fn cancel_long_press(state: &LongPressState) {
 /// right button, and a second finger cancels the pending press so a two-finger
 /// pan/zoom is never mistaken for a long press.
 fn arm_long_press(state: &LongPressState, session: &SessionRef, pe: &PointerEvent) {
-    cancel_long_press(state);
     if pe.kind != PointerKind::Touch {
+        cancel_long_press(state);
+        return;
+    }
+    // A second finger down means the first one's press was the opening move
+    // of a two-finger pan/zoom, not a request for a menu. Drop it rather
+    // than re-arming the timer under the new finger.
+    if state.borrow().is_some() {
+        cancel_long_press(state);
         return;
     }
     let pos = pe_pos(pe);
@@ -174,6 +181,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
                         s.viewport.has_pointer = true;
+                        s.viewport.touch_drag = pe.kind == PointerKind::Touch;
 
                         if map_button(&pe) == PointerButton::Secondary {
                             focus.request_focus();
@@ -340,6 +348,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         }
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
+                        s.viewport.touch_drag = false;
 
                         if s.viewport.guide_drag.is_some() {
                             let surface = s.viewport.surface_size();
@@ -398,6 +407,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
                         s.viewport.pointer_route = None;
+                        s.viewport.touch_drag = false;
                         let tool = s.active_tool;
                         let outs = s.tool.cancel(tool);
                         s.apply_outputs(outs);
@@ -519,13 +529,7 @@ pub fn handle_viewport_gesture(
     use repose_core::shortcuts::{Action, Gesture};
     match action {
         Action::Gesture(Gesture::Pan { delta, center }) => {
-            let is_drag = {
-                let s = session.borrow();
-                s.tool.is_dragging(s.active_tool)
-                    || s.viewport.pan_last.is_some()
-                    || viewport_gesture_in_graph(&s.viewport, *center)
-            };
-            if is_drag {
+            if !claim_canvas_for_gesture(session, Some(*center)) {
                 return false;
             }
             {
@@ -536,11 +540,7 @@ pub fn handle_viewport_gesture(
             true
         }
         Action::Gesture(Gesture::Pinch { delta_scale }) => {
-            let is_drag = {
-                let s = session.borrow();
-                s.tool.is_dragging(s.active_tool)
-            };
-            if is_drag {
+            if !claim_canvas_for_gesture(session, None) {
                 return false;
             }
             let center_in_viewport = {
@@ -558,18 +558,7 @@ pub fn handle_viewport_gesture(
             delta_scale,
             center,
         }) => {
-            let in_graph = {
-                let s = session.borrow();
-                viewport_gesture_in_graph(&s.viewport, *center)
-            };
-            if in_graph {
-                return false;
-            }
-            let is_drag = {
-                let s = session.borrow();
-                s.tool.is_dragging(s.active_tool)
-            };
-            if is_drag {
+            if !claim_canvas_for_gesture(session, Some(*center)) {
                 return false;
             }
             let center_in_viewport = {
@@ -589,6 +578,45 @@ pub fn handle_viewport_gesture(
         }
         _ => false,
     }
+}
+
+/// Decide whether a two-finger gesture may drive the stage, taking the pointer
+/// from whatever drag holds it.
+///
+/// The framework only emits these gestures for two or more simultaneous
+/// contacts, and every finger dispatches its own primary press on the way
+/// down. So a canvas tool is normally *already* armed by the time a gesture
+/// arrives - in design mode the first finger's press alone starts a rubber
+/// band or a node drag. Yielding to that guard would drop every pinch and
+/// two-finger pan, leaving the stage navigable only in Interact mode, where
+/// the press never reaches a tool.
+///
+/// On touch the collision is not intent: two fingers mean navigate. The drag
+/// is cancelled - which rolls back the transaction it opened, so lifting a
+/// finger cannot commit a half-finished move - and the gesture takes over.
+///
+/// A drag the user started with a mouse or stylus keeps priority and the
+/// gesture yields, as does one centred on the machine graph, which owns its
+/// own per-node handler.
+fn claim_canvas_for_gesture(
+    session: &SessionRef,
+    center: Option<repose_core::Vec2>,
+) -> bool {
+    if center.is_some_and(|c| viewport_gesture_in_graph(&session.borrow().viewport, c)) {
+        return false;
+    }
+    let mut s = session.borrow_mut();
+    let held = s.tool.is_dragging(s.active_tool) || s.viewport.pan_last.is_some();
+    if !held || !s.viewport.touch_drag {
+        return !held;
+    }
+    let tool = s.active_tool;
+    let outs = s.tool.cancel(tool);
+    s.apply_outputs(outs);
+    s.viewport.end_pan();
+    s.viewport.pointer_down = false;
+    s.viewport.pointer_route = None;
+    true
 }
 
 /// Select whatever is under `world`, then open the canvas context menu there.
