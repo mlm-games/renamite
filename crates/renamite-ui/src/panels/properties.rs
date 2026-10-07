@@ -395,15 +395,19 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                 .size(th.typography.body_medium)
                 .color(th.on_surface_variant)
                 .modifier(Modifier::new().padding(Dp(16.0))),
-            Text("Select a layer on the canvas or in Layers to edit its properties.")
-                .size(th.typography.body_small)
-                .color(th.on_surface_variant)
-                .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
-                    left: Dp(16.0),
-                    right: Dp(16.0),
-                    top: Dp(0.0),
-                    bottom: Dp(12.0),
-                })),
+            if session.borrow().show_hints() {
+                Text("Select a layer on the canvas or in Layers to edit its properties.")
+                    .size(th.typography.body_small)
+                    .color(th.on_surface_variant)
+                    .modifier(Modifier::new().padding_values(repose_core::PaddingValues {
+                        left: Dp(16.0),
+                        right: Dp(16.0),
+                        top: Dp(0.0),
+                        bottom: Dp(12.0),
+                    }))
+            } else {
+                Box(Modifier::new())
+            },
             comp_section,
         ));
     }
@@ -3444,18 +3448,22 @@ fn use_section(session: SessionRef, id: NodeId) -> Option<View> {
                 .gap(Dp(8.0)))
             .child((
                 Box(Modifier::new().width(Dp(96.0))),
-                Text("Select source")
-                    .size(th.typography.label_medium)
-                    .color(th.primary)
-                    .modifier(Modifier::new().on_pointer_down({
-                        let session = session.clone();
-                        move |_| {
-                            let mut s = session.borrow_mut();
-                            s.selection.nodes = vec![target];
-                            s.ensure_selection_visible();
-                            s.repaint();
-                        }
-                    })),
+                if session.borrow().show_hints() {
+                    Text("Select source")
+                        .size(th.typography.label_medium)
+                        .color(th.primary)
+                        .modifier(Modifier::new().on_pointer_down({
+                            let session = session.clone();
+                            move |_| {
+                                let mut s = session.borrow_mut();
+                                s.selection.nodes = vec![target];
+                                s.ensure_selection_visible();
+                                s.repaint();
+                            }
+                        }))
+                } else {
+                    Box(Modifier::new())
+                },
                 Text("Unlink (bake copy)")
                     .size(th.typography.label_medium)
                     .color(th.primary)

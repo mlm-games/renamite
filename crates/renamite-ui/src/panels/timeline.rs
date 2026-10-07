@@ -149,6 +149,7 @@ fn TimelineInfoBar(
     range: (renamite_animation::Frame, renamite_animation::Frame),
     record: bool,
 ) -> View {
+    let hints = session.borrow().show_hints();
     Row(Modifier::new()
         .fill_max_width()
         .padding(Dp(8.0))
@@ -167,10 +168,12 @@ fn TimelineInfoBar(
                 theme().error_container,
                 theme().on_error_container,
             )
-        } else {
+        } else if hints {
             Text("One row per keyed property")
                 .size(theme().typography.label_small)
                 .color(theme().on_surface_variant)
+        } else {
+            Box(Modifier::new())
         },
     ))
 }

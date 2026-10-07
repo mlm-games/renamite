@@ -50,9 +50,13 @@ pub fn AssetsPanel(session: SessionRef) -> View {
                 Text("No assets yet")
                     .size(theme().typography.body_medium)
                     .color(theme().on_surface),
-                Text("Import an image or font to use it in this project.")
-                    .size(theme().typography.body_small)
-                    .color(theme().on_surface_variant),
+                if session.borrow().show_hints() {
+                    Text("Import an image or font to use it in this project.")
+                        .size(theme().typography.body_small)
+                        .color(theme().on_surface_variant)
+                } else {
+                    Box(Modifier::new())
+                },
             )),
         );
     } else {
