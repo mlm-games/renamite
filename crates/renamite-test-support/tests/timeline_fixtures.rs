@@ -16,3 +16,8 @@ fn clip_alt_cycle_easing() {
 fn clip_drag_one_key() {
     timeline_fixture::run(include_str!("fixtures/clip_drag_one_key.json"));
 }
+
+#[test]
+fn add_key_at_playhead() {
+    timeline_fixture::run(include_str!("fixtures/add_key_at_playhead.json"));
+}

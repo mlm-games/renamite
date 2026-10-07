@@ -2972,13 +2972,18 @@ impl Session {
     /// Row geometry and hit tolerances are dp so the panel is legible on a
     /// dense display; the horizontal scroll and zoom stay in content px,
     /// because those are user-chosen zoom state rather than chrome.
+    ///
+    /// Note these come out in **px**. A panel that lays its own rows out with
+    /// `Dp(..)` must therefore start from the dp constants below, not from
+    /// this struct - handing a value from here to `Dp(..)` converts it twice
+    /// and shifts the rows by a full density factor.
     pub fn timeline_layout(&self) -> renamite_behavior_timeline::TimelineLayout {
         renamite_behavior_timeline::TimelineLayout {
             origin_x: -self.timeline_offset_x.max(0.0),
             px_per_frame: self.timeline_zoom,
-            row_top: dp_px(24.0) as f64,
-            row_height: dp_px(22.0) as f64,
-            key_tolerance_px: dp_px(6.0) as f64,
+            row_top: dp_px(TIMELINE_ROW_TOP_DP) as f64,
+            row_height: dp_px(TIMELINE_ROW_HEIGHT_DP) as f64,
+            key_tolerance_px: dp_px(TIMELINE_KEY_TOLERANCE_DP) as f64,
         }
     }
 
@@ -4875,17 +4880,6 @@ impl ViewportState {
     }
 }
 
-pub fn timeline_ctx<'a>(
-    doc: &'a renamite_model::Document,
-    clips: &'a renamite_machine::ClipMap,
-    rows: &'a [TimelineRow],
-    range: (Frame, Frame),
-    playhead: f64,
-    px_per_frame: f64,
-) -> TimelineCtx<'a> {
-    timeline_ctx_with_offset(doc, clips, rows, range, playhead, px_per_frame, 0.0)
-}
-
 /// Build a timeline context from a caller-supplied layout. Lets a hit test
 /// outside the draw pass (the context menu) agree with what is on screen
 /// instead of re-deriving the geometry and drifting from it.
@@ -4911,32 +4905,6 @@ pub fn timeline_ctx_with_layout<'a>(
     }
 }
 
-pub fn timeline_ctx_with_offset<'a>(
-    doc: &'a renamite_model::Document,
-    clips: &'a renamite_machine::ClipMap,
-    rows: &'a [TimelineRow],
-    range: (Frame, Frame),
-    playhead: f64,
-    px_per_frame: f64,
-    offset_x: f64,
-) -> TimelineCtx<'a> {
-    TimelineCtx {
-        doc,
-        clips,
-        target: TimelineTarget::Doc,
-        rows,
-        layout: TimelineLayout {
-            origin_x: -offset_x.max(0.0),
-            px_per_frame: px_per_frame.clamp(0.5, 48.0),
-            row_top: 24.0,
-            row_height: 22.0,
-            key_tolerance_px: 6.0,
-        },
-        range,
-        playhead,
-    }
-}
-
 pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
     if s.machine_preview_enabled {
         return;
@@ -4950,16 +4918,17 @@ pub fn dispatch_timeline(s: &mut Session, ev: TimelineEvent) {
         .get(comp)
         .map(|composition| composition.range)
         .unwrap_or((Frame(0), Frame(0)));
-    let zoom = s.timeline_zoom;
-    let offset_x = s.timeline_offset_x;
-    let ctx = timeline_ctx_with_offset(
+    // The same layout the paint pass draws with. Re-deriving it here is what
+    // made every hit test disagree with the screen once row geometry became
+    // density-scaled: `row_top`/`row_height`/`key_tolerance_px` are dp, and a
+    // copy pinned to raw px silently pointed at a different row.
+    let ctx = timeline_ctx_with_layout(
         &s.file.document,
         &s.file.clips,
         &rows,
         range,
         head,
-        zoom,
-        offset_x,
+        s.timeline_layout(),
     );
 
     s.keys.retain_valid(&ctx);
@@ -5041,14 +5010,13 @@ fn retain_timeline_keys(s: &mut Session) {
         .get(s.file.document.main)
         .map(|comp| comp.range)
         .unwrap_or((Frame(0), Frame(0)));
-    let ctx = timeline_ctx_with_offset(
+    let ctx = timeline_ctx_with_layout(
         &s.file.document,
         &s.file.clips,
         &rows,
         range,
         s.playback.head,
-        s.timeline_zoom,
-        s.timeline_offset_x,
+        s.timeline_layout(),
     );
     s.keys.retain_valid(&ctx);
 }
@@ -5366,6 +5334,13 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
 pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
     pe_to_dvec(pe)
 }
+
+/// Height of the timeline's frame-ruler strip, in dp. Rows start below it.
+pub const TIMELINE_ROW_TOP_DP: f32 = 24.0;
+/// Height of one timeline row, in dp.
+pub const TIMELINE_ROW_HEIGHT_DP: f32 = 22.0;
+/// Pointer slop for grabbing a keyframe, in dp.
+pub const TIMELINE_KEY_TOLERANCE_DP: f32 = 6.0;
 
 /// Convert a dp size to physical px, honouring display density and UI scale.
 ///

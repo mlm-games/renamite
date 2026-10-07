@@ -314,10 +314,20 @@ fn prop_label(
 }
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
+    // Sized from the dp constants, not from `Session::timeline_layout()`.
+    // This column is laid out in dp by the layout engine, which converts to
+    // px itself; the layout struct is already px, so reusing it here would
+    // scale by density twice and drop every label a full row further down.
     Box(Modifier::new().width(Dp(170.0)).fill_max_height()).child(ScrollArea(
         Modifier::new().fill_max_size(),
         remember_scroll_state("timeline_labels_scroll"),
-        Column(Modifier::new().fill_max_width()).child(
+        Column(Modifier::new().fill_max_width()).child((
+            // The canvas opens with a frame-ruler strip above row 1, so this
+            // column needs the same empty strip or every label sits a row
+            // above the row it names.
+            Box(Modifier::new()
+                .height(Dp(crate::session::TIMELINE_ROW_TOP_DP))
+                .fill_max_width()),
             rows.iter()
                 .map(|row| {
                     let label = prop_label(session.clone(), row.node, &row.prop);
@@ -328,7 +338,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                         None => session.borrow().node_name(row.node),
                     };
                     Box(Modifier::new()
-                        .height(Dp(22.0))
+                        .height(Dp(crate::session::TIMELINE_ROW_HEIGHT_DP))
                         .fill_max_width()
                         .padding_values(repose_core::PaddingValues {
                             left: Dp(10.0),
@@ -344,7 +354,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                     )
                 })
                 .collect::<Vec<_>>(),
-        ),
+        )),
     ))
 }
 

@@ -1,0 +1,23 @@
+{
+  "name": "add key at the playhead on a row below the ruler",
+  "target": "doc",
+  "nodes": ["box", "ball"],
+  "keys": [
+    { "node": "box", "prop": "opacity", "keys": [[0, 0.0], [10, 1.0]] },
+    { "node": "ball", "prop": "opacity", "keys": [[0, 0.0], [10, 1.0]] }
+  ],
+  "rows": [
+    { "node": "box", "prop": "opacity" },
+    { "node": "ball", "prop": "opacity" }
+  ],
+  "layout": { "origin_x": 0.0, "px_per_frame": 10.0, "row_top": 24.0, "row_height": 22.0, "key_tolerance_px": 6.0 },
+  "range": [0, 180],
+  "events": [
+    { "type": "DoubleClick", "x": 300.0, "y": 35.0 }
+  ],
+  "expect": {
+    "row_frames": [[0, 10, 30], [0, 10]],
+    "selection": [["box", 30]],
+    "verify_undo": true
+  }
+}
