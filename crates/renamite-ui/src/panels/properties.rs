@@ -856,14 +856,15 @@ fn diamond_button(
         return Box(Modifier::new().width(Dp(32.0)));
     }
 
-    // One shape, changing fill, so the three states read at a glance: outline =
-    // not animated, filled = animated, filled + primary = the key is at the
-    // playhead. `stop_circle` deliberately stays out of this row - the panel
-    // header uses it for "Stop recording keys", and one glyph cannot mean both.
+    // Material Symbols "Outlined" ships no filled shapes - `circle` and
+    // `fiber_manual_record` both render as rings much like
+    // `radio_button_unchecked` - so shape alone cannot say "keyed". `stop_circle`
+    // (ring plus a filled square) is the one glyph here that reads as distinct,
+    // and the playhead state is carried on top of it by colour.
     let (sym, tip) = match state {
         DiamondState::Empty => (Symbols::radio_button_unchecked, "Add keyframe"),
-        DiamondState::HasKeys => (Symbols::circle, "Add keyframe at playhead"),
-        DiamondState::AtPlayhead => (Symbols::circle, "Remove keyframe"),
+        DiamondState::HasKeys => (Symbols::stop_circle, "Add keyframe at playhead"),
+        DiamondState::AtPlayhead => (Symbols::stop_circle, "Remove keyframe"),
     };
     let key = format!("diamond_{}", path.as_str());
     let tooltip_state = remember_with_key(key, TooltipState::new);
