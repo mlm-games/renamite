@@ -39,6 +39,13 @@ pub fn text_input_focused() -> bool {
 
 pub fn handle_global_action(session: &SessionRef, action: repose_core::shortcuts::Action) -> bool {
     use repose_core::shortcuts::Action;
+    // Gestures are the one global action the canvas owns, so they ride the same
+    // handler as the commands: a second InstallShortcutHandler would be
+    // shadowed by this one. Routed before the text-edit guards because
+    // two-finger pan/zoom on the stage is navigation, not an edit.
+    if let Action::Gesture(_) = action {
+        return crate::panels::viewport::handle_viewport_gesture(session, &action);
+    }
     if text_input_focused() || session.borrow().renaming.is_some() {
         return false;
     }

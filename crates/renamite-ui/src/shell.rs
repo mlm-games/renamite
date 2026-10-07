@@ -76,7 +76,10 @@ pub fn EditorShell(session: SessionRef) -> View {
                 ShellClass::Medium => MediumWorkspace(session_body.clone()),
                 ShellClass::Compact => CompactWorkspace(session_body.clone()),
             };
-            Box(Modifier::new().fill_max_size().padding_values(content_padding)).child(body)
+            Box(Modifier::new()
+                .fill_max_size()
+                .padding_values(content_padding))
+            .child(body)
         },
         ScaffoldConfig {
             top_bar: Some(crate::AppTopBar(session.clone())),

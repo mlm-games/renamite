@@ -4,14 +4,16 @@ use renamite_behavior_common::{Modifiers, SnapConfig, ToolContext, ViewTransform
 use renamite_model::Composition;
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
-use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind};
+use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind, PointerKind};
 use repose_core::{
     AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
     View, remember_auto, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
 
 use crate::components::CompactIconAction;
 use crate::session::{
@@ -21,89 +23,80 @@ use crate::session::{
 use crate::symbols::Symbols;
 use renamite_behavior_common::context_menu::{MenuContext, canvas_menu};
 
+/// How long a finger must rest on the stage before it counts as a right
+/// click. Matches the framework's own drag-and-drop long-press threshold.
+const LONG_PRESS_MS: u64 = 400;
+/// Movement past this (dp) during the wait means the user is panning or
+/// dragging, not asking for a menu.
+const LONG_PRESS_SLOP: f64 = 10.0;
+
+/// A touch press waiting to become a context menu, or one already turned into
+/// one. `fired` is shared with the timer closure, which sets it before opening
+/// the menu so the pointer-up that follows cannot also act on the canvas.
+struct LongPress {
+    pos: DVec2,
+    fired: Rc<Cell<bool>>,
+    timer: repose_core::timer::TimerHandle,
+}
+
+type LongPressState = Rc<RefCell<Option<LongPress>>>;
+
+fn cancel_long_press(state: &LongPressState) {
+    if let Some(press) = state.borrow_mut().take() {
+        press.timer.cancel();
+    }
+}
+
+/// Arm the context-menu long press. Only touch arms it: a mouse already has a
+/// right button, and a second finger cancels the pending press so a two-finger
+/// pan/zoom is never mistaken for a long press.
+fn arm_long_press(state: &LongPressState, session: &SessionRef, pe: &PointerEvent) {
+    cancel_long_press(state);
+    if pe.kind != PointerKind::Touch {
+        return;
+    }
+    let pos = pe_pos(pe);
+    let screen = overlay_anchor(pe);
+    let fired = Rc::new(Cell::new(false));
+    let timer = {
+        let session = session.clone();
+        let fired = fired.clone();
+        repose_core::timer::delay(Duration::from_millis(LONG_PRESS_MS), move || {
+            fired.set(true);
+            let mut s = session.borrow_mut();
+            let world = s.viewport.view.screen_to_world(pos);
+            open_canvas_context_menu(&mut s, world, screen, false);
+        })
+    };
+    *state.borrow_mut() = Some(LongPress { pos, fired, timer });
+}
+
+/// Drop the pending press once the finger travels far enough to be a pan.
+fn track_long_press_move(state: &LongPressState, pe: &PointerEvent) {
+    let beyond_slop = state
+        .borrow()
+        .as_ref()
+        .is_some_and(|press| (pe_pos(pe) - press.pos).length() > LONG_PRESS_SLOP);
+    if beyond_slop {
+        cancel_long_press(state);
+    }
+}
+
+/// Returns true when the press already opened the menu, in which case the
+/// pointer-up must not reach the canvas tools.
+fn finish_long_press(state: &LongPressState) -> bool {
+    let fired = state
+        .borrow()
+        .as_ref()
+        .is_some_and(|press| press.fired.get());
+    cancel_long_press(state);
+    fired
+}
+
 pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember_auto("focus", FocusRequester::new);
-
-    let _gesture_handler = remember_auto("gesture_handler", || {
-        let session = session.clone();
-        repose_core::shortcuts::InstallShortcutHandler(std::rc::Rc::new(move |action| {
-            use repose_core::shortcuts::{Action, Gesture};
-            match action {
-                Action::Gesture(Gesture::Pan { delta, center }) => {
-                    let is_drag = {
-                        let s = session.borrow();
-                        s.tool.is_dragging(s.active_tool)
-                            || s.viewport.pan_last.is_some()
-                            || viewport_gesture_in_graph(&s.viewport, center)
-                    };
-                    if is_drag {
-                        return false;
-                    }
-                    {
-                        let mut s = session.borrow_mut();
-                        s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
-                    }
-                    request_frame();
-                    true
-                }
-                Action::Gesture(Gesture::Pinch { delta_scale }) => {
-                    let is_drag = {
-                        let s = session.borrow();
-                        s.tool.is_dragging(s.active_tool)
-                    };
-                    if is_drag {
-                        return false;
-                    }
-                    let center_in_viewport = {
-                        let s = session.borrow();
-                        s.viewport.surface_size() * 0.5
-                    };
-                    {
-                        let mut s = session.borrow_mut();
-                        s.viewport.zoom_at(center_in_viewport, delta_scale as f64);
-                    }
-                    request_frame();
-                    true
-                }
-                Action::Gesture(Gesture::PinchWithCenter {
-                    delta_scale,
-                    center,
-                }) => {
-                    let in_graph = {
-                        let s = session.borrow();
-                        viewport_gesture_in_graph(&s.viewport, center)
-                    };
-                    if in_graph {
-                        return false;
-                    }
-                    let is_drag = {
-                        let s = session.borrow();
-                        s.tool.is_dragging(s.active_tool)
-                    };
-                    if is_drag {
-                        return false;
-                    }
-                    let center_in_viewport = {
-                        let s = session.borrow();
-                        if let Some(rect) = s.viewport.screen_rect {
-                            DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
-                        } else {
-                            s.viewport.surface_size() * 0.5
-                        }
-                    };
-                    {
-                        let mut s = session.borrow_mut();
-                        s.viewport.zoom_at(center_in_viewport, delta_scale as f64);
-                    }
-                    request_frame();
-                    true
-                }
-                _ => false,
-            }
-        }))
-    });
-    let _ = &_gesture_handler;
+    let long_press = remember_auto("long_press", || Rc::new(RefCell::new(None::<LongPress>)));
 
     let show_template_picker = { session.borrow().welcome };
 
@@ -159,7 +152,9 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_pointer_down({
                     let session = session.clone();
+                    let long_press = long_press.clone();
                     move |pe: PointerEvent| {
+                        arm_long_press(&long_press, &session, &pe);
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
@@ -168,37 +163,8 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         if map_button(&pe) == PointerButton::Secondary {
                             focus.request_focus();
                             let world = s.viewport.view.screen_to_world(pos);
-                            let scene = s.engine.scene().clone();
-                            let comp = s.file.document.main;
-                            if let Some(id) = renamite_model::pick_selectable(
-                                &s.file.document,
-                                &scene,
-                                comp,
-                                world,
-                            ) {
-                                if !s.selection.nodes.contains(&id) {
-                                    s.selection.nodes = vec![id];
-                                }
-                            } else if !pe.modifiers.shift {
-                                s.selection.nodes.clear();
-                            }
-                            let paint = s.current_paint.clone();
-                            let entries = {
-                                let ctx = MenuContext {
-                                    doc: &s.file.document,
-                                    selection: &s.selection.nodes,
-                                    comp: s.file.document.main,
-                                    world_pos: Some(world),
-                                    has_clipboard: s.clipboard.is_some(),
-                                    current_paint: &paint,
-                                };
-                                canvas_menu(&ctx)
-                            };
-                            s.open_context_menu(ContextMenuState {
-                                screen_pos: overlay_anchor(&pe),
-                                entries,
-                                source: ContextMenuSource::Canvas { world },
-                            });
+                            let screen = overlay_anchor(&pe);
+                            open_canvas_context_menu(&mut s, world, screen, pe.modifiers.shift);
                             return;
                         }
 
@@ -284,7 +250,9 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_pointer_move({
                     let session = session.clone();
+                    let long_press = long_press.clone();
                     move |pe: PointerEvent| {
+                        track_long_press_move(&long_press, &pe);
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
@@ -347,7 +315,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_pointer_up({
                     let session = session.clone();
+                    let long_press = long_press.clone();
                     move |pe: PointerEvent| {
+                        if finish_long_press(&long_press) {
+                            // The menu is already up; letting the lift reach the
+                            // tools would retarget the selection behind it.
+                            pe.consume();
+                            return;
+                        }
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
 
@@ -401,8 +376,10 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 })
                 .on_pointer_cancel({
                     let session = session.clone();
+                    let long_press = long_press.clone();
                     move |pe| {
                         pe.consume();
+                        cancel_long_press(&long_press);
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
                         s.viewport.pointer_route = None;
@@ -508,6 +485,134 @@ pub fn ViewportPanel(session: SessionRef) -> View {
         ViewportHint(session.clone()),
         ViewportControls(session),
     ))
+}
+
+/// Two-finger pan and pinch for the stage.
+///
+/// Routed through the app's single global shortcut handler (see
+/// `crate::shortcuts::handle_global_action`). A second
+/// `InstallShortcutHandler` installed from this panel never ran: only the most
+/// recently installed global handler is consulted, and the shell's
+/// keyboard/command handler is installed after the workspace composes, so it
+/// shadowed this one. That is why two-finger zoom reached the machine graph -
+/// it uses a per-node `on_action`, tried before any global handler - but not
+/// the canvas.
+pub fn handle_viewport_gesture(
+    session: &SessionRef,
+    action: &repose_core::shortcuts::Action,
+) -> bool {
+    use repose_core::shortcuts::{Action, Gesture};
+    match action {
+        Action::Gesture(Gesture::Pan { delta, center }) => {
+            let is_drag = {
+                let s = session.borrow();
+                s.tool.is_dragging(s.active_tool)
+                    || s.viewport.pan_last.is_some()
+                    || viewport_gesture_in_graph(&s.viewport, *center)
+            };
+            if is_drag {
+                return false;
+            }
+            {
+                let mut s = session.borrow_mut();
+                s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
+            }
+            request_frame();
+            true
+        }
+        Action::Gesture(Gesture::Pinch { delta_scale }) => {
+            let is_drag = {
+                let s = session.borrow();
+                s.tool.is_dragging(s.active_tool)
+            };
+            if is_drag {
+                return false;
+            }
+            let center_in_viewport = {
+                let s = session.borrow();
+                s.viewport.surface_size() * 0.5
+            };
+            {
+                let mut s = session.borrow_mut();
+                s.viewport.zoom_at(center_in_viewport, *delta_scale as f64);
+            }
+            request_frame();
+            true
+        }
+        Action::Gesture(Gesture::PinchWithCenter {
+            delta_scale,
+            center,
+        }) => {
+            let in_graph = {
+                let s = session.borrow();
+                viewport_gesture_in_graph(&s.viewport, *center)
+            };
+            if in_graph {
+                return false;
+            }
+            let is_drag = {
+                let s = session.borrow();
+                s.tool.is_dragging(s.active_tool)
+            };
+            if is_drag {
+                return false;
+            }
+            let center_in_viewport = {
+                let s = session.borrow();
+                if let Some(rect) = s.viewport.screen_rect {
+                    DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
+                } else {
+                    s.viewport.surface_size() * 0.5
+                }
+            };
+            {
+                let mut s = session.borrow_mut();
+                s.viewport.zoom_at(center_in_viewport, *delta_scale as f64);
+            }
+            request_frame();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Select whatever is under `world`, then open the canvas context menu there.
+///
+/// Shared by the right-click path and the touch long-press, so a long press
+/// menus the same target a right click would. `extend` keeps the current
+/// selection when nothing was hit (the right-click Shift behaviour).
+fn open_canvas_context_menu(
+    s: &mut crate::session::Session,
+    world: DVec2,
+    screen: DVec2,
+    extend: bool,
+) {
+    let scene = s.engine.scene().clone();
+    let comp = s.file.document.main;
+    if let Some(id) = renamite_model::pick_selectable(&s.file.document, &scene, comp, world) {
+        if !s.selection.nodes.contains(&id) {
+            s.selection.nodes = vec![id];
+        }
+    } else if !extend {
+        s.selection.nodes.clear();
+    }
+    let paint = s.current_paint.clone();
+    let entries = {
+        let ctx = MenuContext {
+            doc: &s.file.document,
+            selection: &s.selection.nodes,
+            comp: s.file.document.main,
+            world_pos: Some(world),
+            has_clipboard: s.clipboard.is_some(),
+            current_paint: &paint,
+        };
+        canvas_menu(&ctx)
+    };
+    s.open_context_menu(ContextMenuState {
+        screen_pos: screen,
+        entries,
+        source: ContextMenuSource::Canvas { world },
+    });
 }
 
 fn HudSurface(content: View) -> View {
