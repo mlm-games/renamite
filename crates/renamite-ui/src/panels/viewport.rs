@@ -102,54 +102,10 @@ fn finish_long_press(state: &LongPressState) -> bool {
     fired
 }
 
-/// Double-click detection for the stage.
-///
-/// The platform reports no double-tap, and `CanvasEvent::DoubleClick` had no
-/// producer at all, so the pen had no way to finish a path and the select tool's
-/// drill-into-group never fired. Mirrors the timeline's own tracker.
-#[derive(Default)]
-struct ClickTracker {
-    /// Position and time of the last press that stayed put and lifted.
-    last: Option<(DVec2, web_time::Instant)>,
-    press_at: DVec2,
-    moved: bool,
-}
-
-/// Two presses count as one double-click inside this window and radius.
-const DOUBLE_CLICK_MS: u128 = 350;
-const DOUBLE_CLICK_DP: f64 = 6.0;
-/// Travel that turns a press into a drag, which then disqualifies the click.
-const CLICK_DRAG_DP: f64 = 3.0;
-
-impl ClickTracker {
-    fn press(&mut self, pos: DVec2) -> bool {
-        self.press_at = pos;
-        self.moved = false;
-        let is_double = self.last.is_some_and(|(p, t)| {
-            (web_time::Instant::now() - t).as_millis() < DOUBLE_CLICK_MS
-                && (p - pos).length() < DOUBLE_CLICK_DP
-        });
-        // A double-click consumes the pair; a third press starts a new one.
-        self.last = None;
-        is_double
-    }
-
-    fn moved_to(&mut self, pos: DVec2) {
-        if (pos - self.press_at).length() >= CLICK_DRAG_DP {
-            self.moved = true;
-        }
-    }
-
-    fn release(&mut self, pos: DVec2) {
-        self.last = (!self.moved).then(|| (pos, web_time::Instant::now()));
-    }
-}
-
 pub fn ViewportPanel(session: SessionRef) -> View {
     let draw_session = session.clone();
     let focus = remember_auto("focus", FocusRequester::new);
     let long_press = remember_auto("long_press", || Rc::new(RefCell::new(None::<LongPress>)));
-    let clicks = Rc::new(RefCell::new(ClickTracker::default()));
 
     let show_template_picker = { session.borrow().welcome };
 
@@ -235,7 +191,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_pointer_down({
                     let session = session.clone();
                     let long_press = long_press.clone();
-                    let clicks = clicks.clone();
                     move |pe: PointerEvent| {
                         arm_long_press(&long_press, &session, &pe);
                         let mut s = session.borrow_mut();
@@ -325,20 +280,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
                         s.viewport.pointer_route = Some(false);
-                        // Only the pen consumes a double-click today: it is the one tool with no
-                        // other way to finish. `SelectTool`'s drill-in and `PathEdit`'s
-                        // anchor-insert handlers exist but stay dormant until they are
-                        // actually wanted.
-                        let is_double = s.active_tool == renamite_history::ToolId::Pen
-                            && clicks.borrow_mut().press(pos);
-                        if is_double {
-                            dispatch_canvas(
-                                &mut s,
-                                CanvasEvent::DoubleClick { pos: world },
-                                map_modifiers(&pe),
-                            );
-                            return;
-                        }
                         dispatch_canvas(
                             &mut s,
                             CanvasEvent::PointerDown {
@@ -352,14 +293,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_pointer_move({
                     let session = session.clone();
                     let long_press = long_press.clone();
-                    let clicks = clicks.clone();
                     move |pe: PointerEvent| {
                         track_long_press_move(&long_press, &pe);
                         let mut s = session.borrow_mut();
                         let pos = pe_pos(&pe);
                         s.viewport.last_pointer = pos;
                         s.viewport.has_pointer = true;
-                        clicks.borrow_mut().moved_to(pos);
 
                         if s.viewport.update_pan(pos) {
                             pe.consume();
@@ -400,7 +339,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_pointer_up({
                     let session = session.clone();
                     let long_press = long_press.clone();
-                    let clicks = clicks.clone();
                     move |pe: PointerEvent| {
                         if finish_long_press(&long_press) {
                             // The menu is already up; letting the lift reach the
@@ -435,8 +373,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return;
                         }
 
-                        let pos = pe_pos(&pe);
-                        let world = s.viewport.view.screen_to_world(pos);
+                        let world = s.viewport.view.screen_to_world(pe_pos(&pe));
                         let to_engine = match s.viewport.pointer_route.take() {
                             Some(v) => v,
                             None => {
@@ -460,19 +397,14 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             },
                             map_modifiers(&pe),
                         );
-                        if s.active_tool == renamite_history::ToolId::Pen {
-                            clicks.borrow_mut().release(pos);
-                        }
                     }
                 })
                 .on_pointer_cancel({
                     let session = session.clone();
                     let long_press = long_press.clone();
-                    let clicks = clicks.clone();
                     move |pe| {
                         pe.consume();
                         cancel_long_press(&long_press);
-                        clicks.borrow_mut().last = None;
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
                         s.viewport.pointer_route = None;
@@ -1612,55 +1544,60 @@ fn paint_overlay(scope: &mut DrawScope, overlay: &ToolOverlay, view: &ViewTransf
 }
 
 fn draw_handle_dot(scope: &mut DrawScope, tip: DVec2, color: Color) {
+    let half = dp_px(TANGENT_HALF_DP);
     let rect = Rect {
-        x: tip.x as f32 - 2.5,
-        y: tip.y as f32 - 2.5,
-        w: 5.0,
-        h: 5.0,
+        x: tip.x as f32 - half,
+        y: tip.y as f32 - half,
+        w: half * 2.0,
+        h: half * 2.0,
     };
-    scope.draw_rect(rect, color, Px(5.0));
+    // Radius equal to the full extent keeps it a round dot at any density.
+    scope.draw_rect(rect, color, Px(half * 2.0));
 }
 
 fn draw_selection_handle(scope: &mut DrawScope, point: DVec2, stroke: Color, fill: Color) {
+    let half = dp_px(HANDLE_HALF_DP);
     let rect = Rect {
-        x: point.x as f32 - 4.0,
-        y: point.y as f32 - 4.0,
-        w: 8.0,
-        h: 8.0,
+        x: point.x as f32 - half,
+        y: point.y as f32 - half,
+        w: half * 2.0,
+        h: half * 2.0,
     };
 
-    scope.draw_rect(rect, fill, Px(2.0));
-    scope.draw_rect_stroke(rect, stroke, Px(2.0), Px(1.0));
+    scope.draw_rect(rect, fill, Px(dp_px(2.0)));
+    scope.draw_rect_stroke(rect, stroke, Px(dp_px(2.0)), Px(dp_px(1.0)));
 }
 
 fn draw_pivot(scope: &mut DrawScope, point: DVec2, color: Color) {
+    let arm = dp_px(PIVOT_HALF_DP);
+    let thin = dp_px(1.0);
     let horizontal = Rect {
-        x: point.x as f32 - 7.0,
-        y: point.y as f32 - 1.0,
-        w: 14.0,
-        h: 2.0,
+        x: point.x as f32 - arm,
+        y: point.y as f32 - thin,
+        w: arm * 2.0,
+        h: thin * 2.0,
     };
 
     let vertical = Rect {
-        x: point.x as f32 - 1.0,
-        y: point.y as f32 - 7.0,
-        w: 2.0,
-        h: 14.0,
+        x: point.x as f32 - thin,
+        y: point.y as f32 - arm,
+        w: thin * 2.0,
+        h: arm * 2.0,
     };
 
-    scope.draw_rect(horizontal, color, Px(1.0));
-    scope.draw_rect(vertical, color, Px(1.0));
+    scope.draw_rect(horizontal, color, Px(0.0));
+    scope.draw_rect(vertical, color, Px(0.0));
 
     scope.draw_rect_stroke(
         Rect {
-            x: point.x as f32 - 4.0,
-            y: point.y as f32 - 4.0,
-            w: 8.0,
-            h: 8.0,
+            x: point.x as f32 - arm,
+            y: point.y as f32 - arm,
+            w: arm * 2.0,
+            h: arm * 2.0,
         },
         color,
-        Px(4.0),
-        Px(1.0),
+        Px(arm * 2.0),
+        Px(dp_px(1.0)),
     );
 }
 
@@ -1702,14 +1639,25 @@ fn star_preview_pts(
 }
 
 /// Overlay chrome is drawn in physical px, so it shrinks on a dense display
-/// unless scaled back up. Everything below is sized through this.
+/// unless scaled back up. Marker sizes are declared in dp and passed through
+/// here, so each one is picked once and follows the display.
 fn overlay_px() -> f32 {
     repose_core::locals::effective_density_scale().max(0.5)
+}
+
+fn dp_px(dp: f32) -> f32 {
+    dp * overlay_px()
 }
 
 /// Half-extent of a path node marker, in dp. Inkscape-sized and legible on a
 /// phone, where the old 4px square was barely two millimetres.
 const NODE_HALF_DP: f32 = 6.0;
+/// Half-extent of a path tangent tip, in dp.
+const TANGENT_HALF_DP: f32 = 3.5;
+/// Half-extent of a selection rotate/scale corner handle, in dp.
+const HANDLE_HALF_DP: f32 = 5.0;
+/// Half-extent of the pivot centre square, in dp.
+const PIVOT_HALF_DP: f32 = 5.0;
 
 /// Stroke a bezier by flattening it, since the canvas only strokes polylines.
 fn draw_bezier_overlay(
@@ -1745,7 +1693,7 @@ fn draw_tangents(
 }
 
 fn draw_node_marker(scope: &mut DrawScope, at: DVec2, color: Color) {
-    let half = NODE_HALF_DP * overlay_px();
+    let half = dp_px(NODE_HALF_DP);
     let rect = Rect {
         x: at.x as f32 - half,
         y: at.y as f32 - half,
@@ -1753,19 +1701,19 @@ fn draw_node_marker(scope: &mut DrawScope, at: DVec2, color: Color) {
         h: half * 2.0,
     };
     scope.draw_rect(rect, theme().surface, Px(0.0));
-    scope.draw_rect_stroke(rect, color, Px(0.0), Px(1.0 * overlay_px()));
+    scope.draw_rect_stroke(rect, color, Px(0.0), Px(dp_px(1.0)));
 }
 
 fn draw_filled_node_marker(scope: &mut DrawScope, at: DVec2, fill: Color, border: Color) {
-    let half = NODE_HALF_DP * overlay_px();
+    let half = dp_px(NODE_HALF_DP);
     let rect = Rect {
         x: at.x as f32 - half,
         y: at.y as f32 - half,
         w: half * 2.0,
         h: half * 2.0,
     };
-    scope.draw_rect(rect, fill, Px(1.0 * overlay_px()));
-    scope.draw_rect_stroke(rect, border, Px(0.0), Px(1.0 * overlay_px()));
+    scope.draw_rect(rect, fill, Px(dp_px(1.0)));
+    scope.draw_rect_stroke(rect, border, Px(0.0), Px(dp_px(1.0)));
 }
 
 fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
@@ -1782,7 +1730,7 @@ fn draw_polyline_overlay(scope: &mut DrawScope, pts: &[DVec2], color: Color) {
     scope.draw_line_path(
         points,
         repose_core::Brush::Solid(color),
-        Px(2.0 * overlay_px()),
+        Px(dp_px(2.0)),
         repose_core::StrokeCap::Round,
         repose_core::StrokeJoin::Round,
     );

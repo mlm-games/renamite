@@ -1757,7 +1757,6 @@ impl PenTool {
                 button: PointerButton::Primary,
             } => self.release(ctx, pos),
             CanvasEvent::KeyDown(Key::Enter) => self.finish(ctx, false),
-            CanvasEvent::DoubleClick { .. } => self.finish(ctx, false),
             CanvasEvent::KeyDown(Key::Escape) => {
                 self.state = PenState::Idle;
                 smallvec![ToolOutput::Invalidate]
