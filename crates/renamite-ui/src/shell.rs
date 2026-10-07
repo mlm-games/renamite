@@ -69,10 +69,13 @@ pub fn EditorShell(session: SessionRef) -> View {
     }
 
     let scaffold = Scaffold(
-        move |_content_padding| match class {
-            ShellClass::Expanded => ExpandedWorkspace(session_body.clone()),
-            ShellClass::Medium => MediumWorkspace(session_body.clone()),
-            ShellClass::Compact => CompactWorkspace(session_body.clone()),
+        move |content_padding| {
+            let body = match class {
+                ShellClass::Expanded => ExpandedWorkspace(session_body.clone()),
+                ShellClass::Medium => MediumWorkspace(session_body.clone()),
+                ShellClass::Compact => CompactWorkspace(session_body.clone()),
+            };
+            Box(Modifier::new().fill_max_size().padding_values(content_padding)).child(body)
         },
         ScaffoldConfig {
             top_bar: Some(crate::AppTopBar(session.clone())),
