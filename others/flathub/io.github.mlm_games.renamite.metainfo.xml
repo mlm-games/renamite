@@ -58,6 +58,46 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.8" date="2026-10-07" type="stable">
+      <description>
+        <ul>
+          <li>restore the distinct keyframe glyph, the outline font has no filled circle</li>
+          <li>derive every timeline hit test from the painted layout</li>
+          <li>Revert "align timeline labels with canvas rows and make the record chip a toggle"</li>
+          <li>Revert "point at the touch add-key routes in the empty timeline hint"</li>
+          <li>point at the touch add-key routes in the empty timeline hint</li>
+          <li>align timeline labels with canvas rows and make the record chip a toggle</li>
+          <li>density scale the timeline chrome</li>
+          <li>size every canvas marker in dp and drop the double-tap finish</li>
+          <li>use one fill-varying glyph for the keyframe states</li>
+          <li>show keyframes regardless of layer folding, mark keyed properties</li>
+          <li>draw the pen preview curve and give the pen a way to finish</li>
+          <li>add a overflow button since long press cannot be done on layers (they lose the drag func.)</li>
+          <li>pin the zoom anchor and stop rail drags reaching the canvas</li>
+          <li>zoom and pan finger center move fix</li>
+          <li>make Escape close the number editor and bound its focus polling</li>
+          <li>let a two-finger gesture take the pointer from a touch drag</li>
+          <li>revert the name field sizing, it was not a defect</li>
+          <li>clip inspector values to their field and grow the fields a little</li>
+          <li>make the layer rename field focusable on touch</li>
+          <li>let the focused panel own touch gestures, and keep finger drags off the zoom</li>
+          <li>pin the number field's width instead of sizing it to its text</li>
+          <li>let a field share its owner's focus cell</li>
+          <li>centre the icon buttons in their rows</li>
+          <li>clip the timeline canvas to its key area</li>
+          <li>reserve the top app bar's height in the shell body</li>
+          <li>pan, zoom and context-menu the timeline</li>
+          <li>stop the compact tool palette above the viewport controls</li>
+          <li>give the inspector's number fields the shared text field</li>
+          <li>keep the compact tool palette to the left edge</li>
+          <li>gate remaining persistent hints behind the same flag</li>
+          <li>gate on-screen hints behind a flag</li>
+          <li>two-finger canvas gestures and touch long-press context menu</li>
+          <li>scroll the tool rail and palette, and pin the palette to the stage</li>
+          <li>insets the shell body by the scaffold bars</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.7" date="2026-10-06" type="stable">
       <description>
         <ul>
