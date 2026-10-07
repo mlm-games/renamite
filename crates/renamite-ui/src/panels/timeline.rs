@@ -155,12 +155,24 @@ fn TimelineInfoBar(
             theme().surface_container_high,
             theme().on_surface_variant,
         ),
-        RangeEditor(session, range),
+        RangeEditor(session.clone(), range),
         if record {
-            StatusChip(
-                "● REC - edits add keys".to_string(),
-                theme().error_container,
-                theme().on_error_container,
+            // A toggle, not a label: it looks like a control and sits next to
+            // the other transport buttons, so tapping it has to disarm
+            // recording - the same switch as the Properties-panel diamond.
+            crate::components::ToolAction(
+                Symbols::fiber_manual_record,
+                "Record keys on edit",
+                true,
+                {
+                    let session = session.clone();
+                    move || {
+                        let mut s = session.borrow_mut();
+                        s.record = false;
+                        s.revision = s.revision.wrapping_add(1);
+                        request_frame();
+                    }
+                },
             )
         } else if hints {
             Text("One row per keyed property")
@@ -314,10 +326,21 @@ fn prop_label(
 }
 
 fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
+    // Read the geometry the canvas paints from, rather than restating it: the
+    // canvas reserves `row_top` for the frame ruler and spaces rows by
+    // `row_height`, both density-scaled. A label that guesses either number
+    // lands on the wrong row - and because the canvas starts below the ruler
+    // while this column used to start at the very top, every label was off by
+    // one whole row.
+    let layout = session.borrow().timeline_layout();
+    let row_top = Dp(layout.row_top as f32);
+    let row_height = Dp(layout.row_height as f32);
+
     Box(Modifier::new().width(Dp(170.0)).fill_max_height()).child(ScrollArea(
         Modifier::new().fill_max_size(),
         remember_scroll_state("timeline_labels_scroll"),
-        Column(Modifier::new().fill_max_width()).child(
+        Column(Modifier::new().fill_max_width()).child((
+            Box(Modifier::new().height(row_top).fill_max_width()),
             rows.iter()
                 .map(|row| {
                     let label = prop_label(session.clone(), row.node, &row.prop);
@@ -328,7 +351,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                         None => session.borrow().node_name(row.node),
                     };
                     Box(Modifier::new()
-                        .height(Dp(22.0))
+                        .height(row_height)
                         .fill_max_width()
                         .padding_values(repose_core::PaddingValues {
                             left: Dp(10.0),
@@ -344,7 +367,7 @@ fn TimelineLabels(session: SessionRef, rows: &[TimelineRow]) -> View {
                     )
                 })
                 .collect::<Vec<_>>(),
-        ),
+        )),
     ))
 }
 
