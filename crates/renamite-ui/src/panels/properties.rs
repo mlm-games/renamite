@@ -30,7 +30,8 @@ use renamite_model::{
 use repose_core::input::PointerEvent;
 use repose_core::{
     AlignItems, Dp, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardOptions,
-    KeyboardType, Modifier, PaddingValues, UnitExt, View, remember_with_key, request_frame, theme,
+    KeyboardType, Modifier, Overflow, PaddingValues, UnitExt, View, remember_with_key,
+    request_frame, theme,
 };
 use repose_material::material3::{
     IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
@@ -128,8 +129,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                                 format!("comp_name_{comp_id:?}"),
                                 comp_name.clone(),
                                 "Name",
-                                false,
-                                32.0,
+                                true,
+                                NUM_FIELD_HEIGHT,
                                 {
                                     let session = session.clone();
                                     move |text: String| {
@@ -905,7 +906,9 @@ fn diamond_button(
 
 /// Height of the inspector's numeric fields, matching the fixed-width fields
 /// (image crop, and so on) so a row never changes size when it starts editing.
-const NUM_FIELD_HEIGHT: f32 = 32.0;
+/// Tall enough to be a comfortable touch target and to hold a body-medium line
+/// plus the field padding.
+const NUM_FIELD_HEIGHT: f32 = 36.0;
 
 #[allow(clippy::too_many_arguments)]
 fn scrub_f64_w(
@@ -1117,7 +1120,13 @@ fn scrub_f64_w(
     .child(
         Text(label.clone())
             .size(th.typography.body_medium)
-            .color(th.on_surface),
+            .color(th.on_surface)
+            .single_line()
+            // The field's own rounded clip is the border box, so an unbreakable
+            // value like `-117.195` would run under the padding and get sliced by
+            // the border. A bounds clip on the text node itself cuts it at the
+            // content box instead.
+            .modifier(Modifier::new().overflow(Overflow::Clip)),
     );
 
     if *editing.borrow() {
@@ -1190,13 +1199,13 @@ fn dvec2_editor(
             playhead,
             record,
             0,
-            56.0,
+            64.0,
         ),
         Text("Y")
             .size(th.typography.label_medium)
             .color(th.on_surface_variant),
         scrub_f64_w(
-            session, ids, path, v.y, 1.0, None, None, playhead, record, 1, 56.0,
+            session, ids, path, v.y, 1.0, None, None, playhead, record, 1, 64.0,
         ),
     ))
 }
@@ -2601,8 +2610,8 @@ fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
                     format!("node_name_{id:?}"),
                     name,
                     "Name",
-                    false,
-                    32.0,
+                    true,
+                    NUM_FIELD_HEIGHT,
                     {
                         let session = session.clone();
                         move |text: String| {
