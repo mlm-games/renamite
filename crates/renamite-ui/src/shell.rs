@@ -754,11 +754,15 @@ fn CompactCanvas(session: SessionRef) -> View {
 /// axis size from its insets whenever the size is auto, so offsetting both
 /// sides stretched the palette across the whole stage. Only the vertical axis
 /// is inset-constrained here.
+///
+/// The bottom inset clears the floating viewport controls, which are wide
+/// enough on a phone to reach under the strip; they own that corner.
 fn CompactToolPalette(session: SessionRef) -> View {
+    let bottom = 12.0 + crate::panels::viewport::controls_bottom_clearance().get();
     Box(Modifier::new()
         .absolute()
         .width(Dp(72.0))
-        .offset(Some(Dp(12.0)), Some(Dp(12.0)), None, Some(Dp(12.0)))
+        .offset(Some(Dp(12.0)), Some(Dp(12.0)), None, Some(Dp(bottom)))
         .background(theme().surface_container_high)
         .clip_rounded(Dp(12.0))
         .border(Dp(1.0), theme().outline_variant, Dp(12.0)))

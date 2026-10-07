@@ -7,7 +7,7 @@ use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind, PointerKind};
 use repose_core::{
     AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
-    View, remember_auto, request_frame, theme,
+    View, remember_auto, remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
@@ -1144,7 +1144,19 @@ fn paint_guides(scope: &mut DrawScope, view: &ViewTransform, guides: &[crate::se
     }
 }
 
+/// Bottom-of-stage space the floating controls bar occupies, published so the
+/// compact tool palette can stop above it instead of running underneath.
+///
+/// Seeded from the bar's own metrics (48dp button + 2x4dp padding + 16dp margin
+/// + 8dp gap) so the first frame is already clear, then corrected from the
+/// measured row - if the bar grows or shrinks, the palette follows.
+pub fn controls_bottom_clearance() -> Rc<Cell<f32>> {
+    const SEEDED: f32 = 80.0;
+    remember_with_key("viewport_controls_clearance", || Cell::new(SEEDED))
+}
+
 fn ViewportControls(session: SessionRef) -> View {
+    let clearance = controls_bottom_clearance();
     let (zoom, snapping, snap_grid, snap_guides, snap_objects) = {
         let s = session.borrow();
         (
@@ -1158,7 +1170,18 @@ fn ViewportControls(session: SessionRef) -> View {
 
     Box(Modifier::new()
         .absolute()
-        .offset(None, None, Some(Dp(16.0)), Some(Dp(16.0))))
+        .offset(None, None, Some(Dp(16.0)), Some(Dp(16.0)))
+        .on_globally_positioned({
+            let clearance = clearance.clone();
+            move |r: Rect| {
+                // Row height + its 16dp bottom margin + an 8dp gap.
+                let reserved = r.h + 24.0;
+                if (reserved - clearance.get()).abs() > 0.5 {
+                    clearance.set(reserved);
+                    request_frame();
+                }
+            }
+        }))
     .child(HudSurface(
         Row(Modifier::new()
             .align_items(AlignItems::CENTER)
