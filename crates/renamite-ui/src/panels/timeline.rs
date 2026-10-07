@@ -579,7 +579,12 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let anchor = anchor.clone();
                 move |delta: repose_core::Vec2| {
                     let mut s = session.borrow_mut();
-                    if delta.y.abs() < delta.x.abs() || (delta.x.abs() > 0.5 && delta.y.abs() > 0.5)
+                    // A finger drag pans; only a wheel zooms. Without this a
+                    // one-finger drag that started on the bottom nav bar zooms
+                    // the range as it slides over the timeline.
+                    if s.touch_active
+                        || delta.y.abs() < delta.x.abs()
+                        || (delta.x.abs() > 0.5 && delta.y.abs() > 0.5)
                     {
                         s.pan_timeline(delta.x as f64);
                     } else {

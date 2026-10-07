@@ -1,4 +1,4 @@
-use repose_core::input::{Key, KeyEvent, KeyEventType};
+use repose_core::input::{Key, KeyEvent, KeyEventType, PointerEvent};
 use repose_core::{
     Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_auto, remember_state_auto,
     remember_with_key, request_frame, theme,
@@ -100,8 +100,29 @@ pub fn EditorShell(session: SessionRef) -> View {
     install_global_shortcuts(session.clone());
 
     let session_keys = session.clone();
+    // Track finger-down for the whole app. A touch drag that starts on one
+    // surface and slides over another (the compact bottom nav bar into the
+    // canvas) arrives at the second surface as a scroll delta, indistinguishable
+    // from a wheel. Panels consult this instead of guessing from the delta.
+    let touch_keys = session.clone();
     let global_keys = Modifier::new()
         .fill_max_size()
+        .on_pointer_down({
+            let touch_keys = touch_keys.clone();
+            move |pe: PointerEvent| {
+                if pe.kind == repose_core::input::PointerKind::Touch {
+                    touch_keys.borrow_mut().touch_active = true;
+                }
+            }
+        })
+        .on_pointer_up({
+            let touch_keys = touch_keys.clone();
+            move |_pe: PointerEvent| touch_keys.borrow_mut().touch_active = false
+        })
+        .on_pointer_cancel({
+            let touch_keys = touch_keys.clone();
+            move |_pe: PointerEvent| touch_keys.borrow_mut().touch_active = false
+        })
         .on_key_event(move |ke: KeyEvent| {
             if matches!(ke.key, Key::Space | Key::Enter) {
                 if matches!(ke.key, Key::Space) && ke.event_type == KeyEventType::Up {

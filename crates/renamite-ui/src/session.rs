@@ -130,6 +130,10 @@ pub struct Session {
     /// Horizontal scroll offset (px) for the timeline key area.
     /// `origin_x = -timeline_offset_x`; zoom keeps the left edge stable.
     pub timeline_offset_x: f64,
+    /// A finger is down somewhere in the app. `on_scroll` cannot tell a wheel
+    /// from a finger, so panels use this to avoid treating a drag that started
+    /// on another surface (the bottom nav bar, say) as a wheel zoom.
+    pub touch_active: bool,
     /// Timeline canvas rect in screen space. Lets the global gesture handler
     /// tell a timeline touch apart from a canvas one.
     pub timeline_rect: Option<Rect>,
@@ -410,6 +414,7 @@ impl Session {
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
             timeline_offset_x: 0.0,
+            touch_active: false,
             timeline_rect: None,
             timeline_pan_last: None,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
