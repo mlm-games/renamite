@@ -5017,9 +5017,11 @@ fn append_timeline_rows_for_node(
         }
     }
 
-    if s.expanded_layers.contains(&id)
-        && let Some(node) = doc.nodes.get(id)
-    {
+    // Descend regardless of the Layers panel's expansion state. Gating this on
+    // `expanded_layers` made a keyframe disappear from the timeline whenever
+    // its layer was folded, so a key that existed (and animated) simply had
+    // nowhere to be drawn. Depth-first order still mirrors the layer tree.
+    if let Some(node) = doc.nodes.get(id) {
         for &child in &node.children {
             append_timeline_rows_for_node(s, child, out, visited);
         }

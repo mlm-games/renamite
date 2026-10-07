@@ -858,7 +858,10 @@ fn diamond_button(
 
     let (sym, tip) = match state {
         DiamondState::Empty => (Symbols::radio_button_unchecked, "Add keyframe"),
-        DiamondState::HasKeys => (Symbols::radio_button_unchecked, "Add keyframe at playhead"),
+        // Distinct from `Empty`: this property *is* keyed, the playhead just
+        // isn't on one of the keys. Sharing `Empty`'s outline made every
+        // animated row read as unselected the moment the playhead moved off.
+        DiamondState::HasKeys => (Symbols::circle, "Add keyframe at playhead"),
         DiamondState::AtPlayhead => (Symbols::stop_circle, "Remove keyframe"),
     };
     let key = format!("diamond_{}", path.as_str());
