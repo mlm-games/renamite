@@ -1,9 +1,9 @@
 use repose_core::dnd::{DragDropModifierExt, drag_preview_chip, provide_drag_preview};
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Brush, Dp, Modifier, MutableInteractionSource, PaddingValues, Rect,
-    TextFieldLineLimits, UnitExt, View, dp_to_px, remember_auto, remember_state_with_key,
-    remember_with_key, request_frame, theme,
+    AlignItems, Brush, Dp, FocusRequester, KeyboardOptions, Modifier, MutableInteractionSource,
+    PaddingValues, Rect, TextFieldLineLimits, UnitExt, View, dp_to_px, remember_auto,
+    remember_state_with_key, remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
@@ -395,6 +395,22 @@ pub fn field_cursor_brush() -> Brush {
     Brush::Solid(theme().primary)
 }
 
+/// Capabilities beyond plain text entry, for [`AppTextFieldWith`].
+#[derive(Default)]
+pub struct TextFieldOpts {
+    /// Commit hook: fired on Enter / the IME done action, with the current text.
+    pub on_submit: Option<Rc<dyn Fn(String)>>,
+    /// Platform keyboard hint (numeric keypad, IME action, autocorrect).
+    pub keyboard_options: Option<KeyboardOptions>,
+    /// Lets the owner pull focus into the field instead of waiting for a tap.
+    pub focus_requester: Option<Rc<FocusRequester>>,
+    /// Size to the text instead of filling the row, floored at this width. A
+    /// `fill_max_width` field resolves against the row's width, not the box it
+    /// sits in, so the inspector's number fields pass their own floor here to
+    /// stay put next to their label.
+    pub min_width: Option<f32>,
+}
+
 /// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).
 ///
 /// The model `value` is synced into the field state on recomposition. Edits flow
@@ -406,6 +422,30 @@ pub fn AppTextField(
     hint: impl Into<String>,
     single_line: bool,
     min_height: f32,
+    on_change: impl Fn(String) + 'static,
+) -> View {
+    AppTextFieldWith(
+        key,
+        value,
+        hint,
+        single_line,
+        min_height,
+        TextFieldOpts::default(),
+        on_change,
+    )
+}
+
+/// [`AppTextField`] plus the extras a field needs when it isn't a plain
+/// model-bound input: commit-on-submit, a keyboard hint, and focus the owner
+/// pulls in itself (the inspector's number editor opens and grabs the caret).
+#[track_caller]
+pub fn AppTextFieldWith(
+    key: impl Into<String>,
+    value: String,
+    hint: impl Into<String>,
+    single_line: bool,
+    min_height: f32,
+    opts: TextFieldOpts,
     on_change: impl Fn(String) + 'static,
 ) -> View {
     let key = key.into();
@@ -421,16 +461,19 @@ pub fn AppTextField(
         }
     }
     let th = theme();
+    let mut layout = Modifier::new()
+        .height(Dp(min_height))
+        .padding_values(field_padding());
+    layout = match opts.min_width {
+        Some(floor) => layout.min_width(Dp(floor)),
+        None => layout.fill_max_width(),
+    };
+    if let Some(requester) = &opts.focus_requester {
+        layout = layout.focus_requester(requester.as_ref().clone());
+    }
     BasicTextField(
         tf_state,
-        field_container(
-            Modifier::new()
-                .fill_max_width()
-                .height(Dp(min_height))
-                .padding_values(field_padding()),
-            focused.get(),
-        )
-        .on_focus_changed(crate::shortcuts::note_text_focus),
+        field_container(layout, focused.get()).on_focus_changed(crate::shortcuts::note_text_focus),
         hint,
         TextFieldConfig {
             line_limits: if single_line {
@@ -441,7 +484,9 @@ pub fn AppTextField(
                     max_height_in_lines: 8,
                 }
             },
+            keyboard_options: opts.keyboard_options.unwrap_or(KeyboardOptions::DEFAULT),
             on_change: Some(Rc::new(on_change)),
+            on_submit: opts.on_submit,
             focus_tracker: Some(focused),
             cursor_brush: Some(field_cursor_brush()),
             text_style: repose_core::TextStyle {

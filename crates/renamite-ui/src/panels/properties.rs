@@ -29,9 +29,8 @@ use renamite_model::{
 };
 use repose_core::input::PointerEvent;
 use repose_core::{
-    AlignItems, Dp, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardType, Modifier,
-    PaddingValues, TextFieldLineLimits, TextInputConfig, UnitExt, View, ViewKind,
-    remember_with_key, request_frame, theme,
+    AlignItems, Dp, FocusRequester, ImeAction, KeyboardCapitalization, KeyboardOptions,
+    KeyboardType, Modifier, PaddingValues, UnitExt, View, remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     IconButton, IconButtonConfig, TooltipBox, TooltipConfig, TooltipState,
@@ -904,6 +903,10 @@ fn diamond_button(
     )
 }
 
+/// Height of the inspector's numeric fields, matching the fixed-width fields
+/// (image crop, and so on) so a row never changes size when it starts editing.
+const NUM_FIELD_HEIGHT: f32 = 32.0;
+
 #[allow(clippy::too_many_arguments)]
 fn scrub_f64_w(
     session: SessionRef,
@@ -967,6 +970,153 @@ fn scrub_f64_w(
         }
     };
 
+    // Idle state: the same chrome every other property field wears, so opening
+    // the editor neither reveals a field that wasn't there nor resizes the row.
+    let idle = Text(label.clone())
+        .size(th.typography.body_medium)
+        .color(th.on_surface)
+        .modifier(
+            crate::components::field_container(
+                Modifier::new()
+                    .min_width(Dp(min_width))
+                    .height(Dp(NUM_FIELD_HEIGHT))
+                    .padding_values(crate::components::field_padding()),
+                false,
+            )
+            .cursor(repose_core::CursorIcon::EwResize)
+            .on_pointer_down({
+                let session = session.clone();
+                let ids = ids.clone();
+                let path = path.clone();
+                move |pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    if ids.is_empty() {
+                        return;
+                    }
+                    let origins = ids
+                        .iter()
+                        .map(|id| {
+                            s.file
+                                .document
+                                .value_at(*id, &path, s.playback.head)
+                                .unwrap_or(Value::F64(0.0))
+                        })
+                        .collect::<Vec<_>>();
+                    s.inspector_drag = Some(InspectorDrag {
+                        path: path.clone(),
+                        channel,
+                        ids: ids.clone(),
+                        origins,
+                        press_x: pe.position.x,
+                        txn: false,
+                    });
+                }
+            })
+            .on_pointer_move({
+                let session = session.clone();
+                let path = path.clone();
+                move |pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    let Some(drag) = s.inspector_drag.clone() else {
+                        return;
+                    };
+                    if drag.path != path || drag.channel != channel {
+                        return;
+                    }
+                    let dx = (pe.position.x - drag.press_x) as f64;
+                    let mult = if pe.modifiers.shift { 0.1 } else { 1.0 };
+                    let delta = dx * step * mult;
+                    let mut outs = smallvec![];
+                    if !drag.txn {
+                        outs.push(ToolOutput::BeginTransaction("Edit property".into()));
+                        if let Some(d) = s.inspector_drag.as_mut() {
+                            d.txn = true;
+                        }
+                    }
+                    let mut cmds: Vec<EditorCommand> = Vec::new();
+                    for (id, origin) in drag.ids.iter().zip(drag.origins.iter()) {
+                        if s.file
+                            .document
+                            .nodes
+                            .get(*id)
+                            .and_then(|n| n.prop_ref(&path))
+                            .is_none()
+                        {
+                            continue;
+                        }
+                        let new_v = apply_channel(origin, channel, |o| {
+                            let mut v = o + delta;
+                            if let Some(lo) = min {
+                                v = v.max(lo);
+                            }
+                            if let Some(hi) = max {
+                                v = v.min(hi);
+                            }
+                            v
+                        });
+                        cmds.push(cmd_set_value(
+                            &s.file.document,
+                            *id,
+                            &path,
+                            new_v,
+                            playhead,
+                            record,
+                        ));
+                    }
+                    outs.push(ToolOutput::Commands(cmds.into()));
+                    s.apply_outputs(outs);
+                }
+            })
+            .on_pointer_up({
+                let session = session.clone();
+                let editing = editing.clone();
+                let draft = draft.clone();
+                let focused_once = focused_once.clone();
+                let label = label.clone();
+                move |_pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    let was_drag = s.inspector_drag.take().map(|d| d.txn).unwrap_or(false);
+                    if was_drag {
+                        s.apply_outputs(smallvec![ToolOutput::CommitTransaction]);
+                    }
+                    drop(s);
+                    // A tap (no scrub) opens the exact-value editor.
+                    if !was_drag {
+                        *focused_once.borrow_mut() = false;
+                        *draft.borrow_mut() = label.clone();
+                        *editing.borrow_mut() = true;
+                        request_frame();
+                    }
+                }
+            })
+            .on_pointer_cancel({
+                let session = session.clone();
+                move |pe: PointerEvent| {
+                    pe.consume();
+                    let mut s = session.borrow_mut();
+                    let was_txn = s.inspector_drag.take().map(|d| d.txn).unwrap_or(false);
+                    if was_txn {
+                        s.apply_outputs(smallvec![ToolOutput::CancelTransaction]);
+                    }
+                }
+            })
+            .on_pointer_leave({
+                let session = session.clone();
+                move |_pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    // Only abandon an open scrub txn; a press without movement
+                    // (tap-to-edit) has `txn == false` and must not be cleared
+                    // here or the following pointer-up would open the editor
+                    // twice / lose the tap.
+                    let is_txn = s.inspector_drag.as_ref().is_some_and(|d| d.txn);
+                    if is_txn {
+                        let _ = s.inspector_drag.take();
+                        s.apply_outputs(smallvec![ToolOutput::CancelTransaction]);
+                    }
+                }
+            }),
+        );
+
     if *editing.borrow() {
         if focus.get() {
             *focused_once.borrow_mut() = true;
@@ -976,207 +1126,39 @@ fn scrub_f64_w(
         if *focused_once.borrow() && !focus.get() {
             *editing.borrow_mut() = false;
             request_frame();
-            return Box(Modifier::new().min_width(Dp(min_width))).child(
-                Text(label)
-                    .size(th.typography.body_medium)
-                    .color(th.primary),
-            );
+            return idle;
         }
         // Keep requesting focus until the runtime actually grants it (the
         // requester's target id is only set once this field has been laid out).
         if !focus.get() {
             focus_requester.request_focus();
         }
-        return Box(Modifier::new().width(Dp(min_width))).child(
-            View::new(0, ViewKind::Box).modifier(
-                crate::components::field_container(
-                    Modifier::new()
-                        .focus_requester(focus_requester.as_ref().clone())
-                        .padding_values(PaddingValues {
-                            left: Dp(4.0),
-                            right: Dp(4.0),
-                            top: Dp(2.0),
-                            bottom: Dp(2.0),
-                        }),
-                    focus.get(),
-                )
-                .on_focus_changed(crate::shortcuts::note_text_focus)
-                .text_input(TextInputConfig {
-                    hint: String::new(),
-                    sensitive: false,
-                    multiline: false,
-                    on_change: Some({
-                        let draft = draft.clone();
-                        Rc::new(move |text: String| {
-                            *draft.borrow_mut() = text;
-                        }) as Rc<dyn Fn(String)>
-                    }),
-                    on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
-                    focus_tracker: Some(focus.clone()),
-                    value: draft.borrow().clone(),
-                    visual_transformation: None,
+        return crate::components::AppTextFieldWith(
+            key.clone(),
+            draft.borrow().clone(),
+            label.clone(),
+            true,
+            NUM_FIELD_HEIGHT,
+            crate::components::TextFieldOpts {
+                min_width: Some(min_width),
+                on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
+                keyboard_options: Some(KeyboardOptions {
                     keyboard_type: KeyboardType::Decimal,
                     capitalization: KeyboardCapitalization::None,
                     ime_action: ImeAction::Done,
                     auto_correct_enabled: Some(false),
-                    enabled: true,
-                    read_only: false,
-                    max_lines: Some(1),
-                    min_lines: 1,
-                    cursor_color: Some(th.primary),
-                    on_text_layout: None,
-                    text_style: Some(repose_core::TextStyle {
-                        font_size: 14.0.sp(),
-                        color: Some(th.primary),
-                        ..Default::default()
-                    }),
-                    keyboard_actions: None,
-                    interaction_source: None,
-                    line_limits: Some(TextFieldLineLimits::SingleLine),
+                    ..KeyboardOptions::DEFAULT
                 }),
-            ),
+                focus_requester: Some(focus_requester.clone()),
+            },
+            {
+                let draft = draft.clone();
+                move |text: String| *draft.borrow_mut() = text
+            },
         );
     }
 
-    Text(label.clone())
-        .size(th.typography.body_medium)
-        .color(th.primary)
-        .modifier(
-            Modifier::new()
-                .min_width(Dp(min_width))
-                .cursor(repose_core::CursorIcon::EwResize)
-                .on_pointer_down({
-                    let session = session.clone();
-                    let ids = ids.clone();
-                    let path = path.clone();
-                    move |pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        if ids.is_empty() {
-                            return;
-                        }
-                        let origins = ids
-                            .iter()
-                            .map(|id| {
-                                s.file
-                                    .document
-                                    .value_at(*id, &path, s.playback.head)
-                                    .unwrap_or(Value::F64(0.0))
-                            })
-                            .collect::<Vec<_>>();
-                        s.inspector_drag = Some(InspectorDrag {
-                            path: path.clone(),
-                            channel,
-                            ids: ids.clone(),
-                            origins,
-                            press_x: pe.position.x,
-                            txn: false,
-                        });
-                    }
-                })
-                .on_pointer_move({
-                    let session = session.clone();
-                    let path = path.clone();
-                    move |pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        let Some(drag) = s.inspector_drag.clone() else {
-                            return;
-                        };
-                        if drag.path != path || drag.channel != channel {
-                            return;
-                        }
-                        let dx = (pe.position.x - drag.press_x) as f64;
-                        let mult = if pe.modifiers.shift { 0.1 } else { 1.0 };
-                        let delta = dx * step * mult;
-                        let mut outs = smallvec![];
-                        if !drag.txn {
-                            outs.push(ToolOutput::BeginTransaction("Edit property".into()));
-                            if let Some(d) = s.inspector_drag.as_mut() {
-                                d.txn = true;
-                            }
-                        }
-                        let mut cmds: Vec<EditorCommand> = Vec::new();
-                        for (id, origin) in drag.ids.iter().zip(drag.origins.iter()) {
-                            if s.file
-                                .document
-                                .nodes
-                                .get(*id)
-                                .and_then(|n| n.prop_ref(&path))
-                                .is_none()
-                            {
-                                continue;
-                            }
-                            let new_v = apply_channel(origin, channel, |o| {
-                                let mut v = o + delta;
-                                if let Some(lo) = min {
-                                    v = v.max(lo);
-                                }
-                                if let Some(hi) = max {
-                                    v = v.min(hi);
-                                }
-                                v
-                            });
-                            cmds.push(cmd_set_value(
-                                &s.file.document,
-                                *id,
-                                &path,
-                                new_v,
-                                playhead,
-                                record,
-                            ));
-                        }
-                        outs.push(ToolOutput::Commands(cmds.into()));
-                        s.apply_outputs(outs);
-                    }
-                })
-                .on_pointer_up({
-                    let session = session.clone();
-                    let editing = editing.clone();
-                    let draft = draft.clone();
-                    let focused_once = focused_once.clone();
-                    let label = label.clone();
-                    move |_pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        let was_drag = s.inspector_drag.take().map(|d| d.txn).unwrap_or(false);
-                        if was_drag {
-                            s.apply_outputs(smallvec![ToolOutput::CommitTransaction]);
-                        }
-                        drop(s);
-                        // A tap (no scrub) opens the exact-value editor.
-                        if !was_drag {
-                            *focused_once.borrow_mut() = false;
-                            *draft.borrow_mut() = label.clone();
-                            *editing.borrow_mut() = true;
-                            request_frame();
-                        }
-                    }
-                })
-                .on_pointer_cancel({
-                    let session = session.clone();
-                    move |pe: PointerEvent| {
-                        pe.consume();
-                        let mut s = session.borrow_mut();
-                        let was_txn = s.inspector_drag.take().map(|d| d.txn).unwrap_or(false);
-                        if was_txn {
-                            s.apply_outputs(smallvec![ToolOutput::CancelTransaction]);
-                        }
-                    }
-                })
-                .on_pointer_leave({
-                    let session = session.clone();
-                    move |_pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        // Only abandon an open scrub txn; a press without movement
-                        // (tap-to-edit) has `txn == false` and must not be cleared
-                        // here or the following pointer-up would open the editor
-                        // twice / lose the tap.
-                        let is_txn = s.inspector_drag.as_ref().is_some_and(|d| d.txn);
-                        if is_txn {
-                            let _ = s.inspector_drag.take();
-                            s.apply_outputs(smallvec![ToolOutput::CancelTransaction]);
-                        }
-                    }
-                }),
-        )
+    idle
 }
 
 fn dvec2_editor(
