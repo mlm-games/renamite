@@ -749,11 +749,16 @@ fn CompactCanvas(session: SessionRef) -> View {
 /// It spans the stage vertically and clips rather than growing past it: an
 /// absolute box only gets a height from its offsets, and bottom-anchoring a
 /// content-sized box pushed the palette off the bottom of a short window.
+///
+/// The width is load-bearing, and so is leaving `right` unset: taffy derives an
+/// axis size from its insets whenever the size is auto, so offsetting both
+/// sides stretched the palette across the whole stage. Only the vertical axis
+/// is inset-constrained here.
 fn CompactToolPalette(session: SessionRef) -> View {
     Box(Modifier::new()
         .absolute()
-        .offset(Some(Dp(12.0)), None, Some(Dp(12.0)), Some(Dp(12.0)))
-        .padding(Dp(6.0))
+        .width(Dp(72.0))
+        .offset(Some(Dp(12.0)), Some(Dp(12.0)), None, Some(Dp(12.0)))
         .background(theme().surface_container_high)
         .clip_rounded(Dp(12.0))
         .border(Dp(1.0), theme().outline_variant, Dp(12.0)))

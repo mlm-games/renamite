@@ -652,10 +652,19 @@ fn ViewportStageHud(session: SessionRef) -> View {
         )
     };
 
-    Box(Modifier::new()
-        .absolute()
-        .offset(Some(Dp(16.0)), Some(Dp(16.0)), None, None))
-    .child(HudSurface(
+    // On compact the tool palette floats over the stage's left edge, so the
+    // readout moves right rather than being painted over.
+    let anchor = if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
+        Modifier::new()
+            .absolute()
+            .offset(None, Some(Dp(16.0)), Some(Dp(16.0)), None)
+    } else {
+        Modifier::new()
+            .absolute()
+            .offset(Some(Dp(16.0)), Some(Dp(16.0)), None, None)
+    };
+
+    Box(anchor).child(HudSurface(
         Row(Modifier::new()
             .padding(Dp(8.0))
             .gap(Dp(8.0))
