@@ -122,6 +122,15 @@ pub fn TimelinePanel(session: SessionRef) -> View {
                     )
                     .size(th.typography.body_small)
                     .color(th.on_surface_variant),
+                    // Neither add-a-key route is discoverable on touch, where
+                    // there is no right-click: double-tap a row, or long-press
+                    // it and choose "Add key at playhead".
+                    Text(
+                        "To key a property by hand: double-tap its row, or long-press \
+                        it and pick Add key at playhead.",
+                    )
+                    .size(th.typography.body_small)
+                    .color(th.on_surface_variant),
                 )),
             ),
         ));
