@@ -6,8 +6,8 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{Key, KeyEvent, KeyEventType, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Color, Dp, FocusRequester, JustifyContent, Modifier, Px, TextFieldLineLimits, Vec2,
-    View, remember_auto, remember_state_auto, theme,
+    AlignItems, Color, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
+    TextFieldLineLimits, Vec2, View, remember_auto, remember_state_auto, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
@@ -560,6 +560,11 @@ fn TimelineCanvas(session: SessionRef) -> View {
     Canvas(
         Modifier::new()
             .fill_max_size()
+            // Scrolled past frame 0, `frame_to_x` goes negative and the keys,
+            // ticks and playhead would paint over the label column. The ruler
+            // and zebra rows are already bounded to the canvas width, so this
+            // only clips what can escape left.
+            .overflow(Overflow::Clip)
             .focusable(true)
             .on_key_event({
                 let session = session.clone();
