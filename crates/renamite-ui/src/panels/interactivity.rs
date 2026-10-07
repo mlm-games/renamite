@@ -141,6 +141,9 @@ fn PreviewStatusBar(session: SessionRef) -> View {
         (s.machine_preview_enabled, states, name)
     };
     if !enabled {
+        if !session.borrow().show_hints() {
+            return Box(Modifier::new());
+        }
         return Text("Preview off - press play to drive the machine")
             .size(th.typography.label_small)
             .color(th.on_surface_variant)
@@ -195,15 +198,19 @@ fn EmptyMachineState(session: SessionRef) -> View {
             .size(th.typography.body_medium)
             .color(th.on_surface_variant)
             .modifier(Modifier::new().padding(Dp(16.0))),
-        Text("State machines drive clips from inputs and pointer listeners (Rive-Interact-like.")
-            .size(th.typography.body_small)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: Dp(16.0),
-                right: Dp(16.0),
-                top: Dp(0.0),
-                bottom: Dp(8.0),
-            })),
+        if session.borrow().show_hints() {
+            Text("State machines drive clips from inputs and pointer listeners (Rive-Interact-like.)")
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant)
+                .modifier(Modifier::new().padding_values(PaddingValues {
+                    left: Dp(16.0),
+                    right: Dp(16.0),
+                    top: Dp(0.0),
+                    bottom: Dp(8.0),
+                }))
+        } else {
+            Box(Modifier::new())
+        },
         Box(Modifier::new().padding_values(PaddingValues {
             left: Dp(16.0),
             right: Dp(16.0),
@@ -494,7 +501,7 @@ fn InputsSection(session: SessionRef, machine_id: MachineId) -> View {
         )),
     ];
 
-    if inputs.is_empty() {
+    if inputs.is_empty() && session.borrow().show_hints() {
         rows.push(
             Text("No inputs - add Bool / Number / Trigger to drive transitions")
                 .size(theme().typography.label_small)
@@ -639,13 +646,14 @@ fn InputRow(
                 || Text("Fire").size(th.typography.label_medium),
             ));
         }
-        _ => {
+        _ if session.borrow().show_hints() => {
             controls.push(
                 Text("enable preview")
                     .size(th.typography.label_small)
                     .color(th.on_surface_variant),
             );
         }
+        _ => {}
     }
 
     controls.push(
@@ -751,15 +759,19 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
     };
 
     Column(Modifier::new().fill_max_width()).child((
-        Text("Shift+drag state to wire")
-            .size(theme().typography.label_small)
-            .color(theme().on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: Dp(12.0),
-                right: Dp(8.0),
-                top: Dp(4.0),
-                bottom: Dp(4.0),
-            })),
+        if session.borrow().show_hints() {
+            Text("Shift+drag state to wire")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+                .modifier(Modifier::new().padding_values(PaddingValues {
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(4.0),
+                    bottom: Dp(4.0),
+                }))
+        } else {
+            Box(Modifier::new())
+        },
         Canvas(
             Modifier::new()
                 .fill_max_width()
@@ -1607,10 +1619,11 @@ fn SelectionInspector(session: SessionRef, machine_id: MachineId) -> View {
             transition,
         } => TransitionInspector(session, machine_id, layer, source, transition),
         MachineSelection::Layer { layer } => LayerInspector(session, machine_id, layer),
-        _ => Text("Select a state, edge, or Any node")
+        _ if session.borrow().show_hints() => Text("Select a state, edge, or Any node")
             .size(theme().typography.label_small)
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding(Dp(12.0))),
+        _ => Box(Modifier::new()),
     }
 }
 
@@ -1684,15 +1697,19 @@ fn LayerInspector(session: SessionRef, machine_id: MachineId, layer: usize) -> V
                 top: Dp(0.0),
                 bottom: Dp(4.0),
             })),
-        Text("Shift+drag from Any to wire a global transition")
-            .size(th.typography.label_small)
-            .color(th.on_surface_variant)
-            .modifier(Modifier::new().padding_values(PaddingValues {
-                left: Dp(12.0),
-                right: Dp(12.0),
-                top: Dp(0.0),
-                bottom: Dp(8.0),
-            })),
+        if session.borrow().show_hints() {
+            Text("Shift+drag from Any to wire a global transition")
+                .size(th.typography.label_small)
+                .color(th.on_surface_variant)
+                .modifier(Modifier::new().padding_values(PaddingValues {
+                    left: Dp(12.0),
+                    right: Dp(12.0),
+                    top: Dp(0.0),
+                    bottom: Dp(8.0),
+                }))
+        } else {
+            Box(Modifier::new())
+        },
         Row(Modifier::new()
             .padding_values(PaddingValues {
                 left: Dp(12.0),
@@ -2548,7 +2565,7 @@ fn ListenersSection(session: SessionRef, machine_id: MachineId) -> View {
     // Add-listener row: node comes from the editor selection.
     if let Some(node) = selected_node {
         rows.push(AddListenerRow(session.clone(), machine_id, node, inputs));
-    } else {
+    } else if session.borrow().show_hints() {
         rows.push(
             Text("Select a shape to add a listener")
                 .size(th.typography.label_small)
@@ -3163,9 +3180,13 @@ fn condition_dropdown(
     inputs: Vec<InputDef>,
 ) -> View {
     if inputs.is_empty() {
-        return Text("add inputs first")
-            .size(theme().typography.label_small)
-            .color(theme().on_surface_variant);
+        return if session.borrow().show_hints() {
+            Text("add inputs first")
+                .size(theme().typography.label_small)
+                .color(theme().on_surface_variant)
+        } else {
+            Box(Modifier::new())
+        };
     }
     let items = inputs
         .iter()

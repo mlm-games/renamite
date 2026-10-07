@@ -723,7 +723,12 @@ fn ViewportStageHud(session: SessionRef) -> View {
 }
 
 fn ViewportHint(session: SessionRef) -> View {
-    if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
+    let shown = {
+        let s = session.borrow();
+        s.show_hints()
+            && crate::shell::platform_shell_class() != crate::shell::ShellClass::Compact
+    };
+    if !shown {
         return ZStack(Modifier::new());
     }
     let is_interact = session.borrow().mode == crate::session::EditorMode::Interact;

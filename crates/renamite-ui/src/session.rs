@@ -675,6 +675,11 @@ impl Session {
         self.apply_outputs(outs);
     }
 
+    /// Whether persistent on-screen hints should be rendered.
+    pub fn show_hints(&self) -> bool {
+        self.viewport.show_hints
+    }
+
     pub fn zoom_to_selection(&mut self) {
         if self.selection.nodes.is_empty() {
             return;
@@ -4455,6 +4460,9 @@ pub struct ViewportState {
     pub show_grid: bool,
     pub snapping_enabled: bool,
     pub show_guides: bool,
+    /// Persistent on-screen hints (canvas cheat sheet, panel how-to
+    /// lines). Opt-in: off until a settings toggle enables them.
+    pub show_hints: bool,
     pub snap_to_grid: bool,
     pub snap_to_guides: bool,
     pub snap_to_objects: bool,
@@ -4497,6 +4505,7 @@ impl Default for ViewportState {
             show_grid: false,
             snapping_enabled: true,
             show_guides: true,
+            show_hints: false,
             snap_to_grid: true,
             snap_to_guides: true,
             snap_to_objects: true,
