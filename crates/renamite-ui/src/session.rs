@@ -13,7 +13,7 @@ use renamite_animation::{Frame, LoopMode, PlayState, Playback};
 use renamite_behavior_canvas::{CanvasEvent, PointerButton, ToolSet};
 use renamite_behavior_common::machine::{MachineSelection, remove_state, remove_transition};
 use renamite_behavior_common::{
-    FitState, Modifiers, Selection, SnapConfig, ToolContext, ViewTransform,
+    FitState, GestureAnchor, Modifiers, Selection, SnapConfig, ToolContext, ViewTransform,
 };
 use renamite_behavior_timeline::{
     TimelineCtx, TimelineEvent, TimelineKey, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
@@ -143,6 +143,8 @@ pub struct Session {
     /// gesture take the pointer back instead of yielding to a drag that the
     /// first finger's own press started.
     pub timeline_touch_press: bool,
+    /// Latched zoom anchor for the two-finger timeline gesture.
+    pub timeline_anchor: GestureAnchor,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     autosave_last_ms: f64,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -422,6 +424,7 @@ impl Session {
             timeline_rect: None,
             timeline_pan_last: None,
             timeline_touch_press: false,
+            timeline_anchor: GestureAnchor::new(),
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             autosave_last_ms: 0.0,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -4600,12 +4603,23 @@ pub struct ViewportState {
     /// only ever arrives while a touch press is open, so this tells a drag
     /// the user meant from one the fingers merely started on their way down.
     pub touch_drag: bool,
+    /// Latched zoom anchor for the two-finger canvas gesture. See
+    /// [`renamite_behavior_common::GestureAnchor`].
+    pub gesture_anchor: GestureAnchor,
     pub last_pointer: DVec2,
     /// Whether `last_pointer` has been set by a real pointer event yet.
     /// Guards wheel-zoom anchoring before the first pointer move.
     pub has_pointer: bool,
+    /// Canvas rect in window **physical px** - the space the viewport
+    /// transform and the platform's gesture centres both live in.
+    ///
+    /// Layout reports rects in dp, so this is scaled on the way in rather
+    /// than taken as-is: subtracting a dp origin from a px centre is the
+    /// error this avoids. Kept live by `on_globally_positioned`, so it stays
+    /// correct across dock and panel layout changes that no pointer move
+    /// would otherwise reveal.
     pub screen_rect: Option<Rect>,
-    /// Machine graph canvas rect, in main-viewport-local coordinates.
+    /// Machine graph canvas rect, in main-viewport-local **physical px**.
     /// Lets two-finger gestures route to the graph instead of the canvas.
     pub graph_rect: Option<Rect>,
 
@@ -4651,6 +4665,7 @@ impl Default for ViewportState {
             pointer_down: false,
             pointer_route: None,
             touch_drag: false,
+            gesture_anchor: GestureAnchor::new(),
             last_pointer: DVec2::ZERO,
             has_pointer: false,
             screen_rect: None,

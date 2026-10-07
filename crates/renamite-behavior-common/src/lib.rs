@@ -267,6 +267,58 @@ impl FitState {
     }
 }
 
+/// Stable zoom anchor for one multi-touch transform.
+///
+/// The platform reports each frame's *live* gesture centroid. Scaling about a
+/// centroid that keeps moving makes the fixed point creep toward whichever
+/// finger is holding still: with two contacts the midpoint slides at half the
+/// moving finger's travel, so every frame re-anchors somewhere new and the
+/// content the user is pinching appears to slide out from under their fingers.
+///
+/// Anchoring instead at the centroid captured when the contact set settled
+/// keeps it put. Per frame the view scales about the anchor and then follows
+/// the centroid's own translation, which carries the anchored world point by
+/// exactly `delta` and by nothing else.
+///
+/// Each surface owns one and feeds it the gesture centre already converted
+/// into its own space; it must call [`GestureAnchor::end`] when the gesture
+/// ends so the next one latches its own point.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GestureAnchor {
+    anchored: Option<DVec2>,
+}
+
+impl GestureAnchor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Latch `local` as this gesture's zoom anchor. Later calls are ignored
+    /// until [`GestureAnchor::end`], which is what stops a drifting centroid
+    /// from moving the fixed point.
+    pub fn begin(&mut self, local: DVec2) {
+        if self.anchored.is_none() {
+            self.anchored = Some(local);
+        }
+    }
+
+    /// The point to scale about, or `fallback` while no gesture is anchored
+    /// (a centre-less pinch, or a gesture that never reported a centre).
+    pub fn resolve(&self, fallback: DVec2) -> DVec2 {
+        self.anchored.unwrap_or(fallback)
+    }
+
+    /// True while a gesture is anchored.
+    pub fn is_anchored(&self) -> bool {
+        self.anchored.is_some()
+    }
+
+    /// Release the anchor, so the next gesture latches its own centre.
+    pub fn end(&mut self) {
+        self.anchored = None;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Modifiers {
     pub shift: bool,

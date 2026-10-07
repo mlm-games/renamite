@@ -7,7 +7,7 @@ use web_time::Instant;
 
 use glam::DVec2;
 use renamite_animation::LoopMode;
-use renamite_behavior_common::ViewTransform;
+use renamite_behavior_common::{GestureAnchor, ViewTransform};
 use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
@@ -80,6 +80,14 @@ fn graph_local_origin(rect: &Rc<RefCell<Option<Rect>>>) -> DVec2 {
     rect.borrow()
         .map(|r| DVec2::new(r.x as f64, r.y as f64))
         .unwrap_or(DVec2::ZERO)
+}
+
+/// The gesture centre (window px) in graph-canvas-local dp.
+fn graph_local_point(rect: &Rc<RefCell<Option<Rect>>>, p: Vec2) -> DVec2 {
+    let scale = repose_core::locals::effective_density_scale().max(1e-6) as f64;
+    let dp = DVec2::new(p.x as f64 / scale, p.y as f64 / scale);
+    let origin = graph_local_origin(rect);
+    DVec2::new(dp.x - origin.x, dp.y - origin.y)
 }
 
 pub fn InteractivityPanel(session: SessionRef) -> View {
@@ -717,10 +725,15 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
         remember_with_key(format!("machine_graph_last_ptr_{machine_id:?}"), || {
             RefCell::new(DVec2::ZERO)
         });
+    let anchor: Rc<RefCell<GestureAnchor>> =
+        remember_with_key(format!("machine_graph_anchor_{machine_id:?}"), || {
+            RefCell::new(GestureAnchor::new())
+        });
 
     let graph_action_handler: repose_core::shortcuts::Handler = {
         let rect = graph_rect.clone();
         let view = view.clone();
+        let anchor = anchor.clone();
         std::rc::Rc::new(move |action| {
             use repose_core::shortcuts::{Action, Gesture};
             match action {
@@ -728,6 +741,7 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     if !graph_contains_dp(&rect, center) {
                         return false;
                     }
+                    anchor.borrow_mut().begin(graph_local_point(&rect, center));
                     view.borrow_mut()
                         .pan_by(DVec2::new(delta.x as f64, delta.y as f64));
                     request_frame();
@@ -740,13 +754,10 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     if !graph_contains_dp(&rect, center) {
                         return false;
                     }
-                    let origin = graph_local_origin(&rect);
-                    let scale = repose_core::locals::effective_density_scale().max(1e-6);
-                    let dp = DVec2::new(
-                        center.x as f64 / scale as f64,
-                        center.y as f64 / scale as f64,
-                    );
-                    let local = DVec2::new(dp.x - origin.x, dp.y - origin.y);
+                    anchor
+                        .borrow_mut()
+                        .begin(graph_local_point(&rect, center));
+                    let local = anchor.borrow().resolve(DVec2::ZERO);
                     view.borrow_mut()
                         .zoom_at(local, delta_scale as f64, 0.5, 2.0);
                     request_frame();
@@ -812,11 +823,15 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                         let Some(main) = s.viewport.screen_rect else {
                             return;
                         };
+                        // `r` is dp from layout; the main canvas rect is px.
+                        // Rebase in px so the canvas gesture router compares
+                        // like with like.
+                        let scale = repose_core::locals::effective_density_scale() as f32;
                         let local = Rect {
-                            x: r.x - main.x,
-                            y: r.y - main.y,
-                            w: r.w,
-                            h: r.h,
+                            x: r.x * scale - main.x,
+                            y: r.y * scale - main.y,
+                            w: r.w * scale,
+                            h: r.h * scale,
                         };
                         drop(s);
                         session.borrow_mut().viewport.set_graph_rect(local);
@@ -882,13 +897,17 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                 .on_pointer_up({
                     let session = session.clone();
                     let view = view.clone();
+                    let anchor = anchor.clone();
                     move |event: PointerEvent| {
+                        anchor.borrow_mut().end();
                         handle_graph_up(&session, machine_id, &view, &event);
                     }
                 })
                 .on_pointer_cancel({
                     let session = session.clone();
+                    let anchor = anchor.clone();
                     move |_| {
+                        anchor.borrow_mut().end();
                         session.borrow_mut().machine_graph_gesture = None;
                         request_frame();
                     }

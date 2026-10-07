@@ -525,11 +525,13 @@ fn open_timeline_context_menu(session: &mut crate::session::Session, pos: DVec2,
 fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts::Action) -> bool {
     use repose_core::shortcuts::{Action, Gesture};
     match action {
-        Action::Gesture(Gesture::Pan { delta, .. }) => {
+        Action::Gesture(Gesture::Pan { delta, center }) => {
             if !claim_timeline_for_gesture(session) {
                 return false;
             }
             let mut s = session.borrow_mut();
+            let local_x = timeline_local_x(&s, *center);
+            s.timeline_anchor.begin(DVec2::new(local_x, 0.0));
             s.pan_timeline(delta.x as f64);
             true
         }
@@ -539,18 +541,36 @@ fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts
                 return false;
             }
             let mut s = session.borrow_mut();
-            // Zoom about the pinch centre in canvas-local x. A plain `Pinch`
-            // carries no centre, so it anchors at the left edge.
-            let local_x = match (action, s.timeline_rect) {
-                (Action::Gesture(Gesture::PinchWithCenter { center, .. }), Some(r)) => {
-                    center.x as f64 - r.x as f64
+            // Zoom about the gesture centre in canvas-local x. A plain `Pinch`
+            // carries no centre, so it anchors at the left edge. The anchor
+            // latched on the gesture's first frame keeps the keys under the
+            // fingers from sliding sideways as one finger travels.
+            let center_x = match action {
+                Action::Gesture(Gesture::PinchWithCenter { center, .. }) => {
+                    timeline_local_x(&s, *center)
                 }
                 _ => 0.0,
             };
-            s.zoom_timeline_at(*delta_scale as f64, local_x);
+            let pinned = DVec2::new(center_x, 0.0);
+            s.timeline_anchor.begin(pinned);
+            let anchor_x = s.timeline_anchor.resolve(DVec2::ZERO).x;
+            s.zoom_timeline_at(*delta_scale as f64, anchor_x);
             true
         }
         _ => false,
+    }
+}
+
+/// The gesture centre (window px) in timeline-canvas-local dp.
+///
+/// Layout reports `timeline_rect` in dp while the platform reports gesture
+/// centres in physical px, so the centre is scaled down before the origin is
+/// removed - mixing the two puts the anchor at the wrong frame.
+fn timeline_local_x(s: &crate::session::Session, center: repose_core::Vec2) -> f64 {
+    let scale = repose_core::locals::effective_density_scale().max(1e-6) as f64;
+    match s.timeline_rect {
+        Some(r) => (center.x as f64 / scale) - r.x as f64,
+        None => 0.0,
     }
 }
 
@@ -572,6 +592,7 @@ fn claim_timeline_for_gesture(session: &SessionRef) -> bool {
     let outs = s.scrub.cancel();
     s.apply_outputs(outs);
     s.timeline_pan_last = None;
+    s.timeline_anchor.end();
     true
 }
 
@@ -645,6 +666,9 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     }
                     session.borrow_mut().timeline_touch_press =
                         pe.kind == repose_core::input::PointerKind::Touch;
+                    // A fresh press means any previous gesture is over, even if
+                    // its lift landed off-surface and never reached here.
+                    session.borrow_mut().timeline_anchor.end();
                     if let PointerEventKind::Down(b) = pe.event {
                         use repose_core::input::PointerButton as RB;
                         match b {
@@ -753,6 +777,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let long_press = long_press.clone();
                 move |pe: PointerEvent| {
                     session.borrow_mut().timeline_touch_press = false;
+                    session.borrow_mut().timeline_anchor.end();
                     // A middle drag or a long press owns the lift: the former
                     // ends the pan, the latter already opened the menu and must
                     // not also register as a click (which would scrub).
@@ -797,6 +822,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         s.timeline_pan_last = None;
                         s.timeline_touch_press = false;
+                        s.timeline_anchor.end();
                     }
                     *last_click.borrow_mut() = None;
                     *press_moved.borrow_mut() = false;

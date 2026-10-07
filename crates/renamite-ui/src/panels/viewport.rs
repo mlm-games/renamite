@@ -119,6 +119,12 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .overflow(Overflow::Clip)
                 .focusable(true)
                 .focus_requester((*focus).clone())
+                .on_globally_positioned({
+                    let session = session.clone();
+                    move |r: Rect| {
+                        session.borrow_mut().viewport.screen_rect = Some(rect_to_px(r))
+                    }
+                })
                 .cursor(if panning {
                     CursorIcon::Grabbing
                 } else if space_armed {
@@ -182,6 +188,9 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         s.viewport.last_pointer = pos;
                         s.viewport.has_pointer = true;
                         s.viewport.touch_drag = pe.kind == PointerKind::Touch;
+                        // A fresh press means any previous gesture is over, even
+                        // if its lift landed off-surface and never reached here.
+                        s.viewport.gesture_anchor.end();
 
                         if map_button(&pe) == PointerButton::Secondary {
                             focus.request_focus();
@@ -281,25 +290,6 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         s.viewport.last_pointer = pos;
                         s.viewport.has_pointer = true;
 
-                        let window_pos = pe.position_in_window();
-                        let origin = repose_core::Vec2 {
-                            x: window_pos.x - pos.x as f32,
-                            y: window_pos.y - pos.y as f32,
-                        };
-                        let fit_surface = s.viewport.surface_size();
-                        let size = repose_core::Vec2 {
-                            x: fit_surface.x as f32,
-                            y: fit_surface.y as f32,
-                        };
-                        if size.x > 0.0 && size.y > 0.0 {
-                            s.viewport.screen_rect = Some(repose_core::geometry::Rect {
-                                x: origin.x,
-                                y: origin.y,
-                                w: size.x,
-                                h: size.y,
-                            });
-                        }
-
                         if s.viewport.update_pan(pos) {
                             pe.consume();
                             request_frame();
@@ -349,6 +339,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         let mut s = session.borrow_mut();
                         s.viewport.pointer_down = false;
                         s.viewport.touch_drag = false;
+                        s.viewport.gesture_anchor.end();
 
                         if s.viewport.guide_drag.is_some() {
                             let surface = s.viewport.surface_size();
@@ -408,6 +399,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                         s.viewport.pointer_down = false;
                         s.viewport.pointer_route = None;
                         s.viewport.touch_drag = false;
+                        s.viewport.gesture_anchor.end();
                         let tool = s.active_tool;
                         let outs = s.tool.cancel(tool);
                         s.apply_outputs(outs);
@@ -529,11 +521,16 @@ pub fn handle_viewport_gesture(
     use repose_core::shortcuts::{Action, Gesture};
     match action {
         Action::Gesture(Gesture::Pan { delta, center }) => {
+            let local = viewport_local_center(session, *center);
             if !claim_canvas_for_gesture(session, Some(*center)) {
                 return false;
             }
             {
                 let mut s = session.borrow_mut();
+                // Latch on the first frame of the gesture, whichever kind it
+                // is, so a pinch that starts as a pan still anchors where the
+                // fingers first landed.
+                s.viewport.gesture_anchor.begin(local);
                 s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
             }
             request_frame();
@@ -558,25 +555,45 @@ pub fn handle_viewport_gesture(
             delta_scale,
             center,
         }) => {
+            let local = viewport_local_center(session, *center);
             if !claim_canvas_for_gesture(session, Some(*center)) {
                 return false;
             }
-            let center_in_viewport = {
-                let s = session.borrow();
-                if let Some(rect) = s.viewport.screen_rect {
-                    DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64)
-                } else {
-                    s.viewport.surface_size() * 0.5
-                }
-            };
             {
                 let mut s = session.borrow_mut();
-                s.viewport.zoom_at(center_in_viewport, *delta_scale as f64);
+                s.viewport.gesture_anchor.begin(local);
+                let anchor = s
+                    .viewport
+                    .gesture_anchor
+                    .resolve(s.viewport.surface_size() * 0.5);
+                s.viewport.zoom_at(anchor, *delta_scale as f64);
             }
             request_frame();
             true
         }
         _ => false,
+    }
+}
+
+/// The gesture centre (window px) in main-viewport-local px. Falls back to the
+/// surface centre before the canvas has ever been laid out.
+fn viewport_local_center(session: &SessionRef, center: repose_core::Vec2) -> DVec2 {
+    let s = session.borrow();
+    match s.viewport.screen_rect {
+        Some(rect) => DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64),
+        None => s.viewport.surface_size() * 0.5,
+    }
+}
+
+/// Scale a layout rect (dp) into the physical-px space the viewport
+/// transform and the platform's gesture centres live in.
+fn rect_to_px(r: Rect) -> Rect {
+    let scale = repose_core::locals::effective_density_scale() as f64;
+    Rect {
+        x: (r.x as f64 * scale) as f32,
+        y: (r.y as f64 * scale) as f32,
+        w: (r.w as f64 * scale) as f32,
+        h: (r.h as f64 * scale) as f32,
     }
 }
 
@@ -616,6 +633,7 @@ fn claim_canvas_for_gesture(
     s.viewport.end_pan();
     s.viewport.pointer_down = false;
     s.viewport.pointer_route = None;
+    s.viewport.gesture_anchor.end();
     true
 }
 
@@ -1332,15 +1350,10 @@ fn viewport_gesture_in_graph(
     viewport: &crate::session::ViewportState,
     center: repose_core::Vec2,
 ) -> bool {
-    let scale = repose_core::locals::effective_density_scale().max(1e-6);
-    let dp = repose_core::Vec2 {
-        x: center.x / scale,
-        y: center.y / scale,
-    };
     let Some(rect) = viewport.screen_rect else {
         return false;
     };
-    let local = DVec2::new((dp.x - rect.x) as f64, (dp.y - rect.y) as f64);
+    let local = DVec2::new((center.x - rect.x) as f64, (center.y - rect.y) as f64);
     viewport.graph_rect_at(local)
 }
 
