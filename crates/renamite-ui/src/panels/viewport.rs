@@ -1638,16 +1638,10 @@ fn star_preview_pts(
     out
 }
 
-/// Overlay chrome is drawn in physical px, so it shrinks on a dense display
-/// unless scaled back up. Marker sizes are declared in dp and passed through
-/// here, so each one is picked once and follows the display.
-fn overlay_px() -> f32 {
-    repose_core::locals::effective_density_scale().max(0.5)
-}
-
-fn dp_px(dp: f32) -> f32 {
-    dp * overlay_px()
-}
+/// Overlay chrome is drawn in physical px, so marker sizes are declared in dp
+/// and converted with [`crate::session::dp_px`] - each is picked once and
+/// follows the display.
+use crate::session::dp_px;
 
 /// Half-extent of a path node marker, in dp. Inkscape-sized and legible on a
 /// phone, where the old 4px square was barely two millimetres.

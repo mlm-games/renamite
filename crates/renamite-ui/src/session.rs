@@ -2968,13 +2968,17 @@ impl Session {
     }
 
     /// The timeline geometry the draw pass and every hit test must agree on.
+    ///
+    /// Row geometry and hit tolerances are dp so the panel is legible on a
+    /// dense display; the horizontal scroll and zoom stay in content px,
+    /// because those are user-chosen zoom state rather than chrome.
     pub fn timeline_layout(&self) -> renamite_behavior_timeline::TimelineLayout {
         renamite_behavior_timeline::TimelineLayout {
             origin_x: -self.timeline_offset_x.max(0.0),
             px_per_frame: self.timeline_zoom,
-            row_top: 24.0,
-            row_height: 22.0,
-            key_tolerance_px: 6.0,
+            row_top: dp_px(24.0) as f64,
+            row_height: dp_px(22.0) as f64,
+            key_tolerance_px: dp_px(6.0) as f64,
         }
     }
 
@@ -5361,6 +5365,15 @@ pub fn dispatch_canvas(s: &mut Session, ev: CanvasEvent, m: Modifiers) {
 
 pub fn pe_pos(pe: &PointerEvent) -> DVec2 {
     pe_to_dvec(pe)
+}
+
+/// Convert a dp size to physical px, honouring display density and UI scale.
+///
+/// Canvas paint closures work in physical px, so chrome drawn there (markers,
+/// rules, row heights) has to be declared in dp and passed through this or it
+/// shrinks on a dense display. Shared by every panel that paints a canvas.
+pub fn dp_px(dp: f32) -> f32 {
+    dp * repose_core::locals::effective_density_scale().max(0.5)
 }
 
 fn nudge_tree(tree: &mut renamite_history::NodeTree, d: DVec2) {

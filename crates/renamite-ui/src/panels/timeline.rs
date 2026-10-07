@@ -1,7 +1,5 @@
 use glam::DVec2;
-use renamite_behavior_timeline::{
-    TimelineEvent, TimelineKey, TimelineLayout, TimelineOverlay, TimelineRow,
-};
+use renamite_behavior_timeline::{TimelineEvent, TimelineKey, TimelineOverlay, TimelineRow};
 use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{Key, KeyEvent, KeyEventType, PointerEvent, PointerEventKind};
@@ -561,15 +559,16 @@ fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts
     }
 }
 
-/// The gesture centre (window px) in timeline-canvas-local dp.
+/// The gesture centre (window px) in timeline-canvas-local px.
 ///
-/// Layout reports `timeline_rect` in dp while the platform reports gesture
-/// centres in physical px, so the centre is scaled down before the origin is
-/// removed - mixing the two puts the anchor at the wrong frame.
+/// The timeline works in px throughout - `zoom_timeline_at` takes an
+/// `anchor_px` and mixes it with the px scroll offset - so the rect (which
+/// layout reports in dp) is scaled up to px here. Scaling the centre down
+/// instead would halve the anchor on a 2x display.
 fn timeline_local_x(s: &crate::session::Session, center: repose_core::Vec2) -> f64 {
-    let scale = repose_core::locals::effective_density_scale().max(1e-6) as f64;
+    let scale = crate::session::dp_px(1.0) as f64;
     match s.timeline_rect {
-        Some(r) => (center.x as f64 / scale) - r.x as f64,
+        Some(r) => center.x as f64 - r.x as f64 * scale,
         None => 0.0,
     }
 }
@@ -843,13 +842,9 @@ fn TimelineCanvas(session: SessionRef) -> View {
             let s = sess_draw.borrow();
             let th = theme();
             let rows = crate::session::timeline_rows(&s);
-            let layout = TimelineLayout {
-                origin_x: -s.timeline_offset_x.max(0.0),
-                px_per_frame: s.timeline_zoom,
-                row_top: 24.0,
-                row_height: 22.0,
-                key_tolerance_px: 6.0,
-            };
+            // The one layout both this paint pass and every hit test read, so
+            // row geometry cannot drift between drawing and clicking.
+            let layout = s.timeline_layout();
             let range = s.file.document.compositions[s.file.document.main].range;
             let selected = s.keys.selected();
             let overlay = s.keys.overlay();
@@ -900,16 +895,21 @@ fn TimelineCanvas(session: SessionRef) -> View {
             let vis1 = (layout.x_to_frame(scope.size.width as f64).ceil() as i64)
                 .clamp(range.0.0, range.1.0);
             let step = tick_step.max(1) as i64;
+            let px = crate::session::dp_px;
             let mut frame = range.0.0.max(vis0 - (vis0 - range.0.0).rem_euclid(step));
             while frame <= range.1.0.min(vis1) {
                 let x = layout.frame_to_x(frame as f64) as f32;
                 let major = frame % (label_step as i64) == 0;
-                let tick_h = if major { layout.row_top as f32 } else { 8.0 };
+                let tick_h = if major {
+                    layout.row_top as f32
+                } else {
+                    px(8.0)
+                };
                 scope.draw_rect(
                     Rect {
                         x,
                         y: layout.row_top as f32 - tick_h,
-                        w: if major { 1.5 } else { 1.0 },
+                        w: px(if major { 1.5 } else { 1.0 }),
                         h: tick_h,
                     },
                     if major {
@@ -922,9 +922,12 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 if major {
                     scope.draw_text(
                         frame.to_string(),
-                        Vec2 { x: x + 3.0, y: 4.0 },
+                        Vec2 {
+                            x: x + px(3.0),
+                            y: px(4.0),
+                        },
                         th.on_surface_variant,
-                        Px(10.0),
+                        Px(px(10.0)),
                     );
                 }
                 frame += step;
@@ -942,7 +945,7 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         scope,
                         cx,
                         cy,
-                        if is_sel { 7.0 } else { 5.5 },
+                        px(if is_sel { 7.0 } else { 5.5 }),
                         if is_sel { th.primary } else { th.secondary },
                         if is_sel {
                             Some(th.on_primary)
@@ -963,17 +966,17 @@ fn TimelineCanvas(session: SessionRef) -> View {
                         h: (max.y - min.y).abs() as f32,
                     };
                     scope.draw_rect(r, th.primary.with_alpha(40), Px(0.0));
-                    scope.draw_rect_stroke(r, th.primary.with_alpha(200), Px(0.0), Px(1.0));
+                    scope.draw_rect_stroke(r, th.primary.with_alpha(200), Px(0.0), Px(px(1.0)));
                 }
                 TimelineOverlay::DragDelta { frames } if frames != 0 => {
                     scope.draw_text(
                         format!("{frames:+}f"),
                         Vec2 {
-                            x: 8.0,
-                            y: scope.size.height - 18.0,
+                            x: px(8.0),
+                            y: scope.size.height - px(18.0),
                         },
                         th.primary,
-                        Px(12.0),
+                        Px(px(12.0)),
                     );
                 }
                 _ => {}
@@ -986,15 +989,15 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 scope,
                 x,
                 (layout.row_top * 0.45) as f32,
-                6.0,
+                px(6.0),
                 th.primary,
                 None,
             );
             scope.draw_rect(
                 Rect {
-                    x: x - 1.0,
+                    x: x - px(1.0),
                     y: 0.0,
-                    w: 2.0,
+                    w: px(2.0),
                     h: scope.size.height,
                 },
                 th.primary,
