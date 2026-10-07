@@ -423,6 +423,10 @@ pub struct TextFieldOpts {
     /// sits in, so the inspector's number fields pass their own floor here to
     /// stay put next to their label.
     pub min_width: Option<f32>,
+    /// Drive the focus ring from the caller's cell instead of a private one.
+    /// A caller that pulls focus in with `focus_requester` has to watch the same
+    /// cell, or it never learns the field took focus and re-requests it forever.
+    pub focus_tracker: Option<Rc<Cell<bool>>>,
 }
 
 /// Compact state-backed field. Prefer this over M3 TextField (paste/recompose-safe).
@@ -465,7 +469,9 @@ pub fn AppTextFieldWith(
     let key = key.into();
     let hint = hint.into();
     let tf_state = remember_with_key(key.clone(), || RefCell::new(TextFieldState::new()));
-    let focused: Rc<Cell<bool>> = remember_with_key(format!("{key}_focus"), || Cell::new(false));
+    let owned_focus: Rc<Cell<bool>> =
+        remember_with_key(format!("{key}_focus"), || Cell::new(false));
+    let focused = opts.focus_tracker.clone().unwrap_or(owned_focus);
     {
         let mut st = tf_state.borrow_mut();
         if st.text != value {

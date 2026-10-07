@@ -1136,7 +1136,7 @@ fn scrub_f64_w(
         return crate::components::AppTextFieldWith(
             key.clone(),
             draft.borrow().clone(),
-            label.clone(),
+            String::new(),
             true,
             NUM_FIELD_HEIGHT,
             crate::components::TextFieldOpts {
@@ -1150,6 +1150,7 @@ fn scrub_f64_w(
                     ..KeyboardOptions::DEFAULT
                 }),
                 focus_requester: Some(focus_requester.clone()),
+                focus_tracker: Some(focus.clone()),
             },
             {
                 let draft = draft.clone();
