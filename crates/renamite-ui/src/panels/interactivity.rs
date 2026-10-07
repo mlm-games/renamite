@@ -7,7 +7,6 @@ use web_time::Instant;
 
 use glam::DVec2;
 use renamite_animation::LoopMode;
-use renamite_behavior_common::{GestureAnchor, ViewTransform};
 use renamite_behavior_common::machine::{
     GraphRect, GraphState, MachineSelection, TransitionSource, add_condition, add_input, add_layer,
     add_listener, add_state, add_transition, auto_layout, default_condition, hit_state,
@@ -16,6 +15,7 @@ use renamite_behavior_common::machine::{
     set_entry_state, set_input_default, set_state_kind as pure_set_state_kind, set_state_position,
     set_transition_target, transition_mut,
 };
+use renamite_behavior_common::{GestureAnchor, ViewTransform};
 use renamite_machine::{
     BlendChild, ClipId, CmpOp, Condition, InputDef, InputKind, InputValue, Listener,
     ListenerAction, Machine, MachineId, PointerEventKind, StateKind,
@@ -754,9 +754,7 @@ fn MachineGraph(session: SessionRef, machine_id: MachineId) -> View {
                     if !graph_contains_dp(&rect, center) {
                         return false;
                     }
-                    anchor
-                        .borrow_mut()
-                        .begin(graph_local_point(&rect, center));
+                    anchor.borrow_mut().begin(graph_local_point(&rect, center));
                     let local = anchor.borrow().resolve(DVec2::ZERO);
                     view.borrow_mut()
                         .zoom_at(local, delta_scale as f64, 0.5, 2.0);

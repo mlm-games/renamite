@@ -9,7 +9,9 @@ use repose_core::{
     AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
     View, remember_auto, remember_with_key, request_frame, theme,
 };
-use repose_ui::scroll::{ScrollArea, remember_scroll_state};
+use repose_ui::scroll::{
+    HorizontalScrollArea, ScrollArea, remember_horizontal_scroll_state, remember_scroll_state,
+};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -121,9 +123,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .focus_requester((*focus).clone())
                 .on_globally_positioned({
                     let session = session.clone();
-                    move |r: Rect| {
-                        session.borrow_mut().viewport.screen_rect = Some(rect_to_px(r))
-                    }
+                    move |r: Rect| session.borrow_mut().viewport.screen_rect = Some(rect_to_px(r))
                 })
                 .cursor(if panning {
                     CursorIcon::Grabbing
@@ -135,22 +135,32 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_scroll({
                     let session = session.clone();
                     move |delta: repose_core::Vec2| {
-                        let (is_tool_drag, from_touch) = {
+                        let (is_tool_drag, from_touch, canvas_press) = {
                             let s = session.borrow();
                             (
                                 s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool),
                                 s.touch_active,
+                                s.viewport.pointer_down,
                             )
                         };
                         if is_tool_drag {
                             return repose_core::Vec2::ZERO;
                         }
+                        if from_touch && !canvas_press {
+                            // Scroll handlers chain down the hit regions under
+                            // the finger, each returning what it did not use. A
+                            // side rail is a vertical scroller, so it eats
+                            // delta.y and hands us delta.x - which used to drag
+                            // the canvas sideways while the rail scrolled.
+                            // Panning belongs to a drag that began on the
+                            // canvas, so ignore the axis nobody claimed.
+                            return repose_core::Vec2::ZERO;
+                        }
                         let mut s = session.borrow_mut();
                         if from_touch {
-                            // A finger drag is a pan on both axes, never a
-                            // zoom: pinch is the two-finger gesture, and a
-                            // single finger that reached here started on another
-                            // surface (the compact bottom bar) rather than here.
+                            // A finger drag on the canvas is a pan on both
+                            // axes, never a zoom: pinch is the two-finger
+                            // gesture.
                             s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
                         } else if delta.y.abs() < delta.x.abs() {
                             // Horizontal wheel: pan the canvas along X.
@@ -615,10 +625,7 @@ fn rect_to_px(r: Rect) -> Rect {
 /// A drag the user started with a mouse or stylus keeps priority and the
 /// gesture yields, as does one centred on the machine graph, which owns its
 /// own per-node handler.
-fn claim_canvas_for_gesture(
-    session: &SessionRef,
-    center: Option<repose_core::Vec2>,
-) -> bool {
+fn claim_canvas_for_gesture(session: &SessionRef, center: Option<repose_core::Vec2>) -> bool {
     if center.is_some_and(|c| viewport_gesture_in_graph(&session.borrow().viewport, c)) {
         return false;
     }
@@ -1217,7 +1224,7 @@ pub fn controls_bottom_clearance() -> Rc<Cell<f32>> {
 
 fn ViewportControls(session: SessionRef) -> View {
     let clearance = controls_bottom_clearance();
-    let (zoom, snapping, snap_grid, snap_guides, snap_objects) = {
+    let (zoom, snapping, snap_grid, snap_guides, snap_objects, max_width) = {
         let s = session.borrow();
         (
             s.viewport.view.scale * 100.0,
@@ -1225,7 +1232,16 @@ fn ViewportControls(session: SessionRef) -> View {
             s.viewport.snap_to_grid,
             s.viewport.snap_to_guides,
             s.viewport.snap_to_objects,
+            // The bar is right-anchored, so a row wider than the stage runs
+            // off the left. Bound it to the stage and let it scroll instead.
+            stage_content_width(s.viewport.screen_rect),
         )
+    };
+
+    let scroller = Modifier::new();
+    let scroller = match max_width {
+        Some(w) => scroller.max_width(Dp(w)),
+        None => scroller,
     };
 
     Box(Modifier::new()
@@ -1242,108 +1258,122 @@ fn ViewportControls(session: SessionRef) -> View {
                 }
             }
         }))
-    .child(HudSurface(
-        Row(Modifier::new()
-            .align_items(AlignItems::CENTER)
-            .gap(Dp(2.0))
-            .padding(Dp(4.0)))
-        .child((
-            crate::components::ToolAction(
-                Symbols::gps_fixed,
-                if snapping {
-                    "Snapping on"
-                } else {
-                    "Snapping off"
-                },
-                snapping,
-                {
+    .child(HorizontalScrollArea(
+        scroller,
+        remember_horizontal_scroll_state("viewport_controls_scroll"),
+        HudSurface(
+            Row(Modifier::new()
+                .align_items(AlignItems::CENTER)
+                .gap(Dp(2.0))
+                .padding(Dp(4.0)))
+            .child((
+                crate::components::ToolAction(
+                    Symbols::gps_fixed,
+                    if snapping {
+                        "Snapping on"
+                    } else {
+                        "Snapping off"
+                    },
+                    snapping,
+                    {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
+                            s.repaint();
+                        }
+                    },
+                ),
+                crate::components::ToolAction(
+                    Symbols::grid_on,
+                    if snap_grid {
+                        "Snap to grid on (Shift+G)"
+                    } else {
+                        "Snap to grid off (Shift+G)"
+                    },
+                    snapping && snap_grid,
+                    {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            s.viewport.snap_to_grid = !s.viewport.snap_to_grid;
+                            s.repaint();
+                        }
+                    },
+                ),
+                crate::components::ToolAction(
+                    Symbols::grid_guides,
+                    if snap_guides {
+                        "Snap to guides on (Shift+I)"
+                    } else {
+                        "Snap to guides off (Shift+I)"
+                    },
+                    snapping && snap_guides,
+                    {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            s.viewport.snap_to_guides = !s.viewport.snap_to_guides;
+                            s.repaint();
+                        }
+                    },
+                ),
+                crate::components::ToolAction(
+                    Symbols::transform,
+                    if snap_objects {
+                        "Snap to objects on (Shift+O)"
+                    } else {
+                        "Snap to objects off (Shift+O)"
+                    },
+                    snapping && snap_objects,
+                    {
+                        let session = session.clone();
+                        move || {
+                            let mut s = session.borrow_mut();
+                            s.viewport.snap_to_objects = !s.viewport.snap_to_objects;
+                            s.repaint();
+                        }
+                    },
+                ),
+                CompactIconAction(Symbols::zoom_out, "Zoom out", {
+                    let session = session.clone();
+                    move || {
+                        session.borrow_mut().viewport.zoom_centered(1.0 / 1.2);
+                        request_frame();
+                    }
+                }),
+                Text(format!("{zoom:.0}%"))
+                    .size(theme().typography.label_medium)
+                    .color(theme().on_surface_variant)
+                    .modifier(Modifier::new().min_width(Dp(52.0))),
+                CompactIconAction(Symbols::zoom_in, "Zoom in", {
+                    let session = session.clone();
+                    move || {
+                        session.borrow_mut().viewport.zoom_centered(1.2);
+                        request_frame();
+                    }
+                }),
+                CompactIconAction(Symbols::fit_screen, "Fit artboard (F)", {
                     let session = session.clone();
                     move || {
                         let mut s = session.borrow_mut();
-                        s.viewport.snapping_enabled = !s.viewport.snapping_enabled;
-                        s.repaint();
+                        s.viewport.request_fit();
+                        request_frame();
                     }
-                },
-            ),
-            crate::components::ToolAction(
-                Symbols::grid_on,
-                if snap_grid {
-                    "Snap to grid on (Shift+G)"
-                } else {
-                    "Snap to grid off (Shift+G)"
-                },
-                snapping && snap_grid,
-                {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.viewport.snap_to_grid = !s.viewport.snap_to_grid;
-                        s.repaint();
-                    }
-                },
-            ),
-            crate::components::ToolAction(
-                Symbols::grid_guides,
-                if snap_guides {
-                    "Snap to guides on (Shift+I)"
-                } else {
-                    "Snap to guides off (Shift+I)"
-                },
-                snapping && snap_guides,
-                {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.viewport.snap_to_guides = !s.viewport.snap_to_guides;
-                        s.repaint();
-                    }
-                },
-            ),
-            crate::components::ToolAction(
-                Symbols::transform,
-                if snap_objects {
-                    "Snap to objects on (Shift+O)"
-                } else {
-                    "Snap to objects off (Shift+O)"
-                },
-                snapping && snap_objects,
-                {
-                    let session = session.clone();
-                    move || {
-                        let mut s = session.borrow_mut();
-                        s.viewport.snap_to_objects = !s.viewport.snap_to_objects;
-                        s.repaint();
-                    }
-                },
-            ),
-            CompactIconAction(Symbols::zoom_out, "Zoom out", {
-                let session = session.clone();
-                move || {
-                    session.borrow_mut().viewport.zoom_centered(1.0 / 1.2);
-                    request_frame();
-                }
-            }),
-            Text(format!("{zoom:.0}%"))
-                .size(theme().typography.label_medium)
-                .color(theme().on_surface_variant)
-                .modifier(Modifier::new().min_width(Dp(52.0))),
-            CompactIconAction(Symbols::zoom_in, "Zoom in", {
-                let session = session.clone();
-                move || {
-                    session.borrow_mut().viewport.zoom_centered(1.2);
-                    request_frame();
-                }
-            }),
-            CompactIconAction(Symbols::fit_screen, "Fit artboard (F)", {
-                let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    s.viewport.request_fit();
-                    request_frame();
-                }
-            }),
-        )),
+                }),
+            )),
+        ),
     ))
+}
+
+/// Usable width for the right-anchored controls bar: the stage width less its
+/// right margin. `None` until the stage has been laid out, so the bar is never
+/// pinned to a zero width on the first frame.
+fn stage_content_width(screen_rect: Option<Rect>) -> Option<f32> {
+    let rect = screen_rect?;
+    let scale = repose_core::locals::effective_density_scale().max(1e-6) as f64;
+    let width = (rect.w as f64 / scale) - 32.0;
+    (width.is_finite() && width > 0.0).then_some(width as f32)
 }
 
 fn viewport_gesture_in_graph(
