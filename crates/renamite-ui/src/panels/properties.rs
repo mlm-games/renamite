@@ -129,8 +129,8 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                                 format!("comp_name_{comp_id:?}"),
                                 comp_name.clone(),
                                 "Name",
-                                true,
-                                NUM_FIELD_HEIGHT,
+                                false,
+                                32.0,
                                 {
                                     let session = session.clone();
                                     move |text: String| {
@@ -2610,8 +2610,8 @@ fn identity_section(session: SessionRef, id: NodeId) -> Option<View> {
                     format!("node_name_{id:?}"),
                     name,
                     "Name",
-                    true,
-                    NUM_FIELD_HEIGHT,
+                    false,
+                    32.0,
                     {
                         let session = session.clone();
                         move |text: String| {
