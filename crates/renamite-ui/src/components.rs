@@ -414,6 +414,8 @@ pub fn field_cursor_brush() -> Brush {
 pub struct TextFieldOpts {
     /// Commit hook: fired on Enter / the IME done action, with the current text.
     pub on_submit: Option<Rc<dyn Fn(String)>>,
+    /// Discard hook: fired on Escape, with the current text.
+    pub on_cancel: Option<Rc<dyn Fn(String)>>,
     /// Platform keyboard hint (numeric keypad, IME action, autocorrect).
     pub keyboard_options: Option<KeyboardOptions>,
     /// Lets the owner pull focus into the field instead of waiting for a tap.
@@ -469,7 +471,7 @@ pub fn AppTextFieldWith(
     let focused = opts.focus_tracker.clone().unwrap_or(owned_focus);
     {
         let mut st = tf_state.borrow_mut();
-        if st.text != value {
+        if st.composition.is_none() && st.text != value {
             st.text = value.clone();
             let len = st.text.len();
             st.selection = len..len;
@@ -484,9 +486,21 @@ pub fn AppTextFieldWith(
         Some(requester) => layout.focus_requester(requester.as_ref().clone()),
         None => layout,
     };
+    let cancel = opts.on_cancel.clone();
+    let cancel_state = tf_state.clone();
     BasicTextField(
         tf_state,
-        field_container(layout, focused.get()).on_focus_changed(crate::shortcuts::note_text_focus),
+        field_container(layout, focused.get())
+            .on_focus_changed(crate::shortcuts::note_text_focus)
+            .on_key_event(move |ek: KeyEvent| {
+                if matches!(ek.key, Key::Escape) {
+                    if let Some(cancel) = &cancel {
+                        cancel(cancel_state.borrow().text.clone());
+                    }
+                    return true;
+                }
+                false
+            }),
         hint,
         TextFieldConfig {
             line_limits: if single_line {

@@ -910,6 +910,12 @@ fn diamond_button(
 /// plus the field padding.
 const NUM_FIELD_HEIGHT: f32 = 36.0;
 
+/// How many frames the click-to-type editor may ask for focus before it gives
+/// up and waits for a tap. The requester's target id only exists after layout
+/// and the focus tracker only flips after the paint that grants it, so the
+/// first couple of frames always miss.
+const NUM_EDIT_FOCUS_TRIES: u32 = 3;
+
 #[allow(clippy::too_many_arguments)]
 fn scrub_f64_w(
     session: SessionRef,
@@ -928,14 +934,13 @@ fn scrub_f64_w(
     let label = format!("{value:.3}");
 
     // Click-to-type editing: a tap on the value opens a single-line input that
-    // commits on Enter and reverts on Escape/focus-loss. Dragging still scrubs.
+    // commits on Enter and reverts on Escape. Dragging still scrubs.
     let key = format!("numedit_{}_{}", path.as_str(), channel);
     let editing: Rc<RefCell<bool>> = remember_with_key(format!("{key}_ed"), || RefCell::new(false));
     let draft: Rc<RefCell<String>> =
         remember_with_key(format!("{key}_dr"), || RefCell::new(label.clone()));
-    let focused_once: Rc<RefCell<bool>> =
-        remember_with_key(format!("{key}_fo"), || RefCell::new(false));
     let focus: Rc<Cell<bool>> = remember_with_key(format!("{key}_fs"), || Cell::new(false));
+    let focus_tries: Rc<Cell<u32>> = remember_with_key(format!("{key}_ft"), || Cell::new(0));
     let focus_requester: Rc<FocusRequester> =
         remember_with_key(format!("{key}_fr"), FocusRequester::new);
 
@@ -1071,7 +1076,7 @@ fn scrub_f64_w(
                 let session = session.clone();
                 let editing = editing.clone();
                 let draft = draft.clone();
-                let focused_once = focused_once.clone();
+                let focus_tries = focus_tries.clone();
                 let label = label.clone();
                 move |_pe: PointerEvent| {
                     let mut s = session.borrow_mut();
@@ -1082,7 +1087,7 @@ fn scrub_f64_w(
                     drop(s);
                     // A tap (no scrub) opens the exact-value editor.
                     if !was_drag {
-                        *focused_once.borrow_mut() = false;
+                        focus_tries.set(0);
                         *draft.borrow_mut() = label.clone();
                         *editing.borrow_mut() = true;
                         request_frame();
@@ -1130,20 +1135,12 @@ fn scrub_f64_w(
     );
 
     if *editing.borrow() {
-        if focus.get() {
-            *focused_once.borrow_mut() = true;
-        }
-        // Focus was granted and then lost without a submit: revert to the
-        // pre-edit value and close the editor.
-        if *focused_once.borrow() && !focus.get() {
-            *editing.borrow_mut() = false;
-            request_frame();
-            return idle;
-        }
-        // Keep requesting focus until the runtime actually grants it (the
-        // requester's target id is only set once this field has been laid out).
         if !focus.get() {
-            focus_requester.request_focus();
+            let tries = focus_tries.get();
+            if tries < NUM_EDIT_FOCUS_TRIES {
+                focus_tries.set(tries + 1);
+                focus_requester.request_focus();
+            }
         }
         return Box(Modifier::new().width(Dp(min_width))).child(
             crate::components::AppTextFieldWith(
@@ -1154,6 +1151,13 @@ fn scrub_f64_w(
                 NUM_FIELD_HEIGHT,
                 crate::components::TextFieldOpts {
                     on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
+                    on_cancel: Some(Rc::new({
+                        let editing = editing.clone();
+                        move |_| {
+                            *editing.borrow_mut() = false;
+                            request_frame();
+                        }
+                    }) as Rc<dyn Fn(String)>),
                     keyboard_options: Some(KeyboardOptions {
                         keyboard_type: KeyboardType::Decimal,
                         capitalization: KeyboardCapitalization::None,
