@@ -78,7 +78,7 @@ pub fn EditorShell(session: SessionRef) -> View {
             };
             Box(Modifier::new()
                 .fill_max_size()
-                .padding_values(content_padding))
+                .padding_values(reserved_body_padding(content_padding)))
             .child(body)
         },
         ScaffoldConfig {
@@ -114,6 +114,33 @@ pub fn EditorShell(session: SessionRef) -> View {
         });
 
     ZStack(global_keys).child((scaffold, picker, menu, confirm))
+}
+
+fn dp_max(a: Dp, b: Dp) -> Dp {
+    if a > b { a } else { b }
+}
+
+/// Height of the shell's top app bar, measured off the bar itself.
+///
+/// The Scaffold reserves bar space from a signal its own layout pass fills in,
+/// which reads as zero on the frames before the bar has been laid out - and
+/// nothing schedules the frame that would correct it, so the body can settle
+/// underneath the bar with the stage, its HUD and the tool palette all shifted
+/// up by the bar's height. Seeding the floor with the M3 small top bar keeps the
+/// reservation right from the first frame; the measurement only raises it.
+pub fn app_bar_height() -> Rc<Cell<f32>> {
+    const SEEDED: f32 = 64.0;
+    remember_with_key("shell_app_bar_height", || Cell::new(SEEDED))
+}
+
+/// Scaffold insets, with the top bar's height guaranteed to be reserved.
+fn reserved_body_padding(content_padding: PaddingValues) -> PaddingValues {
+    let insets = repose_core::locals::window_insets();
+    let bar_top = repose_core::Px(insets.top).to_dp() + Dp(app_bar_height().get());
+    PaddingValues {
+        top: dp_max(content_padding.top, bar_top),
+        ..content_padding
+    }
 }
 
 fn install_global_shortcuts(session: SessionRef) {

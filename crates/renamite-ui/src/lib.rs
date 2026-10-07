@@ -143,13 +143,23 @@ pub fn AppTopBar(session: SessionRef) -> View {
         }
     }
 
-    CenterAlignedTopAppBar(
+    let bar_height = shell::app_bar_height();
+    Box(Modifier::new().fill_max_width().on_globally_positioned({
+        let bar_height = bar_height.clone();
+        move |r: repose_core::geometry::Rect| {
+            if r.h > 0.0 && (r.h - bar_height.get()).abs() > 0.5 {
+                bar_height.set(r.h);
+                request_frame();
+            }
+        }
+    }))
+    .child(CenterAlignedTopAppBar(
         EditorModeSwitch(session.clone()),
         None,
         Some(FileMenu(session.clone())),
         actions,
         TopAppBarConfig::default(),
-    )
+    ))
 }
 
 pub fn FileMenu(session: SessionRef) -> View {
