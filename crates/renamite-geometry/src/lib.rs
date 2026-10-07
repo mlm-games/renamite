@@ -843,10 +843,23 @@ pub fn offset_bez_path(path: &BezPath, amount: f64, tolerance: f64) -> Option<Be
     }
 }
 
+/// A flattened contour: the polyline a bezier contour reduces to at a given
+/// tolerance, plus whether the contour was closed.
 #[derive(Clone, Debug)]
-struct FlatContour {
-    points: Vec<DVec2>,
-    closed: bool,
+pub struct FlatContour {
+    pub points: Vec<DVec2>,
+    pub closed: bool,
+}
+
+/// Flatten a bezier path into polylines within `tolerance` world units.
+///
+/// For stroking previews and hit overlays, where the curve has to reach a
+/// renderer that only strokes polylines.
+pub fn flatten_bez_path(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {
+    if !path.is_finite() {
+        return Vec::new();
+    }
+    flatten_to_contours(path, tolerance)
 }
 
 fn flatten_to_contours(path: &BezPath, tolerance: f64) -> Vec<FlatContour> {

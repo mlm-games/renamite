@@ -376,6 +376,10 @@ pub fn handle_viewport_key(session: &SessionRef, event: KeyEvent) -> bool {
             return true;
         }
         match key {
+            Key::Enter => {
+                dispatch_canvas(&mut s, CanvasEvent::KeyDown(CanvasKey::Enter), mods);
+                return true;
+            }
             Key::Insert => {
                 dispatch_canvas(&mut s, CanvasEvent::KeyDown(CanvasKey::Insert), mods);
                 return true;
