@@ -23,6 +23,7 @@ use repose_material::material3::{
     MenuState, TopAppBarConfig,
 };
 use repose_platform::RenderContext;
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, ViewExt};
 use std::rc::Rc;
 use web_time::Instant;
@@ -290,21 +291,21 @@ pub(crate) fn toggle_playback(session: &SessionRef) {
     request_frame();
 }
 
-pub fn ToolRail(session: SessionRef) -> View {
+/// The tool buttons in rail order. Shared by the docked rail and the compact
+/// floating palette so both offer the same tool set.
+pub fn ToolButtons(session: SessionRef) -> View {
     let selected = session.borrow().active_tool;
 
     Column(
         Modifier::new()
-            .width(Dp(72.0))
-            .fill_max_height()
+            .fill_max_width()
             .padding_values(repose_core::PaddingValues {
                 left: Dp(12.0),
                 right: Dp(12.0),
                 top: Dp(12.0),
                 bottom: Dp(12.0),
             })
-            .gap(Dp(6.0))
-            .background(theme().surface_container),
+            .gap(Dp(6.0)),
     )
     .child(vec![
         tool(
@@ -379,6 +380,23 @@ pub fn ToolRail(session: SessionRef) -> View {
             selected,
         ),
     ])
+}
+
+/// Docked tool rail for the medium and expanded shell classes.
+///
+/// Short windows (a phone in landscape, a split-screen desktop) leave less
+/// room than the tool column needs, so the rail scrolls instead of spilling
+/// past both ends of the window.
+pub fn ToolRail(session: SessionRef) -> View {
+    Box(Modifier::new()
+        .width(Dp(72.0))
+        .fill_max_height()
+        .background(theme().surface_container))
+    .child(ScrollArea(
+        Modifier::new().fill_max_size(),
+        remember_scroll_state("tool_rail_scroll"),
+        ToolButtons(session),
+    ))
 }
 
 fn tool(

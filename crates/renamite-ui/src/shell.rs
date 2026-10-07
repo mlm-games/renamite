@@ -9,6 +9,7 @@ use repose_material::material3::{
     NavigationBarConfig, Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, TextButton,
 };
 use repose_ui::overlay::{SnackbarController, SnackbarRequest};
+use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Spacer, Text, TextStyle, ViewExt, ZStack};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -17,7 +18,7 @@ use repose_docking::{
     DockArea, DockCallbacks, DockKind, DockNode, DockPanel, DockState, PanelId, SplitDir,
 };
 
-use crate::components::{PanelSurface, PillButton, ToolAction};
+use crate::components::{PanelSurface, PillButton};
 use crate::panels::{
     AssetsPanel, InteractivityPanel, LayersPanel, PropertiesPanel, TimelinePanel, ViewportPanel,
 };
@@ -739,96 +740,25 @@ fn CompactCanvas(session: SessionRef) -> View {
         .child((ViewportPanel(session.clone()), CompactToolPalette(session)))
 }
 
-fn compact_tool(
-    session: SessionRef,
-    id: renamite_history::ToolId,
-    icon: repose_material::Symbol,
-    label: &'static str,
-) -> View {
-    let selected = session.borrow().active_tool == id;
-    ToolAction(icon, label, selected, move || {
-        let mut s = session.borrow_mut();
-        s.active_tool = id;
-        s.repaint();
-    })
-}
-
-/// Floating tool palette for the compact canvas (the tool rail is dropped on
-/// phones, so the tools move on top of the stage instead). Wider than a rail
-/// on desktop but still compact: one button per tool, same set everywhere.
+/// Floating tool palette for the compact canvas (the docked rail is dropped on
+/// phones, so the tools move on top of the stage instead).
+///
+/// It spans the stage vertically and clips rather than growing past it: an
+/// absolute box only gets a height from its offsets, and bottom-anchoring a
+/// content-sized box pushed the palette off the bottom of a short window.
 fn CompactToolPalette(session: SessionRef) -> View {
     Box(Modifier::new()
         .absolute()
-        .offset(Some(Dp(12.0)), None, None, Some(Dp(12.0))))
-    .child(
-        Box(Modifier::new()
-            .padding(Dp(6.0))
-            .background(theme().surface_container_high)
-            .clip_rounded(Dp(12.0))
-            .border(Dp(1.0), theme().outline_variant, Dp(12.0)))
-        .child(Column(Modifier::new().gap(Dp(4.0))).child(vec![
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Select,
-                Symbols::arrow_selector_tool,
-                "Select",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Transform,
-                Symbols::transform,
-                "Transform / pivot",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Pen,
-                Symbols::draw,
-                "Pen",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::PathEdit,
-                Symbols::edit,
-                "Edit path",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Rect,
-                Symbols::rectangle,
-                "Rectangle",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Ellipse,
-                Symbols::circle,
-                "Ellipse",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Star,
-                Symbols::star,
-                "Star",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Text,
-                Symbols::text_fields,
-                "Text",
-            ),
-            compact_tool(
-                session.clone(),
-                renamite_history::ToolId::Gradient,
-                Symbols::gradient,
-                "Gradient",
-            ),
-            compact_tool(
-                session,
-                renamite_history::ToolId::Fill,
-                Symbols::format_color_fill,
-                "Fill",
-            ),
-        ])),
-    )
+        .offset(Some(Dp(12.0)), None, Some(Dp(12.0)), Some(Dp(12.0)))
+        .padding(Dp(6.0))
+        .background(theme().surface_container_high)
+        .clip_rounded(Dp(12.0))
+        .border(Dp(1.0), theme().outline_variant, Dp(12.0)))
+    .child(ScrollArea(
+        Modifier::new().fill_max_size(),
+        remember_scroll_state("compact_tool_palette_scroll"),
+        crate::ToolButtons(session),
+    ))
 }
 
 fn active_side_panel(session: SessionRef) -> View {
