@@ -1,5 +1,6 @@
 //! Layers panel: M3 list with visibility, lock, expand, select, reorder, rename.
 
+use glam::DVec2;
 use renamite_behavior_common::layers::{
     LayerKind, LayerRow, cmd_toggle_locked, cmd_toggle_visible, flatten_layers, select_only,
     toggle_in_selection,
@@ -16,10 +17,12 @@ use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 use smallvec::smallvec;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::components::{CompactIconAction, ICON_ACTION_SIZE, PanelHeader};
+use crate::components::{
+    CompactIconAction, CompactIconActionWithKey, ICON_ACTION_SIZE, PanelHeader,
+};
 use crate::session::{
     ContextMenuSource, ContextMenuState, LayerDropHover, SessionRef, overlay_anchor,
 };
@@ -234,10 +237,33 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
 
     // Keyed on the row id, not `remember_auto`: rows are a list whose membership
     // changes with expand/collapse, and an auto slot is positional.
-    let row_rect: Rc<std::cell::Cell<Rect>> =
-        remember_with_key(format!("layer_row_rect:{id:?}"), || {
-            std::cell::Cell::new(Rect::default())
-        });
+    let row_rect: Rc<Cell<Rect>> = remember_with_key(format!("layer_row_rect:{id:?}"), || {
+        Cell::new(Rect::default())
+    });
+    // A phone has no right button, so the compact shell carries the overflow
+    // affordance that a right click provides everywhere else. Long press stays
+    // with the reorder drag, which is what the platform uses it for.
+    let overflow_action =
+        if crate::shell::platform_shell_class() == crate::shell::ShellClass::Compact {
+            let session = session.clone();
+            let row_rect = row_rect.clone();
+            CompactIconActionWithKey(
+                format!("layer_menu:{id:?}"),
+                Symbols::more_vert,
+                "Layer menu",
+                move || {
+                    let rect = row_rect.get();
+                    let mut s = session.borrow_mut();
+                    open_layers_menu(
+                        &mut s,
+                        id,
+                        DVec2::new((rect.x + rect.w - 48.0) as f64, (rect.y + rect.h) as f64),
+                    );
+                },
+            )
+        } else {
+            Box(Modifier::new().width(Dp(0.0)))
+        };
     let row_view = Row(layer_drag_handlers(
         Modifier::new()
             .height(Dp(ROW_HEIGHT))
@@ -262,26 +288,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
             let mut s = session.borrow_mut();
             if matches!(pe.event, PointerEventKind::Down(PointerButton::Secondary)) {
                 // Right-click: select the row if needed, then open the menu.
-                if !s.selection.nodes.contains(&row.id) {
-                    s.selection.nodes = vec![row.id];
-                }
-                let paint = s.current_paint.clone();
-                let entries = {
-                    let ctx = MenuContext {
-                        doc: &s.file.document,
-                        selection: &s.selection.nodes,
-                        comp: s.file.document.main,
-                        world_pos: None,
-                        has_clipboard: s.clipboard.is_some(),
-                        current_paint: &paint,
-                    };
-                    layers_menu(&ctx, row.id)
-                };
-                s.open_context_menu(ContextMenuState {
-                    screen_pos: overlay_anchor(&pe),
-                    entries,
-                    source: ContextMenuSource::Layers { row: row.id },
-                });
+                open_layers_menu(&mut s, row.id, overlay_anchor(&pe));
                 return;
             }
             if matches!(pe.event, PointerEventKind::Down(PointerButton::Primary)) {
@@ -433,6 +440,7 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 }
             },
         ),
+        overflow_action,
     ));
     if show_sibling_divider {
         if drop_before {
@@ -443,6 +451,33 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
     } else {
         row_view
     }
+}
+
+fn open_layers_menu(
+    session: &mut crate::session::Session,
+    row_id: renamite_model::NodeId,
+    screen_pos: DVec2,
+) {
+    if !session.selection.nodes.contains(&row_id) {
+        session.selection.nodes = vec![row_id];
+    }
+    let paint = session.current_paint.clone();
+    let entries = {
+        let ctx = MenuContext {
+            doc: &session.file.document,
+            selection: &session.selection.nodes,
+            comp: session.file.document.main,
+            world_pos: None,
+            has_clipboard: session.clipboard.is_some(),
+            current_paint: &paint,
+        };
+        layers_menu(&ctx, row_id)
+    };
+    session.open_context_menu(ContextMenuState {
+        screen_pos,
+        entries,
+        source: ContextMenuSource::Layers { row: row_id },
+    });
 }
 
 fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String) -> View {

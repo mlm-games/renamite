@@ -411,7 +411,7 @@ const LONG_PRESS_SLOP: f64 = 10.0;
 
 struct TimelineLongPress {
     pos: DVec2,
-    fired: Cell<bool>,
+    fired: Rc<Cell<bool>>,
     timer: repose_core::timer::TimerHandle,
 }
 
@@ -438,7 +438,7 @@ fn arm_timeline_long_press(state: &LongPressState, session: &SessionRef, pe: &Po
     }
     let pos = pe_pos(pe);
     let screen = overlay_anchor(pe);
-    let fired = Cell::new(false);
+    let fired = Rc::new(Cell::new(false));
     let timer = {
         let session = session.clone();
         let fired = fired.clone();
