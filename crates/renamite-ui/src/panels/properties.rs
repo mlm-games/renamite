@@ -970,19 +970,16 @@ fn scrub_f64_w(
         }
     };
 
-    // Idle state: the same chrome every other property field wears, so opening
-    // the editor neither reveals a field that wasn't there nor resizes the row.
-    let idle = Text(label.clone())
-        .size(th.typography.body_medium)
-        .color(th.on_surface)
-        .modifier(
-            crate::components::field_container(
-                Modifier::new()
-                    .min_width(Dp(min_width))
-                    .height(Dp(NUM_FIELD_HEIGHT))
-                    .padding_values(crate::components::field_padding()),
-                false,
-            )
+    // Idle state: the same chrome, box and width every other property field
+    // wears, so opening the editor neither reveals a field that wasn't there nor
+    // resizes the row. The width is definite, not intrinsic - a content-sized
+    // field re-measures against the platform's text layout once focused and
+    // jumps to whatever width that reports.
+    let idle = Box(crate::components::field_container(
+        Modifier::new()
+            .width(Dp(min_width))
+            .height(Dp(NUM_FIELD_HEIGHT))
+            .padding_values(crate::components::field_padding())
             .cursor(repose_core::CursorIcon::EwResize)
             .on_pointer_down({
                 let session = session.clone();
@@ -1115,7 +1112,13 @@ fn scrub_f64_w(
                     }
                 }
             }),
-        );
+        false,
+    ))
+    .child(
+        Text(label.clone())
+            .size(th.typography.body_medium)
+            .color(th.on_surface),
+    );
 
     if *editing.borrow() {
         if focus.get() {
@@ -1133,29 +1136,30 @@ fn scrub_f64_w(
         if !focus.get() {
             focus_requester.request_focus();
         }
-        return crate::components::AppTextFieldWith(
-            key.clone(),
-            draft.borrow().clone(),
-            String::new(),
-            true,
-            NUM_FIELD_HEIGHT,
-            crate::components::TextFieldOpts {
-                min_width: Some(min_width),
-                on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
-                keyboard_options: Some(KeyboardOptions {
-                    keyboard_type: KeyboardType::Decimal,
-                    capitalization: KeyboardCapitalization::None,
-                    ime_action: ImeAction::Done,
-                    auto_correct_enabled: Some(false),
-                    ..KeyboardOptions::DEFAULT
-                }),
-                focus_requester: Some(focus_requester.clone()),
-                focus_tracker: Some(focus.clone()),
-            },
-            {
-                let draft = draft.clone();
-                move |text: String| *draft.borrow_mut() = text
-            },
+        return Box(Modifier::new().width(Dp(min_width))).child(
+            crate::components::AppTextFieldWith(
+                key.clone(),
+                draft.borrow().clone(),
+                String::new(),
+                true,
+                NUM_FIELD_HEIGHT,
+                crate::components::TextFieldOpts {
+                    on_submit: Some(Rc::new(commit) as Rc<dyn Fn(String)>),
+                    keyboard_options: Some(KeyboardOptions {
+                        keyboard_type: KeyboardType::Decimal,
+                        capitalization: KeyboardCapitalization::None,
+                        ime_action: ImeAction::Done,
+                        auto_correct_enabled: Some(false),
+                        ..KeyboardOptions::DEFAULT
+                    }),
+                    focus_requester: Some(focus_requester.clone()),
+                    focus_tracker: Some(focus.clone()),
+                },
+                {
+                    let draft = draft.clone();
+                    move |text: String| *draft.borrow_mut() = text
+                },
+            ),
         );
     }
 

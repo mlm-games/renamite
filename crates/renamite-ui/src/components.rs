@@ -418,11 +418,6 @@ pub struct TextFieldOpts {
     pub keyboard_options: Option<KeyboardOptions>,
     /// Lets the owner pull focus into the field instead of waiting for a tap.
     pub focus_requester: Option<Rc<FocusRequester>>,
-    /// Size to the text instead of filling the row, floored at this width. A
-    /// `fill_max_width` field resolves against the row's width, not the box it
-    /// sits in, so the inspector's number fields pass their own floor here to
-    /// stay put next to their label.
-    pub min_width: Option<f32>,
     /// Drive the focus ring from the caller's cell instead of a private one.
     /// A caller that pulls focus in with `focus_requester` has to watch the same
     /// cell, or it never learns the field took focus and re-requests it forever.
@@ -481,16 +476,14 @@ pub fn AppTextFieldWith(
         }
     }
     let th = theme();
-    let mut layout = Modifier::new()
+    let layout = Modifier::new()
+        .fill_max_width()
         .height(Dp(min_height))
         .padding_values(field_padding());
-    layout = match opts.min_width {
-        Some(floor) => layout.min_width(Dp(floor)),
-        None => layout.fill_max_width(),
+    let layout = match &opts.focus_requester {
+        Some(requester) => layout.focus_requester(requester.as_ref().clone()),
+        None => layout,
     };
-    if let Some(requester) = &opts.focus_requester {
-        layout = layout.focus_requester(requester.as_ref().clone());
-    }
     BasicTextField(
         tf_state,
         field_container(layout, focused.get()).on_focus_changed(crate::shortcuts::note_text_focus),
