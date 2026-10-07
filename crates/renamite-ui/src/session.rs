@@ -16,7 +16,7 @@ use renamite_behavior_common::{
     FitState, Modifiers, Selection, SnapConfig, ToolContext, ViewTransform,
 };
 use renamite_behavior_timeline::{
-    TimelineCtx, TimelineEvent, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
+    TimelineCtx, TimelineEvent, TimelineKey, TimelineKeyframeBehavior, TimelineLayout, TimelineRow,
     TimelineScrubBehavior, TimelineTarget,
 };
 use renamite_history::{EditorCommand, History, OutputVec, ProjectMut, ToolId, ToolOutput};
@@ -130,6 +130,11 @@ pub struct Session {
     /// Horizontal scroll offset (px) for the timeline key area.
     /// `origin_x = -timeline_offset_x`; zoom keeps the left edge stable.
     pub timeline_offset_x: f64,
+    /// Timeline canvas rect in screen space. Lets the global gesture handler
+    /// tell a timeline touch apart from a canvas one.
+    pub timeline_rect: Option<Rect>,
+    /// Anchor for a middle-button / Space drag pan of the timeline.
+    pub timeline_pan_last: Option<DVec2>,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     autosave_last_ms: f64,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -299,8 +304,17 @@ pub struct ContextMenuState {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ContextMenuSource {
-    Layers { row: renamite_model::NodeId },
-    Canvas { world: DVec2 },
+    Layers {
+        row: renamite_model::NodeId,
+    },
+    Canvas {
+        world: DVec2,
+    },
+    /// Timeline canvas-local pointer position: the row under the pointer
+    /// decides whether "Add key at playhead" is offered.
+    Timeline {
+        pos: DVec2,
+    },
 }
 
 impl Session {
@@ -396,6 +410,8 @@ impl Session {
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
             timeline_offset_x: 0.0,
+            timeline_rect: None,
+            timeline_pan_last: None,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             autosave_last_ms: 0.0,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -554,6 +570,16 @@ impl Session {
             MenuAction, MenuContext, dispatch_menu_action,
         };
 
+        // Timeline menus act on keyframes, not on the document selection, so
+        // they must never fall through to the layers/canvas dispatch below.
+        if matches!(
+            self.context_menu.as_ref().map(|m| m.source),
+            Some(ContextMenuSource::Timeline { .. })
+        ) {
+            self.run_timeline_menu_action(&action);
+            return;
+        }
+
         match &action {
             MenuAction::Rename => {
                 if let Some(ContextMenuState {
@@ -608,7 +634,7 @@ impl Session {
 
         let world = self.context_menu.as_ref().and_then(|m| match m.source {
             ContextMenuSource::Canvas { world } => Some(world),
-            ContextMenuSource::Layers { .. } => None,
+            ContextMenuSource::Layers { .. } | ContextMenuSource::Timeline { .. } => None,
         });
         let paint = self.current_paint.clone();
         let outs = {
@@ -624,6 +650,76 @@ impl Session {
         };
         self.close_context_menu();
         self.apply_outputs(outs.into());
+    }
+
+    /// Timeline menu actions. Key operations reuse the same `TimelineKey`s the
+    /// shortcuts send, so a menu item and its keyboard shortcut cannot drift.
+    fn run_timeline_menu_action(
+        &mut self,
+        action: &renamite_behavior_common::context_menu::MenuAction,
+    ) {
+        use renamite_behavior_common::context_menu::MenuAction;
+        let key = match action {
+            MenuAction::Delete => Some(TimelineKey::Delete),
+            MenuAction::Cut => Some(TimelineKey::Cut),
+            MenuAction::Copy => Some(TimelineKey::Copy),
+            MenuAction::Paste => Some(TimelineKey::Paste),
+            MenuAction::Duplicate => Some(TimelineKey::Duplicate),
+            MenuAction::SelectAllKeys => Some(TimelineKey::SelectAll),
+            _ => None,
+        };
+        if let Some(key) = key {
+            dispatch_timeline(self, TimelineEvent::KeyDown(key));
+            self.close_context_menu();
+            self.repaint();
+            return;
+        }
+        match action {
+            MenuAction::SetEasing(preset) => {
+                dispatch_timeline(self, TimelineEvent::SetEasing { preset: *preset });
+                self.close_context_menu();
+                self.repaint();
+            }
+            MenuAction::AddKeyAtPlayhead => {
+                self.add_key_at_playhead();
+                self.close_context_menu();
+            }
+            MenuAction::ZoomTimelineIn => {
+                self.zoom_timeline(1.25);
+                self.close_context_menu();
+            }
+            MenuAction::ZoomTimelineOut => {
+                self.zoom_timeline(0.8);
+                self.close_context_menu();
+            }
+            MenuAction::FitTimeline => {
+                self.fit_timeline();
+                self.close_context_menu();
+            }
+            _ => self.close_context_menu(),
+        }
+    }
+
+    /// Add a key on the row under the menu pointer at the current playhead.
+    /// Reuses the double-click path so the new key samples the evaluated value
+    /// (a visual no-op) exactly as a double click does.
+    fn add_key_at_playhead(&mut self) {
+        let Some(ContextMenuState {
+            source: ContextMenuSource::Timeline { pos },
+            ..
+        }) = self.context_menu.as_ref()
+        else {
+            return;
+        };
+        let layout = self.timeline_layout();
+        let x = layout.frame_to_x(self.playback.head);
+        dispatch_timeline(
+            self,
+            TimelineEvent::DoubleClick {
+                pos: DVec2::new(x, pos.y),
+                modifiers: renamite_behavior_common::Modifiers::none(),
+            },
+        );
     }
 
     fn center_pivot(&mut self) {
@@ -2843,6 +2939,48 @@ impl Session {
         self.repaint();
     }
 
+    /// Zoom keeping the frame under `anchor_px` (timeline-canvas local x) put.
+    /// With `origin_x = -offset` and `x = origin_x + frame * zoom`, holding
+    /// that `x` fixed means `offset' = (anchor + offset) * zoom'/zoom - anchor`.
+    pub fn zoom_timeline_at(&mut self, factor: f64, anchor_px: f64) {
+        let old = self.timeline_zoom.max(0.5);
+        let next = (old * factor).clamp(0.5, 48.0);
+        if next == old {
+            return;
+        }
+        self.timeline_offset_x = (anchor_px + self.timeline_offset_x) * (next / old) - anchor_px;
+        self.timeline_zoom = next;
+        self.clamp_timeline_offset();
+        self.repaint();
+    }
+
+    /// The timeline geometry the draw pass and every hit test must agree on.
+    pub fn timeline_layout(&self) -> renamite_behavior_timeline::TimelineLayout {
+        renamite_behavior_timeline::TimelineLayout {
+            origin_x: -self.timeline_offset_x.max(0.0),
+            px_per_frame: self.timeline_zoom,
+            row_top: 24.0,
+            row_height: 22.0,
+            key_tolerance_px: 6.0,
+        }
+    }
+
+    pub fn fit_timeline(&mut self) {
+        let frames = self.timeline_frame_span();
+        self.timeline_zoom = (300.0 / frames).clamp(0.5, 48.0);
+        self.timeline_offset_x = 0.0;
+        self.clamp_timeline_offset();
+        self.repaint();
+    }
+
+    fn timeline_frame_span(&self) -> f64 {
+        self.file
+            .document
+            .main_composition()
+            .map(|c| (c.range.1.0 - c.range.0.0).max(1) as f64)
+            .unwrap_or(180.0)
+    }
+
     pub fn pan_timeline(&mut self, delta_px: f64) {
         self.timeline_offset_x += delta_px;
         self.clamp_timeline_offset();
@@ -4712,6 +4850,31 @@ pub fn timeline_ctx<'a>(
     px_per_frame: f64,
 ) -> TimelineCtx<'a> {
     timeline_ctx_with_offset(doc, clips, rows, range, playhead, px_per_frame, 0.0)
+}
+
+/// Build a timeline context from a caller-supplied layout. Lets a hit test
+/// outside the draw pass (the context menu) agree with what is on screen
+/// instead of re-deriving the geometry and drifting from it.
+pub fn timeline_ctx_with_layout<'a>(
+    doc: &'a renamite_model::Document,
+    clips: &'a renamite_machine::ClipMap,
+    rows: &'a [TimelineRow],
+    range: (Frame, Frame),
+    playhead: f64,
+    layout: TimelineLayout,
+) -> TimelineCtx<'a> {
+    TimelineCtx {
+        doc,
+        clips,
+        target: TimelineTarget::Doc,
+        rows,
+        layout: TimelineLayout {
+            px_per_frame: layout.px_per_frame.clamp(0.5, 48.0),
+            ..layout
+        },
+        playhead,
+        range,
+    }
 }
 
 pub fn timeline_ctx_with_offset<'a>(

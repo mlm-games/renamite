@@ -12,10 +12,12 @@ use repose_core::{
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::textfield::{BasicTextField, TextFieldConfig, TextFieldState};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::components::{CompactIconAction, PanelHeader, StatusChip};
+use crate::request_frame;
+use crate::session::overlay_anchor;
 use crate::session::{SessionRef, dispatch_timeline, map_modifiers, pe_pos};
 use crate::symbols::Symbols;
 
@@ -91,13 +93,7 @@ pub fn TimelinePanel(session: SessionRef) -> View {
             }),
             CompactIconAction(Symbols::fit_screen, "Fit range", {
                 let session = session.clone();
-                move || {
-                    let mut s = session.borrow_mut();
-                    let range = s.file.document.compositions[s.file.document.main].range;
-                    let frames = (range.1.0 - range.0.0).max(1) as f64;
-                    s.timeline_zoom = (300.0 / frames).clamp(0.5, 48.0);
-                    s.repaint();
-                }
+                move || session.borrow_mut().fit_timeline()
             }),
         ],
     );
@@ -410,12 +406,156 @@ fn handle_timeline_key(session: &SessionRef, event: KeyEvent) -> bool {
     true
 }
 
+const LONG_PRESS_MS: u64 = 500;
+const LONG_PRESS_SLOP: f64 = 10.0;
+
+struct TimelineLongPress {
+    pos: DVec2,
+    fired: Cell<bool>,
+    timer: repose_core::timer::TimerHandle,
+}
+
+type LongPressState = Rc<RefCell<Option<TimelineLongPress>>>;
+
+fn cancel_timeline_long_press(state: &LongPressState) {
+    if let Some(press) = state.borrow_mut().take() {
+        press.timer.cancel();
+    }
+}
+
+/// Arm the touch long press. Only touch arms it: a mouse already has the
+/// right-click path, and arming there would double-fire on press-and-hold.
+fn arm_timeline_long_press(state: &LongPressState, session: &SessionRef, pe: &PointerEvent) {
+    cancel_timeline_long_press(state);
+    if pe.kind != repose_core::input::PointerKind::Touch {
+        return;
+    }
+    let pos = pe_pos(pe);
+    let screen = overlay_anchor(pe);
+    let fired = Cell::new(false);
+    let timer = {
+        let session = session.clone();
+        let fired = fired.clone();
+        repose_core::timer::delay(std::time::Duration::from_millis(LONG_PRESS_MS), move || {
+            fired.set(true);
+            let mut s = session.borrow_mut();
+            open_timeline_context_menu(&mut s, pos, screen);
+        })
+    };
+    *state.borrow_mut() = Some(TimelineLongPress { pos, fired, timer });
+}
+
+/// Drop the pending press once the finger travels far enough to be a pan.
+fn track_timeline_long_press_move(state: &LongPressState, pe: &PointerEvent) {
+    let beyond = state
+        .borrow()
+        .as_ref()
+        .is_some_and(|press| (pe_pos(pe) - press.pos).length() > LONG_PRESS_SLOP);
+    if beyond {
+        cancel_timeline_long_press(state);
+    }
+}
+
+fn finish_timeline_long_press(state: &LongPressState) -> bool {
+    let fired = state
+        .borrow()
+        .as_ref()
+        .is_some_and(|press| press.fired.get());
+    cancel_timeline_long_press(state);
+    fired
+}
+
+/// Right-click / long-press menu for the timeline. A key under the pointer that
+/// is not part of the selection narrows the selection to it first, so the menu
+/// always acts on what the pointer is actually over - the same rule the canvas
+/// and layers panels follow.
+fn open_timeline_context_menu(session: &mut crate::session::Session, pos: DVec2, screen: DVec2) {
+    use crate::session::ContextMenuSource;
+    use renamite_behavior_common::context_menu::TimelineMenuContext;
+
+    let rows = crate::session::timeline_rows(session);
+    let range = session
+        .file
+        .document
+        .compositions
+        .get(session.file.document.main)
+        .map(|c| c.range)
+        .unwrap_or((renamite_animation::Frame(0), renamite_animation::Frame(0)));
+    let layout = session.timeline_layout();
+    let ctx = crate::session::timeline_ctx_with_layout(
+        &session.file.document,
+        &session.file.clips,
+        &rows,
+        range,
+        session.playback.head,
+        layout,
+    );
+    session.keys.focus_key_at(&ctx, pos);
+
+    let row_under_pointer = layout
+        .y_to_row(pos.y)
+        .is_some_and(|r| pos.y >= layout.row_top && r < rows.len());
+    let entries = renamite_behavior_common::context_menu::timeline_menu(&TimelineMenuContext {
+        selected_keys: session.keys.selected().len(),
+        row_under_pointer,
+        has_clipboard: session.keys.has_clipboard(),
+    });
+
+    session.open_context_menu(crate::session::ContextMenuState {
+        screen_pos: screen,
+        entries,
+        source: ContextMenuSource::Timeline { pos },
+    });
+}
+
+/// Touch pan/pinch for the timeline. Registered as a node action so it wins
+/// over the global viewport gesture handler, which would otherwise pan and zoom
+/// the *canvas* when the fingers land here.
+///
+/// Both gestures yield while a key drag or a scrub owns the pointer, so a
+/// one-finger drag that became a key move is not then panned sideways.
+fn handle_timeline_gesture(session: &SessionRef, action: &repose_core::shortcuts::Action) -> bool {
+    use repose_core::shortcuts::{Action, Gesture};
+    match action {
+        Action::Gesture(Gesture::Pan { delta, .. }) => {
+            let mut s = session.borrow_mut();
+            if s.keys.is_active() || s.scrub.is_dragging() {
+                return false;
+            }
+            s.pan_timeline(delta.x as f64);
+            true
+        }
+        Action::Gesture(Gesture::Pinch { delta_scale })
+        | Action::Gesture(Gesture::PinchWithCenter { delta_scale, .. }) => {
+            let mut s = session.borrow_mut();
+            if s.keys.is_active() || s.scrub.is_dragging() {
+                return false;
+            }
+            // Zoom about the pinch centre in canvas-local x. A plain `Pinch`
+            // carries no centre, so it anchors at the left edge.
+            let local_x = match (action, s.timeline_rect) {
+                (Action::Gesture(Gesture::PinchWithCenter { center, .. }), Some(r)) => {
+                    center.x as f64 - r.x as f64
+                }
+                _ => 0.0,
+            };
+            s.zoom_timeline_at(*delta_scale as f64, local_x);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn TimelineCanvas(session: SessionRef) -> View {
     let sess_draw = session.clone();
     let last_click: Rc<RefCell<Option<(DVec2, web_time::Instant)>>> = Rc::new(RefCell::new(None));
     let press_moved: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let down_pos: Rc<RefCell<DVec2>> = Rc::new(RefCell::new(DVec2::ZERO));
     let focus = remember_auto("timeline_canvas_focus", FocusRequester::new);
+    let long_press = remember_auto("timeline_long_press", || {
+        Rc::new(RefCell::new(None::<TimelineLongPress>))
+    });
+    let anchor = remember_auto("timeline_wheel_anchor", || Rc::new(Cell::new(0.0f64)));
 
     Canvas(
         Modifier::new()
@@ -425,18 +565,31 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 move |ke: KeyEvent| handle_timeline_key(&session, ke)
             })
+            .on_globally_positioned({
+                let session = session.clone();
+                move |r: Rect| session.borrow_mut().timeline_rect = Some(r)
+            })
             .on_scroll({
                 let session = session.clone();
+                let anchor = anchor.clone();
                 move |delta: repose_core::Vec2| {
                     let mut s = session.borrow_mut();
                     if delta.y.abs() < delta.x.abs() || (delta.x.abs() > 0.5 && delta.y.abs() > 0.5)
                     {
                         s.pan_timeline(delta.x as f64);
                     } else {
+                        // Anchor on the cursor so the frame under it stays put,
+                        // matching the canvas wheel-zoom behaviour.
                         let factor = (1.0 + (delta.y as f64) * 0.002).clamp(0.5, 2.0);
-                        s.zoom_timeline(factor);
+                        s.zoom_timeline_at(factor, anchor.get());
                     }
                     repose_core::Vec2::ZERO
+                }
+            })
+            .on_action({
+                let session = session.clone();
+                move |action: repose_core::shortcuts::Action| {
+                    handle_timeline_gesture(&session, &action)
                 }
             })
             .on_pointer_down({
@@ -445,14 +598,34 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let press_moved = press_moved.clone();
                 let down_pos = down_pos.clone();
                 let focus = focus.clone();
+                let long_press = long_press.clone();
+                let anchor = anchor.clone();
                 move |pe: PointerEvent| {
                     if !matches!(pe.event, PointerEventKind::Down(_)) {
                         return;
                     }
                     if let PointerEventKind::Down(b) = pe.event {
                         use repose_core::input::PointerButton as RB;
-                        if !matches!(b, RB::Primary) {
-                            return;
+                        match b {
+                            // Right-click: menu the thing under the pointer.
+                            RB::Secondary => {
+                                cancel_timeline_long_press(&long_press);
+                                let mut s = session.borrow_mut();
+                                open_timeline_context_menu(
+                                    &mut s,
+                                    pe_pos(&pe),
+                                    overlay_anchor(&pe),
+                                );
+                                return;
+                            }
+                            // Middle drag pans the range, like the canvas.
+                            RB::Tertiary => {
+                                cancel_timeline_long_press(&long_press);
+                                session.borrow_mut().timeline_pan_last = Some(pe_pos(&pe));
+                                focus.request_focus();
+                                return;
+                            }
+                            RB::Primary => {}
                         }
                     }
                     let pos = pe_pos(&pe);
@@ -460,6 +633,8 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     let now = web_time::Instant::now();
                     *down_pos.borrow_mut() = pos;
                     *press_moved.borrow_mut() = false;
+                    anchor.set(pos.x);
+                    arm_timeline_long_press(&long_press, &session, &pe);
                     focus.request_focus();
                     let gesture_active = {
                         let s = session.borrow();
@@ -498,8 +673,25 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 let press_moved = press_moved.clone();
                 let down_pos = down_pos.clone();
+                let long_press = long_press.clone();
+                let anchor = anchor.clone();
                 move |pe: PointerEvent| {
                     let pos = pe_pos(&pe);
+                    if session.borrow().timeline_pan_last.is_some() {
+                        // Middle-drag pan: keep the range under the cursor put.
+                        let mut s = session.borrow_mut();
+                        if let Some(last) = s.timeline_pan_last {
+                            s.timeline_pan_last = Some(pos);
+                            s.pan_timeline(pos.x - last.x);
+                        }
+                        request_frame();
+                        return;
+                    }
+                    track_timeline_long_press_move(&long_press, &pe);
+                    if matches!(pe.event, PointerEventKind::Move) {
+                        // Keep the wheel-zoom anchor under a moving cursor.
+                        anchor.set(pos.x);
+                    }
                     if (*down_pos.borrow() - pos).length() >= 3.0 {
                         *press_moved.borrow_mut() = true;
                     }
@@ -517,7 +709,18 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 let last_click = last_click.clone();
                 let press_moved = press_moved.clone();
+                let long_press = long_press.clone();
                 move |pe: PointerEvent| {
+                    // A middle drag or a long press owns the lift: the former
+                    // ends the pan, the latter already opened the menu and must
+                    // not also register as a click (which would scrub).
+                    if session.borrow_mut().timeline_pan_last.take().is_some() {
+                        return;
+                    }
+                    if finish_timeline_long_press(&long_press) {
+                        *press_moved.borrow_mut() = true;
+                        return;
+                    }
                     if let PointerEventKind::Up(b) = pe.event {
                         use repose_core::input::PointerButton as RB;
                         if !matches!(b, RB::Primary) {
@@ -544,8 +747,11 @@ fn TimelineCanvas(session: SessionRef) -> View {
                 let session = session.clone();
                 let last_click = last_click.clone();
                 let press_moved = press_moved.clone();
+                let long_press = long_press.clone();
                 move |pe: PointerEvent| {
                     pe.consume();
+                    cancel_timeline_long_press(&long_press);
+                    session.borrow_mut().timeline_pan_last = None;
                     *last_click.borrow_mut() = None;
                     *press_moved.borrow_mut() = false;
                     let mut s = session.borrow_mut();

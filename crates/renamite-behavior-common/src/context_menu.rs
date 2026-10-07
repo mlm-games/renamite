@@ -59,6 +59,12 @@ pub enum MenuAction {
     ReleaseMask,
     ToggleMaskInverted,
     CenterPivot,
+    SelectAllKeys,
+    AddKeyAtPlayhead,
+    SetEasing(renamite_animation::EasingPreset),
+    ZoomTimelineIn,
+    ZoomTimelineOut,
+    FitTimeline,
 }
 
 #[derive(Clone)]
@@ -145,6 +151,91 @@ pub fn layers_menu(ctx: &MenuContext, row_id: NodeId) -> Vec<MenuEntry> {
             action(MenuAction::AddRepeater, "Repeater", !locked),
             action(MenuAction::AddZigZag, "Zig Zag", !locked),
             action(MenuAction::AddPuckerBloat, "Pucker & Bloat", !locked),
+        ],
+    });
+    m
+}
+
+/// What a timeline menu needs to know about the surface under the pointer.
+/// Deliberately not [`MenuContext`]: that one is canvas/layers shaped, and a
+/// timeline menu has no document selection to speak of.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TimelineMenuContext {
+    /// Keyframes currently selected.
+    pub selected_keys: usize,
+    /// A row sits under the pointer, so a key can be added at the playhead.
+    pub row_under_pointer: bool,
+    pub has_clipboard: bool,
+}
+
+/// Right-click / long-press menu for the timeline. Key operations come first
+/// and only when something is selected; the view operations are always there so
+/// a right click on empty ruler space is still useful.
+pub fn timeline_menu(ctx: &TimelineMenuContext) -> Vec<MenuEntry> {
+    let has_keys = ctx.selected_keys > 0;
+    let mut m = Vec::new();
+    if has_keys {
+        m.push(action(MenuAction::Cut, "Cut keys", ctx.has_clipboard));
+        m.push(action(MenuAction::Copy, "Copy keys", true));
+        m.push(action(MenuAction::Paste, "Paste keys", ctx.has_clipboard));
+        m.push(action(MenuAction::Duplicate, "Duplicate keys", true));
+        m.push(action(MenuAction::Delete, "Delete keys", true));
+        m.push(action(MenuAction::SelectAllKeys, "Select all keys", true));
+        m.push(MenuEntry::Submenu {
+            label: "Easing",
+            children: vec![
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::Linear),
+                    "Linear",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::EaseIn),
+                    "Ease in",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::EaseOut),
+                    "Ease out",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::EaseInOut),
+                    "Ease in-out",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::Anticipate),
+                    "Anticipate",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::Overshoot),
+                    "Overshoot",
+                    true,
+                ),
+                action(
+                    MenuAction::SetEasing(renamite_animation::EasingPreset::Hold),
+                    "Hold",
+                    true,
+                ),
+            ],
+        });
+        m.push(MenuEntry::Separator);
+    }
+    if ctx.row_under_pointer {
+        m.push(action(
+            MenuAction::AddKeyAtPlayhead,
+            "Add key at playhead",
+            true,
+        ));
+    }
+    m.push(MenuEntry::Submenu {
+        label: "Zoom",
+        children: vec![
+            action(MenuAction::ZoomTimelineIn, "Zoom in", true),
+            action(MenuAction::ZoomTimelineOut, "Zoom out", true),
+            action(MenuAction::FitTimeline, "Fit to range", true),
         ],
     });
     m
@@ -407,6 +498,15 @@ pub fn dispatch_menu_action(ctx: &MenuContext, action: &MenuAction) -> Vec<ToolO
         // Host-side in the session: needs scene + playhead, unavailable here.
         MenuAction::CenterPivot => vec![],
         MenuAction::Clone => vec![],
+
+        // Timeline actions need key selection, playhead and zoom state; the
+        // session owns all three.
+        MenuAction::SelectAllKeys
+        | MenuAction::AddKeyAtPlayhead
+        | MenuAction::SetEasing(_)
+        | MenuAction::ZoomTimelineIn
+        | MenuAction::ZoomTimelineOut
+        | MenuAction::FitTimeline => vec![],
 
         MenuAction::Rename
         | MenuAction::Cut

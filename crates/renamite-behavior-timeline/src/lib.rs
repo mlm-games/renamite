@@ -73,11 +73,28 @@ pub struct TimelineCtx<'a> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TimelineEvent {
-    Press { pos: DVec2, modifiers: Modifiers },
-    Move { pos: DVec2, modifiers: Modifiers },
-    Release { pos: DVec2, modifiers: Modifiers },
-    DoubleClick { pos: DVec2, modifiers: Modifiers },
+    Press {
+        pos: DVec2,
+        modifiers: Modifiers,
+    },
+    Move {
+        pos: DVec2,
+        modifiers: Modifiers,
+    },
+    Release {
+        pos: DVec2,
+        modifiers: Modifiers,
+    },
+    DoubleClick {
+        pos: DVec2,
+        modifiers: Modifiers,
+    },
     KeyDown(TimelineKey),
+    /// Apply one preset to every selected key (context menu). Unlike the
+    /// Alt+click cycle this is absolute, so the menu can pick a preset.
+    SetEasing {
+        preset: EasingPreset,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +226,24 @@ impl TimelineKeyframeBehavior {
         self.selected.retain(|r| key_data(ctx, r).is_some());
     }
 
+    /// Context-menu targeting: a key hit outside the current selection narrows
+    /// the selection to it, matching the canvas rule that a right click acts on
+    /// what is under the pointer. Returns whether a key was hit at all.
+    pub fn focus_key_at(&mut self, ctx: &TimelineCtx, pos: DVec2) -> bool {
+        let Some(key) = hit_key(ctx, pos) else {
+            return false;
+        };
+        if !self.selected.contains(&key) {
+            self.selected = vec![key];
+        }
+        self.state = KeyState::Idle;
+        true
+    }
+
+    pub fn has_clipboard(&self) -> bool {
+        !self.clipboard.entries.is_empty()
+    }
+
     pub fn overlay(&self) -> TimelineOverlay {
         match &self.state {
             KeyState::BoxSelect { start, current } => TimelineOverlay::BoxSelect {
@@ -245,7 +280,28 @@ impl TimelineKeyframeBehavior {
             TimelineEvent::Release { pos, modifiers } => self.on_release(ctx, pos, modifiers),
             TimelineEvent::DoubleClick { pos, .. } => self.on_double_click(ctx, pos),
             TimelineEvent::KeyDown(k) => self.on_key(ctx, k),
+            TimelineEvent::SetEasing { preset } => self.on_set_easing(ctx, preset),
         }
+    }
+
+    fn on_set_easing(&mut self, ctx: &TimelineCtx, preset: EasingPreset) -> OutputVec {
+        let (interpolation, ease_out, ease_in) = preset.segment();
+        let cmds: Vec<EditorCommand> = self
+            .selected
+            .iter()
+            .filter_map(|r| {
+                let k = key_data(ctx, r)?;
+                Some(set_easing_cmd(ctx, r, &k, interpolation, ease_out, ease_in))
+            })
+            .collect();
+        if cmds.is_empty() {
+            return smallvec![];
+        }
+        self.state = KeyState::Idle;
+        let mut out = smallvec![ToolOutput::BeginTransaction("Set easing".into())];
+        out.push(ToolOutput::Commands(cmds.into_iter().collect()));
+        out.push(ToolOutput::CommitTransaction);
+        out
     }
 
     fn on_press(&mut self, ctx: &TimelineCtx, pos: DVec2, m: Modifiers) -> OutputVec {
@@ -1244,6 +1300,79 @@ mod tests {
             },
         );
         assert_eq!(hrn.frames(node), vec![Frame(3), Frame(8), Frame(9)]);
+    }
+
+    #[test]
+    fn set_easing_applies_to_every_selected_key_in_one_transaction() {
+        let mut hrn = Harness::new();
+        let node = hrn.w.node();
+        for f in [0, 10] {
+            hrn.w.doc_key(node, f, 0.0);
+        }
+        let mut b = TimelineKeyframeBehavior::default();
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::KeyDown(TimelineKey::SelectAll),
+        );
+        assert_eq!(b.selected().len(), 2);
+
+        hrn.run(
+            &mut b,
+            TimelineTarget::Doc,
+            TimelineEvent::SetEasing {
+                preset: EasingPreset::EaseInOut,
+            },
+        );
+
+        let (interpolation, ease_out, ease_in) = EasingPreset::EaseInOut.segment();
+        for f in [0, 10] {
+            let k = hrn
+                .w
+                .doc
+                .keyframe_data(node, &PropPath::new("opacity"), Frame(f))
+                .unwrap();
+            assert_eq!(k.interpolation, interpolation);
+            assert_eq!(k.ease_out, ease_out);
+            assert_eq!(k.ease_in, ease_in);
+        }
+        hrn.h.undo(&mut hrn.w.pm()).unwrap(); // one transaction = one undo
+        let first = hrn
+            .w
+            .doc
+            .keyframe_data(node, &PropPath::new("opacity"), Frame(0))
+            .unwrap();
+        assert_eq!(first.interpolation, Interpolation::Linear);
+    }
+
+    #[test]
+    fn focus_key_at_narrows_selection_to_the_key_under_the_pointer() {
+        let mut hrn = Harness::new();
+        let node = hrn.w.node();
+        for f in [0, 10] {
+            hrn.w.doc_key(node, f, 0.0);
+        }
+        let mut b = TimelineKeyframeBehavior::default();
+        let ctx = ctx_for(&hrn.w, TimelineTarget::Doc);
+
+        // LAYOUT is 10 px per frame, so frame 10 sits at x=100.
+        assert!(b.focus_key_at(&ctx, DVec2::new(100.0, 10.0)));
+        assert_eq!(
+            b.selected(),
+            &[KeyRef {
+                node,
+                prop: PropPath::new("opacity"),
+                frame: Frame(10),
+            }]
+        );
+
+        // Already-selected key: selection is left alone.
+        assert!(b.focus_key_at(&ctx, DVec2::new(100.0, 10.0)));
+        assert_eq!(b.selected().len(), 1);
+
+        // Empty space hits nothing and keeps the selection.
+        assert!(!b.focus_key_at(&ctx, DVec2::new(55.0, 10.0)));
+        assert_eq!(b.selected().len(), 1);
     }
 
     #[test]

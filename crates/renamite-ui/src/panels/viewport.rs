@@ -502,6 +502,15 @@ pub fn handle_viewport_gesture(
     action: &repose_core::shortcuts::Action,
 ) -> bool {
     use repose_core::shortcuts::{Action, Gesture};
+    // Another panel may own this gesture: the timeline pans/zooms itself on a
+    // node action, and the machine graph does the same. Without this the
+    // canvas would pan and zoom in response to touches meant for those panels.
+    if let Some(center) = gesture_center(action)
+        && let Some(rect) = session.borrow().timeline_rect
+        && rect_contains_dp(rect, center)
+    {
+        return false;
+    }
     match action {
         Action::Gesture(Gesture::Pan { delta, center }) => {
             let is_drag = {
@@ -734,8 +743,7 @@ fn ViewportStageHud(session: SessionRef) -> View {
 fn ViewportHint(session: SessionRef) -> View {
     let shown = {
         let s = session.borrow();
-        s.show_hints()
-            && crate::shell::platform_shell_class() != crate::shell::ShellClass::Compact
+        s.show_hints() && crate::shell::platform_shell_class() != crate::shell::ShellClass::Compact
     };
     if !shown {
         return ZStack(Modifier::new());
@@ -1300,6 +1308,27 @@ fn viewport_gesture_in_graph(
     };
     let local = DVec2::new((dp.x - rect.x) as f64, (dp.y - rect.y) as f64);
     viewport.graph_rect_at(local)
+}
+
+/// Screen-space centre of a pan/pinch, if it carries one. `Pinch` has no
+/// centre, which is why a bare pinch still falls through to the canvas.
+fn gesture_center(action: &repose_core::shortcuts::Action) -> Option<repose_core::Vec2> {
+    use repose_core::shortcuts::{Action, Gesture};
+    match action {
+        Action::Gesture(Gesture::Pan { center, .. }) => Some(*center),
+        Action::Gesture(Gesture::PinchWithCenter { center, .. }) => Some(*center),
+        _ => None,
+    }
+}
+
+/// Whether a screen point (px) lands in a dp rect laid out by the framework.
+fn rect_contains_dp(rect: Rect, point: repose_core::Vec2) -> bool {
+    let scale = repose_core::locals::effective_density_scale().max(1e-6);
+    let dp = repose_core::Vec2 {
+        x: point.x / scale,
+        y: point.y / scale,
+    };
+    dp.x >= rect.x && dp.x <= rect.x + rect.w && dp.y >= rect.y && dp.y <= rect.y + rect.h
 }
 
 fn map_button(pe: &PointerEvent) -> PointerButton {
