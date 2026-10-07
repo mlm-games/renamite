@@ -36,7 +36,7 @@ use repose_material::material3::{
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt};
 
-use crate::components::{CollapsibleSection, CompactIconAction, PanelHeader};
+use crate::components::{CollapsibleSection, CompactIconAction, ICON_ACTION_SIZE, PanelHeader};
 use crate::session::{MachineGraphGesture, SessionRef};
 use crate::symbols::{AppIcon, Symbols};
 
@@ -690,7 +690,7 @@ fn InputRow(
             }
         }));
     } else {
-        controls.push(Box(Modifier::new().width(Dp(40.0))));
+        controls.push(Box(Modifier::new().width(ICON_ACTION_SIZE)));
     }
 
     Row(Modifier::new()

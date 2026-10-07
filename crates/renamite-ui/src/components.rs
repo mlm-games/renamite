@@ -1,9 +1,9 @@
 use repose_core::dnd::{DragDropModifierExt, drag_preview_chip, provide_drag_preview};
 use repose_core::input::{Key, KeyEvent};
 use repose_core::{
-    AlignItems, Brush, Dp, FocusRequester, KeyboardOptions, Modifier, MutableInteractionSource,
-    PaddingValues, Rect, TextFieldLineLimits, UnitExt, View, dp_to_px, remember_auto,
-    remember_state_with_key, remember_with_key, request_frame, theme,
+    AlignItems, AlignSelf, Brush, Dp, FocusRequester, KeyboardOptions, Modifier,
+    MutableInteractionSource, PaddingValues, Rect, TextFieldLineLimits, UnitExt, View, dp_to_px,
+    remember_auto, remember_state_with_key, remember_with_key, request_frame, theme,
 };
 use repose_material::Symbol;
 use repose_material::material3::{
@@ -197,6 +197,13 @@ pub fn CollapsibleSection(
     )
 }
 
+/// Outer box of a [`CompactIconAction`].
+///
+/// `IconButton` clamps its box up to the M3 48dp minimum touch target whatever
+/// `container_size` asks for, so anything that has to line up with one of these
+/// measures against this, not against the icon size.
+pub const ICON_ACTION_SIZE: Dp = Dp(48.0);
+
 #[track_caller]
 pub fn CompactIconAction(
     symbol: Symbol,
@@ -223,7 +230,7 @@ pub fn CompactIconActionWithKey(
     TooltipBox(
         tooltip,
         tooltip_state,
-        Modifier::new(),
+        tooltip_host(),
         IconButton(
             AppIcon(symbol, 22.0),
             on_click,
@@ -249,7 +256,7 @@ fn compact_icon_action(
     TooltipBox(
         tooltip,
         tooltip_state,
-        Modifier::new(),
+        tooltip_host(),
         IconButton(
             AppIcon(symbol, 22.0),
             on_click,
@@ -261,6 +268,13 @@ fn compact_icon_action(
         ),
         TooltipConfig::default(),
     )
+}
+
+/// `TooltipBox` defaults its host to `align-self: flex-start`, which overrides
+/// the container's `align-items` and pins a button to the top of a row - 8dp low
+/// once the 48dp touch box is taller than the row it sits in.
+fn tooltip_host() -> Modifier {
+    Modifier::new().align_self(AlignSelf::CENTER)
 }
 
 #[track_caller]

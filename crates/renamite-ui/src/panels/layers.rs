@@ -19,14 +19,17 @@ use smallvec::smallvec;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::components::{CompactIconAction, PanelHeader};
+use crate::components::{CompactIconAction, ICON_ACTION_SIZE, PanelHeader};
 use crate::session::{
     ContextMenuSource, ContextMenuState, LayerDropHover, SessionRef, overlay_anchor,
 };
 use crate::symbols::{AppIcon, Symbols};
 use renamite_behavior_common::context_menu::{MenuContext, layers_menu};
 
-const ROW_HEIGHT: f32 = 40.0;
+/// Tall enough for `ICON_ACTION_SIZE`: the chevron, visibility and lock buttons
+/// are 48dp touch boxes whatever container size they ask for, so a shorter row
+/// pushes them off-centre and hands their lower 8dp to the next row.
+const ROW_HEIGHT: f32 = 48.0;
 const ROW_GAP: f32 = 2.0;
 
 /// Payload moved while a layer row is dragged to a new slot.
@@ -364,7 +367,9 @@ fn LayerRowView(session: SessionRef, row: LayerRow, st: LayerRowState) -> View {
                 },
             )
         } else {
-            Box(Modifier::new().width(Dp(40.0))) // spacer
+            // Same width as the chevron button it stands in for, so the rest of
+            // the row lines up whether or not the layer has children.
+            Box(Modifier::new().width(ICON_ACTION_SIZE))
         },
         AppIcon(
             match kind {
