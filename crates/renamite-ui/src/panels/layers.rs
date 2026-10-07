@@ -9,7 +9,7 @@ use repose_core::dnd::{DragDropModifierExt, drag_preview_label, provide_drag_pre
 use repose_core::geometry::Rect;
 use repose_core::input::{Key, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 use repose_core::{
-    AlignItems, Dp, Modifier, PaddingValues, Px, View, dp_to_px, keyed, px_to_dp,
+    AlignItems, Dp, FocusRequester, Modifier, PaddingValues, Px, View, dp_to_px, keyed, px_to_dp,
     remember_with_key, request_frame, theme,
 };
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
@@ -461,6 +461,16 @@ fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String)
 
     let focused: Rc<std::cell::Cell<bool>> =
         remember_with_key("active_rename_focus", || std::cell::Cell::new(false));
+    let focus_requester: Rc<FocusRequester> =
+        remember_with_key("active_rename_focus_request", FocusRequester::new);
+    // The rename opens on a double tap, so pull the caret in instead of waiting
+    // for another one - on touch that second tap is what raises the keyboard.
+    // The requester's target only exists once this field has been laid out, so
+    // keep asking until the runtime grants it (same loop as the inspector's
+    // number editor).
+    if !focused.get() {
+        focus_requester.request_focus();
+    }
 
     Row(Modifier::new()
         .flex_grow(1.0)
@@ -473,10 +483,15 @@ fn rename_field(session: SessionRef, _id: renamite_model::NodeId, draft: String)
                 Modifier::new()
                     .flex_grow(1.0)
                     .height(Dp(32.0))
-                    .padding_values(crate::components::field_padding()),
+                    .padding_values(crate::components::field_padding())
+                    .focus_requester((*focus_requester).clone()),
                 focused.get(),
             )
             .on_focus_changed(crate::shortcuts::note_text_focus)
+            // The row commits an open rename on any press, and this field is
+            // inside the row: swallow presses that land in it, or tapping to
+            // focus closed the rename before the field could take the caret.
+            .on_pointer_down(|pe: PointerEvent| pe.consume())
             .on_key_event({
                 let session = session.clone();
                 move |ke: KeyEvent| {
