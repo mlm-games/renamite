@@ -145,10 +145,12 @@ pub struct Session {
     pub timeline_touch_press: bool,
     /// Latched zoom anchor for the two-finger timeline gesture.
     pub timeline_anchor: GestureAnchor,
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     autosave_last_ms: f64,
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     recovery_available: bool,
+    /// `document_generation` at which the backend last refused the payload for
+    /// size. While the document has not changed since, the autosave attempt is
+    /// known-doomed, so it is skipped instead of re-serialized every tick.
+    autosave_oversized_at: Option<u64>,
     document_generation: u64,
     next_file_operation: u64,
     active_file_operation: Option<FileOperationToken>,
@@ -360,7 +362,6 @@ impl Session {
             .or_else(|| file.machine_order.first().copied());
         let history = History::new();
         let saved_fingerprint = file_fingerprint(&file);
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         let recovery_available = renamite_platform::autosave_bytes().is_some();
         Self {
             file,
@@ -425,10 +426,9 @@ impl Session {
             timeline_pan_last: None,
             timeline_touch_press: false,
             timeline_anchor: GestureAnchor::new(),
-            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             autosave_last_ms: 0.0,
-            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             recovery_available,
+            autosave_oversized_at: None,
             document_generation: 0,
             next_file_operation: 0,
             active_file_operation: None,
@@ -539,7 +539,6 @@ impl Session {
         if needs_evaluation {
             self.engine.reevaluate(&self.file);
         }
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         if document_changed {
             self.autosave_if_due();
         }
@@ -2796,7 +2795,6 @@ impl Session {
         ]);
     }
 
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn recover_autosave(&mut self) {
         if self.dirty {
             self.status = Some("Save or discard the current document before recovering".into());
@@ -2806,7 +2804,6 @@ impl Session {
         self.recover_autosave_unchecked();
     }
 
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     pub fn recover_autosave_unchecked(&mut self) {
         let Some(bytes) = renamite_platform::autosave_bytes() else {
             self.recovery_available = false;
@@ -2836,34 +2833,48 @@ impl Session {
         self.repaint();
     }
 
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     fn autosave_if_due(&mut self) {
         if !self.dirty {
+            return;
+        }
+        // The backend already rejected this exact document for size. Any edit
+        // bumps the generation, so an edit that shrinks it back under the cap
+        // still gets a fresh attempt.
+        if self.autosave_oversized_at == Some(self.document_generation) {
             return;
         }
         let now = renamite_platform::now_ms();
         if self.autosave_last_ms > 0.0 && (now - self.autosave_last_ms).max(0.0) < 2_000.0 {
             return;
         }
+        self.autosave_last_ms = now;
         let Ok(bytes) = self.save_snapshot() else {
             return;
         };
-        match renamite_platform::autosave_store()
-            .set_checked(renamite_platform::AUTOSAVE_KEY, &bytes)
-        {
+        match renamite_platform::set_autosave(&bytes) {
             Ok(()) => {
-                self.autosave_last_ms = now;
                 self.recovery_available = true;
+                self.autosave_oversized_at = None;
             }
-            Err(error) => {
-                log::error!("autosave write failed: {error}");
+            Err(renamite_platform::AutosaveSkip::TooLarge { len, cap }) => {
+                let first_refusal = self.autosave_oversized_at.is_none();
+                self.autosave_oversized_at = Some(self.document_generation);
+                if first_refusal {
+                    self.status = Some(format!(
+                        "Autosave paused: this document is {:.1} MB and the limit here is {:.1} MB. Save it to keep your work.",
+                        len as f64 / 1_048_576.0,
+                        cap as f64 / 1_048_576.0
+                    ));
+                }
             }
+            // Already logged by the store; the status line would repeat every
+            // 2 s for a condition the user cannot act on.
+            Err(renamite_platform::AutosaveSkip::WriteFailed) => {}
         }
     }
 
     pub fn bump(&mut self) {
         self.refresh_dirty_from_saved();
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         self.autosave_if_due();
         self.engine.reevaluate(&self.file);
         self.revision = self.revision.wrapping_add(1);
@@ -3379,7 +3390,6 @@ impl Session {
             Ok(applied) => {
                 self.document_generation = self.document_generation.wrapping_add(1);
                 self.refresh_dirty_from_saved();
-                #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
                 self.autosave_if_due();
                 Some(applied)
             }
@@ -3394,7 +3404,6 @@ impl Session {
         self.document_generation = self.document_generation.wrapping_add(1);
         self.dirty_without_history = true;
         self.refresh_dirty_from_saved();
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         self.autosave_if_due();
     }
 
@@ -3491,7 +3500,6 @@ impl Session {
         self.replace_file_inner(file, false);
     }
 
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     fn replace_file_preserving_recovery(&mut self, file: RenFile) {
         self.replace_file_inner(file, true);
     }
@@ -3559,15 +3567,13 @@ impl Session {
         self.dirty_without_history = false;
         self.exporting_png = false;
         self.sync_image_assets();
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-        {
-            if !_preserve_recovery {
-                renamite_platform::clear_autosave();
-                self.recovery_available = false;
-                self.autosave_last_ms = 0.0;
-            } else {
-                self.recovery_available = true;
-            }
+        if !_preserve_recovery {
+            renamite_platform::clear_autosave();
+            self.recovery_available = false;
+            self.autosave_last_ms = 0.0;
+            self.autosave_oversized_at = None;
+        } else {
+            self.recovery_available = true;
         }
         self.revision = self.revision.wrapping_add(1);
         request_frame();
@@ -3587,11 +3593,11 @@ impl Session {
         self.saved_fingerprint = fingerprint;
         self.dirty_without_history = false;
         self.refresh_dirty_from_saved();
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         if !self.dirty && self.pending_intent != Some(PendingIntent::RecoverAutosave) {
             renamite_platform::clear_autosave();
             self.recovery_available = false;
             self.autosave_last_ms = 0.0;
+            self.autosave_oversized_at = None;
         }
         self.revision = self.revision.wrapping_add(1);
         request_frame();

@@ -1,8 +1,10 @@
 //! Vector path geometry. Document stores editable anchors; `kurbo::BezPath` is
 //! the render/hit-test/export form only.
 
+pub mod morph;
 pub mod pucker_bloat;
 pub mod zigzag;
+pub use morph::match_topology;
 pub use pucker_bloat::{pucker_bloat_path, pucker_bloat_vector_path};
 pub use zigzag::zigzag_path;
 

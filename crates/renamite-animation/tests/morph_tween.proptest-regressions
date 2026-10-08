@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d6b1e0542285921606189dffc156b8cb622aff9869054c948ad341e01acb2556 # shrinks to pair = (VectorPath { anchors: [Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }, Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }, Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, -662813.3979577011), tan_out: DVec2(-662813.3979577011, 0.0), mode: Smooth }], closed: true }, VectorPath { anchors: [Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }, Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }, Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }, Anchor { pos: DVec2(0.0, 0.0), tan_in: DVec2(0.0, 0.0), tan_out: DVec2(0.0, 0.0), mode: Smooth }], closed: true })

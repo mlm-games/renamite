@@ -1,7 +1,7 @@
 //! Time and tweening. Integer frames internally - no FP drift on scrub/import.
 
 use glam::DVec2;
-use renamite_geometry::{Anchor, VectorPath};
+use renamite_geometry::{Anchor, VectorPath, match_topology};
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -368,13 +368,23 @@ impl Tween for Angle {
     }
 }
 
-/// Topology-safe path tween: equal anchor count + same closed -> per-anchor lerp;
-/// otherwise Hold (Lottie behavior).
+/// Morph tween: [`match_topology`] resamples and re-correlates differing
+/// topologies, then anchors are lerped. Morphs it cannot make sense of Hold
+/// (Lottie behavior).
 impl Tween for VectorPath {
     fn tween(a: &Self, b: &Self, t: f64) -> Self {
-        if a.anchors.len() != b.anchors.len() || a.closed != b.closed {
-            return if t < 1.0 { a.clone() } else { b.clone() };
+        // Exactness at the ends, but not a clamp: easing can overshoot past 1.
+        // The originals are returned, not the matched pair, so a keyframe's own
+        // anchor list survives every frame it is actually resting on.
+        if t == 0.0 {
+            return a.clone();
         }
+        if t == 1.0 {
+            return b.clone();
+        }
+        let Some((a, b)) = match_topology(a, b) else {
+            return if t < 1.0 { a.clone() } else { b.clone() };
+        };
         VectorPath {
             closed: a.closed,
             anchors: a

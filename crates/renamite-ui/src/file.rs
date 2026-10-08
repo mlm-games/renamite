@@ -240,7 +240,6 @@ pub fn discard_discard(session: &SessionRef) {
     let _preserve_recovery =
         session.borrow().pending_intent == Some(PendingIntent::RecoverAutosave);
     session.borrow().confirm_dialog.dismiss();
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     if !_preserve_recovery {
         renamite_platform::clear_autosave();
     }
@@ -253,7 +252,6 @@ pub fn discard_cancel(session: &SessionRef) {
     session.borrow_mut().clear_pending_intent();
 }
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn recover_autosave(session: &SessionRef) {
     if !request_guard(session, PendingIntent::RecoverAutosave) {
         return;
@@ -261,19 +259,8 @@ pub fn recover_autosave(session: &SessionRef) {
     recover_autosave_inner(session);
 }
 
-#[cfg(any(target_os = "android", target_arch = "wasm32"))]
-pub fn recover_autosave(session: &SessionRef) {
-    set_status(session, "Autosave recovery is available on desktop");
-}
-
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn recover_autosave_inner(session: &SessionRef) {
     session.borrow_mut().recover_autosave_unchecked();
-}
-
-#[cfg(any(target_os = "android", target_arch = "wasm32"))]
-fn recover_autosave_inner(session: &SessionRef) {
-    set_status(session, "Autosave recovery is available on desktop");
 }
 
 /// New document, discarding the current one (after an unsaved guard).

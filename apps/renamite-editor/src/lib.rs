@@ -1,6 +1,12 @@
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+/// Mirrors `package.metadata.android.package`. Only consulted if
+/// `internal_data_path()` is unavailable, so the two can drift unnoticed; a
+/// build script reading the manifest is the fix if that ever matters.
+#[cfg(target_os = "android")]
+const ANDROID_PACKAGE: &str = "org.mlm.renamite";
+
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn desktop_main() -> anyhow::Result<()> {
     repose_platform::run_desktop_app_with_config(
@@ -30,6 +36,14 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     );
 
     renamite_platform::dialogs::init();
+    // Autosave lands in app-private storage, not the evictable temp dir:
+    // `$HOME` is unset on Android so `ProjectDirs` cannot resolve it.
+    renamite_platform::set_android_data_dir(
+        android_app
+            .internal_data_path()
+            .unwrap_or_else(std::env::temp_dir),
+        ANDROID_PACKAGE,
+    );
 
     rlobkit_app_events::system_bars::set_system_bars_visible(
         rlobkit_app_events::system_bars::SystemBars {

@@ -10,6 +10,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use game_utils::save_store::SaveStore;
+use game_utils::storage::FsStorage;
+
 /// File dialogs.
 pub mod dialogs {
     use std::path::PathBuf;
@@ -320,106 +323,161 @@ fn sync_parent(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-pub const AUTOSAVE_KEY: &str = "last-session";
+pub const AUTOSAVE_KEY: &str = "last-session.ren";
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-pub fn autosave_bytes() -> Option<Vec<u8>> {
-    autosave_store().get(AUTOSAVE_KEY)
+/// Why an autosave write did not land, when the payload itself is fine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutosaveSkip {
+    /// Larger than the backend can hold. On wasm the store is
+    /// `localStorage`-backed (~5 MB total, base64-inflated), so a large
+    /// document is skipped rather than evicting unrelated keys.
+    TooLarge { len: usize, cap: usize },
+    /// The backend refused the write (quota, permissions, read-only volume).
+    /// The previous shadow copy is left intact.
+    WriteFailed,
 }
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-pub fn clear_autosave() {
-    let path = autosave_store().dir.join(sanitize_key(AUTOSAVE_KEY));
-    let _ = std::fs::remove_file(path);
+/// Largest autosave payload the active backend accepts.
+pub fn autosave_cap() -> usize {
+    // `ropfs::sync::Fs` is localStorage: ~5 MB for the whole origin, every
+    // value base64-inflated 4/3, and a write holds `temp` + `target` + `.bak`
+    // live at once. 1 MB of document is ~4 MB of quota at the peak, which
+    // leaves room for the rest of the origin's keys.
+    #[cfg(target_arch = "wasm32")]
+    {
+        1024 * 1024
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        256 * 1024 * 1024
+    }
 }
 
-/// Filesystem-backed autosave store (desktop).
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-pub fn autosave_store() -> DirStore {
-    let configured = std::env::var_os("RENAMITE_DATA_DIR")
+/// Crash-recovery autosave: a single shadow copy of the open document in the
+/// app's data dir, never next to the user's own files.
+///
+/// Backed by game-utils' [`FsStorage`], which is `std::fs` on native and a
+/// `ropfs` localStorage shim on wasm, so this works on every target.
+pub fn autosave_store() -> SaveStore<FsStorage> {
+    let mut store =
+        SaveStore::new(autosave_dir(), AUTOSAVE_KEY).with_validator(is_autosave_payload);
+    // A torn shadow copy is worth nothing, and on wasm keeping one would
+    // spend scarce quota on a garbage document the user can never open.
+    store.quarantine_corrupt = false;
+    store
+}
+
+/// The autosave payload is a whole `.ren` document, so it is neither JSON nor
+/// necessarily RON (`save_binary` postcard output is also valid). Accept any
+/// non-empty payload and let the document parser be the real integrity check;
+/// the store's validator exists to avoid quarantining on a torn write.
+fn is_autosave_payload(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+}
+
+fn autosave_dir() -> PathBuf {
+    let base = std::env::var_os("RENAMITE_DATA_DIR")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty());
-    let data_dir = dirs::data_dir().map(|path| path.join("renamite"));
-    let fallback = std::env::temp_dir().join("renamite");
-    let candidates = configured
-        .into_iter()
-        .chain(data_dir)
-        .chain(std::iter::once(fallback));
+    base.unwrap_or_else(default_data_dir)
+}
 
-    for base in candidates {
-        let dir = base.join("autosave");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return DirStore { dir };
-        }
+#[cfg(target_arch = "wasm32")]
+fn default_data_dir() -> PathBuf {
+    // `FsStorage` on wasm is `ropfs::sync::Fs`: paths are virtual keys
+    // hydrated from localStorage, and `directories` cannot resolve a home dir
+    // in a browser. A relative path matches game-utils' own wasm convention.
+    PathBuf::from("renamite")
+}
+
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+fn default_data_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", "renamite")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .unwrap_or_else(|| std::env::temp_dir().join("renamite"))
+}
+
+#[cfg(target_os = "android")]
+fn default_data_dir() -> PathBuf {
+    // `ProjectDirs` is unusable on Android ($HOME unset), so this is the
+    // runtime internal data dir recorded at boot, else app-private storage
+    // under the real package id, else the evictable temp dir.
+    game_utils::storage::android_data_dir(android_package())
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_PACKAGE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+fn android_package() -> &'static str {
+    ANDROID_PACKAGE.get().copied().unwrap_or("org.mlm.renamite")
+}
+
+/// Record the Android runtime internal data dir so [`default_data_dir`] lands
+/// in app-private storage instead of the evictable temp dir. `package` must
+/// match the application id, and is only consulted if the runtime dir was
+/// never recorded. Call once from `android_main`. No-op on other targets.
+#[cfg(target_os = "android")]
+pub fn set_android_data_dir(path: PathBuf, package: &'static str) {
+    let _ = ANDROID_PACKAGE.set(package);
+    game_utils::storage::set_android_data_dir(path);
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_android_data_dir(_path: PathBuf, _package: &'static str) {}
+
+pub fn autosave_bytes() -> Option<Vec<u8>> {
+    let store = autosave_store();
+    if let Some(bytes) = store.load(&is_autosave_payload, &[]).data {
+        return Some(bytes);
     }
-
-    let dir = std::env::temp_dir().join("renamite").join("autosave");
-    let _ = std::fs::create_dir_all(&dir);
-    DirStore { dir }
+    // The pre-`game-utils` store was `<data>/autosave/last-session`; adopt it
+    // once so an upgrade keeps the recovery it would otherwise drop.
+    adopt_legacy_autosave(&store)
 }
 
-/// Durable key/value storage for autosave.
-pub trait KvStore: Send + Sync {
-    fn get(&self, key: &str) -> Option<Vec<u8>>;
-    fn set(&self, key: &str, value: &[u8]);
-}
-
-/// Filesystem-backed store.
-pub struct DirStore {
-    pub dir: PathBuf,
-}
-
-impl DirStore {
-    pub fn set_checked(&self, key: &str, value: &[u8]) -> std::io::Result<()> {
-        if value.len() > 256 * 1024 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "autosave payload is too large",
-            ));
-        }
-        std::fs::create_dir_all(&self.dir)?;
-        let path = self.dir.join(sanitize_key(key));
-        #[cfg(not(target_arch = "wasm32"))]
-        atomic_write(&path, value)?;
-        #[cfg(target_arch = "wasm32")]
-        std::fs::write(path, value)?;
-        Ok(())
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+fn adopt_legacy_autosave(store: &SaveStore<FsStorage>) -> Option<Vec<u8>> {
+    let legacy_dir = store.dir.join("autosave");
+    let legacy = legacy_dir.join("last-session");
+    let bytes = std::fs::read(&legacy).ok().filter(|b| !b.is_empty())?;
+    if store.write(&bytes).is_ok() {
+        let _ = std::fs::remove_file(&legacy);
+        let _ = std::fs::remove_dir(&legacy_dir);
     }
+    Some(bytes)
 }
 
-impl KvStore for DirStore {
-    fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let path = self.dir.join(sanitize_key(key));
-        let metadata = std::fs::metadata(&path).ok()?;
-        if !metadata.is_file() || metadata.len() > 256 * 1024 * 1024 {
-            return None;
-        }
-        std::fs::read(path).ok()
-    }
-    fn set(&self, key: &str, value: &[u8]) {
-        if let Err(error) = self.set_checked(key, value) {
-            log::error!("autosave write failed: {error}");
-        }
-    }
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+fn adopt_legacy_autosave(_store: &SaveStore<FsStorage>) -> Option<Vec<u8>> {
+    None
 }
 
-fn sanitize_key(key: &str) -> String {
-    key.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// Write the shadow copy, or report why it was skipped. A failed write leaves
+/// the previous copy in place.
+pub fn set_autosave(value: &[u8]) -> Result<(), AutosaveSkip> {
+    let cap = autosave_cap();
+    if value.len() > cap {
+        return Err(AutosaveSkip::TooLarge {
+            len: value.len(),
+            cap,
+        });
+    }
+    if let Err(error) = autosave_store().write(value) {
+        log::error!("autosave write failed: {error}");
+        return Err(AutosaveSkip::WriteFailed);
+    }
+    Ok(())
+}
+
+pub fn clear_autosave() {
+    autosave_store().delete();
 }
 
 /// Monotonic-ish milliseconds since the Unix epoch.
 pub fn now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0)
 }

@@ -9,3 +9,6 @@ description = "Frame, Animated<T>, Tween, Playback, and easing for renamite."
 serde.workspace = true
 glam.workspace = true
 renamite-geometry.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -3,11 +3,10 @@ name = "renamite-text"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure text -> BezPath shaping (ttf-parser). No UI, no GPU, wasm-clean."
+description = "Pure text -> BezPath shaping over repose-text. No UI, no GPU, wasm-clean."
 
 [dependencies]
 kurbo.workspace = true
+repose-text.workspace = true
 serde.workspace = true
-ttf-parser.workspace = true
 thiserror.workspace = true
-web-workers.workspace = true

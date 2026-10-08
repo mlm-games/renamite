@@ -7,11 +7,13 @@ description = "Files and autosave backends for renamite (desktop + mobile/web)."
 
 [dependencies]
 rlobkit-dialogs = "0.5"
+game-utils.workspace = true
 log = "0.4"
 futures-lite = "2"
+web-time = "1.1"
 
-[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
-dirs = "6"
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+directories = "6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
