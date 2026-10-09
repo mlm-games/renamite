@@ -32,6 +32,9 @@ pub const MAX_REPEATER_OFFSET: f64 = 1_000_000.0;
 /// Width profile points one stroke may carry, kept small enough that a
 /// texture-measured profile cannot flood a scene.
 pub const MAX_STROKE_PROFILE_POINTS: usize = 64;
+/// Warp pins one warp may carry: the solve is per pin, and a swarm of them is
+/// never what a pin warp is for.
+pub const MAX_WARP_PINS: usize = 64;
 const MAX_REPEATER_PATHS: usize = 100_000;
 
 fn default_format_version() -> u32 {
@@ -944,6 +947,34 @@ pub enum ModifierKind {
         /// handles away); negative = bloat (vertices away).
         amount: Animated<f64>,
     },
+    /// Deforms the accumulated paths with the pins of a warp mesh.
+    Warp(WarpSpec),
+}
+
+/// One pin of a warp: where it was placed on the rest art, where it is dragged
+/// to now, and the turn the art takes about it. Rest is set once (by placing
+/// the pin); `at` and the turn animate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WarpPin {
+    pub rest: glam::DVec2,
+    pub at: Animated<glam::DVec2>,
+    /// Degrees; `None` leaves the art free to turn about the pin.
+    #[serde(default)]
+    pub angle: Option<Animated<f64>>,
+}
+
+/// How a warp's mesh is built: the pin warp it carries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WarpSpec {
+    /// Cell size of the mesh grid, in document units.
+    #[serde(default = "default_warp_spacing")]
+    pub spacing: Animated<f64>,
+    #[serde(default)]
+    pub pins: Vec<WarpPin>,
+}
+
+fn default_warp_spacing() -> Animated<f64> {
+    Animated::new(32.0)
 }
 
 /// How Trim distributes [start, end] across multiple accumulated paths.
@@ -2729,6 +2760,9 @@ fn apply_modifier(
                 }
             }
         }
+        ModifierKind::Warp(spec) => {
+            warp_paths(spec, id, frame, ov, paths);
+        }
         ModifierKind::PuckerBloat { amount } => {
             let amt = ov_f64(ov, id, "pucker.amount", amount.value_at(frame));
             if amt.abs() > 1e-9 {
@@ -2748,6 +2782,131 @@ fn apply_modifier(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Deform the accumulated paths with the pins of a warp.
+///
+/// The mesh, the solve and the anchor mapping are all pure functions of the
+/// accumulated geometry and the pins, so a frame is reproducible. Pins that
+/// cannot be placed on the art are dropped rather than skip the whole warp.
+fn warp_paths(spec: &WarpSpec, id: NodeId, frame: f64, ov: &Overrides, paths: &mut [ShapeEntry]) {
+    if spec.pins.is_empty() {
+        return;
+    }
+    let spacing = ov_f64(ov, id, "warp.spacing", spec.spacing.value_at(frame));
+    if !spacing.is_finite() || spacing <= 0.0 {
+        return;
+    }
+    let mut combined = kurbo::BezPath::new();
+    let mut bounds: Option<kurbo::Rect> = None;
+    for entry in paths.iter() {
+        combined.extend(entry.path.elements().iter().copied());
+        let boxed = entry.path.bounding_box();
+        bounds = Some(match bounds {
+            Some(b) => kurbo::Rect::new(
+                b.x0.min(boxed.x0),
+                b.y0.min(boxed.y0),
+                b.x1.max(boxed.x1),
+                b.y1.max(boxed.y1),
+            ),
+            None => boxed,
+        });
+    }
+    // The mesh also has to reach the pins, which sit on the art's edge as
+    // often as inside it.
+    let mut bounds = match bounds.filter(|b| b.width() > 0.0 || b.height() > 0.0) {
+        Some(bounds) => bounds,
+        None => return,
+    };
+    for pin in &spec.pins {
+        bounds.x0 = bounds.x0.min(pin.rest.x);
+        bounds.y0 = bounds.y0.min(pin.rest.y);
+        bounds.x1 = bounds.x1.max(pin.rest.x);
+        bounds.y1 = bounds.y1.max(pin.rest.y);
+    }
+    let Some(mesh) = renamite_geometry::warp_mesh(&combined, bounds, spacing) else {
+        return;
+    };
+
+    let pins: Vec<renamite_geometry::WarpPin> = spec
+        .pins
+        .iter()
+        .enumerate()
+        .map(|(index, pin)| {
+            let at = pin.at.value_at(frame);
+            renamite_geometry::WarpPin {
+                rest: renamite_geometry::DVec2::new(pin.rest.x, pin.rest.y),
+                at: renamite_geometry::DVec2::new(
+                    ov_f64(ov, id, &format!("warp.pins.{index}.at.x"), at.x),
+                    ov_f64(ov, id, &format!("warp.pins.{index}.at.y"), at.y),
+                ),
+                angle: pin.angle.as_ref().map(|a| {
+                    ov_f64(
+                        ov,
+                        id,
+                        &format!("warp.pins.{index}.angle"),
+                        a.value_at(frame),
+                    )
+                }),
+            }
+        })
+        .filter(|pin| pin.rest.is_finite() && pin.at.is_finite())
+        .collect();
+    if pins.is_empty() {
+        return;
+    }
+    let solved = renamite_geometry::warp_solve(&mesh, &pins);
+    let moved = solved
+        .iter()
+        .zip(&mesh.vertices)
+        .filter(|(a, b)| (*a - *b).length() > 1e-6)
+        .count();
+    println!("D moved vertices {moved}");
+
+    // Map every anchor and handle through the triangle it rests in: handles
+    // stay handles because the mapping is affine inside a triangle.
+    for entry in paths.iter_mut() {
+        let mut warped = kurbo::BezPath::new();
+        for contour in renamite_geometry::split_bez_subpaths(&entry.path) {
+            let mut moved = renamite_geometry::VectorPath {
+                closed: contour.closed,
+                ..Default::default()
+            };
+            let mut failed = false;
+            for anchor in &contour.anchors {
+                let place = |p: glam::DVec2| -> Option<glam::DVec2> {
+                    let (triangle, weights) = renamite_geometry::mesh_locate(
+                        &mesh,
+                        renamite_geometry::DVec2::new(p.x, p.y),
+                    )?;
+                    let q = renamite_geometry::warp_point(&mesh, &solved, triangle, weights);
+                    Some(glam::DVec2::new(q.x, q.y))
+                };
+                let (Some(pos), Some(tan_in), Some(tan_out)) = (
+                    place(anchor.pos),
+                    place(anchor.pos + anchor.tan_in),
+                    place(anchor.pos + anchor.tan_out),
+                ) else {
+                    failed = true;
+                    break;
+                };
+                moved.anchors.push(renamite_geometry::Anchor {
+                    pos,
+                    tan_in: tan_in - pos,
+                    tan_out: tan_out - pos,
+                    mode: anchor.mode,
+                });
+            }
+            if failed {
+                warped.extend(contour.to_bez_path().elements().iter().copied());
+            } else {
+                warped.extend(moved.to_bez_path().elements().iter().copied());
+            }
+        }
+        if !warped.elements().is_empty() {
+            entry.path = warped;
         }
     }
 }
@@ -3982,6 +4141,7 @@ pub fn prop_section_of(prop: &str) -> Option<&'static str> {
         "offset" => Some("Offset Path"),
         "zigzag" => Some("Zig Zag"),
         "pucker" => Some("Pucker & Bloat"),
+        "warp" => Some("Warp"),
         "star" => Some("Shape"),
         "layer" => Some("Layer"),
         _ => None,
@@ -4007,6 +4167,7 @@ pub fn node_supports_section(kind: &NodeKind, section: &str) -> bool {
         "Offset Path" => matches!(kind, NodeKind::Modifier(ModifierKind::OffsetPath { .. })),
         "Zig Zag" => matches!(kind, NodeKind::Modifier(ModifierKind::ZigZag { .. })),
         "Pucker & Bloat" => matches!(kind, NodeKind::Modifier(ModifierKind::PuckerBloat { .. })),
+        "Warp" => matches!(kind, NodeKind::Modifier(ModifierKind::Warp { .. })),
         "Layer" => matches!(kind, NodeKind::Layer(_)),
         _ => false,
     }
@@ -4385,6 +4546,17 @@ fn dash_index(path: &str) -> Option<usize> {
     path.strip_prefix("stroke.dash.")?.parse().ok()
 }
 
+/// `warp.pins.3.at`: which pin a prop addresses. A pin's rest position is
+/// placed by a command, so only its drag and turn are props.
+fn warp_pin_index(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix("warp.pins.")?;
+    let (index, field) = rest.split_once('.')?;
+    if !matches!(field, "at" | "angle") {
+        return None;
+    }
+    index.parse().ok()
+}
+
 /// `stroke.profile.3.at` and `stroke.profile.3.scale`: the field of profile
 /// point `3`. Fields other than `at` and `scale` are not props.
 fn width_profile_index(path: &str) -> Option<usize> {
@@ -4431,6 +4603,17 @@ impl Node {
                 });
             }
             return None;
+        }
+        if let Some(index) = warp_pin_index(s) {
+            let NodeKind::Modifier(ModifierKind::Warp(spec)) = &mut self.kind else {
+                return None;
+            };
+            let pin = spec.pins.get_mut(index)?;
+            let field = s.split_once('.')?.1;
+            if field == "angle" {
+                return pin.angle.as_mut().map(F64);
+            }
+            return Some(Vec2(&mut pin.at));
         }
 
         match (s, &mut self.kind) {
@@ -4839,6 +5022,16 @@ impl Node {
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
             ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
                 Some(F64(miter_limit))
+            }
+            (name, NodeKind::Modifier(ModifierKind::Warp(spec)))
+                if warp_pin_index(name).is_some() =>
+            {
+                let pin = spec.pins.get(warp_pin_index(name)?)?;
+                if name.ends_with(".angle") {
+                    pin.angle.as_ref().map(F64)
+                } else {
+                    Some(Vec2(&pin.at))
+                }
             }
             (name, NodeKind::Style(StyleKind::Stroke { profile, .. }))
                 if width_profile_index(name).is_some() =>

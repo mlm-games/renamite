@@ -11,3 +11,6 @@ glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 linesweeper.workspace = true
+
+[dev-dependencies]
+glam.workspace = true

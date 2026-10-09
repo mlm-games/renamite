@@ -1171,6 +1171,8 @@ fn modifier_json(name: &str, modifier: &ModifierKind) -> Option<Value> {
             "nm": name,
             "r": export_scalar(radius, 1.0)
         })),
+        // A pin warp has no Lottie equivalent: it warns and drops out.
+        ModifierKind::Warp(_) => None,
         ModifierKind::Repeater {
             copies,
             offset,

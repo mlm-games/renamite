@@ -7,8 +7,8 @@ use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
     Asset, AssetId, CompId, Document, GradientKind, GradientStop, GradientStops, KeyframeData,
-    MAX_STROKE_PROFILE_POINTS, ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut,
-    PropPath, StyleKind, StylePaint, Value,
+    MAX_STROKE_PROFILE_POINTS, MAX_WARP_PINS, ModelError, ModifierKind, Node, NodeId, NodeKind,
+    Parent, PropMut, PropPath, StyleKind, StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -216,6 +216,18 @@ pub enum EditorCommand {
     SetStrokeProfile {
         id: NodeId,
         profile: Option<renamite_model::StrokeProfile>,
+    },
+    /// Add a warp pin where it was placed. Exact inverse: `RemoveWarpPin`.
+    AddWarpPin {
+        id: NodeId,
+        pin: renamite_model::WarpPin,
+    },
+    /// Drop warp pin `index`. Exact inverse: `RestoreWarpPin`, which puts the
+    /// same pin back where it was.
+    RemoveWarpPin {
+        id: NodeId,
+        index: usize,
+        pin: renamite_model::WarpPin,
     },
     /// Flip a ZigZag's `smooth` flag (corner zig vs smooth wave). Exact
     /// inverse: same command with the old value.
@@ -742,6 +754,8 @@ fn apply_command(
         | SetTrimMode { .. }
         | SetStrokeDash { .. }
         | SetStrokeProfile { .. }
+        | AddWarpPin { .. }
+        | RemoveWarpPin { .. }
         | SetStrokeCap { .. }
         | SetStrokeJoin { .. }
         | SetFillRule { .. }
@@ -1545,6 +1559,42 @@ fn apply_document_command(
                 vec![SetStrokeProfile {
                     id: *id,
                     profile: old,
+                }],
+            ))
+        }
+        AddWarpPin { id, pin } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Modifier(ModifierKind::Warp(spec)) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Warp").into());
+            };
+            if spec.pins.len() >= MAX_WARP_PINS {
+                return Err(ModelError::OutOfRange("warp pins").into());
+            }
+            spec.pins.push(pin.clone());
+            let index = spec.pins.len() - 1;
+            Ok((
+                None,
+                vec![RemoveWarpPin {
+                    id: *id,
+                    index,
+                    pin: pin.clone(),
+                }],
+            ))
+        }
+        RemoveWarpPin { id, index, pin } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+            let NodeKind::Modifier(ModifierKind::Warp(spec)) = &mut node.kind else {
+                return Err(ModelError::WrongNodeKind("Warp").into());
+            };
+            if spec.pins.get(*index) != Some(pin) {
+                return Err(ModelError::OutOfRange("warp pin").into());
+            }
+            spec.pins.remove(*index);
+            Ok((
+                None,
+                vec![AddWarpPin {
+                    id: *id,
+                    pin: pin.clone(),
                 }],
             ))
         }

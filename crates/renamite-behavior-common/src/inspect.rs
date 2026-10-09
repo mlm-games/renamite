@@ -711,6 +711,38 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     },
                 ));
             }
+            ModifierKind::Warp(spec) => {
+                d.push(pd(
+                    "Warp",
+                    "Cell size",
+                    "warp.spacing",
+                    PropKind::F64 {
+                        min: Some(1.0),
+                        max: None,
+                        step: 1.0,
+                    },
+                ));
+                for (index, _) in spec.pins.iter().enumerate() {
+                    if let Some(label) = pin_label(index, true) {
+                        d.push(pd_indexed(
+                            "Warp",
+                            label,
+                            format!("warp.pins.{index}.at"),
+                            PropKind::DVec2,
+                        ));
+                    }
+                    if spec.pins[index].angle.is_some()
+                        && let Some(label) = pin_label(index, false)
+                    {
+                        d.push(pd_indexed(
+                            "Warp",
+                            label,
+                            format!("warp.pins.{index}.angle"),
+                            PropKind::Angle,
+                        ));
+                    }
+                }
+            }
         },
         NodeKind::Mask(mask) => {
             d.push(pd("Mask", "Inverted", "mask.inverted", PropKind::Bool));
@@ -894,6 +926,23 @@ fn transform_descriptors() -> Vec<PropDescriptor> {
 
 /// Labels for width profile points, interned once: the descriptor API takes
 /// `'static` labels while the number of points comes from the document.
+static PIN_LABELS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+fn pin_label(index: usize, drag: bool) -> Option<&'static str> {
+    let table = PIN_LABELS.get_or_init(|| {
+        (0..renamite_model::MAX_WARP_PINS)
+            .map(|i| {
+                (
+                    format!("Pin {n} at", n = i + 1),
+                    format!("Pin {n} turn", n = i + 1),
+                )
+            })
+            .collect()
+    });
+    let (at, turn) = table.get(index)?;
+    Some(if drag { at } else { turn })
+}
+
 static PROFILE_LABELS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
 
 fn profile_point_label(index: usize, position: bool) -> Option<&'static str> {

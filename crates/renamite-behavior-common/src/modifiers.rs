@@ -2,7 +2,9 @@
 
 use renamite_animation::{Animated, AnimatedTransform};
 use renamite_history::{EditorCommand, NodeTree};
-use renamite_model::{Document, ModifierKind, Node, NodeId, NodeKind, Parent, TrimMode};
+use renamite_model::{
+    Document, ModifierKind, Node, NodeId, NodeKind, Parent, TrimMode, WarpPin, WarpSpec,
+};
 
 /// Append a Trim Path modifier as the last child of `parent` (a group).
 /// Placed at the end so it applies after all sibling shapes in pass 1.
@@ -134,6 +136,29 @@ pub fn cmd_add_pucker_bloat_after(
             NodeKind::Modifier(ModifierKind::PuckerBloat {
                 amount: Animated::new(amount),
             }),
+        )),
+    })
+}
+
+/// Append a Warp modifier with one pin as a sibling immediately after `after`.
+///
+/// The pin starts where `at` places it and is not dragged yet, which is the
+/// state a pin is placed in: dragging comes next, from the canvas.
+pub fn cmd_add_warp_after(doc: &Document, after: NodeId, at: glam::DVec2) -> Option<EditorCommand> {
+    let (parent, index) = doc.locate(after)?;
+    Some(EditorCommand::InsertNode {
+        parent,
+        index: index + 1,
+        tree: NodeTree::leaf(Node::new(
+            "Warp",
+            NodeKind::Modifier(ModifierKind::Warp(WarpSpec {
+                spacing: Animated::new(32.0),
+                pins: vec![WarpPin {
+                    rest: at,
+                    at: Animated::new(at),
+                    angle: None,
+                }],
+            })),
         )),
     })
 }

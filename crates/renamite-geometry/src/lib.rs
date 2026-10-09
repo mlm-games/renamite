@@ -4,6 +4,7 @@
 pub mod morph;
 pub mod pucker_bloat;
 pub mod stroke;
+pub mod warp;
 pub mod zigzag;
 pub use morph::match_topology;
 pub use pucker_bloat::{pucker_bloat_path, pucker_bloat_vector_path};
@@ -11,12 +12,16 @@ pub use stroke::{
     MAX_WIDTH_SCALE, OutlineStyle, WidthContour, WidthCurve, WidthSegment, stroke_outline,
     width_contours, width_curve,
 };
+pub use warp::{
+    BandMatrix, MAX_WARP_VERTICES, WarpGrid, WarpMesh, WarpPin, mesh_locate, warp_mesh, warp_point,
+    warp_solve,
+};
 pub use zigzag::zigzag_path;
 
 use kurbo::ParamCurveNearest;
 pub use kurbo::{Affine, BezPath, CubicBez, PathEl, Point, Rect, Shape as KurboShape, Vec2};
 
-use glam::DVec2;
+pub use glam::DVec2;
 
 /// Validate a dash pattern before passing it to Kurbo.
 ///

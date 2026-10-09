@@ -17,8 +17,8 @@ use renamite_machine::{
 };
 use renamite_model::{
     Asset, Color, CompId, Document, GradientStops, MAX_REPEATER_COPIES, MAX_REPEATER_OFFSET,
-    MAX_STROKE_PROFILE_POINTS, ModifierKind, Node, NodeId, NodeKind, PropRef, ShapeKind, StyleKind,
-    StylePaint, Value, node_supports_opacity, node_supports_transform,
+    MAX_STROKE_PROFILE_POINTS, MAX_WARP_PINS, ModifierKind, Node, NodeId, NodeKind, PropRef,
+    ShapeKind, StyleKind, StylePaint, Value, node_supports_opacity, node_supports_transform,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -854,6 +854,23 @@ impl<'a> Validator<'a> {
             ModifierKind::RoundCorners { radius } => {
                 self.check_animated(&format!("{base}/radius"), radius, finite_f64);
                 self.check_nonnegative(&format!("{base}/radius"), radius);
+            }
+            ModifierKind::Warp(spec) => {
+                self.check_animated(&format!("{base}/spacing"), &spec.spacing, finite_f64);
+                self.check_nonnegative(&format!("{base}/spacing"), &spec.spacing);
+                if spec.pins.len() > MAX_WARP_PINS {
+                    self.err(format!("{base}/pins"), "warp has too many pins");
+                }
+                for (index, pin) in spec.pins.iter().take(MAX_WARP_PINS).enumerate() {
+                    let path = format!("{base}/pins/{index}");
+                    if !(pin.rest.x.is_finite() && pin.rest.y.is_finite()) {
+                        self.err(path.clone(), "pin rest position is not finite");
+                    }
+                    self.check_animated(&format!("{path}/at"), &pin.at, finite_vec2);
+                    if let Some(angle) = &pin.angle {
+                        self.check_animated(&format!("{path}/angle"), angle, finite_f64);
+                    }
+                }
             }
             ModifierKind::OffsetPath { amount } => {
                 self.check_animated(&format!("{base}/amount"), amount, finite_f64);

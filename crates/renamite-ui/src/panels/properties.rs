@@ -16,7 +16,7 @@ use renamite_behavior_common::inspect::{
 };
 use renamite_behavior_common::modifiers::{
     cmd_add_offset_path_after, cmd_add_pucker_bloat_after, cmd_add_repeater_after,
-    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_zigzag_after,
+    cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_warp_after, cmd_add_zigzag_after,
 };
 use renamite_behavior_common::stroke::{
     cmd_add_stroke_dash_pair, cmd_clear_stroke_profile, cmd_disable_stroke_dash,
@@ -1539,6 +1539,27 @@ fn add_modifier_row(session: SessionRef, id: NodeId) -> Option<View> {
             if let Some(cmd) = cmd_add_repeater_after(&s.file.document, id) {
                 s.apply_outputs(smallvec![
                     ToolOutput::BeginTransaction("Add Repeater".into()),
+                    ToolOutput::Commands(smallvec![cmd]),
+                    ToolOutput::CommitTransaction,
+                ]);
+            }
+        }
+    }));
+    buttons.push(modifier_chip("Warp", {
+        let session = session.clone();
+        move || {
+            let mut s = session.borrow_mut();
+            // The pin lands at the shape's centre, where a pin usually starts.
+            let at = s
+                .file
+                .document
+                .nodes
+                .get(id)
+                .map(|n| n.transform.position.base)
+                .unwrap_or(glam::DVec2::ZERO);
+            if let Some(cmd) = cmd_add_warp_after(&s.file.document, id, at) {
+                s.apply_outputs(smallvec![
+                    ToolOutput::BeginTransaction("Add Warp".into()),
                     ToolOutput::Commands(smallvec![cmd]),
                     ToolOutput::CommitTransaction,
                 ]);
