@@ -11,7 +11,9 @@
 //! bytes: [`register_font_data`] stores a font keyed by the name its own name
 //! table reports, [`font_family_name`] extracts that name, and
 //! [`FontRef::for_family`] resolves a `TextNode.font` value to a face, falling
-//! back to the bundled default.
+//! back to the bundled default. Shaping addresses each face by a private alias
+//! rather than that name, so a host cannot change the result by having a
+//! different font installed under the same family.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -57,12 +59,13 @@ pub enum TextAlign {
 }
 
 /// A font face known to the registry, owning its bytes. Cheap to clone (an
-/// `Arc` bump). Shaping addresses it by family, which is what the host's
-/// collection indexes.
+/// `Arc` bump). Shaping addresses it by alias, a name only this registry
+/// answers to, so the face cannot be shadowed by a like-named system font.
 #[derive(Clone)]
 pub struct FontRef {
     family: Option<String>,
     data: Arc<[u8]>,
+    alias: String,
 }
 
 impl FontRef {
@@ -72,18 +75,21 @@ impl FontRef {
     pub fn parse(data: &[u8]) -> Result<Self, TextError> {
         // The evaluator hands us the same bytes every frame, so a payload the
         // registry already knows costs one fingerprint and no copy or parse.
-        if let Some((family, data)) = lookup_payload(data) {
+        if let Some(payload) = lookup_payload(data) {
             return Ok(Self {
-                family: Some(family),
-                data,
+                family: Some(payload.family),
+                data: payload.data,
+                alias: payload.alias,
             });
         }
         let family = font_family_name(data).ok_or(TextError::BadFont)?;
         let data: Arc<[u8]> = Arc::from(data);
-        register_payload(data.clone(), family.clone());
+        let alias = payload_alias(&data);
+        register_payload(data.clone(), family.clone(), alias.clone());
         Ok(Self {
             family: Some(family),
             data,
+            alias,
         })
     }
 
@@ -94,9 +100,14 @@ impl FontRef {
         let registry = registry()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let alias = registry
+            .default_alias
+            .clone()
+            .unwrap_or_else(|| payload_alias(DEFAULT_FONT));
         Self {
             family: registry.default_family.clone(),
             data: default_font_data().clone(),
+            alias,
         }
     }
 
@@ -107,16 +118,24 @@ impl FontRef {
             let registry = registry()
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
+            let data = registry.fonts.get(name)?.clone();
+            let alias = registry
+                .payloads
+                .get(&payload_key(&data))
+                .map(|p| p.alias.clone())
+                .unwrap_or_else(|| payload_alias(&data));
             Some(Self {
                 family: Some(name.to_string()),
-                data: registry.fonts.get(name)?.clone(),
+                data,
+                alias,
             })
         });
         found.unwrap_or_else(Self::default_font)
     }
 
-    /// Family name the host shapes this face by, or `None` if the bytes carry
-    /// no name at all.
+    /// Family name the face's own name table reports, or `None` if the bytes
+    /// carry no name at all. This is what a document stores; shaping does not
+    /// use it, since a like-named font on the host could answer to it.
     pub fn family(&self) -> Option<&str> {
         self.family.as_deref()
     }
@@ -142,10 +161,34 @@ struct Registry {
     /// Family name -> bytes: what [`registered_families`] and
     /// [`FontRef::for_family`] see.
     fonts: HashMap<String, Arc<[u8]>>,
-    /// Payload fingerprint -> that payload's family and bytes, so a repeat
-    /// payload resolves without copying or parsing anything.
-    payloads: HashMap<u64, (String, Arc<[u8]>)>,
+    /// Payload fingerprint -> that payload's family, bytes and host alias, so a
+    /// repeat payload resolves without copying or parsing anything.
+    payloads: HashMap<u64, Payload>,
     default_family: Option<String>,
+    default_alias: Option<String>,
+}
+
+struct Payload {
+    family: String,
+    data: Arc<[u8]>,
+    alias: String,
+}
+
+impl Clone for Payload {
+    fn clone(&self) -> Self {
+        Self {
+            family: self.family.clone(),
+            data: self.data.clone(),
+            alias: self.alias.clone(),
+        }
+    }
+}
+
+/// Name renamite shapes this payload by. Derived from the fingerprint, so it is
+/// stable across runs and unique per payload, and no font installed on the host
+/// can answer to it.
+fn payload_alias(bytes: &[u8]) -> String {
+    format!("renamite-{:016x}", payload_key(bytes))
 }
 
 impl Registry {
@@ -154,6 +197,7 @@ impl Registry {
             fonts: HashMap::new(),
             payloads: HashMap::new(),
             default_family: None,
+            default_alias: None,
         }
     }
 
@@ -162,16 +206,25 @@ impl Registry {
         let Some(family) = font_family_name(DEFAULT_FONT) else {
             return registry;
         };
-        registry.insert(default_font_data().clone(), family.clone());
+        let alias = payload_alias(DEFAULT_FONT);
+        registry.insert(default_font_data().clone(), family.clone(), alias.clone());
         registry.default_family = Some(family);
+        registry.default_alias = Some(alias);
         registry
     }
 
     /// Returns true when this payload is new to the host.
-    fn insert(&mut self, data: Arc<[u8]>, family: String) -> bool {
+    fn insert(&mut self, data: Arc<[u8]>, family: String, alias: String) -> bool {
         self.fonts.insert(family.clone(), data.clone());
         self.payloads
-            .insert(payload_key(&data), (family, data))
+            .insert(
+                payload_key(&data),
+                Payload {
+                    family,
+                    data,
+                    alias,
+                },
+            )
             .is_none()
     }
 }
@@ -197,23 +250,23 @@ fn payload_key(bytes: &[u8]) -> u64 {
 /// Look up a payload the registry may already hold. The fingerprint samples the
 /// payload, so a hit is confirmed by comparing the bytes before handing them
 /// back: a collision must cost a re-registration, never the wrong font.
-fn lookup_payload(bytes: &[u8]) -> Option<(String, Arc<[u8]>)> {
+fn lookup_payload(bytes: &[u8]) -> Option<Payload> {
     let registry = registry()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    let (family, data) = registry.payloads.get(&payload_key(bytes))?.clone();
-    (data.as_ref() == bytes).then_some((family, data))
+    let payload = registry.payloads.get(&payload_key(bytes))?.clone();
+    (payload.data.as_ref() == bytes).then_some(payload)
 }
 
-fn register_payload(data: Arc<[u8]>, family: String) {
+fn register_payload(data: Arc<[u8]>, family: String, alias: String) {
     let fresh = {
         let mut registry = registry()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        registry.insert(data.clone(), family)
+        registry.insert(data.clone(), family, alias.clone())
     };
     if fresh {
-        repose_text::register_font_data(&data);
+        repose_text::register_font_as(&data, &alias);
     }
 }
 
@@ -228,7 +281,8 @@ pub fn font_family_name(bytes: &[u8]) -> Option<String> {
 /// if the bytes are not a parseable font.
 pub fn register_font_data(bytes: Vec<u8>) -> Option<String> {
     let family = font_family_name(&bytes)?;
-    register_payload(Arc::from(bytes), family.clone());
+    let alias = payload_alias(&bytes);
+    register_payload(Arc::from(bytes), family.clone(), alias);
     Some(family)
 }
 
@@ -295,15 +349,14 @@ pub fn shape_text(
     }
     let tracking = to_f32(tracking);
     let leading = to_f32(leading);
-    let family = font.family();
-    let line_height = line_height(family, size as f64, leading as f64);
+    let line_height = line_height(&font.alias, size as f64, leading as f64);
     let mut out = BezPath::new();
     for (index, line) in text
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .enumerate()
     {
-        let Some(glyphs) = shape_line(family, line, size, tracking) else {
+        let Some(glyphs) = shape_line(&font.alias, line, size, tracking) else {
             continue;
         };
         if glyphs.is_empty() {
@@ -381,8 +434,7 @@ fn line_advance(glyphs: &[ShapedGlyph], tracking: f32) -> f32 {
 /// content height of the face rather than parley's preferred line height.
 fn line_height(family: Option<&str>, size: f64, leading: f64) -> f64 {
     let (ascent, descent) =
-        repose_text::primary_font_vertical_metrics(family, FONT_WEIGHT, METRIC_PX);
-    let line_height_em = (ascent + descent) as f64 / METRIC_PX as f64;
+        repose_text::primary_font_vertical_metrics(family, FONT_WEIGHT, METRIC_PX);    let line_height_em = (ascent + descent) as f64 / METRIC_PX as f64;
     let line_height = if line_height_em.is_finite() && line_height_em > 0.0 {
         line_height_em * size
     } else {
