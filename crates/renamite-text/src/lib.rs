@@ -436,7 +436,8 @@ fn line_advance(glyphs: &[ShapedGlyph], tracking: f32) -> f32 {
 /// content height of the face rather than parley's preferred line height.
 fn line_height(family: Option<&str>, size: f64, leading: f64) -> f64 {
     let (ascent, descent) =
-        repose_text::primary_font_vertical_metrics(family, FONT_WEIGHT, METRIC_PX);    let line_height_em = (ascent + descent) as f64 / METRIC_PX as f64;
+        repose_text::primary_font_vertical_metrics(family, FONT_WEIGHT, METRIC_PX);
+    let line_height_em = (ascent + descent) as f64 / METRIC_PX as f64;
     let line_height = if line_height_em.is_finite() && line_height_em > 0.0 {
         line_height_em * size
     } else {

@@ -640,8 +640,9 @@ fn TimelineCanvas(session: SessionRef) -> View {
                     let mut s = session.borrow_mut();
                     // A finger drag pans; only a wheel zooms. Without this a
                     // one-finger drag that started on the bottom nav bar zooms
-                    // the range as it slides over the timeline.
-                    if s.touch_active
+                    // the range as it slides over the timeline. Two fingers are
+                    // a pinch, handled as an action instead.
+                    if s.touch_count() > 0
                         || delta.y.abs() < delta.x.abs()
                         || (delta.x.abs() > 0.5 && delta.y.abs() > 0.5)
                     {

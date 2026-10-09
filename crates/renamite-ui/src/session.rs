@@ -130,10 +130,10 @@ pub struct Session {
     /// Horizontal scroll offset (px) for the timeline key area.
     /// `origin_x = -timeline_offset_x`; zoom keeps the left edge stable.
     pub timeline_offset_x: f64,
-    /// A finger is down somewhere in the app. `on_scroll` cannot tell a wheel
-    /// from a finger, so panels use this to avoid treating a drag that started
-    /// on another surface (the bottom nav bar, say) as a wheel zoom.
-    pub touch_active: bool,
+    /// Live touch pointers, in press order. A gesture and a scroll both arrive
+    /// as a bare delta, so panels read the count rather than a flag: one live
+    /// finger is a drag, two or more is a pinch, and none is a wheel.
+    touch_pointers: Vec<repose_core::input::PointerId>,
     /// Timeline canvas rect in screen space. Lets the global gesture handler
     /// tell a timeline touch apart from a canvas one.
     pub timeline_rect: Option<Rect>,
@@ -421,7 +421,7 @@ impl Session {
             listener_draft: ListenerDraft::default(),
             timeline_zoom: 6.0,
             timeline_offset_x: 0.0,
-            touch_active: false,
+            touch_pointers: Vec::new(),
             timeline_rect: None,
             timeline_pan_last: None,
             timeline_touch_press: false,
@@ -433,6 +433,39 @@ impl Session {
             next_file_operation: 0,
             active_file_operation: None,
         }
+    }
+
+    /// True while at least one finger is down. `on_scroll` cannot tell a wheel
+    /// from a finger, so panels use this to avoid treating a drag that started
+    /// on another surface (the bottom nav bar, say) as a wheel zoom.
+    pub fn touch_active(&self) -> bool {
+        !self.touch_pointers.is_empty()
+    }
+
+    /// Live finger count. One is a drag, two or more is a pinch, and none is a
+    /// wheel.
+    pub fn touch_count(&self) -> usize {
+        self.touch_pointers.len()
+    }
+
+    /// Record a finger going down. Re-pressing an id already tracked (a
+    /// duplicate move) is ignored so the count stays honest.
+    pub fn touch_pressed(&mut self, id: repose_core::input::PointerId) {
+        if !self.touch_pointers.contains(&id) {
+            // A leak would pin `touch_active` for the rest of the session and
+            // make every later wheel look like a drag, so bound it.
+            if self.touch_pointers.len() >= 8 {
+                self.touch_pointers.clear();
+            }
+            self.touch_pointers.push(id);
+        }
+    }
+
+    /// Record a finger lifting. Only that id is removed, so lifting one finger
+    /// of a pinch leaves the remaining one counted - clearing the whole set on
+    /// any lift is what made the last finger of a pinch look like a wheel.
+    pub fn touch_released(&mut self, id: repose_core::input::PointerId) {
+        self.touch_pointers.retain(|live| *live != id);
     }
 
     pub fn apply_outputs(&mut self, outputs: OutputVec) {

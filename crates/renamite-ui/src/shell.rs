@@ -111,17 +111,25 @@ pub fn EditorShell(session: SessionRef) -> View {
             let touch_keys = touch_keys.clone();
             move |pe: PointerEvent| {
                 if pe.kind == repose_core::input::PointerKind::Touch {
-                    touch_keys.borrow_mut().touch_active = true;
+                    touch_keys.borrow_mut().touch_pressed(pe.id);
                 }
             }
         })
         .on_pointer_up({
             let touch_keys = touch_keys.clone();
-            move |_pe: PointerEvent| touch_keys.borrow_mut().touch_active = false
+            move |pe: PointerEvent| {
+                if pe.kind == repose_core::input::PointerKind::Touch {
+                    touch_keys.borrow_mut().touch_released(pe.id);
+                }
+            }
         })
         .on_pointer_cancel({
             let touch_keys = touch_keys.clone();
-            move |_pe: PointerEvent| touch_keys.borrow_mut().touch_active = false
+            move |pe: PointerEvent| {
+                if pe.kind == repose_core::input::PointerKind::Touch {
+                    touch_keys.borrow_mut().touch_released(pe.id);
+                }
+            }
         })
         .on_key_event(move |ke: KeyEvent| {
             if matches!(ke.key, Key::Space | Key::Enter) {

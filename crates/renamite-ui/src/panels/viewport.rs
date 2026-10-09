@@ -135,18 +135,25 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                 .on_scroll({
                     let session = session.clone();
                     move |delta: repose_core::Vec2| {
-                        let (is_tool_drag, from_touch, canvas_press) = {
+                        let (is_tool_drag, touch_count, canvas_press) = {
                             let s = session.borrow();
                             (
                                 s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool),
-                                s.touch_active,
+                                s.touch_count(),
                                 s.viewport.pointer_down,
                             )
                         };
                         if is_tool_drag {
                             return repose_core::Vec2::ZERO;
                         }
-                        if from_touch && !canvas_press {
+                        if touch_count > 1 {
+                            // Two fingers are a pinch, and the platform already
+                            // turns them into a zoom or pan action. Swallowing
+                            // the delta here is what keeps a pinch from moving
+                            // the view while it scales it.
+                            return repose_core::Vec2::ZERO;
+                        }
+                        if touch_count == 1 && !canvas_press {
                             // Scroll handlers chain down the hit regions under
                             // the finger, each returning what it did not use. A
                             // side rail is a vertical scroller, so it eats
@@ -157,7 +164,7 @@ pub fn ViewportPanel(session: SessionRef) -> View {
                             return repose_core::Vec2::ZERO;
                         }
                         let mut s = session.borrow_mut();
-                        if from_touch {
+                        if touch_count == 1 {
                             // A finger drag on the canvas is a pan on both
                             // axes, never a zoom: pinch is the two-finger
                             // gesture.
