@@ -802,6 +802,12 @@ impl Exporter<'_> {
                 vec![style_json(&node.name, style, &node.opacity)]
             }
             NodeKind::Modifier(modifier) => {
+                if matches!(modifier, ModifierKind::Warp(_)) {
+                    self.warnings.push(LottieWarning::new(
+                        format!("node/{id:?}"),
+                        "pin warp is not representable in Lottie; its art keeps its unwarped shape",
+                    ));
+                }
                 modifier_json(&node.name, modifier).into_iter().collect()
             }
             NodeKind::Text(text) => {

@@ -2814,18 +2814,9 @@ fn warp_paths(spec: &WarpSpec, id: NodeId, frame: f64, ov: &Overrides, paths: &m
             None => boxed,
         });
     }
-    // The mesh also has to reach the pins, which sit on the art's edge as
-    // often as inside it.
-    let mut bounds = match bounds.filter(|b| b.width() > 0.0 || b.height() > 0.0) {
-        Some(bounds) => bounds,
-        None => return,
+    let Some(bounds) = bounds.filter(|b| b.width() > 0.0 || b.height() > 0.0) else {
+        return;
     };
-    for pin in &spec.pins {
-        bounds.x0 = bounds.x0.min(pin.rest.x);
-        bounds.y0 = bounds.y0.min(pin.rest.y);
-        bounds.x1 = bounds.x1.max(pin.rest.x);
-        bounds.y1 = bounds.y1.max(pin.rest.y);
-    }
     let Some(mesh) = renamite_geometry::warp_mesh(&combined, bounds, spacing) else {
         return;
     };
@@ -2858,12 +2849,6 @@ fn warp_paths(spec: &WarpSpec, id: NodeId, frame: f64, ov: &Overrides, paths: &m
         return;
     }
     let solved = renamite_geometry::warp_solve(&mesh, &pins);
-    let moved = solved
-        .iter()
-        .zip(&mesh.vertices)
-        .filter(|(a, b)| (*a - *b).length() > 1e-6)
-        .count();
-    println!("D moved vertices {moved}");
 
     // Map every anchor and handle through the triangle it rests in: handles
     // stay handles because the mapping is affine inside a triangle.

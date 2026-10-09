@@ -13,8 +13,8 @@ pub use stroke::{
     width_contours, width_curve,
 };
 pub use warp::{
-    BandMatrix, MAX_WARP_VERTICES, WarpGrid, WarpMesh, WarpPin, mesh_locate, warp_mesh, warp_point,
-    warp_solve,
+    BandMatrix, MAX_WARP_VERTICES, WarpGrid, WarpMesh, WarpPin, mesh_locate, warp_bandwidth,
+    warp_mesh, warp_point, warp_solve,
 };
 pub use zigzag::zigzag_path;
 

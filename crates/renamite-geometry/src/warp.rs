@@ -15,9 +15,9 @@ use crate::{DVec2, flatten_bez_path, pt};
 
 use kurbo::{Rect, Shape as _};
 
-/// Maximum grid vertices one mesh may carry. The solve is quadratic in mesh
-/// size, so the cap keeps a pathological hatch from stalling a frame.
-pub const MAX_WARP_VERTICES: usize = 4_000;
+/// Maximum grid vertices one mesh may carry. The solve costs about
+/// `vertices * width^2`, which is what the cap keeps bounded.
+pub const MAX_WARP_VERTICES: usize = 2_500;
 
 /// One pin: where it sat on the art, where it is dragged to now, and the turn
 /// it holds. `angle` of `None` leaves the art free to turn about the pin.
@@ -68,6 +68,8 @@ pub fn warp_mesh(path: &kurbo::BezPath, bounds: Rect, spacing: f64) -> Option<Wa
     let cols = length_cells(bounds.width(), spacing)?;
     let rows = length_cells(bounds.height(), spacing)?;
     if cells_vertices(cols, rows) > MAX_WARP_VERTICES {
+        // A cell holds four corners, and neighbouring cells share them: the
+        // mesh is a (cols + 1) by (rows + 1) lattice.
         return None;
     }
     let grid = WarpGrid {
@@ -89,28 +91,31 @@ pub fn warp_mesh(path: &kurbo::BezPath, bounds: Rect, spacing: f64) -> Option<Wa
         return None;
     }
 
-    let mut index: HashMap<(usize, usize), usize> = HashMap::new();
-    let mut vertices = Vec::with_capacity(live.len() * 4);
-    let mut vertex_cells = Vec::with_capacity(live.len() * 4);
-    for &cell in &live {
-        for corner in [
-            (cell.0, cell.1),
-            (cell.0 + 1, cell.1),
-            (cell.0, cell.1 + 1),
-            (cell.0 + 1, cell.1 + 1),
-        ] {
-            if let std::collections::hash_map::Entry::Vacant(slot) = index.entry(corner) {
-                slot.insert(vertices.len());
-                vertices.push(corner_point(&grid, corner));
-                vertex_cells.push(corner);
-            }
-        }
+    // Vertices are numbered row-major over the grid, so a triangle's corner
+    // indices stay close together and the solve's band stays the grid's width
+    // instead of the mesh's size.
+    let mut corners: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    for &(col, row) in &live {
+        corners.insert((col, row));
+        corners.insert((col + 1, row));
+        corners.insert((col, row + 1));
+        corners.insert((col + 1, row + 1));
     }
+    let index: HashMap<(usize, usize), usize> = corners
+        .iter()
+        .enumerate()
+        .map(|(vertex, &corner)| (corner, vertex))
+        .collect();
+    let vertices: Vec<DVec2> = corners
+        .iter()
+        .map(|&corner| corner_point(&grid, corner))
+        .collect();
+    let vertex_cells: Vec<(usize, usize)> = corners.into_iter().collect();
 
-    let corners = [(0usize, 0usize), (1, 0), (0, 1), (1, 1)];
+    let offsets = [(0usize, 0usize), (1, 0), (0, 1), (1, 1)];
     let mut triangles = Vec::with_capacity(live.len() * 2);
     for &(col, row) in &live {
-        let quad: Vec<usize> = corners
+        let quad: Vec<usize> = offsets
             .iter()
             .map(|&(dc, dr)| index[&(col + dc, row + dr)])
             .collect();
@@ -120,7 +125,7 @@ pub fn warp_mesh(path: &kurbo::BezPath, bounds: Rect, spacing: f64) -> Option<Wa
 
     let mut cell_triangles = vec![Vec::new(); cols * rows];
     for (triangle_index, triangle) in triangles.iter().enumerate() {
-        let (col, row) = triangle_cell(&grid, &vertex_cells, triangle)?;
+        let (col, row) = triangle_cell(&vertex_cells, triangle);
         cell_triangles[row * cols + col].push(triangle_index);
     }
 
@@ -143,8 +148,10 @@ fn length_cells(length: f64, spacing: f64) -> Option<usize> {
     Some(((length / spacing).floor() as usize).max(1))
 }
 
+/// Vertices a `cols` by `rows` grid of cells carries.
 fn cells_vertices(cols: usize, rows: usize) -> usize {
-    cols.saturating_mul(rows)
+    cols.saturating_add(1)
+        .saturating_mul(rows.saturating_add(1))
 }
 
 /// Shrink the cap to the art's own bounds, so a large document does not build
@@ -218,18 +225,14 @@ fn point_to_segment_sq(p: DVec2, a: DVec2, b: DVec2) -> f64 {
     (p - nearest).length_squared()
 }
 
-/// The cell of the grid a triangle's lowest corner sits in.
-fn triangle_cell(
-    grid: &WarpGrid,
-    vertex_cells: &[(usize, usize)],
-    triangle: &[usize; 3],
-) -> Option<(usize, usize)> {
-    let (col, row) = triangle.iter().map(|&vertex| vertex_cells[vertex]).min()?;
-    let (col, row) = (
-        col.min(grid.cols.saturating_sub(1)),
-        row.min(grid.rows.saturating_sub(1)),
-    );
-    Some((col, row))
+/// The grid cell a triangle was built from, which under row-major vertex
+/// numbering is the cell of its lowest-numbered corner.
+fn triangle_cell(vertex_cells: &[(usize, usize)], triangle: &[usize; 3]) -> (usize, usize) {
+    triangle
+        .iter()
+        .map(|&vertex| vertex_cells[vertex])
+        .min()
+        .unwrap_or((0, 0))
 }
 
 /// Neighbours per vertex, sorted and deduplicated so the banded solve does not
@@ -399,25 +402,35 @@ fn warp_rows(mesh: &WarpMesh, pins: &[WarpPin]) -> Vec<WarpRow> {
     rows
 }
 
-/// The normal equations of `rows`, as one symmetric system both axes share.
-fn normal_equations(rows: &[WarpRow], n: usize) -> (BandMatrix, Vec<f64>, Vec<f64>) {
-    // The band is exact: the widest span of vertex indices any row covers, so
-    // nothing can fall outside it.
-    let bandwidth = rows
-        .iter()
+/// The band width the warp's solve would use, which is what its per-frame
+/// cost scales with.
+pub fn warp_bandwidth(mesh: &WarpMesh, pins: &[WarpPin]) -> usize {
+    rows_bandwidth(&warp_rows(mesh, pins))
+}
+
+/// The widest span of vertex indices any row covers, so nothing a row touches
+/// falls outside the band.
+fn rows_bandwidth(rows: &[WarpRow]) -> usize {
+    rows.iter()
         .map(|row| {
-            let (low, high) = row
-                .terms
-                .iter()
-                .map(|&(vertex, _)| vertex)
-                .fold((usize::MAX, 0), |(low, high), vertex| {
-                    (low.min(vertex), high.max(vertex))
-                });
-            if low > high { 1 } else { high - low + 1 }
+            let span =
+                |pick: fn(&(usize, f64)) -> usize| row.terms.iter().map(pick).max().unwrap_or(0);
+            span(|(vertex, _)| *vertex).saturating_sub(
+                row.terms
+                    .iter()
+                    .map(|(vertex, _)| *vertex)
+                    .min()
+                    .unwrap_or(0),
+            ) + 1
         })
         .max()
         .unwrap_or(1)
-        .max(1);
+        .max(1)
+}
+
+/// The normal equations of `rows`, as one symmetric system both axes share.
+fn normal_equations(rows: &[WarpRow], n: usize) -> (BandMatrix, Vec<f64>, Vec<f64>) {
+    let bandwidth = rows_bandwidth(rows);
     let mut matrix = BandMatrix::new(n, bandwidth);
     let mut rhs_x = vec![0.0; n];
     let mut rhs_y = vec![0.0; n];
@@ -487,7 +500,6 @@ impl BandMatrix {
                 }
                 if i == j {
                     if !sum.is_finite() || sum <= 0.0 {
-                        println!("FAIL row {i} sum {sum}");
                         return false;
                     }
                     self.set(i, j, sum.sqrt());
@@ -521,7 +533,7 @@ impl BandMatrix {
         for i in (0..self.n).rev() {
             let mut sum = y[i];
             for k in (i + 1..=self.high(i)).rev() {
-                sum -= self.get(k.min(self.n - 1), i) * b[k];
+                sum -= self.get(k, i) * b[k];
             }
             let diagonal = self.get(i, i);
             if !diagonal.is_finite() || diagonal <= 0.0 {
