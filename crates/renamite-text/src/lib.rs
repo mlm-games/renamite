@@ -349,14 +349,14 @@ pub fn shape_text(
     }
     let tracking = to_f32(tracking);
     let leading = to_f32(leading);
-    let line_height = line_height(&font.alias, size as f64, leading as f64);
+    let line_height = line_height(Some(&font.alias), size as f64, leading as f64);
     let mut out = BezPath::new();
     for (index, line) in text
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .enumerate()
     {
-        let Some(glyphs) = shape_line(&font.alias, line, size, tracking) else {
+        let Some(glyphs) = shape_line(Some(&font.alias), line, size, tracking) else {
             continue;
         };
         if glyphs.is_empty() {
