@@ -6,6 +6,7 @@ license.workspace = true
 description = "ToolContext, selection, snapping, and view transforms shared by renamite behaviors."
 
 [dependencies]
+renamite-geometry.workspace = true
 renamite-model.workspace = true
 renamite-history.workspace = true
 renamite-animation.workspace = true

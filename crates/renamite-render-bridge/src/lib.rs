@@ -9,7 +9,11 @@
 //! ([`SceneRenderer::append_repose_scene`]) - one `PreparedScene`, two sinks.
 
 use kurbo::PathEl;
-use lyon_path::{Path as LyonPath, geom::point};
+use lyon_path::{
+    Path as LyonPath,
+    geom::point,
+    traits::{Build as _, PathBuilder as _},
+};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, StrokeOptions,
     StrokeTessellator, StrokeVertexConstructor, VertexBuffers,
@@ -28,6 +32,14 @@ use rustc_hash::FxHashMap;
 use slotmap::Key as _;
 use std::collections::VecDeque;
 use std::sync::Arc;
+
+/// Attribute index the variable-width stroke passes to lyon.
+const WIDTH_ATTRIBUTE: usize = 0;
+
+/// World-unit tolerance for cutting a contour at its width breakpoints. The
+/// screen tolerance cannot be known here: the split feeds tessellation, which
+/// is re-cut per zoom and cached.
+const WIDTH_CONTOUR_TOLERANCE: f64 = 0.25;
 
 struct SolidVertexCtor {
     color: [f32; 4],
@@ -646,6 +658,16 @@ impl SceneRenderer {
         let source_path = dashed_path.as_ref().unwrap_or(&item.path);
         let lyon_path = bez_to_lyon(source_path);
 
+        // A width profile needs the contour split at its breakpoints, so it
+        // takes a path of its own; when it cannot be built the flat-width
+        // tessellator draws the same stroke at constant width instead.
+        let profiled = match &item.kind {
+            PaintKind::Stroke(stroke) if stroke.profile.is_some() => {
+                self.variable_width_mesh(source_path, stroke, tol)
+            }
+            _ => None,
+        };
+
         let mesh = match (&item.paint, &item.kind) {
             (ScenePaint::RadialGradient { center, end, stops }, PaintKind::Fill(_)) => {
                 match radial_fan_mesh(source_path, *center, *end, stops, item.opacity, tol) {
@@ -656,10 +678,13 @@ impl SceneRenderer {
                     }
                 }
             }
-            _ => {
-                let m = self.tessellate(&lyon_path, &item.kind, [1.0; 4], tol)?;
-                colorize_mesh(m, &item.paint, item.opacity)
-            }
+            _ => match profiled {
+                Some(m) => colorize_mesh(m, &item.paint, item.opacity),
+                None => {
+                    let m = self.tessellate(&lyon_path, &item.kind, [1.0; 4], tol)?;
+                    colorize_mesh(m, &item.paint, item.opacity)
+                }
+            },
         };
         self.cache_insert(key, mesh.clone());
         Some(mesh)
@@ -680,6 +705,85 @@ impl SceneRenderer {
         let mesh = Arc::new(mesh);
         self.cache_insert(key, mesh.clone());
         Some(mesh)
+    }
+
+    /// Stroke with a width profile: the contour is cut at the profile's
+    /// breakpoints and lyon's per-vertex width attribute carries the rest, so
+    /// joins and caps behave exactly as a flat stroke's do.
+    ///
+    /// `None` when the profile cannot describe the path (no length, nothing
+    /// drawable), so the caller falls back to the flat-width tessellator.
+    fn variable_width_mesh(
+        &mut self,
+        path: &kurbo::BezPath,
+        stroke: &renamite_model::StrokeSample,
+        tol: f32,
+    ) -> Option<VectorMeshData> {
+        let profile = stroke.profile.as_ref()?;
+        if !stroke.width.is_finite() || stroke.width <= 0.0 {
+            return None;
+        }
+        let curve = renamite_geometry::width_curve(&profile.curve)?;
+        if curve.is_flat() {
+            return None;
+        }
+        let contours = renamite_geometry::width_contours(path, &curve, WIDTH_CONTOUR_TOLERANCE);
+        if contours.is_empty() {
+            return None;
+        }
+
+        let mut buffers: VertexBuffers<VectorVertex, u32> = VertexBuffers::new();
+        let ctor = SolidVertexCtor { color: [1.0; 4] };
+        let mut b = BuffersBuilder::new(&mut buffers, ctor);
+        let opts = StrokeOptions::tolerance(tol)
+            .with_line_width(stroke.width as f32)
+            .with_start_cap(map_cap(stroke.cap))
+            .with_end_cap(map_cap(stroke.cap))
+            .with_line_join(map_join(stroke.join))
+            .with_miter_limit(stroke.miter_limit.max(1.0) as f32)
+            .with_variable_line_width(WIDTH_ATTRIBUTE);
+        let mut builder = self.stroke_tess.builder_with_attributes(1, &opts, &mut b);
+
+        for contour in &contours {
+            let (start_pos, start_scale) = contour.ends.first()?;
+            builder.begin(
+                point(start_pos.x as f32, start_pos.y as f32),
+                &[*start_scale as f32],
+            );
+            for (index, segment) in contour.segments.iter().enumerate() {
+                let (to, scale) = contour.ends.get(index + 1).copied()?;
+                let to = point(to.x as f32, to.y as f32);
+                match *segment {
+                    renamite_geometry::WidthSegment::Line => {
+                        builder.line_to(to, &[scale as f32]);
+                    }
+                    renamite_geometry::WidthSegment::Quad(c) => {
+                        builder.quadratic_bezier_to(
+                            point(c.x as f32, c.y as f32),
+                            to,
+                            &[scale as f32],
+                        );
+                    }
+                    renamite_geometry::WidthSegment::Cubic(c1, c2) => {
+                        builder.cubic_bezier_to(
+                            point(c1.x as f32, c1.y as f32),
+                            point(c2.x as f32, c2.y as f32),
+                            to,
+                            &[scale as f32],
+                        );
+                    }
+                }
+            }
+            builder.end(contour.closed);
+        }
+
+        if builder.build().is_err() || buffers.indices.is_empty() {
+            return None;
+        }
+        Some(VectorMeshData {
+            vertices: buffers.vertices.into(),
+            indices: buffers.indices.into(),
+        })
     }
 
     fn tessellate(
@@ -1240,6 +1344,17 @@ fn push_kind(key: &mut MeshCacheKey, kind: &PaintKind) {
                 renamite_model::StrokeJoin::Bevel => 2,
             });
             push_f64(key, stroke.miter_limit);
+            match &stroke.profile {
+                None => key.push(0),
+                Some(profile) => {
+                    key.push(1);
+                    push_usize(key, profile.curve.len());
+                    for (at, scale) in &profile.curve {
+                        push_f64(key, *at);
+                        push_f64(key, *scale);
+                    }
+                }
+            }
             match &stroke.dash {
                 None => key.push(0),
                 Some(dash) => {
@@ -1276,4 +1391,63 @@ fn clip_key(path: &kurbo::BezPath, rule: FillRule, tolerance: f32) -> MeshCacheK
         FillRule::EvenOdd => 1,
     });
     key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(profile: Option<renamite_model::WidthSample>) -> renamite_model::StrokeSample {
+        renamite_model::StrokeSample {
+            width: 20.0,
+            cap: renamite_model::StrokeCap::Butt,
+            join: renamite_model::StrokeJoin::Miter,
+            miter_limit: 4.0,
+            dash: None,
+            profile,
+        }
+    }
+
+    fn line() -> kurbo::BezPath {
+        let mut path = kurbo::BezPath::new();
+        path.move_to(kurbo::Point::new(0.0, 0.0));
+        path.line_to(kurbo::Point::new(100.0, 0.0));
+        path
+    }
+
+    #[test]
+    fn variable_width_tessellates_a_wedge() {
+        let mut renderer = SceneRenderer::new();
+        let profile = Some(renamite_model::WidthSample {
+            curve: vec![(0.0, 1.0), (1.0, 0.0)],
+        });
+        let mesh = renderer
+            .variable_width_mesh(&line(), &sample(profile), 0.25)
+            .expect("variable width tessellation");
+        let (mut near, mut far) = (0.0f64, 0.0f64);
+        for v in mesh.vertices.iter() {
+            if v.pos[0] as f64 > 99.0 {
+                far = far.max(v.pos[1] as f64).max(-v.pos[1] as f64);
+            }
+            if (v.pos[0] as f64) < 1.0 {
+                near = near.max(v.pos[1] as f64).max(-v.pos[1] as f64);
+            }
+        }
+        assert!(near > 9.0, "near half width {near}");
+        assert!(far < 1.0, "far half width {far}");
+    }
+
+    #[test]
+    fn flat_profile_falls_back_to_constant_width() {
+        let mut renderer = SceneRenderer::new();
+        let profile = Some(renamite_model::WidthSample {
+            curve: vec![(0.0, 1.0), (1.0, 1.0)],
+        });
+        assert!(
+            renderer
+                .variable_width_mesh(&line(), &sample(profile), 0.25)
+                .is_none(),
+            "a flat profile should stay on the constant-width path"
+        );
+    }
 }

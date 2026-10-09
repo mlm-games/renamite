@@ -2538,6 +2538,7 @@ impl Session {
                     join,
                     dash,
                     miter_limit,
+                    profile,
                 } = stroke
                 else {
                     continue;
@@ -2552,9 +2553,44 @@ impl Session {
                     )
                 });
 
+                // A width profile outlines along the contour, so the stroke has
+                // to be baked by the profile kernel rather than at one width.
+                let curve = profile.as_ref().and_then(|profile| {
+                    let pairs: Vec<(f64, f64)> = profile
+                        .points
+                        .iter()
+                        .map(|point| (point.at.value_at(frame), point.scale.value_at(frame)))
+                        .collect();
+                    renamite_geometry::width_curve(&pairs)
+                });
+                let profiled = curve.as_ref().is_some_and(|curve| !curve.is_flat());
+
                 let mut outlines: Vec<renamite_geometry::VectorPath> = Vec::new();
                 for bez in &geometry {
                     for path in renamite_geometry::split_bez_subpaths(bez) {
+                        if profiled {
+                            let curve = match &curve {
+                                Some(curve) => curve,
+                                None => continue,
+                            };
+                            let mut pieces: Vec<renamite_geometry::VectorPath> =
+                                renamite_geometry::stroke_outline(
+                                    &path.to_bez_path(),
+                                    curve,
+                                    width_value,
+                                    renamite_geometry::OutlineStyle {
+                                        cap: kurbo_cap(cap),
+                                        join: kurbo_join(join),
+                                        miter_limit: miter_value,
+                                    },
+                                    0.1,
+                                )
+                                .into_iter()
+                                .flat_map(|outline| renamite_geometry::split_bez_subpaths(&outline))
+                                .collect();
+                            outlines.append(&mut pieces);
+                            continue;
+                        }
                         if let Ok(mut pieces) = renamite_geometry::stroke_to_paths(
                             &path,
                             width_value,

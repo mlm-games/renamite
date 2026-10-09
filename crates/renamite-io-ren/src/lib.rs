@@ -394,6 +394,7 @@ pub fn open_binary_unormalized(bytes: &[u8]) -> Result<RenFile, RenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use renamite_model::StyleKind;
 
     #[test]
     fn ron_roundtrip() {
@@ -412,5 +413,112 @@ mod tests {
         let f = RenFile::new(renamite_model::Document::empty(), "bin");
         let back = open_binary(&save_binary(&f).unwrap()).unwrap();
         assert_eq!(back.meta.name, "bin");
+    }
+
+    /// A stroke's width profile has to survive both encodings: RON reads it by
+    /// field name, postcard positionally after `miter_limit`.
+    fn stroked_with_profile() -> renamite_model::Document {
+        use renamite_animation::Animated;
+        use renamite_model::{
+            Color, Document, Node, NodeKind, Parent, ShapeKind, StrokeJoin, StrokeProfile,
+            StyleKind, StylePaint, WidthPoint,
+        };
+
+        let mut document = Document::empty();
+        let shape = document.create_node(Node::new(
+            "Path",
+            NodeKind::Shape(ShapeKind::Path(Animated::new(
+                renamite_geometry::VectorPath::default(),
+            ))),
+        ));
+        let stroke = document.create_node(Node::new(
+            "Stroke",
+            NodeKind::Style(StyleKind::Stroke {
+                paint: StylePaint::solid(Color::WHITE),
+                width: Animated::new(12.0),
+                cap: renamite_model::StrokeCap::Round,
+                join: StrokeJoin::Round,
+                dash: None,
+                miter_limit: Animated::new(4.0),
+                profile: Some(StrokeProfile {
+                    points: vec![
+                        WidthPoint {
+                            at: Animated::new(0.0),
+                            scale: Animated::new(1.0),
+                        },
+                        WidthPoint {
+                            at: Animated::new(0.5),
+                            scale: Animated::new(3.0),
+                        },
+                    ],
+                }),
+            }),
+        ));
+        document
+            .attach(shape, Parent::Comp(document.main), 0)
+            .unwrap();
+        document
+            .attach(stroke, Parent::Comp(document.main), 1)
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn ron_roundtrip_keeps_width_profile() {
+        let document = stroked_with_profile();
+        let stroke = document
+            .nodes
+            .iter()
+            .find(|(_, n)| matches!(n.kind, renamite_model::NodeKind::Style(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        let back = open(&save(&RenFile::new(document, "profile")).unwrap()).unwrap();
+        match &back.document.nodes.get(stroke).unwrap().kind {
+            renamite_model::NodeKind::Style(StyleKind::Stroke { profile, .. }) => {
+                assert_eq!(profile.as_ref().expect("profile survives").points.len(), 2);
+            }
+            other => panic!("unexpected kind {other:?}"),
+        }
+    }
+
+    /// Older files have no profile field at all, and must still open.
+    #[test]
+    fn ron_without_width_profile_field_still_opens() {
+        let document = stroked_with_profile();
+        let text = save(&RenFile::new(document, "profile")).unwrap();
+        let text = text.replace("profile: Some(", "profile_removed: Some(");
+        let back = open(&text).unwrap();
+        let stroke = back
+            .document
+            .nodes
+            .iter()
+            .find(|(_, n)| matches!(n.kind, renamite_model::NodeKind::Style(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        match &back.document.nodes.get(stroke).unwrap().kind {
+            renamite_model::NodeKind::Style(StyleKind::Stroke { profile, .. }) => {
+                assert!(profile.is_none());
+            }
+            other => panic!("unexpected kind {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "binary")]
+    #[test]
+    fn binary_roundtrip_keeps_width_profile() {
+        let document = stroked_with_profile();
+        let stroke = document
+            .nodes
+            .iter()
+            .find(|(_, n)| matches!(n.kind, renamite_model::NodeKind::Style(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        let back = open_binary(&save_binary(&RenFile::new(document, "bin")).unwrap()).unwrap();
+        match &back.document.nodes.get(stroke).unwrap().kind {
+            renamite_model::NodeKind::Style(StyleKind::Stroke { profile, .. }) => {
+                assert_eq!(profile.as_ref().expect("profile survives").points.len(), 2);
+            }
+            other => panic!("unexpected kind {other:?}"),
+        }
     }
 }

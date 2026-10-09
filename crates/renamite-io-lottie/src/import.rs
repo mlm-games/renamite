@@ -1030,6 +1030,7 @@ impl Importer {
                             1.0,
                             4.0,
                         ),
+                        profile: None,
                     }),
                 );
                 node.opacity =
@@ -1083,6 +1084,7 @@ impl Importer {
                                 1.0,
                                 4.0,
                             ),
+                            profile: None,
                         }),
                     )
                 };

@@ -67,6 +67,8 @@ pub fn import_stroke(
             join,
             dash,
             miter_limit: renamite_animation::Animated::new(stroke.miterlimit().get() as f64),
+            // SVG strokes carry no width profile.
+            profile: None,
         }),
     );
     node.opacity = renamite_animation::Animated::new(stroke.opacity().get() as f64);

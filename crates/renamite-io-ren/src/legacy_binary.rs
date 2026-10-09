@@ -334,6 +334,8 @@ impl LegacyStyleKind {
                 join,
                 dash,
                 miter_limit,
+                // Legacy binary files predate width profiles.
+                profile: None,
             },
         }
     }

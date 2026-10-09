@@ -29,6 +29,9 @@ const MAX_PARENT_DEPTH: usize = 256;
 const MAX_DEPTH: u32 = 256;
 pub const MAX_REPEATER_COPIES: f64 = 1024.0;
 pub const MAX_REPEATER_OFFSET: f64 = 1_000_000.0;
+/// Width profile points one stroke may carry, kept small enough that a
+/// texture-measured profile cannot flood a scene.
+pub const MAX_STROKE_PROFILE_POINTS: usize = 64;
 const MAX_REPEATER_PATHS: usize = 100_000;
 
 fn default_format_version() -> u32 {
@@ -703,6 +706,8 @@ pub enum StyleKind {
         dash: Option<AnimatedDash>,
         #[serde(default = "default_miter_limit")]
         miter_limit: Animated<f64>,
+        #[serde(default)]
+        profile: Option<StrokeProfile>,
     },
 }
 
@@ -715,6 +720,7 @@ struct StyleCompatContent {
     join: Option<StrokeJoin>,
     miter_limit: Option<Animated<f64>>,
     dash: Option<AnimatedDash>,
+    profile: Option<StrokeProfile>,
     rule: Option<FillRule>,
 }
 
@@ -723,6 +729,115 @@ struct StyleCompatContent {
 enum StylePaintCompat {
     Paint(StylePaint),
     Color(Animated<Color>),
+}
+
+/// Assemble a style from its variant's fields, whatever encoding carried them.
+fn style_from_content(fill: bool, content: StyleCompatContent) -> StyleKind {
+    let paint = content.paint.unwrap_or_else(|| StylePaint::Solid {
+        color: content.color.unwrap_or_else(|| Animated::new(Color::BLACK)),
+    });
+    if fill {
+        StyleKind::Fill {
+            paint,
+            rule: content.rule.unwrap_or_default(),
+        }
+    } else {
+        StyleKind::Stroke {
+            paint,
+            width: content.width.unwrap_or_else(default_stroke_width),
+            cap: content.cap.unwrap_or_else(default_stroke_cap),
+            join: content.join.unwrap_or_else(default_stroke_join),
+            dash: content.dash,
+            miter_limit: content.miter_limit.unwrap_or_else(default_miter_limit),
+            profile: content.profile,
+        }
+    }
+}
+
+/// Reads one variant's fields, by name (RON) or by position (postcard).
+struct StyleFieldsVisitor {
+    fill: bool,
+    human_readable: bool,
+}
+
+impl<'de> Visitor<'de> for StyleFieldsVisitor {
+    type Value = StyleCompatContent;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("style variant fields")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut content = StyleCompatContent::default();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "paint" => content.paint = Some(map.next_value()?),
+                "color" => content.color = Some(map.next_value()?),
+                "width" => content.width = Some(map.next_value()?),
+                "cap" => content.cap = Some(map.next_value()?),
+                "join" => content.join = Some(map.next_value()?),
+                "miter_limit" => content.miter_limit = Some(map.next_value()?),
+                "dash" => content.dash = map.next_value::<Option<AnimatedDash>>()?,
+                "profile" => content.profile = map.next_value::<Option<StrokeProfile>>()?,
+                "rule" => content.rule = Some(map.next_value()?),
+                other => {
+                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                    let _ = other;
+                }
+            }
+        }
+        Ok(content)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        // Named formats carry keys; binary ones carry the fields positionally,
+        // in derived declaration order.
+        let (paint, color) = if self.human_readable {
+            match seq.next_element::<StylePaintCompat>()? {
+                Some(StylePaintCompat::Paint(paint)) => (Some(paint), None),
+                Some(StylePaintCompat::Color(color)) => (None, Some(color)),
+                None => (None, None),
+            }
+        } else {
+            (seq.next_element::<StylePaint>()?, None)
+        };
+        let mut content = StyleCompatContent {
+            paint,
+            color,
+            ..Default::default()
+        };
+        if self.fill {
+            content.rule = Some(seq.next_element::<FillRule>()?.unwrap_or_default());
+        } else {
+            content.width = Some(
+                seq.next_element::<Animated<f64>>()?
+                    .unwrap_or_else(default_stroke_width),
+            );
+            content.cap = Some(
+                seq.next_element::<StrokeCap>()?
+                    .unwrap_or_else(default_stroke_cap),
+            );
+            content.join = Some(
+                seq.next_element::<StrokeJoin>()?
+                    .unwrap_or_else(default_stroke_join),
+            );
+            content.dash = seq.next_element::<Option<AnimatedDash>>()?.unwrap_or(None);
+            // Absent from files written before the miter limit.
+            content.miter_limit = Some(
+                seq.next_element::<Animated<f64>>()?
+                    .unwrap_or_else(default_miter_limit),
+            );
+            // Absent from files written before width profiles.
+            content.profile = seq.next_element::<Option<StrokeProfile>>()?.unwrap_or(None);
+        }
+        Ok(content)
+    }
 }
 
 impl<'de> Deserialize<'de> for StyleKind {
@@ -751,121 +866,29 @@ impl<'de> Deserialize<'de> for StyleKind {
                 A: serde::de::EnumAccess<'de>,
             {
                 use serde::de::VariantAccess as _;
-                struct ContentVisitor {
-                    fill: bool,
-                    human_readable: bool,
-                }
-                impl<'de> Visitor<'de> for ContentVisitor {
-                    type Value = StyleCompatContent;
-                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                        f.write_str("style variant fields")
-                    }
-                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: serde::de::MapAccess<'de>,
-                    {
-                        let mut content = StyleCompatContent::default();
-                        while let Some(key) = map.next_key::<String>()? {
-                            match key.as_str() {
-                                "paint" => content.paint = Some(map.next_value()?),
-                                "color" => content.color = Some(map.next_value()?),
-                                "width" => content.width = Some(map.next_value()?),
-                                "cap" => content.cap = Some(map.next_value()?),
-                                "join" => content.join = Some(map.next_value()?),
-                                "miter_limit" => content.miter_limit = Some(map.next_value()?),
-                                "dash" => {
-                                    content.dash = map.next_value::<Option<AnimatedDash>>()?
-                                }
-                                "rule" => content.rule = Some(map.next_value()?),
-                                other => {
-                                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
-                                    let _ = other;
-                                }
-                            }
-                        }
-                        Ok(content)
-                    }
-                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: serde::de::SeqAccess<'de>,
-                    {
-                        // Postcard encodes struct-variant content positionally
-                        // (no keys), in derived declaration order.
-                        let (paint, color) = if self.human_readable {
-                            match seq.next_element::<StylePaintCompat>()? {
-                                Some(StylePaintCompat::Paint(paint)) => (Some(paint), None),
-                                Some(StylePaintCompat::Color(color)) => (None, Some(color)),
-                                None => (None, None),
-                            }
-                        } else {
-                            (seq.next_element::<StylePaint>()?, None)
-                        };
-                        let mut content = StyleCompatContent {
-                            paint,
-                            color,
-                            ..Default::default()
-                        };
-                        if self.fill {
-                            content.rule =
-                                Some(seq.next_element::<FillRule>()?.unwrap_or_default());
-                        } else {
-                            content.width = Some(
-                                seq.next_element::<Animated<f64>>()?
-                                    .unwrap_or_else(default_stroke_width),
-                            );
-                            content.cap = Some(
-                                seq.next_element::<StrokeCap>()?
-                                    .unwrap_or_else(default_stroke_cap),
-                            );
-                            content.join = Some(
-                                seq.next_element::<StrokeJoin>()?
-                                    .unwrap_or_else(default_stroke_join),
-                            );
-                            content.dash =
-                                seq.next_element::<Option<AnimatedDash>>()?.unwrap_or(None);
-                            // legacy encodings omit it.
-                            content.miter_limit = Some(
-                                seq.next_element::<Animated<f64>>()?
-                                    .unwrap_or_else(default_miter_limit),
-                            );
-                        }
-                        Ok(content)
-                    }
-                }
                 let (tag, content) = data.variant::<StyleTag>()?;
-                let content = match tag {
-                    StyleTag::Fill => content.struct_variant(
-                        &["paint", "rule"],
-                        ContentVisitor {
-                            fill: true,
-                            human_readable: self.human_readable,
-                        },
-                    )?,
-                    StyleTag::Stroke => content.struct_variant(
-                        &["paint", "width", "cap", "join", "dash", "miter_limit"],
-                        ContentVisitor {
-                            fill: false,
-                            human_readable: self.human_readable,
-                        },
-                    )?,
-                };
-                let paint = content.paint.unwrap_or_else(|| StylePaint::Solid {
-                    color: content.color.unwrap_or_else(|| Animated::new(Color::BLACK)),
-                });
-                match tag {
-                    StyleTag::Fill => Ok(StyleKind::Fill {
-                        paint,
-                        rule: content.rule.unwrap_or_default(),
-                    }),
-                    StyleTag::Stroke => Ok(StyleKind::Stroke {
-                        paint,
-                        width: content.width.unwrap_or_else(default_stroke_width),
-                        cap: content.cap.unwrap_or_else(default_stroke_cap),
-                        join: content.join.unwrap_or_else(default_stroke_join),
-                        dash: content.dash,
-                        miter_limit: content.miter_limit.unwrap_or_else(default_miter_limit),
-                    }),
-                }
+                let fill = matches!(tag, StyleTag::Fill);
+                let content = content.struct_variant(
+                    if fill {
+                        &["paint", "rule"]
+                    } else {
+                        &[
+                            "paint",
+                            "width",
+                            "cap",
+                            "join",
+                            "dash",
+                            "miter_limit",
+                            "profile",
+                        ]
+                    },
+                    StyleFieldsVisitor {
+                        fill,
+                        human_readable: self.human_readable,
+                    },
+                )?;
+
+                Ok(style_from_content(fill, content))
             }
         }
 
@@ -1134,6 +1157,21 @@ pub struct AnimatedDash {
     pub dashes: Vec<Animated<f64>>,
     pub offset: Animated<f64>,
 }
+
+/// One point of a stroke width profile: where it sits along the contour
+/// (`at`, 0..=1 by arclength) and the width multiplier there (`scale`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WidthPoint {
+    pub at: Animated<f64>,
+    pub scale: Animated<f64>,
+}
+
+/// A stroke width profile over a contour. Absent means a constant width, the
+/// cheaper and far more common case every sink keeps its fast path for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrokeProfile {
+    pub points: Vec<WidthPoint>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StarKind {
     Star,
@@ -1384,6 +1422,15 @@ pub struct StrokeSample {
     #[serde(default = "default_miter_limit_f64")]
     pub miter_limit: f64,
     pub dash: Option<DashSample>,
+    /// Width multipliers along the contour, normalized and ready to sample.
+    pub profile: Option<WidthSample>,
+}
+
+/// A resolved width profile: `(position, scale)` pairs ordered by position,
+/// spanning the whole contour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WidthSample {
+    pub curve: Vec<(f64, f64)>,
 }
 
 fn default_miter_limit_f64() -> f64 {
@@ -1514,6 +1561,57 @@ fn canonical_prop_str(prop: &str) -> &str {
 
 fn canonical_prop(prop: PropPath) -> PropPath {
     PropPath::new(canonical_prop_str(prop.as_str()))
+}
+
+/// A width profile at `frame`, or `None` when it is absent, degenerate or
+/// flat: a profile that never changes the width is not worth a scene entry.
+fn sample_stroke_profile(
+    profile: &Option<StrokeProfile>,
+    frame: f64,
+    ov: &Overrides,
+    id: NodeId,
+) -> Option<WidthSample> {
+    let profile = profile.as_ref()?;
+    if profile.points.len() > MAX_STROKE_PROFILE_POINTS {
+        return None;
+    }
+    let pairs: Vec<(f64, f64)> = profile
+        .points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            (
+                ov_f64(
+                    ov,
+                    id,
+                    &format!("stroke.profile.{index}.at"),
+                    point.at.value_at(frame),
+                ),
+                ov_f64(
+                    ov,
+                    id,
+                    &format!("stroke.profile.{index}.scale"),
+                    point.scale.value_at(frame),
+                ),
+            )
+        })
+        .collect();
+    let curve = renamite_geometry::width_curve(&pairs)?;
+    if curve.is_flat() {
+        return None;
+    }
+    Some(WidthSample {
+        curve: curve.points().to_vec(),
+    })
+}
+
+/// How far a stroke paints from its path: the width, or the widest point of
+/// its width profile.
+fn stroke_paint_extent(stroke: &StrokeSample) -> f64 {
+    match &stroke.profile {
+        Some(profile) => stroke.width * profile.curve.iter().fold(0.0f64, |m, (_, s)| m.max(*s)),
+        None => stroke.width,
+    }
 }
 
 fn ov_f64(ov: &Overrides, id: NodeId, prop: &str, dflt: f64) -> f64 {
@@ -2806,6 +2904,7 @@ fn emit_style(
                 join,
                 miter_limit,
                 dash,
+                profile,
             } => (
                 paint,
                 PaintKind::Stroke(StrokeSample {
@@ -2836,6 +2935,7 @@ fn emit_style(
                         renamite_geometry::normalize_dash_pattern(&dashes)
                             .map(|dashes| DashSample { dashes, offset })
                     }),
+                    profile: sample_stroke_profile(profile, frame, ov, style_id),
                 }),
                 true,
             ),
@@ -3111,6 +3211,8 @@ pub enum ModelError {
     MalformedTree,
     #[error("asset not found")]
     MissingAsset,
+    #[error("value out of range for {0}")]
+    OutOfRange(&'static str),
 }
 
 impl Document {
@@ -3611,7 +3713,7 @@ fn scene_item_hits(scene: &Scene, item: &SceneItem, q: Point) -> bool {
     let hit_path = dashed_path.as_ref().unwrap_or(&item.path);
 
     let padding = match &item.kind {
-        PaintKind::Stroke(stroke) => (stroke.width * 0.5).max(1.0),
+        PaintKind::Stroke(stroke) => (stroke_paint_extent(stroke) * 0.5).max(1.0),
         PaintKind::Fill(_) => 0.0,
     };
 
@@ -3976,11 +4078,20 @@ pub fn node_supports_prop(kind: &NodeKind, prop: &str) -> bool {
         );
     }
     if prop.starts_with("stroke.") {
-        let NodeKind::Style(StyleKind::Stroke { paint, dash, .. }) = kind else {
+        let NodeKind::Style(StyleKind::Stroke {
+            paint,
+            dash,
+            profile,
+            ..
+        }) = kind
+        else {
             return false;
         };
         if prop == "stroke.dash.offset" || dash_index(prop).is_some() {
             return dash.is_some();
+        }
+        if width_profile_index(prop).is_some() {
+            return profile.is_some();
         }
         if prop == "stroke.color" {
             return matches!(paint, StylePaint::Solid { .. });
@@ -4274,6 +4385,17 @@ fn dash_index(path: &str) -> Option<usize> {
     path.strip_prefix("stroke.dash.")?.parse().ok()
 }
 
+/// `stroke.profile.3.at` and `stroke.profile.3.scale`: the field of profile
+/// point `3`. Fields other than `at` and `scale` are not props.
+fn width_profile_index(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix("stroke.profile.")?;
+    let (index, field) = rest.split_once('.')?;
+    if !matches!(field, "at" | "scale") {
+        return None;
+    }
+    index.parse().ok()
+}
+
 impl Node {
     pub fn prop_mut(&mut self, prop: &PropPath) -> Option<PropMut<'_>> {
         use PropMut::*;
@@ -4292,6 +4414,21 @@ impl Node {
                 if let Some(index) = dash_index(s) {
                     return dash.dashes.get_mut(index).map(PropMut::F64);
                 }
+            }
+            return None;
+        }
+        if let Some(index) = width_profile_index(s) {
+            if let NodeKind::Style(StyleKind::Stroke {
+                profile: Some(profile),
+                ..
+            }) = &mut self.kind
+            {
+                let point = profile.points.get_mut(index)?;
+                return Some(if s.ends_with(".at") {
+                    F64(&mut point.at)
+                } else {
+                    F64(&mut point.scale)
+                });
             }
             return None;
         }
@@ -4702,6 +4839,17 @@ impl Node {
             ("stroke.width", NodeKind::Style(StyleKind::Stroke { width, .. })) => Some(F64(width)),
             ("stroke.miter_limit", NodeKind::Style(StyleKind::Stroke { miter_limit, .. })) => {
                 Some(F64(miter_limit))
+            }
+            (name, NodeKind::Style(StyleKind::Stroke { profile, .. }))
+                if width_profile_index(name).is_some() =>
+            {
+                let profile = profile.as_ref()?;
+                let point = profile.points.get(width_profile_index(name)?)?;
+                Some(if name.ends_with(".at") {
+                    F64(&point.at)
+                } else {
+                    F64(&point.scale)
+                })
             }
             ("image.tint" | "image.tint()", NodeKind::Image(img)) => Some(Color(img.tint())),
             (

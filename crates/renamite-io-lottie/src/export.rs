@@ -787,6 +787,18 @@ impl Exporter<'_> {
                         "gradient has no stops; Lottie export uses a deterministic zero-stop fallback",
                     ));
                 }
+                if let StyleKind::Stroke { profile, .. } = style
+                    && let Some(profile) = profile
+                    && profile
+                        .points
+                        .iter()
+                        .any(|point| (point.scale.base - 1.0).abs() > 1e-9)
+                {
+                    self.warnings.push(LottieWarning::new(
+                        format!("node/{id:?}"),
+                        "width profile is not representable in Lottie; stroke exported at its base width",
+                    ));
+                }
                 vec![style_json(&node.name, style, &node.opacity)]
             }
             NodeKind::Modifier(modifier) => {
@@ -1079,6 +1091,7 @@ fn style_json(name: &str, style: &StyleKind, opacity: &Animated<f64>) -> Value {
             join,
             dash,
             miter_limit,
+            profile: _,
         } => {
             let mut value = match paint {
                 StylePaint::Solid { color } => json!({

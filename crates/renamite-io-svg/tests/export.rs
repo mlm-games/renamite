@@ -43,6 +43,52 @@ fn export_roundtrip_preserves_item_count() {
 }
 
 #[test]
+fn export_bakes_a_width_profile_into_a_fill() {
+    let mut doc = Document::empty();
+    let comp = doc.main;
+    let shape = doc.create_node(Node::new(
+        "Line",
+        NodeKind::Shape(ShapeKind::Rect {
+            pos: Animated::new(glam::DVec2::new(10.0, 40.0)),
+            size: Animated::new(glam::DVec2::new(80.0, 0.0)),
+            rounded: Animated::new(0.0),
+        }),
+    ));
+    let stroke = doc.create_node(Node::new(
+        "Stroke",
+        NodeKind::Style(StyleKind::Stroke {
+            paint: StylePaint::solid(Color::rgba(1.0, 0.0, 0.0, 1.0)),
+            width: Animated::new(20.0),
+            cap: renamite_model::StrokeCap::Round,
+            join: renamite_model::StrokeJoin::Round,
+            dash: None,
+            miter_limit: Animated::new(4.0),
+            profile: Some(renamite_model::StrokeProfile {
+                points: vec![
+                    renamite_model::WidthPoint {
+                        at: Animated::new(0.0),
+                        scale: Animated::new(1.0),
+                    },
+                    renamite_model::WidthPoint {
+                        at: Animated::new(1.0),
+                        scale: Animated::new(0.0),
+                    },
+                ],
+            }),
+        }),
+    ));
+    doc.attach(shape, Parent::Comp(comp), 0).unwrap();
+    doc.attach(stroke, Parent::Comp(comp), 1).unwrap();
+
+    let out = export_frame(&doc, comp, 0.0).unwrap();
+    // A profile has no SVG equivalent: it is written as the outline it paints.
+    assert!(out.contains("fill=\"#FF0000\""), "{out}");
+    assert!(!out.contains("stroke-width"), "{out}");
+    let reparsed = usvg::Tree::from_data(out.as_bytes(), &usvg_options()).unwrap();
+    assert_eq!(reparsed.size().width(), 512.0);
+}
+
+#[test]
 fn export_image_uses_data_uri() {
     use base64::Engine as _;
 

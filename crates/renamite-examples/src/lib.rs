@@ -171,6 +171,7 @@ fn solid_stroke(doc: &mut Document, color: Color, width: f64) -> renamite_model:
             join: StrokeJoin::Round,
             miter_limit: Animated::new(4.0),
             dash: None,
+            profile: None,
         }),
     ))
 }

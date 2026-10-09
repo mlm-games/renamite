@@ -19,8 +19,8 @@ use renamite_behavior_common::modifiers::{
     cmd_add_round_corners_after, cmd_add_trim_path_after, cmd_add_zigzag_after,
 };
 use renamite_behavior_common::stroke::{
-    cmd_add_stroke_dash_pair, cmd_disable_stroke_dash, cmd_enable_stroke_dash,
-    cmd_remove_stroke_dash_pair,
+    cmd_add_stroke_dash_pair, cmd_clear_stroke_profile, cmd_disable_stroke_dash,
+    cmd_enable_stroke_dash, cmd_remove_stroke_dash_pair, cmd_seed_stroke_profile,
 };
 use renamite_history::{EditorCommand, ToolOutput, resolve_property_edit};
 use renamite_model::{
@@ -559,6 +559,9 @@ pub fn PropertiesPanel(session: SessionRef) -> View {
                     stroke_dash_section(session.clone(), stroke_id, playhead, record, diamond_quiet)
                 {
                     appearance.push(("dash".into(), v));
+                }
+                if let Some(v) = stroke_width_profile_section(session.clone(), stroke_id) {
+                    appearance.push(("width_profile".into(), v));
                 }
             }
             let mut chips: Vec<View> = Vec::new();
@@ -4620,4 +4623,114 @@ fn apply_dash_structure_command(
         ToolOutput::Commands(smallvec![command]),
         ToolOutput::CommitTransaction,
     ]);
+}
+
+/// Width profile: add one, or take it off. Per-point rows (position along the
+/// contour and the width multiplier) come from the prop descriptors in the
+/// Stroke section, keyable like any other stroke value.
+fn stroke_width_profile_section(session: SessionRef, id: NodeId) -> Option<View> {
+    let has_profile = {
+        let session = session.borrow();
+        let node = session.file.document.nodes.get(id)?;
+
+        match &node.kind {
+            NodeKind::Style(StyleKind::Stroke { profile, .. }) => profile.is_some(),
+            _ => return None,
+        }
+    };
+
+    let th = theme();
+    let mut children: Vec<View> = Vec::new();
+
+    if has_profile {
+        children.push(
+            Row(Modifier::new()
+                .height(Dp(36.0))
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: Dp(12.0),
+                    right: Dp(8.0),
+                    top: Dp(0.0),
+                    bottom: Dp(0.0),
+                })
+                .align_items(AlignItems::CENTER)
+                .gap(Dp(8.0)))
+            .child((
+                CompactIconAction(Symbols::delete, "Remove width profile", {
+                    let session = session.clone();
+
+                    move || {
+                        let mut session = session.borrow_mut();
+
+                        let Some(command) = cmd_clear_stroke_profile(&session.file.document, id)
+                        else {
+                            return;
+                        };
+
+                        session.apply_outputs(smallvec![
+                            ToolOutput::BeginTransaction("Remove width profile".into()),
+                            ToolOutput::Commands(smallvec![command]),
+                            ToolOutput::CommitTransaction,
+                        ]);
+                    }
+                }),
+                Text("Remove width profile")
+                    .size(th.typography.body_medium)
+                    .color(th.on_surface_variant),
+            )),
+        );
+    } else {
+        for preset in ["Taper In-Out", "Bulge"] {
+            children.push(
+                Row(Modifier::new()
+                    .height(Dp(36.0))
+                    .fill_max_width()
+                    .padding_values(PaddingValues {
+                        left: Dp(12.0),
+                        right: Dp(8.0),
+                        top: Dp(0.0),
+                        bottom: Dp(0.0),
+                    })
+                    .align_items(AlignItems::CENTER)
+                    .gap(Dp(8.0)))
+                .child((
+                    CompactIconAction(Symbols::add, "Add width profile", {
+                        let session = session.clone();
+
+                        move || {
+                            let mut session = session.borrow_mut();
+
+                            let Some(command) =
+                                cmd_seed_stroke_profile(&session.file.document, id, preset)
+                            else {
+                                return;
+                            };
+
+                            session.apply_outputs(smallvec![
+                                ToolOutput::BeginTransaction("Add width profile".into()),
+                                ToolOutput::Commands(smallvec![command]),
+                                ToolOutput::CommitTransaction,
+                            ]);
+                        }
+                    }),
+                    Text("Add width profile")
+                        .size(th.typography.body_medium)
+                        .color(th.on_surface_variant),
+                ))
+                .child(
+                    Text(preset)
+                        .size(th.typography.label_medium)
+                        .color(th.on_surface_variant),
+                ),
+            );
+        }
+    }
+
+    Some(crate::components::CollapsibleSection(
+        "stroke_width_profile_section",
+        "Width Profile",
+        vec![],
+        Column(Modifier::new().fill_max_width()).child(children),
+        section_drag(session.clone(), "width_profile", "Width Profile"),
+    ))
 }

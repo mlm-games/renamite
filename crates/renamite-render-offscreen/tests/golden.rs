@@ -240,6 +240,7 @@ fn fixture_stroke() -> Document {
             join: StrokeJoin::Round,
             miter_limit: Animated::new(4.0),
             dash: None,
+            profile: None,
         }),
     ));
     doc.attach(shape, Parent::Comp(comp), 0).unwrap();
@@ -329,6 +330,7 @@ fn fixture_trim_half() -> Document {
             join: StrokeJoin::Round,
             miter_limit: Animated::new(4.0),
             dash: None,
+            profile: None,
         }),
     ));
 
@@ -708,6 +710,7 @@ fn fixture_dashed_stroke() -> Document {
                 dashes: vec![Animated::new(32.0), Animated::new(18.0)],
                 offset: Animated::new(0.0),
             }),
+            profile: None,
         }),
     ));
 

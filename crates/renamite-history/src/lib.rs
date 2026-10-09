@@ -7,8 +7,8 @@ use renamite_geometry::{AnchorEdit, VectorPath};
 use renamite_machine::{Clip, ClipId, ClipMap, EventKey, Machine, MachineId, MachineMap, Track};
 use renamite_model::{
     Asset, AssetId, CompId, Document, GradientKind, GradientStop, GradientStops, KeyframeData,
-    ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut, PropPath, StyleKind,
-    StylePaint, Value,
+    MAX_STROKE_PROFILE_POINTS, ModelError, ModifierKind, Node, NodeId, NodeKind, Parent, PropMut,
+    PropPath, StyleKind, StylePaint, Value,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -210,6 +210,12 @@ pub enum EditorCommand {
     SetStrokeDash {
         id: NodeId,
         dash: Option<renamite_model::AnimatedDash>,
+    },
+    /// Replace (or clear) a stroke's width profile. Exact inverse: same
+    /// command with the previous value.
+    SetStrokeProfile {
+        id: NodeId,
+        profile: Option<renamite_model::StrokeProfile>,
     },
     /// Flip a ZigZag's `smooth` flag (corner zig vs smooth wave). Exact
     /// inverse: same command with the old value.
@@ -735,6 +741,7 @@ fn apply_command(
         | SetPaint { .. }
         | SetTrimMode { .. }
         | SetStrokeDash { .. }
+        | SetStrokeProfile { .. }
         | SetStrokeCap { .. }
         | SetStrokeJoin { .. }
         | SetFillRule { .. }
@@ -1513,6 +1520,33 @@ fn apply_document_command(
             let old = std::mem::replace(current, dash.clone());
 
             Ok((None, vec![SetStrokeDash { id: *id, dash: old }]))
+        }
+        SetStrokeProfile { id, profile } => {
+            let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;
+
+            let NodeKind::Style(StyleKind::Stroke {
+                profile: current, ..
+            }) = &mut node.kind
+            else {
+                return Err(ModelError::WrongNodeKind("Stroke").into());
+            };
+
+            let profile = match profile {
+                Some(profile) if profile.points.len() <= MAX_STROKE_PROFILE_POINTS => {
+                    Some(profile.clone())
+                }
+                Some(_) => return Err(ModelError::OutOfRange("width profile points").into()),
+                None => None,
+            };
+            let old = std::mem::replace(current, profile);
+
+            Ok((
+                None,
+                vec![SetStrokeProfile {
+                    id: *id,
+                    profile: old,
+                }],
+            ))
         }
         SetNodeKind { id, kind } => {
             let node = doc.nodes.get_mut(*id).ok_or(ModelError::MissingNode)?;

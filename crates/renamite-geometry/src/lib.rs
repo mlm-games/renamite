@@ -3,9 +3,14 @@
 
 pub mod morph;
 pub mod pucker_bloat;
+pub mod stroke;
 pub mod zigzag;
 pub use morph::match_topology;
 pub use pucker_bloat::{pucker_bloat_path, pucker_bloat_vector_path};
+pub use stroke::{
+    MAX_WIDTH_SCALE, OutlineStyle, WidthContour, WidthCurve, WidthSegment, stroke_outline,
+    width_contours, width_curve,
+};
 pub use zigzag::zigzag_path;
 
 use kurbo::ParamCurveNearest;

@@ -9,6 +9,7 @@
 use glam::DVec2;
 use image::GenericImageView;
 use renamite_animation::{Angle, Animated, AnimatedTransform, Frame};
+use renamite_geometry::MAX_WIDTH_SCALE;
 use renamite_geometry::VectorPath;
 use renamite_io_ren::RenFile;
 use renamite_machine::{
@@ -16,8 +17,8 @@ use renamite_machine::{
 };
 use renamite_model::{
     Asset, Color, CompId, Document, GradientStops, MAX_REPEATER_COPIES, MAX_REPEATER_OFFSET,
-    ModifierKind, Node, NodeId, NodeKind, PropRef, ShapeKind, StyleKind, StylePaint, Value,
-    node_supports_opacity, node_supports_transform,
+    MAX_STROKE_PROFILE_POINTS, ModifierKind, Node, NodeId, NodeKind, PropRef, ShapeKind, StyleKind,
+    StylePaint, Value, node_supports_opacity, node_supports_transform,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -729,6 +730,7 @@ impl<'a> Validator<'a> {
                 width,
                 dash,
                 miter_limit,
+                profile,
                 ..
             } => {
                 self.validate_paint(&format!("{base}/paint"), paint);
@@ -736,6 +738,31 @@ impl<'a> Validator<'a> {
                 self.check_nonnegative(&format!("{base}/width"), width);
                 self.check_animated(&format!("{base}/miter_limit"), miter_limit, finite_f64);
                 self.check_range(&format!("{base}/miter_limit"), miter_limit, 1.0, 10.0);
+                if let Some(profile) = profile {
+                    if profile.points.len() > MAX_STROKE_PROFILE_POINTS {
+                        self.err(
+                            format!("{base}/profile"),
+                            "width profile has too many points",
+                        );
+                    }
+                    for (i, point) in profile
+                        .points
+                        .iter()
+                        .take(MAX_STROKE_PROFILE_POINTS)
+                        .enumerate()
+                    {
+                        let path = format!("{base}/profile/{i}");
+                        self.check_animated(&format!("{path}/at"), &point.at, finite_f64);
+                        self.check_range(&format!("{path}/at"), &point.at, 0.0, 1.0);
+                        self.check_animated(&format!("{path}/scale"), &point.scale, finite_f64);
+                        self.check_range(
+                            &format!("{path}/scale"),
+                            &point.scale,
+                            0.0,
+                            MAX_WIDTH_SCALE,
+                        );
+                    }
+                }
                 if let Some(dash) = dash {
                     if dash.dashes.len() > 4096 {
                         self.err(format!("{base}/dash"), "dash pattern has too many entries");

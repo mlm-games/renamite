@@ -491,7 +491,7 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                 },
             ));
         }
-        NodeKind::Style(StyleKind::Stroke { .. }) => {
+        NodeKind::Style(StyleKind::Stroke { profile, .. }) => {
             // Color handled by paint_section
             d.push(pd(
                 "Stroke",
@@ -529,6 +529,35 @@ fn descriptors_for(kind: &NodeKind) -> Vec<PropDescriptor> {
                     step: 0.1,
                 },
             ));
+            // Width profile points: position on the contour and the width
+            // multiplier there, both keyable like any other stroke value.
+            let points = profile.as_ref().map(|p| p.points.len()).unwrap_or(0);
+            for index in 0..points {
+                if let Some(label) = profile_point_label(index, true) {
+                    d.push(pd_indexed(
+                        "Stroke",
+                        label,
+                        format!("stroke.profile.{index}.at"),
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: Some(1.0),
+                            step: 0.01,
+                        },
+                    ));
+                }
+                if let Some(label) = profile_point_label(index, false) {
+                    d.push(pd_indexed(
+                        "Stroke",
+                        label,
+                        format!("stroke.profile.{index}.scale"),
+                        PropKind::F64 {
+                            min: Some(0.0),
+                            max: Some(renamite_geometry::MAX_WIDTH_SCALE),
+                            step: 0.05,
+                        },
+                    ));
+                }
+            }
         }
         NodeKind::Modifier(m) => match m {
             ModifierKind::TrimPath { .. } => {
@@ -863,7 +892,42 @@ fn transform_descriptors() -> Vec<PropDescriptor> {
     ]
 }
 
+/// Labels for width profile points, interned once: the descriptor API takes
+/// `'static` labels while the number of points comes from the document.
+static PROFILE_LABELS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+fn profile_point_label(index: usize, position: bool) -> Option<&'static str> {
+    let table = PROFILE_LABELS.get_or_init(|| {
+        (0..renamite_model::MAX_STROKE_PROFILE_POINTS)
+            .map(|i| {
+                (
+                    format!("Width {n} at", n = i + 1),
+                    format!("Width {n} x", n = i + 1),
+                )
+            })
+            .collect()
+    });
+    let (at, scale) = table.get(index)?;
+    Some(if position { at } else { scale })
+}
+
 fn pd(section: &'static str, label: &'static str, path: &str, kind: PropKind) -> PropDescriptor {
+    PropDescriptor {
+        path: PropPath::new(path),
+        label,
+        kind,
+        section,
+    }
+}
+
+/// Same as [`pd`] for props whose path is built at runtime (profile point
+/// indices); labels stay interned through [`profile_point_label`].
+fn pd_indexed(
+    section: &'static str,
+    label: &'static str,
+    path: impl Into<String>,
+    kind: PropKind,
+) -> PropDescriptor {
     PropDescriptor {
         path: PropPath::new(path),
         label,

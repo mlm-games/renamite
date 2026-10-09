@@ -9,6 +9,22 @@ use std::collections::HashMap;
 
 use renamite_model::{CompId, Document, PaintKind, SceneItem, ScenePaint, StrokeCap, StrokeJoin};
 
+fn stroke_cap_kurbo(cap: renamite_model::StrokeCap) -> kurbo::Cap {
+    match cap {
+        renamite_model::StrokeCap::Butt => kurbo::Cap::Butt,
+        renamite_model::StrokeCap::Round => kurbo::Cap::Round,
+        renamite_model::StrokeCap::Square => kurbo::Cap::Square,
+    }
+}
+
+fn stroke_join_kurbo(join: renamite_model::StrokeJoin) -> kurbo::Join {
+    match join {
+        renamite_model::StrokeJoin::Miter => kurbo::Join::Miter,
+        renamite_model::StrokeJoin::Round => kurbo::Join::Round,
+        renamite_model::StrokeJoin::Bevel => kurbo::Join::Bevel,
+    }
+}
+
 use crate::path::{fmt, matrix_attr, path_data};
 use crate::{SvgError, SvgReport, SvgWarning};
 
@@ -119,7 +135,19 @@ impl Exporter<'_> {
                         self.export_fill(item, paint, *rule, opacity, &mut content)
                     }
                     PaintKind::Stroke(stroke) => {
-                        self.export_stroke(item, paint, stroke, opacity, &mut content)
+                        match &stroke.profile {
+                            // SVG strokes carry no width profile, so the frame
+                            // keeps its look by writing the outline it paints.
+                            Some(profile) => self.export_stroke_outline(
+                                item,
+                                paint,
+                                stroke,
+                                profile,
+                                opacity,
+                                &mut content,
+                            ),
+                            None => self.export_stroke(item, paint, stroke, opacity, &mut content),
+                        }
                     }
                 }
             }
@@ -228,6 +256,62 @@ impl Exporter<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// A profiled stroke, baked into the outline it paints.
+    fn export_stroke_outline(
+        &mut self,
+        item: &SceneItem,
+        paint: &ScenePaint,
+        stroke: &renamite_model::StrokeSample,
+        profile: &renamite_model::WidthSample,
+        opacity: f64,
+        out: &mut String,
+    ) {
+        let Some(curve) = renamite_geometry::width_curve(&profile.curve) else {
+            return;
+        };
+        if curve.is_flat() {
+            self.export_stroke(item, paint, stroke, opacity, out);
+            return;
+        }
+        let dashes: Vec<f64> = stroke
+            .dash
+            .as_ref()
+            .map(|dash| dash.dashes.clone())
+            .unwrap_or_default();
+        let source = stroke
+            .dash
+            .as_ref()
+            .and_then(|dash| renamite_geometry::dash_bez_path(&item.path, &dashes, dash.offset))
+            .unwrap_or_else(|| item.path.clone());
+        let outlines = renamite_geometry::stroke_outline(
+            &source,
+            &curve,
+            stroke.width,
+            renamite_geometry::OutlineStyle {
+                cap: stroke_cap_kurbo(stroke.cap),
+                join: stroke_join_kurbo(stroke.join),
+                miter_limit: stroke.miter_limit,
+            },
+            0.1,
+        );
+        if outlines.is_empty() {
+            return;
+        }
+        let fill = self.paint_attr(paint, "fill");
+        let opacity_attr = if opacity < 1.0 {
+            format!(" opacity=\"{}\"", fmt(opacity))
+        } else {
+            String::new()
+        };
+        for outline in &outlines {
+            let d = path_data(outline);
+            if d.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("<path d=\"{d}\"{fill}{opacity_attr}/>\n"));
+        }
+    }
+
     fn export_image(
         &mut self,
         item: &SceneItem,
