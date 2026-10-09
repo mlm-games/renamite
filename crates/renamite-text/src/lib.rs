@@ -207,9 +207,11 @@ impl Registry {
             return registry;
         };
         let alias = payload_alias(DEFAULT_FONT);
-        registry.insert(default_font_data().clone(), family.clone(), alias.clone());
+        let data = default_font_data().clone();
+        registry.insert(data.clone(), family.clone(), alias.clone());
         registry.default_family = Some(family);
-        registry.default_alias = Some(alias);
+        registry.default_alias = Some(alias.clone());
+        repose_text::register_font_as(&data, &alias);
         registry
     }
 
