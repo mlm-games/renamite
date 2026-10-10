@@ -112,8 +112,6 @@ pub struct PreparedClip {
 pub struct PreparedScene {
     pub draws: Vec<PreparedDraw>,
     pub clips: Vec<PreparedClip>,
-    /// Artboard bounds in screen space, when the frame is clipped to them.
-    pub artboard_clip: Option<Arc<VectorMeshData>>,
 }
 
 const MESH_CACHE_CAPACITY: usize = 512;
@@ -190,18 +188,6 @@ impl SceneRenderer {
 
     /// Tessellate `scene` once under `view` into a reusable `PreparedScene`.
     pub fn prepare(&mut self, scene: &Scene, view: &ViewTransform) -> PreparedScene {
-        self.prepare_clipped(scene, view, None)
-    }
-
-    /// Prepare a frame clipped to `artboard` world units. Geometry outside the
-    /// artboard is not part of the frame and must not bleed into whatever the
-    /// rig is composited over. `None` leaves the frame unclipped.
-    pub fn prepare_clipped(
-        &mut self,
-        scene: &Scene,
-        view: &ViewTransform,
-        artboard: Option<glam::DVec2>,
-    ) -> PreparedScene {
         let scale = if view.scale.is_finite() && view.scale > 1e-6 {
             view.scale
         } else {
@@ -275,24 +261,7 @@ impl SceneRenderer {
             }
         }
 
-        let artboard_clip = artboard.and_then(|size| {
-            if !size.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
-                return None;
-            }
-            let mut path = kurbo::BezPath::new();
-            path.move_to(kurbo::Point::ZERO);
-            path.line_to(kurbo::Point::new(size.x, 0.0));
-            path.line_to(kurbo::Point::new(size.x, size.y));
-            path.line_to(kurbo::Point::new(0.0, size.y));
-            path.close_path();
-            self.clip_mesh(&path, FillRule::NonZero, tol)
-                .map(|mesh| transform_mesh(&mesh, t))
-        });
-        PreparedScene {
-            draws,
-            clips,
-            artboard_clip,
-        }
+        PreparedScene { draws, clips }
     }
 
     /// Compose a model local→world affine with the view transform.
@@ -405,12 +374,6 @@ impl SceneRenderer {
     /// Paint a prepared scene into a Repose `DrawScope` (editor canvas).
     /// Clips become real `PushVectorClip`/`PopVectorClip` nesting.
     pub fn paint_prepared(&self, prepared: &PreparedScene, scope: &mut DrawScope) {
-        if let Some(mesh) = prepared.artboard_clip.clone() {
-            scope.commands.push(DrawCommand::PushVectorClip {
-                mesh,
-                op: ClipOp::Intersect,
-            });
-        }
         for draw in &prepared.draws {
             match draw {
                 PreparedDraw::Vector {
@@ -483,19 +446,10 @@ impl SceneRenderer {
                 }
             }
         }
-        if prepared.artboard_clip.is_some() {
-            scope.commands.push(DrawCommand::PopVectorClip);
-        }
     }
 
     /// Append a prepared scene to a headless `repose_core::Scene` (export).
     pub fn append_repose_scene(&self, prepared: &PreparedScene, out: &mut ReposeScene) {
-        if let Some(mesh) = prepared.artboard_clip.clone() {
-            out.nodes.push(SceneNode::PushVectorClip {
-                mesh,
-                op: ClipOp::Intersect,
-            });
-        }
         for draw in &prepared.draws {
             match draw {
                 PreparedDraw::Vector {
@@ -570,9 +524,6 @@ impl SceneRenderer {
                     }
                 }
             }
-        }
-        if prepared.artboard_clip.is_some() {
-            out.nodes.push(SceneNode::PopVectorClip);
         }
     }
 
@@ -1445,90 +1396,6 @@ fn clip_key(path: &kurbo::BezPath, rule: FillRule, tolerance: f32) -> MeshCacheK
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rect_scene(rect: kurbo::Rect, color: renamite_model::Color) -> Scene {
-        let mut ids = renamite_model::NodeMap::default();
-        let node = ids.insert(renamite_model::Node::new(
-            "rect",
-            renamite_model::NodeKind::Group,
-        ));
-        let mut path = kurbo::BezPath::new();
-        path.move_to(kurbo::Point::new(rect.x0, rect.y0));
-        path.line_to(kurbo::Point::new(rect.x1, rect.y0));
-        path.line_to(kurbo::Point::new(rect.x1, rect.y1));
-        path.line_to(kurbo::Point::new(rect.x0, rect.y1));
-        path.close_path();
-        Scene {
-            items: vec![SceneItem {
-                path,
-                node,
-                style: node,
-                paint: ScenePaint::Solid(color),
-                kind: PaintKind::Fill(FillRule::NonZero),
-                opacity: 1.0,
-                clips: Vec::new(),
-                blend: renamite_model::BlendMode::Normal,
-            }],
-            clips: Vec::new(),
-        }
-    }
-
-    /// A rig's artboard is its frame: art parked outside it belongs to the
-    /// document, not to the surface the rig is composited over.
-    #[test]
-    fn an_artboard_clip_bounds_the_frame() {
-        let mut renderer = SceneRenderer::new();
-        let view = ViewTransform {
-            scale: 2.0,
-            offset: glam::DVec2::new(10.0, 20.0),
-        };
-        let oversized = rect_scene(
-            kurbo::Rect::new(-200.0, -200.0, 400.0, 400.0),
-            renamite_model::Color::BLACK,
-        );
-
-        let unclipped = renderer.prepare(&oversized, &view);
-        assert!(unclipped.artboard_clip.is_none());
-
-        let clipped =
-            renderer.prepare_clipped(&oversized, &view, Some(glam::DVec2::new(64.0, 64.0)));
-        let mesh = clipped.artboard_clip.as_ref().expect("artboard clip");
-        let span = |pick: fn(&VectorVertex) -> f32| {
-            let values: Vec<f64> = mesh.vertices.iter().map(|v| f64::from(pick(v))).collect();
-            (
-                values.iter().copied().fold(f64::INFINITY, f64::min),
-                values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-            )
-        };
-        assert_eq!(
-            span(|v| v.pos[0]),
-            (10.0, 138.0),
-            "artboard x under the view"
-        );
-        assert_eq!(
-            span(|v| v.pos[1]),
-            (20.0, 148.0),
-            "artboard y under the view"
-        );
-    }
-
-    #[test]
-    fn a_degenerate_artboard_leaves_the_frame_unclipped() {
-        let mut renderer = SceneRenderer::new();
-        let view = ViewTransform::identity();
-        let scene = rect_scene(
-            kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
-            renamite_model::Color::BLACK,
-        );
-        for size in [
-            glam::DVec2::ZERO,
-            glam::DVec2::splat(-1.0),
-            glam::DVec2::new(f64::NAN, 1.0),
-        ] {
-            let prepared = renderer.prepare_clipped(&scene, &view, Some(size));
-            assert!(prepared.artboard_clip.is_none(), "{size} must not clip");
-        }
-    }
 
     fn sample(profile: Option<renamite_model::WidthSample>) -> renamite_model::StrokeSample {
         renamite_model::StrokeSample {

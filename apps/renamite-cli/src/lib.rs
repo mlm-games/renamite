@@ -340,7 +340,6 @@ fn cmd_render(
         .ok_or_else(|| anyhow!("main composition is missing"))?
         .size;
     let view = export_view(comp_size, width, height);
-    let artboard = glam::DVec2::new(comp_size.0 as f64, comp_size.1 as f64);
     let bg_clear = bg.map(|[r, g, b, a]| {
         [
             r as f64 / 255.0,
@@ -369,14 +368,7 @@ fn cmd_render(
     match (frame, frames) {
         (Some(f), None) => {
             player.scrub(f as f64);
-            let png = rasterize_png(
-                &mut bridge,
-                &mut gpu,
-                player.scene(),
-                &view,
-                artboard,
-                bg_clear,
-            )?;
+            let png = rasterize_png(&mut bridge, &mut gpu, player.scene(), &view, bg_clear)?;
             let out = out.ok_or_else(|| anyhow!("--out is required with --frame"))?;
             atomic_write(&out, &png)?;
             println!("Rendered frame {f} -> {}", out.display());
@@ -390,7 +382,7 @@ fn cmd_render(
             }
             let scenes = player.bake(n, resolved_dt);
             for (i, scene) in scenes.iter().enumerate() {
-                let png = rasterize_png(&mut bridge, &mut gpu, scene, &view, artboard, bg_clear)?;
+                let png = rasterize_png(&mut bridge, &mut gpu, scene, &view, bg_clear)?;
                 let path = out_dir.join(format!("{prefix}_{i:05}.png"));
                 if !path.starts_with(&out_dir) || path.parent() != Some(out_dir.as_path()) {
                     bail!("render output path escaped {}", out_dir.display());
@@ -425,10 +417,9 @@ fn rasterize_png(
     gpu: &mut OffscreenRenderer,
     scene: &renamite_model::Scene,
     view: &ViewTransform,
-    artboard: glam::DVec2,
     bg: Option<[f64; 4]>,
 ) -> Result<Vec<u8>> {
-    let prepared = bridge.prepare_clipped(scene, view, Some(artboard));
+    let prepared = bridge.prepare(scene, view);
     let mut repose = repose_core::Scene::default();
     bridge.append_repose_scene(&prepared, &mut repose);
     gpu.render_png(&repose, bg)
