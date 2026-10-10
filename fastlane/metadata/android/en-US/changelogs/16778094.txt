@@ -1,0 +1,15 @@
+- repose bump
+- misc.
+- artboard clip
+- renamite mcp: shared ops, control channel, remote mode
+- renamite mcp: stable node handles
+- renamite mcp v2: timeline, clips, machines
+- pathfinder in behavior-common
+- renamite mcp server
+- warp solve cleanup
+- pin warp modifier
+- variable-width strokes
+- track live touch pointers by id
+- Update Cargo.lock
+- Update Cargo.lock
+- replace renamite-text with repose

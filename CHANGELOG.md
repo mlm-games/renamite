@@ -1,3 +1,22 @@
+## v0.3.11
+
+- repose bump
+- misc.
+- artboard clip
+- renamite mcp: shared ops, control channel, remote mode
+- renamite mcp: stable node handles
+- renamite mcp v2: timeline, clips, machines
+- pathfinder in behavior-common
+- renamite mcp server
+- warp solve cleanup
+- pin warp modifier
+- variable-width strokes
+- track live touch pointers by id
+- Update Cargo.lock
+- Update Cargo.lock
+- replace renamite-text with repose
+
+
 ## v0.3.8
 
 - restore the distinct keyframe glyph, the outline font has no filled circle

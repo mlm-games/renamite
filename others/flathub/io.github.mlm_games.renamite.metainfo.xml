@@ -58,6 +58,27 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.11" date="2026-10-10" type="stable">
+      <description>
+        <ul>
+          <li>repose bump</li>
+          <li>misc.</li>
+          <li>artboard clip</li>
+          <li>renamite mcp: shared ops, control channel, remote mode</li>
+          <li>renamite mcp: stable node handles</li>
+          <li>renamite mcp v2: timeline, clips, machines</li>
+          <li>pathfinder in behavior-common</li>
+          <li>renamite mcp server</li>
+          <li>warp solve cleanup</li>
+          <li>pin warp modifier</li>
+          <li>variable-width strokes</li>
+          <li>track live touch pointers by id</li>
+          <li>Update Cargo.lock</li>
+          <li>Update Cargo.lock</li>
+          <li>replace renamite-text with repose</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.8" date="2026-10-07" type="stable">
       <description>
         <ul>
