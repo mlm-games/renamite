@@ -102,7 +102,13 @@ pub fn align(
             align::page_bounds(size)
         }
     };
-    let cmds = move_commands(doc, &roots, frame, record, &align::align_deltas(&bounds, target, op));
+    let cmds = move_commands(
+        doc,
+        &roots,
+        frame,
+        record,
+        &align::align_deltas(&bounds, target, op),
+    );
     (!cmds.is_empty()).then_some(cmds)
 }
 

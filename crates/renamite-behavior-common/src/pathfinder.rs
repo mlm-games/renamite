@@ -16,9 +16,7 @@ use glam::DVec2;
 use renamite_animation::Animated;
 use renamite_geometry::{BooleanOp, VectorPath, boolean_bez, contours_to_bez, split_bez_subpaths};
 use renamite_history::{EditorCommand, NodeTree, SelectionChange};
-use renamite_model::{
-    CompId, Document, Node, NodeId, NodeKind, Overrides, Parent, ShapeKind,
-};
+use renamite_model::{CompId, Document, Node, NodeId, NodeKind, Overrides, Parent, ShapeKind};
 
 /// Which Pathfinder operation to run over the selected shape roots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +109,9 @@ pub fn contours_in_subject_space(
     };
     let local: kurbo::BezPath = match &node.kind {
         NodeKind::Shape(ShapeKind::CompoundPath(compound)) => compound.to_bez_path(frame),
-        NodeKind::Shape(shape) => renamite_model::shape_path(shape, id, frame, &Overrides::default()),
+        NodeKind::Shape(shape) => {
+            renamite_model::shape_path(shape, id, frame, &Overrides::default())
+        }
         _ => return Err("Selection contains non-shape nodes".into()),
     };
 
@@ -247,12 +247,8 @@ pub fn boolean(
 
     for cutter in ids.iter().copied().skip(1) {
         let rhs = contours_in_subject_space(doc, cutter, subject, frame)?;
-        let result = boolean_bez(
-            &contours_to_bez(&accumulated),
-            &contours_to_bez(&rhs),
-            op,
-        )
-        .map_err(|e| e.to_string())?;
+        let result = boolean_bez(&contours_to_bez(&accumulated), &contours_to_bez(&rhs), op)
+            .map_err(|e| e.to_string())?;
         accumulated = result;
     }
 
