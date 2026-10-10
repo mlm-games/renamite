@@ -15,6 +15,7 @@ renamite-animation.workspace = true
 renamite-behavior-common.workspace = true
 renamite-io-ren.workspace = true
 renamite-io-svg.workspace = true
+renamite-machine.workspace = true
 renamite-model.workspace = true
 renamite-player.workspace = true
 renamite-render-bridge.workspace = true

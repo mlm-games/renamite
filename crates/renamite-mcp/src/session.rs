@@ -3,12 +3,17 @@
 
 use std::path::{Path, PathBuf};
 
-use renamite_animation::Animated;
+use renamite_animation::{Angle, Animated, EasingHandle, Frame, Interpolation, LoopMode};
 use renamite_io_ren::RenFile;
-use renamite_model::{
-    Color, CompId, Document, FillRule, Node, NodeId, NodeKind, Parent, ShapeKind, StrokeCap,
-    StrokeJoin, StyleKind, StylePaint,
+use renamite_machine::{
+    Clip, ClipId, CmpOp, Condition, InputDef, InputKind, Machine, MachineId, MachineLayer, State,
+    StateKind, Track, Transition,
 };
+use renamite_model::{
+    Color, CompId, Document, FillRule, KeyframeData, Node, NodeId, NodeKind, Parent, PropPath,
+    ShapeKind, StrokeCap, StrokeJoin, StyleKind, StylePaint, Value as ModelValue,
+};
+use renamite_player::Player;
 use serde_json::{Value, json};
 
 /// Hard cap on file reads, matching the CLI.
@@ -16,6 +21,7 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct Session {
     file: RenFile,
+    player: Player,
     path: Option<PathBuf>,
     dirty: bool,
 }
@@ -28,11 +34,21 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
+        let file = RenFile::new(Document::empty(), "untitled");
+        let player = Player::new(file.clone()).expect("an empty document opens");
         Self {
-            file: RenFile::new(Document::empty(), "untitled"),
+            file,
+            player,
             path: None,
             dirty: false,
         }
+    }
+
+    /// The player owns machine state and the playhead, so every edit rebuilds
+    /// it from the file. Authoring and then previewing is the loop; live
+    /// tweaking of a playing rig is not a v2 goal.
+    fn refresh_player(&mut self) {
+        self.player = Player::new(self.file.clone()).expect("the session file opens");
     }
 
     pub fn document(&self) -> &Document {
@@ -103,7 +119,12 @@ impl Session {
 
     // -- project lifecycle -------------------------------------------------
 
-    pub fn project_new(&mut self, name: Option<&str>, width: u32, height: u32) -> Result<Value, String> {
+    pub fn project_new(
+        &mut self,
+        name: Option<&str>,
+        width: u32,
+        height: u32,
+    ) -> Result<Value, String> {
         let mut document = Document::empty();
         let comp = document
             .compositions
@@ -114,6 +135,7 @@ impl Session {
         self.file = RenFile::new(document, name.unwrap_or("untitled"));
         self.path = None;
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({"ok": true, "size": [width.max(1), height.max(1)]}))
     }
 
@@ -125,6 +147,7 @@ impl Session {
             .map_err(|error| format!("{} did not parse: {error}", path.display()))?;
         self.path = Some(path.to_path_buf());
         self.dirty = false;
+        self.refresh_player();
         Ok(json!({"ok": true, "path": path.display().to_string()}))
     }
 
@@ -151,19 +174,14 @@ impl Session {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("{}: {error}", parent.display()))?;
         }
-        std::fs::write(&target, bytes)
-            .map_err(|error| format!("{}: {error}", target.display()))?;
+        std::fs::write(&target, bytes).map_err(|error| format!("{}: {error}", target.display()))?;
         self.path = Some(target.clone());
         self.dirty = false;
         Ok(json!({"ok": true, "path": target.display().to_string(), "binary": binary}))
     }
 
     pub fn project_info(&self) -> Value {
-        let comp = self
-            .file
-            .document
-            .compositions
-            .get(self.file.document.main);
+        let comp = self.file.document.compositions.get(self.file.document.main);
         let nodes: Vec<Value> = self
             .node_ids()
             .iter()
@@ -276,10 +294,18 @@ impl Session {
             self.push_child(shape_id, style)?;
         }
         if let Some(color) = stroke {
-            let style = stroke_node(color, if stroke_width > 0.0 { stroke_width } else { 1.0 });
+            let style = stroke_node(
+                color,
+                if stroke_width > 0.0 {
+                    stroke_width
+                } else {
+                    1.0
+                },
+            );
             self.push_child(shape_id, style)?;
         }
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({"ok": true, "id": self.index_of(shape_id), "name": shape}))
     }
 
@@ -301,7 +327,12 @@ impl Session {
                 let Some(node) = self.file.document.nodes.get_mut(child) else {
                     continue;
                 };
-                match (&mut node.kind, &fill, &stroke, stroke_width.as_ref().ok().copied()) {
+                match (
+                    &mut node.kind,
+                    &fill,
+                    &stroke,
+                    stroke_width.as_ref().ok().copied(),
+                ) {
                     (NodeKind::Style(StyleKind::Fill { .. }), Some(color), _, _) => {
                         node.kind = NodeKind::Style(StyleKind::Fill {
                             paint: StylePaint::solid(*color),
@@ -330,6 +361,7 @@ impl Session {
             }
         }
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({"ok": true, "touched": touched}))
     }
 
@@ -350,8 +382,9 @@ impl Session {
             match &mut node.kind {
                 NodeKind::Shape(shape) => {
                     let (pos, size) = match shape {
-                        ShapeKind::Ellipse { pos, size }
-                        | ShapeKind::Rect { pos, size, .. } => (pos, size),
+                        ShapeKind::Ellipse { pos, size } | ShapeKind::Rect { pos, size, .. } => {
+                            (pos, size)
+                        }
                         _ => continue,
                     };
                     let current_pos = pos.value_at(0.0);
@@ -360,10 +393,8 @@ impl Session {
                         width.unwrap_or(current_size.x).max(0.0),
                         height.unwrap_or(current_size.y).max(0.0),
                     );
-                    let next_pos = glam::DVec2::new(
-                        x.unwrap_or(current_pos.x),
-                        y.unwrap_or(current_pos.y),
-                    );
+                    let next_pos =
+                        glam::DVec2::new(x.unwrap_or(current_pos.x), y.unwrap_or(current_pos.y));
                     pos.base = next_pos;
                     size.base = next_size;
                     if let Some(degrees) = rotation {
@@ -381,6 +412,7 @@ impl Session {
             }
         }
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({"ok": true, "touched": touched}))
     }
 
@@ -391,6 +423,7 @@ impl Session {
             let _ = self.file.document.detach(id);
         }
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({"ok": true, "deleted": deleted}))
     }
 
@@ -401,10 +434,14 @@ impl Session {
         let scale = number(params, "scale").unwrap_or(1.0).max(0.01);
         let width = (comp.0 as f64 * scale).round().max(1.0) as u32;
         let height = (comp.1 as f64 * scale).round().max(1.0) as u32;
-        let source = renamite_io_ren::save(&self.file).map_err(|error| error.to_string())?;
-        let mut player = renamite_player::Player::new(renamite_io_ren::open(&source).map_err(|e| e.to_string())?)
-            .map_err(|error| format!("failed to open player: {error}"))?;
-        player.scrub(0.0);
+        // The session player carries machine state and the playhead, so a
+        // playback or input_set call before this render applies here.
+        match params.get("frame").and_then(Value::as_f64) {
+            Some(frame) => self.seek(frame),
+            None => {
+                let _ = self.player.tick(1.0 / 60.0);
+            }
+        }
         let view = renamite_behavior_common::ViewTransform {
             scale,
             offset: glam::DVec2::new(
@@ -417,9 +454,9 @@ impl Session {
             width, height, 4,
         ))
         .map_err(|error| format!("offscreen renderer: {error}"))?;
-        gpu.sync_document_images(&player.project.document)
+        gpu.sync_document_images(&self.player.project.document)
             .map_err(|error| format!("image upload: {error}"))?;
-        let prepared = bridge.prepare(player.scene(), &view);
+        let prepared = bridge.prepare(self.player.scene(), &view);
         let mut repose = repose_core::Scene::default();
         bridge.append_repose_scene(&prepared, &mut repose);
         let png = gpu
@@ -427,18 +464,15 @@ impl Session {
             .map_err(|error| format!("render: {error}"))?;
         match params.get("path").and_then(Value::as_str) {
             Some(path) => {
-                std::fs::write(path, &png)
-                    .map_err(|error| format!("{path}: {error}"))?;
+                std::fs::write(path, &png).map_err(|error| format!("{path}: {error}"))?;
                 Ok(json!({"ok": true, "path": path, "width": width, "height": height}))
             }
-            None => {
-                Ok(json!({
-                    "ok": true,
-                    "width": width,
-                    "height": height,
-                    "png_base64": base64_encode(&png),
-                }))
-            }
+            None => Ok(json!({
+                "ok": true,
+                "width": width,
+                "height": height,
+                "png_base64": base64_encode(&png),
+            })),
         }
     }
 
@@ -478,6 +512,7 @@ impl Session {
         self.file = RenFile::new(document, "imported svg");
         self.path = None;
         self.dirty = true;
+        self.refresh_player();
         Ok(json!({
             "ok": true,
             "nodes": node_count,
@@ -527,7 +562,9 @@ impl Session {
     }
 
     fn index_of(&self, id: NodeId) -> Option<usize> {
-        self.node_ids().iter().position(|candidate| *candidate == id)
+        self.node_ids()
+            .iter()
+            .position(|candidate| *candidate == id)
     }
 }
 
@@ -636,4 +673,589 @@ fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+impl Session {
+    // Timeline, clips, machines and playback: v2 of the authoring loop.
+
+    /// Set one keyframe on a node property, or its static value when no frame
+    /// is given. `value` is a number, [x, y], "#rrggbb", a bool, or degrees for
+    /// rotation properties, and must match the property's existing type.
+    pub fn timeline_set(&mut self, params: &Value) -> Result<Value, String> {
+        let id = self.node_of(params)?;
+        let property = params
+            .get("property")
+            .and_then(Value::as_str)
+            .ok_or("timeline_set needs a property name")?
+            .to_string();
+        let prop = PropPath::new(property.clone());
+        let like = self.file.document.get_static(id, &prop).ok();
+        let value = coerce_value(like.as_ref(), &property, params.get("value"))
+            .ok_or_else(|| format!("property {property} cannot take this value"))?;
+        match params.get("frame").and_then(Value::as_f64) {
+            Some(frame) => {
+                let frame = Frame(frame.round().max(0.0) as i64);
+                self.file
+                    .document
+                    .add_keyframe(id, &prop, frame, &value)
+                    .map_err(|error| error.to_string())?;
+            }
+            None => {
+                self.file
+                    .document
+                    .set_static(id, &prop, &value)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        self.dirty = true;
+        self.refresh_player();
+        Ok(json!({"ok": true, "keys": self.key_frames_of(id, &prop)}))
+    }
+
+    pub fn timeline_remove(&mut self, params: &Value) -> Result<Value, String> {
+        let id = self.node_of(params)?;
+        let property = params
+            .get("property")
+            .and_then(Value::as_str)
+            .ok_or("timeline_remove needs a property name")?
+            .to_string();
+        let prop = PropPath::new(property.clone());
+        let frame = params
+            .get("frame")
+            .and_then(Value::as_f64)
+            .ok_or("timeline_remove needs a frame")?;
+        let removed = self
+            .file
+            .document
+            .remove_keyframe(id, &prop, Frame(frame.round().max(0.0) as i64))
+            .is_ok();
+        self.dirty = true;
+        self.refresh_player();
+        Ok(json!({"ok": true, "removed": removed, "keys": self.key_frames_of(id, &prop)}))
+    }
+
+    /// Keyframes of every animated property on the node.
+    pub fn timeline_info(&self, params: &Value) -> Result<Value, String> {
+        let id = self.node_of(params)?;
+        let node = self.file.document.nodes.get(id).ok_or("no such node")?;
+        let name = node.name.clone();
+        let mut animated = Vec::new();
+        for property in PROPERTIES {
+            let prop = PropPath::new(*property);
+            let frames = self.key_frames_of(id, &prop);
+            if frames.is_empty() {
+                continue;
+            }
+            let keys: Vec<Value> = frames
+                .iter()
+                .map(|frame| {
+                    self.file
+                        .document
+                        .keyframe_data(id, &prop, *frame)
+                        .map(|key| {
+                            json!({"frame": key.frame.0, "value": model_value_json(&key.value)})
+                        })
+                        .unwrap_or(json!({"frame": frame.0}))
+                })
+                .collect();
+            animated.push(json!({"property": property, "keys": keys}));
+        }
+        Ok(json!({"ok": true, "id": self.index_of(id), "name": name, "animated": animated}))
+    }
+
+    /// Move the playhead to `frame`. `Player::scrub` leaves machine mode, which
+    /// would orphan the inputs a rig's transitions gate on, so a machine is
+    /// re-armed on the first seek and only ticked afterwards: re-arming mid
+    /// session would reset the inputs the caller just set.
+    fn seek(&mut self, frame: f64) {
+        let rate = self.player.rate();
+        let step = 1.0 / (rate.num as f64 / rate.den as f64).max(1.0);
+        if let Some(machine) = self.file.start_machine {
+            if self.player.active_machine_states().is_none() {
+                self.player.play_machine(machine);
+            }
+            let mut ticks = 0;
+            while (self.player.head() < frame || ticks == 0) && ticks < 100_000 {
+                self.player.tick(step);
+                ticks += 1;
+            }
+        } else {
+            self.player.scrub(frame);
+        }
+    }
+
+    fn key_frames_of(&self, id: NodeId, prop: &PropPath) -> Vec<Frame> {
+        self.file.document.key_frames(id, prop)
+    }
+
+    pub fn clip_new(&mut self, params: &Value) -> Result<Value, String> {
+        let name = params.get("name").and_then(Value::as_str).unwrap_or("Clip");
+        let frames = params.get("frames").and_then(Value::as_f64).unwrap_or(60.0);
+        let clip = Clip {
+            name: name.to_string(),
+            range: (Frame(0), Frame(frames.round().max(1.0) as i64)),
+            tracks: Vec::new(),
+            events: Vec::new(),
+        };
+        let id = self.file.clips.insert(clip);
+        self.file.clip_order.push(id);
+        self.dirty = true;
+        self.refresh_player();
+        Ok(json!({"ok": true, "clip": self.clip_index(id)}))
+    }
+
+    /// Set one key in a clip track, creating the track on first use.
+    pub fn clip_track_set(&mut self, params: &Value) -> Result<Value, String> {
+        let clip = self.clip_of(params)?;
+        let id = self.node_of(params)?;
+        let property = params
+            .get("property")
+            .and_then(Value::as_str)
+            .ok_or("clip_track_set needs a property name")?
+            .to_string();
+        let prop = PropPath::new(property.clone());
+        let frame = params.get("frame").and_then(Value::as_f64).unwrap_or(0.0);
+        let frame = Frame(frame.round().max(0.0) as i64);
+        let existing = self
+            .file
+            .clips
+            .get(clip)
+            .and_then(|clip| {
+                clip.tracks
+                    .iter()
+                    .find(|track| track.node == id && track.prop == prop)
+            })
+            .and_then(|track| track.keys.first())
+            .map(|key| key.value.clone());
+        let value = coerce_value(existing.as_ref(), &property, params.get("value"))
+            .ok_or_else(|| format!("property {property} cannot take this value"))?;
+        let key = KeyframeData {
+            frame,
+            value,
+            interpolation: Interpolation::Linear,
+            ease_out: EasingHandle::LINEAR_OUT,
+            ease_in: EasingHandle::LINEAR_IN,
+        };
+        let clip = self.file.clips.get_mut(clip).ok_or("clip disappeared")?;
+        match clip
+            .tracks
+            .iter_mut()
+            .find(|track| track.node == id && track.prop == prop)
+        {
+            Some(track) => {
+                track.keys.retain(|key| key.frame != frame);
+                track.keys.push(key);
+                track.keys.sort_by_key(|key| key.frame.0);
+            }
+            None => clip.tracks.push(Track {
+                node: id,
+                prop: prop.clone(),
+                keys: vec![key],
+            }),
+        }
+        if frame > clip.range.1 {
+            clip.range.1 = frame;
+        }
+        self.dirty = true;
+        self.refresh_player();
+        Ok(json!({"ok": true}))
+    }
+
+    pub fn machine_new(&mut self, params: &Value) -> Result<Value, String> {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Machine");
+        let machine = Machine {
+            name: name.to_string(),
+            inputs: Vec::new(),
+            layers: vec![MachineLayer {
+                name: "Base".to_string(),
+                states: Vec::new(),
+                entry: 0,
+                any_transitions: Vec::new(),
+            }],
+            listeners: Vec::new(),
+        };
+        let id = self.file.machines.insert(machine);
+        self.file.machine_order.push(id);
+        let start = params.get("start").and_then(Value::as_bool).unwrap_or(true);
+        if start {
+            self.file.start_machine = Some(id);
+        }
+        self.dirty = true;
+        self.refresh_player();
+        Ok(json!({"ok": true, "machine": self.machine_index(id), "start": start}))
+    }
+
+    pub fn machine_input(&mut self, params: &Value) -> Result<Value, String> {
+        let machine = self.machine_of(params)?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("machine_input needs a name")?
+            .to_string();
+        let kind = match params.get("kind").and_then(Value::as_str).unwrap_or("bool") {
+            "bool" => InputKind::Bool {
+                default: params
+                    .get("default")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+            "number" => InputKind::Number {
+                default: params.get("default").and_then(Value::as_f64).unwrap_or(0.0),
+            },
+            "trigger" => InputKind::Trigger,
+            other => {
+                return Err(format!(
+                    "unknown input kind {other}: bool, number or trigger"
+                ));
+            }
+        };
+        let machine = self
+            .file
+            .machines
+            .get_mut(machine)
+            .ok_or("machine disappeared")?;
+        machine.inputs.push(InputDef { name, kind });
+        self.dirty = true;
+        Ok(json!({"ok": true, "input": machine.inputs.len() - 1}))
+    }
+
+    /// Add a state to the machine's first layer. With a clip it plays that
+    /// clip; without one it rests on the document values. The first state is
+    /// the entry state.
+    pub fn machine_state(&mut self, params: &Value) -> Result<Value, String> {
+        let machine = self.machine_of(params)?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("machine_state needs a name")?
+            .to_string();
+        let kind = match params.get("clip").and_then(Value::as_u64) {
+            Some(clip) => {
+                let clip = self.clip_by_index(clip as usize)?;
+                let loop_mode = match params.get("loop").and_then(Value::as_str).unwrap_or("loop") {
+                    "once" => LoopMode::Once,
+                    "pingpong" => LoopMode::PingPong,
+                    _ => LoopMode::Loop,
+                };
+                StateKind::Clip {
+                    clip,
+                    speed: params.get("speed").and_then(Value::as_f64).unwrap_or(1.0),
+                    loop_mode,
+                }
+            }
+            None => StateKind::Empty,
+        };
+        let machine = self
+            .file
+            .machines
+            .get_mut(machine)
+            .ok_or("machine disappeared")?;
+        let layer = machine.layers.first_mut().ok_or("machine has no layer")?;
+        layer.states.push(State {
+            name,
+            kind,
+            transitions: Vec::new(),
+            graph_pos: None,
+        });
+        let state = layer.states.len() - 1;
+        self.dirty = true;
+        Ok(json!({"ok": true, "state": state}))
+    }
+
+    /// Add a transition between states, gated on one machine input. Names
+    /// resolve to input indices; `op` is eq, ne, lt, le, gt or ge.
+    pub fn machine_transition(&mut self, params: &Value) -> Result<Value, String> {
+        let machine = self.machine_of(params)?;
+        let from = params
+            .get("from")
+            .and_then(Value::as_u64)
+            .ok_or("needs from")? as usize;
+        let to = params.get("to").and_then(Value::as_u64).ok_or("needs to")? as usize;
+        let duration = params
+            .get("duration")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let conditions = {
+            let machine = self
+                .file
+                .machines
+                .get(machine)
+                .ok_or("machine disappeared")?;
+            let states = machine
+                .layers
+                .first()
+                .map(|layer| layer.states.len())
+                .unwrap_or(0);
+            if from >= states || to >= states {
+                return Err("no such state".to_string());
+            }
+            match params.get("input").and_then(Value::as_str) {
+                Some(name) => {
+                    let index = machine
+                        .inputs
+                        .iter()
+                        .position(|input| input.name == name)
+                        .ok_or_else(|| format!("no input named {name}"))?;
+                    let condition = if params.get("triggered").and_then(Value::as_bool)
+                        == Some(true)
+                    {
+                        Condition::Triggered { input: index }
+                    } else if let Some(value) = params.get("is").and_then(Value::as_bool) {
+                        Condition::BoolIs {
+                            input: index,
+                            value,
+                        }
+                    } else if let Some(value) = params.get("value").and_then(Value::as_f64) {
+                        let op = match params.get("op").and_then(Value::as_str).unwrap_or("eq") {
+                            "ne" => CmpOp::Ne,
+                            "lt" => CmpOp::Lt,
+                            "le" => CmpOp::Le,
+                            "gt" => CmpOp::Gt,
+                            "ge" => CmpOp::Ge,
+                            _ => CmpOp::Eq,
+                        };
+                        Condition::NumberCmp {
+                            input: index,
+                            op,
+                            value,
+                        }
+                    } else {
+                        return Err("needs is, value or triggered".to_string());
+                    };
+                    vec![condition]
+                }
+                None => Vec::new(),
+            }
+        };
+        let machine = self
+            .file
+            .machines
+            .get_mut(machine)
+            .ok_or("machine disappeared")?;
+        let layer = machine.layers.first_mut().ok_or("machine has no layer")?;
+        layer.states[from].transitions.push(Transition {
+            to,
+            duration,
+            exit_time: params.get("exitTime").and_then(Value::as_f64),
+            conditions,
+        });
+        self.dirty = true;
+        Ok(json!({"ok": true}))
+    }
+
+    pub fn playback(&mut self, params: &Value) -> Result<Value, String> {
+        let action = params
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("play");
+        match action {
+            "play" => {
+                let looped = params.get("loop").and_then(Value::as_bool).unwrap_or(true);
+                let mode = if looped {
+                    LoopMode::Loop
+                } else {
+                    LoopMode::Once
+                };
+                match self.file.start_machine {
+                    Some(machine) => self.player.play_machine(machine),
+                    None => {
+                        self.player.play_timeline(mode);
+                        true
+                    }
+                };
+                true
+            }
+            "pause" => {
+                self.player.pause();
+                true
+            }
+            "scrub" => {
+                let frame = params
+                    .get("frame")
+                    .and_then(Value::as_f64)
+                    .ok_or("scrub needs a frame")?;
+                self.player.scrub(frame);
+                true
+            }
+            other => {
+                return Err(format!(
+                    "unknown playback action {other}: play, pause or scrub"
+                ));
+            }
+        };
+        Ok(json!({"ok": true, "action": action}))
+    }
+
+    pub fn input_set(&mut self, params: &Value) -> Result<Value, String> {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("input_set needs a name")?;
+        let ok = if let Some(value) = params.get("bool").and_then(Value::as_bool) {
+            self.player.set_bool(name, value)
+        } else if let Some(value) = params.get("number").and_then(Value::as_f64) {
+            self.player.set_number(name, value)
+        } else {
+            return Err("input_set needs bool or number".to_string());
+        };
+        Ok(json!({"ok": ok}))
+    }
+
+    pub fn input_fire(&mut self, params: &Value) -> Result<Value, String> {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("input_fire needs a name")?;
+        Ok(json!({"ok": self.player.fire(name)}))
+    }
+
+    fn node_of(&self, params: &Value) -> Result<NodeId, String> {
+        let index = params
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or("needs a node id")? as usize;
+        self.node_ids()
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("no node id {index}"))
+    }
+
+    fn clip_of(&self, params: &Value) -> Result<ClipId, String> {
+        let index = params
+            .get("clip")
+            .and_then(Value::as_u64)
+            .ok_or("needs a clip id")? as usize;
+        self.clip_by_index(index)
+    }
+
+    fn clip_by_index(&self, index: usize) -> Result<ClipId, String> {
+        self.file
+            .clip_order
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("no clip id {index}"))
+    }
+
+    fn clip_index(&self, id: ClipId) -> usize {
+        self.file
+            .clip_order
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(usize::MAX)
+    }
+
+    fn machine_of(&self, params: &Value) -> Result<MachineId, String> {
+        let index = params
+            .get("machine")
+            .and_then(Value::as_u64)
+            .ok_or("needs a machine id")? as usize;
+        self.machine_by_index(index)
+    }
+
+    fn machine_by_index(&self, index: usize) -> Result<MachineId, String> {
+        self.file
+            .machine_order
+            .get(index)
+            .copied()
+            .ok_or_else(|| format!("no machine id {index}"))
+    }
+
+    fn machine_index(&self, id: MachineId) -> usize {
+        self.file
+            .machine_order
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(usize::MAX)
+    }
+}
+
+/// The animatable properties `timeline_set` accepts, in the model's own naming.
+const PROPERTIES: &[&str] = &[
+    "shape.pos",
+    "shape.size",
+    "shape.rounded",
+    "transform.position",
+    "transform.rotation",
+    "transform.scale",
+    "transform.anchor",
+    "transform.skew",
+    "opacity",
+    "stroke.width",
+];
+
+fn coerce_value(
+    like: Option<&ModelValue>,
+    property: &str,
+    input: Option<&Value>,
+) -> Option<ModelValue> {
+    let input = input?;
+    if property.contains("rotation") {
+        return input
+            .as_f64()
+            .map(|degrees| ModelValue::Angle(Angle(degrees.to_radians())));
+    }
+    if let Some(like) = like {
+        return match like {
+            ModelValue::DVec2(_) => input
+                .as_array()
+                .and_then(|pair| Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?]))
+                .map(|[x, y]| ModelValue::DVec2(glam::DVec2::new(x, y))),
+            ModelValue::Color(_) => input.as_str().and_then(parse_model_color),
+            ModelValue::Bool(_) => input.as_bool().map(ModelValue::Bool),
+            ModelValue::Angle(_) => input
+                .as_f64()
+                .map(|degrees| ModelValue::Angle(Angle(degrees.to_radians()))),
+            other => input.as_f64().map(|_| other.clone()),
+        };
+    }
+    if let Some(text) = input.as_str() {
+        return parse_model_color(text);
+    }
+    if let Some(pair) = input.as_array() {
+        return Some(ModelValue::DVec2(glam::DVec2::new(
+            pair.first()?.as_f64()?,
+            pair.get(1)?.as_f64()?,
+        )));
+    }
+    if let Some(flag) = input.as_bool() {
+        return Some(ModelValue::Bool(flag));
+    }
+    input.as_f64().map(ModelValue::F64)
+}
+
+fn parse_model_color(text: &str) -> Option<ModelValue> {
+    let hex = text.trim_start_matches('#');
+    if hex.len() != 6 && hex.len() != 8 {
+        return None;
+    }
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |index: usize| {
+        u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .map(|value| f64::from(value) / 255.0)
+            .unwrap_or(0.0)
+    };
+    let alpha = if hex.len() == 8 { channel(3) } else { 1.0 };
+    Some(ModelValue::Color(Color::rgba(
+        channel(0),
+        channel(1),
+        channel(2),
+        alpha,
+    )))
+}
+
+fn model_value_json(value: &ModelValue) -> Value {
+    match value {
+        ModelValue::F64(value) => json!(value),
+        ModelValue::I64(value) => json!(value),
+        ModelValue::Bool(value) => json!(value),
+        ModelValue::DVec2(value) => json!([value.x, value.y]),
+        ModelValue::Angle(value) => json!(value.0.to_degrees()),
+        ModelValue::Color(value) => json!(hex_color(*value)),
+        other => json!(format!("{other:?}")),
+    }
 }

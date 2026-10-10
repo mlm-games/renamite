@@ -3478,6 +3478,7 @@ dependencies = [
  "renamite-behavior-common",
  "renamite-io-ren",
  "renamite-io-svg",
+ "renamite-machine",
  "renamite-model",
  "renamite-player",
  "renamite-render-bridge",

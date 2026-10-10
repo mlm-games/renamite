@@ -116,6 +116,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "scale": {"type": "number", "description": "pixels per design unit (default 1)"},
+                    "frame": {"type": "number", "description": "frame index to render (default 0)"},
                     "path": {"type": "string", "description": "write the PNG here instead of returning base64"},
                 },
             }),
@@ -146,6 +147,162 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["path"],
             }),
         ),
+        tool(
+            "timeline_set",
+            "Keyframe a node property on the composition timeline, or set its static value when frame is omitted. Properties: shape.pos, shape.size, shape.rounded, transform.position, transform.rotation, transform.scale, transform.anchor, transform.skew, opacity, stroke.width. Values are numbers, [x, y], degrees for rotation, or #rrggbb.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "property": {"type": "string"},
+                    "frame": {"type": "number", "description": "omit to set the static value"},
+                    "value": {"description": "number, [x, y], bool, degrees, or #rrggbb"},
+                },
+                "required": ["id", "property", "value"],
+            }),
+        ),
+        tool(
+            "timeline_remove",
+            "Remove one keyframe from a node property.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "property": {"type": "string"},
+                    "frame": {"type": "number"},
+                },
+                "required": ["id", "property", "frame"],
+            }),
+        ),
+        tool(
+            "timeline_info",
+            "List the animated properties of a node with their keyframes and values.",
+            json!({
+                "type": "object",
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"],
+            }),
+        ),
+        tool(
+            "clip_new",
+            "Create a clip: a reusable track bundle that machine states play. Returns its id.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "frames": {"type": "number", "description": "clip length in frames"},
+                },
+            }),
+        ),
+        tool(
+            "clip_track_set",
+            "Keyframe one node property inside a clip, creating the track on first use.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "clip": {"type": "integer"},
+                    "id": {"type": "integer"},
+                    "property": {"type": "string"},
+                    "frame": {"type": "number"},
+                    "value": {"description": "number, [x, y], bool, degrees, or #rrggbb"},
+                },
+                "required": ["clip", "id", "property", "value"],
+            }),
+        ),
+        tool(
+            "machine_new",
+            "Create a state machine and, by default, make it the one the runtime starts.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "start": {"type": "boolean", "description": "set as start_machine (default true)"},
+                },
+            }),
+        ),
+        tool(
+            "machine_input",
+            "Declare an input on a machine: bool, number or trigger. Transitions gate on these.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "machine": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["bool", "number", "trigger"]},
+                    "default": {"description": "default value for bool or number"},
+                },
+                "required": ["machine", "name"],
+            }),
+        ),
+        tool(
+            "machine_state",
+            "Add a state to a machine. With a clip it plays that clip; without one it rests on the document values. The first state is the entry state.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "machine": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "clip": {"type": "integer"},
+                    "speed": {"type": "number"},
+                    "loop": {"type": "string", "enum": ["loop", "once", "pingpong"]},
+                },
+                "required": ["machine", "name"],
+            }),
+        ),
+        tool(
+            "machine_transition",
+            "Add a transition from one state to another, gated on one input: is <bool>, value <number> with op eq/ne/lt/le/gt/ge, or triggered for a trigger input. No input means an unconditional transition.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "machine": {"type": "integer"},
+                    "from": {"type": "integer"},
+                    "to": {"type": "integer"},
+                    "input": {"type": "string"},
+                    "is": {"type": "boolean"},
+                    "value": {"type": "number"},
+                    "op": {"type": "string", "enum": ["eq", "ne", "lt", "le", "gt", "ge"]},
+                    "triggered": {"type": "boolean"},
+                    "duration": {"type": "number", "description": "crossfade in frames (default 0)"},
+                    "exitTime": {"type": "number"},
+                },
+                "required": ["machine", "from", "to"],
+            }),
+        ),
+        tool(
+            "playback",
+            "Play (the start machine, or the timeline), pause, or scrub to a frame. Playback state lives in the session, so scrub then render_png at that frame.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["play", "pause", "scrub"]},
+                    "frame": {"type": "number", "description": "for scrub"},
+                    "loop": {"type": "boolean", "description": "loop timeline playback (default true)"},
+                },
+            }),
+        ),
+        tool(
+            "input_set",
+            "Set a machine input value. The machine reacts on the next tick, which render_png performs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "bool": {"type": "boolean"},
+                    "number": {"type": "number"},
+                },
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "input_fire",
+            "Fire a trigger input on the start machine.",
+            json!({
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            }),
+        ),
     ]
 }
 
@@ -157,11 +314,18 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
     })
 }
 
-pub fn call_tool(session: &mut Session, name: &str, arguments: &Value) -> Result<ToolResult, String> {
+pub fn call_tool(
+    session: &mut Session,
+    name: &str,
+    arguments: &Value,
+) -> Result<ToolResult, String> {
     let outcome = match name {
         "project_new" => {
             let width = arguments.get("width").and_then(Value::as_u64).unwrap_or(64) as u32;
-            let height = arguments.get("height").and_then(Value::as_u64).unwrap_or(64) as u32;
+            let height = arguments
+                .get("height")
+                .and_then(Value::as_u64)
+                .unwrap_or(64) as u32;
             let title = arguments.get("name").and_then(Value::as_str);
             session.project_new(title, width, height)
         }
@@ -173,7 +337,10 @@ pub fn call_tool(session: &mut Session, name: &str, arguments: &Value) -> Result
             session.project_open(std::path::Path::new(path))
         }
         "project_save" => {
-            let path = arguments.get("path").and_then(Value::as_str).map(std::path::Path::new);
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(std::path::Path::new);
             session.project_save(path)
         }
         "project_info" => Ok(session.project_info()),
@@ -182,6 +349,18 @@ pub fn call_tool(session: &mut Session, name: &str, arguments: &Value) -> Result
         "transform" => session.transform(arguments),
         "delete" => session.delete(arguments),
         "render_png" => session.render_png(arguments),
+        "timeline_set" => session.timeline_set(arguments),
+        "timeline_remove" => session.timeline_remove(arguments),
+        "timeline_info" => session.timeline_info(arguments),
+        "clip_new" => session.clip_new(arguments),
+        "clip_track_set" => session.clip_track_set(arguments),
+        "machine_new" => session.machine_new(arguments),
+        "machine_input" => session.machine_input(arguments),
+        "machine_state" => session.machine_state(arguments),
+        "machine_transition" => session.machine_transition(arguments),
+        "playback" => session.playback(arguments),
+        "input_set" => session.input_set(arguments),
+        "input_fire" => session.input_fire(arguments),
         "validate" => session.validate(),
         "import_svg" => session.import_svg(arguments),
         "export_svg" => session.export_svg(arguments),
