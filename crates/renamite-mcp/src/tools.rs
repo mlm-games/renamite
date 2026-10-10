@@ -13,7 +13,7 @@ pub enum ToolResult {
 const COLOR_DOC: &str = "#rrggbb or #rrggbbaa, or none to drop the paint";
 
 pub fn tool_definitions() -> Vec<Value> {
-    let ids = || json!({"type": "array", "items": {"type": "integer"}});
+    let ids = || json!({"type": "array", "items": {"type": "string"}, "description": "node handles, e.g. [n0, n3]"});
     vec![
         tool(
             "project_new",
@@ -153,7 +153,7 @@ pub fn tool_definitions() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "id": {"type": "integer"},
+                    "id": {"type": "string", "description": "node handle, e.g. n0 (legacy enumeration integers still work)"},
                     "property": {"type": "string"},
                     "frame": {"type": "number", "description": "omit to set the static value"},
                     "value": {"description": "number, [x, y], bool, degrees, or #rrggbb"},
@@ -167,7 +167,7 @@ pub fn tool_definitions() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "id": {"type": "integer"},
+                    "id": {"type": "string", "description": "node handle, e.g. n0 (legacy enumeration integers still work)"},
                     "property": {"type": "string"},
                     "frame": {"type": "number"},
                 },
@@ -179,7 +179,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "List the animated properties of a node with their keyframes and values.",
             json!({
                 "type": "object",
-                "properties": {"id": {"type": "integer"}},
+                "properties": {"id": {"type": "string", "description": "node handle, e.g. n0"}},
                 "required": ["id"],
             }),
         ),
@@ -201,7 +201,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "clip": {"type": "integer"},
-                    "id": {"type": "integer"},
+                    "id": {"type": "string", "description": "node handle, e.g. n0 (legacy enumeration integers still work)"},
                     "property": {"type": "string"},
                     "frame": {"type": "number"},
                     "value": {"description": "number, [x, y], bool, degrees, or #rrggbb"},

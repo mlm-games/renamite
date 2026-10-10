@@ -28,7 +28,7 @@ pub fn commands() -> Vec<CommandDef> {
                 "properties": {
                     "name": {"type": "string", "description": "Node name"},
                     "kind": {"type": "string", "enum": ["rect", "ellipse", "star", "polygon", "path", "compound", "group", "layer", "text", "mask"], "description": "Node kind to create"},
-                    "parent": {"type": "object", "description": "{\\"node\\": id} or {\\"comp\\": id}; defaults to the main composition"},
+                    "parent": {"type": "object", "description": "'node' or 'comp' key with an id from inspect_document; defaults to the main composition"},
                     "index": {"type": "integer", "description": "Position among the parent's children; default: last"},
                     "width": {"type": "number", "description": "Shape width, and the outer radius for star/polygon"},
                     "height": {"type": "number", "description": "Shape height"},
@@ -60,7 +60,7 @@ pub fn commands() -> Vec<CommandDef> {
                 "required": ["id", "parent"],
                 "properties": {
                     "id": {"type": "string"},
-                    "parent": {"type": "object", "description": "{\\"node\\": id} or {\\"comp\\": id}"},
+                    "parent": {"type": "object", "description": "'node' or 'comp' key with an id from inspect_document"},
                     "index": {"type": "integer"},
                 },
             }),
@@ -184,8 +184,6 @@ pub fn list(filter: Option<&str>) -> Value {
     })
 }
 
-// ---------- the MCP tool catalogue ----------
-
 /// One MCP tool.
 pub struct ToolDef {
     pub name: &'static str,
@@ -234,7 +232,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "new_project",
             title: "New project",
             description: "Start a new project from a built-in template. List them with the templates tool.",
-            schema: json!({"type": "object", "properties": {"template": {"type": "string", "description": "Template slug; default \\"ellipse\\""}}}),
+            schema: json!({"type": "object", "properties": {"template": {"type": "string", "description": "Template slug; default "ellipse""}}}),
             read_only: false,
         },
         ToolDef {

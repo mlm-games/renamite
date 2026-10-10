@@ -28,8 +28,6 @@ impl std::fmt::Display for BuildError {
 
 type BuildOut = Result<Built, BuildError>;
 
-// ---------- field accessors ----------
-
 fn field<'a>(o: &'a serde_json::Map<String, serde_json::Value>, k: &str) -> Option<&'a serde_json::Value> {
     o.get(k)
 }
@@ -233,8 +231,6 @@ pub fn build(
     }
     Ok(Built { commands: out, selection })
 }
-
-// ---------- shapes ----------
 
 /// The shape kind a `node.insert` asks for, from its flat fields.
 fn shape_kind(o: &serde_json::Map<String, serde_json::Value>) -> Result<renamite_model::ShapeKind, BuildError> {

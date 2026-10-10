@@ -1,6 +1,7 @@
 //! The headless document session: one `RenFile` in memory plus the tool
 //! operations an agent drives it with.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use renamite_animation::{Angle, Animated, EasingHandle, Frame, Interpolation, LoopMode};
@@ -22,6 +23,10 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub struct Session {
     file: RenFile,
     player: Player,
+    /// Stable per-session handles. Enumeration indices shift the moment a
+    /// node is added or removed, so every id the tools hand out is a handle
+    /// assigned on first sight and kept for the session's life.
+    handles: HandleTable,
     path: Option<PathBuf>,
     dirty: bool,
 }
@@ -39,6 +44,7 @@ impl Session {
         Self {
             file,
             player,
+            handles: HandleTable::default(),
             path: None,
             dirty: false,
         }
@@ -74,8 +80,30 @@ impl Session {
 
     // -- ids ---------------------------------------------------------------
 
-    /// Node ids are 0-based indices into the active composition's subtree in
-    /// document order. Recomputed per call, so read ids back after edits.
+    /// Refresh handles against the live tree: new nodes get one, removed
+    /// nodes lose theirs.
+    pub fn sync_handles(&mut self) {
+        let live = self.node_ids();
+        for id in &live {
+            if !self.handles.nodes.contains_key(id) {
+                let handle = format!("n{}", self.handles.next);
+                self.handles.next += 1;
+                self.handles.nodes.insert(*id, handle);
+                self.handles.order.push(*id);
+            }
+        }
+        let keep: HashSet<NodeId> = live.into_iter().collect();
+        self.handles.order.retain(|id| keep.contains(id));
+    }
+
+    fn handle_of(&mut self, id: NodeId) -> Value {
+        self.sync_handles();
+        match self.handles.nodes.get(&id) {
+            Some(handle) => json!(handle),
+            None => json!(null),
+        }
+    }
+
     pub fn node_ids(&self) -> Vec<NodeId> {
         let mut ids = Vec::new();
         let Some(comp) = self.file.document.compositions.get(self.file.document.main) else {
@@ -94,27 +122,19 @@ impl Session {
         ids
     }
 
-    fn ids_of(&self, params: &Value) -> Result<Vec<NodeId>, String> {
-        let all = self.node_ids();
-        let requested: Vec<usize> = match params.get("ids") {
+    fn ids_of(&mut self, params: &Value) -> Result<Vec<NodeId>, String> {
+        self.sync_handles();
+        match params.get("ids") {
             Some(Value::Array(items)) => items
                 .iter()
                 .map(|item| {
-                    item.as_u64()
-                        .map(|value| value as usize)
-                        .ok_or_else(|| "ids must be integers".to_string())
+                    self.handles
+                        .resolve(item)
+                        .ok_or_else(|| "unknown node handle".to_string())
                 })
-                .collect::<Result<_, _>>()?,
-            _ => (0..all.len()).collect(),
-        };
-        requested
-            .into_iter()
-            .map(|index| {
-                all.get(index)
-                    .copied()
-                    .ok_or_else(|| format!("no node id {index} in the active composition"))
-            })
-            .collect()
+                .collect(),
+            _ => Ok(self.handles.live().into_iter().map(|(_, id)| id).collect()),
+        }
     }
 
     // -- project lifecycle -------------------------------------------------
@@ -180,21 +200,28 @@ impl Session {
         Ok(json!({"ok": true, "path": target.display().to_string(), "binary": binary}))
     }
 
-    pub fn project_info(&self) -> Value {
-        let comp = self.file.document.compositions.get(self.file.document.main);
-        let nodes: Vec<Value> = self
-            .node_ids()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, id)| {
-                let node = self.file.document.nodes.get(*id)?;
-                let parent = node
-                    .parent
-                    .and_then(|parent| self.node_ids().iter().position(|id| *id == parent));
+    pub fn project_info(&mut self) -> Value {
+        self.sync_handles();
+        let ids = self.node_ids();
+        let comp = self
+            .file
+            .document
+            .compositions
+            .get(self.file.document.main)
+            .map(|c| (c.name.clone(), c.size));
+        let mut nodes: Vec<Value> = Vec::new();
+        for id in &ids {
+            let Some(node) = self.file.document.nodes.get(*id) else {
+                continue;
+            };
+            let name = node.name.clone();
+            let visible = node.visible;
+            let (kind, detail) = {
                 let (kind, detail) = match &node.kind {
                     NodeKind::Shape(shape) => {
                         let (name, pos, size) = match shape {
-                            ShapeKind::Ellipse { pos, size } | ShapeKind::Rect { pos, size, .. } => (
+                            ShapeKind::Ellipse { pos, size }
+                            | ShapeKind::Rect { pos, size, .. } => (
                                 if matches!(shape, ShapeKind::Ellipse { .. }) {
                                     "ellipse"
                                 } else {
@@ -205,7 +232,6 @@ impl Session {
                             ),
                             _ => ("shape", glam::DVec2::ZERO, glam::DVec2::ZERO),
                         };
-                        let _ = rounded_of(shape);
                         (
                             name.to_string(),
                             json!({"pos": [pos.x, pos.y], "size": [size.x, size.y]}),
@@ -214,7 +240,9 @@ impl Session {
                     NodeKind::Style(style) => {
                         let (paint, width) = match style {
                             StyleKind::Fill { paint, .. } => (paint, None),
-                            StyleKind::Stroke { paint, width, .. } => (paint, Some(width.value_at(0.0))),
+                            StyleKind::Stroke { paint, width, .. } => {
+                                (paint, Some(width.value_at(0.0)))
+                            }
                         };
                         let color = match paint {
                             StylePaint::Solid { color } => Some(color.value_at(0.0)),
@@ -238,26 +266,24 @@ impl Session {
                     NodeKind::Use { .. } => ("use".to_string(), json!({})),
                     NodeKind::Mask(_) => ("mask".to_string(), json!({})),
                 };
-                Some(json!({
-                    "id": index,
-                    "name": node.name,
-                    "kind": kind,
-                    "visible": node.visible,
-                    "parent": parent,
-                    "detail": detail,
-                }))
-            })
-            .collect();
+                (kind, detail)
+            };
+            nodes.push(json!({
+                "handle": self.handle_of(*id),
+                "name": name,
+                "kind": kind,
+                "visible": visible,
+                "detail": detail,
+            }));
+        }
         json!({
-            "name": self.file.document.compositions.get(self.file.document.main).map(|c| c.name.clone()).unwrap_or_default(),
-            "size": comp.map(|c| c.size).unwrap_or((0, 0)),
+            "name": comp.as_ref().map(|(name, _)| name.clone()).unwrap_or_default(),
+            "size": comp.map(|(_, size)| size).unwrap_or((0, 0)),
             "dirty": self.dirty,
             "path": self.path.as_ref().map(|p| p.display().to_string()),
             "nodes": nodes,
         })
     }
-
-    // -- drawing -----------------------------------------------------------
 
     pub fn draw_shape(&mut self, params: &Value) -> Result<Value, String> {
         let shape = params
@@ -306,7 +332,7 @@ impl Session {
         }
         self.dirty = true;
         self.refresh_player();
-        Ok(json!({"ok": true, "id": self.index_of(shape_id), "name": shape}))
+        Ok(json!({"ok": true, "handle": self.handle_of(shape_id), "name": shape}))
     }
 
     pub fn set_paint(&mut self, params: &Value) -> Result<Value, String> {
@@ -568,13 +594,6 @@ impl Session {
     }
 }
 
-fn rounded_of(shape: &ShapeKind) -> f64 {
-    match shape {
-        ShapeKind::Rect { rounded, .. } => rounded.value_at(0.0),
-        _ => 0.0,
-    }
-}
-
 fn fill_node(color: Color, rule: Option<&str>) -> Node {
     Node::new(
         "Fill",
@@ -735,7 +754,7 @@ impl Session {
     }
 
     /// Keyframes of every animated property on the node.
-    pub fn timeline_info(&self, params: &Value) -> Result<Value, String> {
+    pub fn timeline_info(&mut self, params: &Value) -> Result<Value, String> {
         let id = self.node_of(params)?;
         let node = self.file.document.nodes.get(id).ok_or("no such node")?;
         let name = node.name.clone();
@@ -760,7 +779,7 @@ impl Session {
                 .collect();
             animated.push(json!({"property": property, "keys": keys}));
         }
-        Ok(json!({"ok": true, "id": self.index_of(id), "name": name, "animated": animated}))
+        Ok(json!({"ok": true, "handle": self.handle_of(id), "name": name, "animated": animated}))
     }
 
     /// Move the playhead to `frame`. `Player::scrub` leaves machine mode, which
@@ -1112,15 +1131,12 @@ impl Session {
         Ok(json!({"ok": self.player.fire(name)}))
     }
 
-    fn node_of(&self, params: &Value) -> Result<NodeId, String> {
-        let index = params
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or("needs a node id")? as usize;
-        self.node_ids()
-            .get(index)
-            .copied()
-            .ok_or_else(|| format!("no node id {index}"))
+    fn node_of(&mut self, params: &Value) -> Result<NodeId, String> {
+        self.sync_handles();
+        let handle = params.get("id").ok_or("needs a node id")?;
+        self.handles
+            .resolve(handle)
+            .ok_or_else(|| "unknown node handle".to_string())
     }
 
     fn clip_of(&self, params: &Value) -> Result<ClipId, String> {
@@ -1257,5 +1273,38 @@ fn model_value_json(value: &ModelValue) -> Value {
         ModelValue::Angle(value) => json!(value.0.to_degrees()),
         ModelValue::Color(value) => json!(hex_color(*value)),
         other => json!(format!("{other:?}")),
+    }
+}
+
+/// Stable per-session node handles. Enumeration indices shift the moment a
+/// node is added or removed, so the tools hand these out instead. Legacy
+/// integer ids still resolve against the current enumeration order.
+#[derive(Default)]
+pub struct HandleTable {
+    next: usize,
+    nodes: HashMap<NodeId, String>,
+    order: Vec<NodeId>,
+}
+
+impl HandleTable {
+    /// Resolve a handle string, or a legacy enumeration index, to a node.
+    pub fn resolve(&self, handle: &Value) -> Option<NodeId> {
+        if let Some(text) = handle.as_str() {
+            return self
+                .order
+                .iter()
+                .copied()
+                .find(|id| self.nodes.get(id).map(String::as_str) == Some(text));
+        }
+        let index = handle.as_u64()? as usize;
+        self.order.get(index).copied()
+    }
+
+    /// Live handles with their nodes, in assignment order.
+    pub fn live(&self) -> Vec<(Value, NodeId)> {
+        self.order
+            .iter()
+            .filter_map(|id| self.nodes.get(id).map(|handle| (json!(handle), *id)))
+            .collect()
     }
 }
