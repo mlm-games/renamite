@@ -12,8 +12,8 @@ categories = ["graphics", "multimedia::images"]
 [dependencies]
 glam.workspace = true
 renamite-animation.workspace = true
+renamite-io-ren = { workspace = true, features = ["binary"] }
 renamite-behavior-common.workspace = true
-renamite-io-ren.workspace = true
 renamite-io-svg.workspace = true
 renamite-machine.workspace = true
 renamite-model.workspace = true
@@ -25,3 +25,4 @@ repose-core.workspace = true
 pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+log.workspace = true

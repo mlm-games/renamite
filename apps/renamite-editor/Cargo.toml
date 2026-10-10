@@ -43,6 +43,7 @@ categories = ["android.intent.category.LAUNCHER"]
 [dependencies]
 repose-platform.workspace = true
 repose-core.workspace = true
+renamite-mcp.workspace = true
 renamite-ui.workspace = true
 renamite-platform.workspace = true
 anyhow.workspace = true

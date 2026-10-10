@@ -9,10 +9,16 @@
 //! message).
 #![forbid(unsafe_code)]
 
+mod control;
+mod ops;
+mod remote;
 mod server;
 mod session;
 mod tools;
 
+pub use control::{ControlCall, ControlChannel, control_apply};
+pub use ops::HandleTable;
+pub use remote::serve as serve_remote;
 pub use server::{PROTOCOL_VERSION, Server};
 pub use session::Session;
 pub use tools::{ToolResult, call_tool, tool_definitions};

@@ -9,10 +9,63 @@ const ANDROID_PACKAGE: &str = "org.mlm.renamite";
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn desktop_main() -> anyhow::Result<()> {
+    let control = match control_addr() {
+        Some(addr) => Some(
+            renamite_mcp::ControlChannel::spawn(&addr)
+                .map_err(|error| anyhow::anyhow!("control channel {addr}: {error}"))?,
+        ),
+        None => None,
+    };
+    let handles = std::sync::Mutex::new(renamite_mcp::HandleTable::default());
     repose_platform::run_desktop_app_with_config(
-        renamite_ui::app,
+        move |sched, ctx| {
+            drain_control(control.as_ref(), &handles, ctx);
+            renamite_ui::app(sched, ctx)
+        },
         repose_platform::AppConfig::default(),
     )
+}
+
+/// `--control <host:port>` drives the editor over a loopback JSON-lines
+/// channel; without it the editor is standalone as before.
+fn control_addr() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--control" {
+            return args.next();
+        }
+        if let Some(addr) = arg.strip_prefix("--control=") {
+            return Some(addr.to_string());
+        }
+    }
+    None
+}
+
+/// Apply queued control calls to the live session. `init_session` is keyed
+/// state, so it hands back the same session the editor is showing.
+fn drain_control(
+    control: Option<&renamite_mcp::ControlChannel>,
+    handles: &std::sync::Mutex<renamite_mcp::HandleTable>,
+    ctx: &repose_core::RenderContext,
+) {
+    let Some(control) = control else { return };
+    let calls = control.take();
+    if calls.is_empty() {
+        return;
+    }
+    let session = renamite_ui::session::init_session(ctx);
+    let mut borrowed = session.borrow_mut();
+    let mut handles = handles.lock().unwrap_or_else(|e| e.into_inner());
+    for call in calls {
+        let reply = renamite_mcp::control_apply(
+            &mut borrowed.file,
+            &mut handles,
+            &call.method,
+            &call.params,
+        );
+        borrowed.revision = borrowed.revision.wrapping_add(1);
+        let _ = call.reply.send(reply);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

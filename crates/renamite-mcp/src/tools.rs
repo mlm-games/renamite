@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
+use crate::ops::HandleTable;
 use crate::session::Session;
+use renamite_io_ren::RenFile;
 
 pub enum ToolResult {
     Ok(Value),
@@ -320,6 +322,10 @@ pub fn call_tool(
     arguments: &Value,
 ) -> Result<ToolResult, String> {
     let outcome = match name {
+        "render_png" => session.render_png(arguments),
+        "playback" => session.playback(arguments),
+        "input_set" => session.input_set(arguments),
+        "input_fire" => session.input_fire(arguments),
         "project_new" => {
             let width = arguments.get("width").and_then(Value::as_u64).unwrap_or(64) as u32;
             let height = arguments
@@ -334,7 +340,9 @@ pub fn call_tool(
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or("project_open needs a path")?;
-            session.project_open(std::path::Path::new(path))
+            let value = session.project_open(std::path::Path::new(path))?;
+            session.sync_handles();
+            Ok(value)
         }
         "project_save" => {
             let path = arguments
@@ -343,31 +351,65 @@ pub fn call_tool(
                 .map(std::path::Path::new);
             session.project_save(path)
         }
-        "project_info" => Ok(session.project_info()),
-        "draw_shape" => session.draw_shape(arguments),
-        "set_paint" => session.set_paint(arguments),
-        "transform" => session.transform(arguments),
-        "delete" => session.delete(arguments),
-        "render_png" => session.render_png(arguments),
-        "timeline_set" => session.timeline_set(arguments),
-        "timeline_remove" => session.timeline_remove(arguments),
-        "timeline_info" => session.timeline_info(arguments),
-        "clip_new" => session.clip_new(arguments),
-        "clip_track_set" => session.clip_track_set(arguments),
-        "machine_new" => session.machine_new(arguments),
-        "machine_input" => session.machine_input(arguments),
-        "machine_state" => session.machine_state(arguments),
-        "machine_transition" => session.machine_transition(arguments),
-        "playback" => session.playback(arguments),
-        "input_set" => session.input_set(arguments),
-        "input_fire" => session.input_fire(arguments),
-        "validate" => session.validate(),
-        "import_svg" => session.import_svg(arguments),
-        "export_svg" => session.export_svg(arguments),
-        other => Err(format!("unknown tool {other}")),
+        document => dispatch_document(&mut session.file, &mut session.handles, document, arguments),
     };
     Ok(match outcome {
         Ok(value) => ToolResult::Ok(value),
         Err(message) => ToolResult::Err(message),
     })
+}
+
+/// The document tools, which run against a bare `RenFile` plus its handle
+/// table. The MCP session and the editor's control channel both go through
+/// here, so one implementation serves both.
+pub fn dispatch_document(
+    file: &mut RenFile,
+    handles: &mut HandleTable,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    use crate::ops;
+    match name {
+        "project_info" => Ok(ops::project_info(file, handles)),
+        "project_save" => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("project_save needs a path")?;
+            ops::project_save(file, std::path::Path::new(path))
+        }
+        "project_new" => {
+            let width = arguments.get("width").and_then(Value::as_u64).unwrap_or(64) as u32;
+            let height = arguments
+                .get("height")
+                .and_then(Value::as_u64)
+                .unwrap_or(64) as u32;
+            let title = arguments.get("name").and_then(Value::as_str);
+            ops::project_new(file, handles, title, width, height)
+        }
+        "project_open" => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("project_open needs a path")?;
+            ops::project_open(file, std::path::Path::new(path))
+        }
+        "draw_shape" => ops::draw_shape(file, handles, arguments),
+        "set_paint" => ops::set_paint(file, handles, arguments),
+        "transform" => ops::transform(file, handles, arguments),
+        "delete" => ops::delete(file, handles, arguments),
+        "timeline_set" => ops::timeline_set(file, handles, arguments),
+        "timeline_remove" => ops::timeline_remove(file, handles, arguments),
+        "timeline_info" => ops::timeline_info(file, handles, arguments),
+        "clip_new" => ops::clip_new(file, arguments),
+        "clip_track_set" => ops::clip_track_set(file, handles, arguments),
+        "machine_new" => ops::machine_new(file, arguments),
+        "machine_input" => ops::machine_input(file, arguments),
+        "machine_state" => ops::machine_state(file, arguments),
+        "machine_transition" => ops::machine_transition(file, arguments),
+        "validate" => ops::validate(file),
+        "import_svg" => ops::import_svg(file, arguments),
+        "export_svg" => ops::export_svg(file, arguments),
+        other => Err(format!("unknown tool {other}")),
+    }
 }

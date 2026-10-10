@@ -89,6 +89,7 @@ renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.3.10" }
 renamite-validate = { path = "crates/renamite-validate", version = "0.3.10" }
 renamite-examples = { path = "crates/renamite-examples", version = "0.3.10" }
 renamite-player = { path = "crates/renamite-player", version = "0.3.10" }
+renamite-mcp = { path = "crates/renamite-mcp", version = "0.3.10" }
 renamite-player-ui = { path = "crates/renamite-player-ui", version = "0.3.10" }
 
 # [patch.crates-io]

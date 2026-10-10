@@ -3357,6 +3357,7 @@ version = "0.3.10"
 dependencies = [
  "anyhow",
  "env_logger",
+ "renamite-mcp",
  "renamite-platform",
  "renamite-ui",
  "repose-core",
@@ -3473,6 +3474,7 @@ name = "renamite-mcp"
 version = "0.3.10"
 dependencies = [
  "glam",
+ "log",
  "pollster 0.4.0",
  "renamite-animation",
  "renamite-behavior-common",
