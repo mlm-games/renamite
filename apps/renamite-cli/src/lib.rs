@@ -175,6 +175,9 @@ pub enum Commands {
     },
 
     /// Generate shell completions
+    /// Serve the MCP server over stdio.
+    Mcp {},
+
     Completions { shell: clap_complete::Shell },
 }
 
@@ -250,6 +253,7 @@ fn dispatch(command: Commands) -> Result<()> {
             output,
             strict,
         } => cmd_import_svg(input, output, strict),
+        Commands::Mcp {} => renamite_mcp::serve().map_err(|error| anyhow::anyhow!("mcp: {error}")),
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();

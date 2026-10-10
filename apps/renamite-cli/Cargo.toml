@@ -10,6 +10,7 @@ name = "renamite"
 path = "src/main.rs"
 
 [dependencies]
+renamite-mcp = { path = "../../crates/renamite-mcp", version = "0.3.10" }
 renamite-player = { workspace = true, features = ["binary"] }
 renamite-io-ren = { workspace = true, features = ["binary"] }
 renamite-io-lottie.workspace = true

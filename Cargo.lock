@@ -3338,6 +3338,7 @@ dependencies = [
  "renamite-io-lottie",
  "renamite-io-ren",
  "renamite-io-svg",
+ "renamite-mcp",
  "renamite-model",
  "renamite-platform",
  "renamite-player",
@@ -3465,6 +3466,26 @@ dependencies = [
  "serde",
  "slotmap",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "renamite-mcp"
+version = "0.3.10"
+dependencies = [
+ "glam",
+ "pollster 0.4.0",
+ "renamite-animation",
+ "renamite-behavior-common",
+ "renamite-io-ren",
+ "renamite-io-svg",
+ "renamite-model",
+ "renamite-player",
+ "renamite-render-bridge",
+ "renamite-render-offscreen",
+ "renamite-validate",
+ "repose-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
