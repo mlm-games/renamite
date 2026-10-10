@@ -73,6 +73,18 @@ pub enum SelectionBoolean {
     Xor,
 }
 
+impl From<SelectionBoolean> for renamite_behavior_common::pathfinder::ShapeBoolean {
+    fn from(op: SelectionBoolean) -> Self {
+        use renamite_behavior_common::pathfinder::ShapeBoolean as B;
+        match op {
+            SelectionBoolean::Union => B::Union,
+            SelectionBoolean::Difference => B::Difference,
+            SelectionBoolean::Intersection => B::Intersection,
+            SelectionBoolean::Xor => B::Xor,
+        }
+    }
+}
+
 pub struct Session {
     pub file: RenFile,
     pub current_path: Option<PathBuf>,
@@ -836,67 +848,14 @@ impl Session {
         self.repaint();
     }
 
+    /// Outermost selected nodes, in selection order (descendants of a selected
+    /// group are dropped). Shared with the MCP server through
+    /// `pathfinder::selection_roots`.
     pub(crate) fn selected_roots(&self) -> Vec<renamite_model::NodeId> {
-        let selected: HashSet<_> = self
-            .selection
-            .nodes
-            .iter()
-            .copied()
-            .filter(|&id| node_is_attached(&self.file.document, id))
-            .collect();
-        self.selection
-            .nodes
-            .iter()
-            .copied()
-            .filter(|&id| node_is_attached(&self.file.document, id))
-            .filter(|&id| {
-                let mut current = id;
-                let mut seen = HashSet::new();
-                while let Some(node) = self.file.document.nodes.get(current) {
-                    if !seen.insert(current) {
-                        return false;
-                    }
-                    let Some(parent) = node.parent else {
-                        break;
-                    };
-                    if selected.contains(&parent) {
-                        return false;
-                    }
-                    current = parent;
-                }
-                true
-            })
-            .collect()
-    }
-
-    /// Roots that can carry a geometric edit (align/distribute/flip/nudge):
-    /// style and modifier nodes have no honored transform (see
-    /// `node_supports_transform`), so resolve them to the shape they paint
-    /// or affect instead of writing dead values. Returns `None` when the
-    /// node is geometric already or no carrier exists.
-    pub(crate) fn geometric_target(
-        &self,
-        id: renamite_model::NodeId,
-    ) -> Option<renamite_model::NodeId> {
-        let node = self.file.document.nodes.get(id)?;
-        if renamite_model::node_supports_transform(&node.kind) {
-            return Some(id);
-        }
-        match &node.kind {
-            renamite_model::NodeKind::Style(_) => {
-                crate::panels::properties::painted_shape_for_session(self, id)
-            }
-            renamite_model::NodeKind::Modifier(_) => {
-                let parent = node.parent?;
-                let parent_node = self.file.document.nodes.get(parent)?;
-                if renamite_model::node_supports_transform(&parent_node.kind) {
-                    Some(parent)
-                } else {
-                    self.geometric_target(parent)
-                }
-            }
-            _ => None,
-        }
+        renamite_behavior_common::pathfinder::selection_roots(
+            &self.file.document,
+            &self.selection.nodes,
+        )
     }
 
     fn tree_of(&self, id: renamite_model::NodeId) -> renamite_history::NodeTree {
@@ -1591,479 +1550,71 @@ impl Session {
         ]);
     }
 
-    fn selected_shape_roots_in_z_order(&self) -> Vec<renamite_model::NodeId> {
-        use renamite_model::{NodeKind, ShapeKind};
-
-        let doc = &self.file.document;
-        let mut out = Vec::new();
-        fn visit(
-            doc: &renamite_model::Document,
-            children: &[renamite_model::NodeId],
-            sel: &[renamite_model::NodeId],
-            inherited_selected: bool,
-            out: &mut Vec<renamite_model::NodeId>,
-        ) {
-            for &id in children.iter().rev() {
-                let Some(node) = doc.nodes.get(id) else {
-                    continue;
-                };
-                let selected = inherited_selected || sel.contains(&id);
-
-                match &node.kind {
-                    NodeKind::Shape(
-                        ShapeKind::Path(_)
-                        | ShapeKind::Rect { .. }
-                        | ShapeKind::Ellipse { .. }
-                        | ShapeKind::Star { .. }
-                        | ShapeKind::Polygon { .. }
-                        | ShapeKind::CompoundPath(_),
-                    ) => {
-                        if selected {
-                            out.push(id);
-                        }
-                    }
-                    NodeKind::Group | NodeKind::Layer(_) => {
-                        visit(doc, &node.children, sel, selected, out);
-                    }
-                    _ => {}
-                }
+    /// Apply a Pathfinder result as one undo step, or report why there was
+    /// nothing to do. Shared by boolean / divide / combine / break apart.
+    fn run_pathfinder(
+        &mut self,
+        edit: Result<renamite_behavior_common::pathfinder::PathfinderEdit, String>,
+        fallback_label: String,
+    ) {
+        let edit = match edit {
+            Ok(edit) => edit,
+            Err(message) => {
+                self.status = Some(message);
+                self.repaint();
+                return;
             }
-        }
-        let comp = doc.main;
-        let Some(c) = doc.compositions.get(comp) else {
-            return out;
         };
-        visit(doc, &c.children, &self.selection.nodes, false, &mut out);
-
-        let mut seen = HashSet::new();
-        out.retain(|id| seen.insert(*id));
-        out
+        self.apply_outputs(smallvec![
+            ToolOutput::BeginTransaction(match edit.label.is_empty() {
+                true => fallback_label,
+                false => edit.label,
+            }),
+            ToolOutput::Commands(edit.commands.into_iter().collect()),
+            ToolOutput::CommitTransaction,
+            ToolOutput::RequestSelection(edit.selection),
+        ]);
     }
 
-    fn contours_in_subject_space(
-        &self,
-        id: renamite_model::NodeId,
-        subject: renamite_model::NodeId,
-    ) -> Result<Vec<renamite_geometry::VectorPath>, String> {
-        use renamite_model::{NodeKind, Overrides, ShapeKind};
-
-        let frame = self.playback.head;
-        let doc = &self.file.document;
-        let Some(node) = doc.nodes.get(id) else {
-            return Err("Selected node no longer exists".into());
-        };
-        let local: kurbo::BezPath = match &node.kind {
-            NodeKind::Shape(ShapeKind::CompoundPath(compound)) => compound.to_bez_path(frame),
-            NodeKind::Shape(shape) => {
-                renamite_model::shape_path(shape, id, frame, &Overrides::default())
-            }
-            _ => return Err("Selection contains non-shape nodes".into()),
-        };
-
-        let Some(from) = renamite_model::node_transform_context(doc, id, frame) else {
-            return Err("Cannot resolve transforms for the selection".into());
-        };
-        let Some(to) = renamite_model::node_transform_context(doc, subject, frame) else {
-            return Err("Cannot resolve transforms for the selection".into());
-        };
-        let to_subject_space = to.world.inverse() * from.world;
-
-        let mapped = to_subject_space * local;
-        Ok(renamite_geometry::split_bez_subpaths(&mapped))
-    }
     pub fn boolean_selection(&mut self, operation: SelectionBoolean) {
         let label = format!("{operation:?}");
-        let ids = self.selected_shape_roots_in_z_order();
-
-        if ids.len() < 2 {
-            self.status = Some("Select at least two closed shapes".into());
-            self.repaint();
-            return;
-        }
-
-        let subject = ids[0];
-        let mut accumulated: Vec<renamite_geometry::VectorPath> =
-            match self.contours_in_subject_space(subject, subject) {
-                Ok(paths) => paths,
-                Err(message) => {
-                    self.status = Some(message);
-                    self.repaint();
-                    return;
-                }
-            };
-        if accumulated.is_empty() {
-            self.status = Some("The subject has no geometry".into());
-            self.repaint();
-            return;
-        }
-
-        for cutter in ids.iter().copied().skip(1) {
-            let rhs = match self.contours_in_subject_space(cutter, subject) {
-                Ok(paths) => paths,
-                Err(message) => {
-                    self.status = Some(message);
-                    self.repaint();
-                    return;
-                }
-            };
-            let rhs_bez = renamite_geometry::contours_to_bez(&rhs);
-
-            let op = match operation {
-                SelectionBoolean::Union => renamite_geometry::BooleanOp::Union,
-                SelectionBoolean::Difference => renamite_geometry::BooleanOp::Difference,
-                SelectionBoolean::Intersection => renamite_geometry::BooleanOp::Intersection,
-                SelectionBoolean::Xor => renamite_geometry::BooleanOp::Xor,
-            };
-
-            let result = renamite_geometry::boolean_bez(
-                &renamite_geometry::contours_to_bez(&accumulated),
-                &rhs_bez,
-                op,
-            );
-
-            match result {
-                Ok(contours) => accumulated = contours,
-                Err(error) => {
-                    self.status = Some(error.to_string());
-                    self.repaint();
-                    return;
-                }
-            }
-        }
-
-        if accumulated.is_empty() {
-            let commands: SmallVec<[EditorCommand; 4]> = ids
-                .iter()
-                .copied()
-                .map(|id| EditorCommand::RemoveNode { id })
-                .collect();
-
-            self.apply_outputs(smallvec![
-                ToolOutput::BeginTransaction(label),
-                ToolOutput::Commands(commands),
-                ToolOutput::CommitTransaction,
-                ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(Vec::new())),
-            ]);
-            return;
-        }
-
-        let replacement = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
-            renamite_model::CompoundPath {
-                contours: accumulated
-                    .into_iter()
-                    .map(renamite_animation::Animated::new)
-                    .collect(),
-            },
-        ));
-
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        commands.push(EditorCommand::SetNodeKind {
-            id: subject,
-            kind: replacement,
-        });
-
-        for id in ids.iter().copied().skip(1) {
-            commands.push(EditorCommand::RemoveNode { id });
-        }
-
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction(label),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![subject])),
-        ]);
+        let edit = renamite_behavior_common::pathfinder::boolean(
+            &self.file.document,
+            self.file.document.main,
+            &self.selection.nodes,
+            self.playback.head,
+            operation.into(),
+        );
+        self.run_pathfinder(edit, label);
     }
 
     pub fn divide_selection(&mut self) {
-        use renamite_history::NodeTree;
-        use renamite_model::{Node, NodeKind, Parent, ShapeKind};
-
-        let ids = self.selected_shape_roots_in_z_order();
-        if ids.len() < 2 {
-            self.status = Some("Select at least two closed shapes to divide".into());
-            self.repaint();
-            return;
-        }
-        let subject = ids[0];
-
-        {
-            let doc = &self.file.document;
-            let frame = self.playback.head;
-            for &id in &ids {
-                let closed = match doc.nodes.get(id).map(|n| &n.kind) {
-                    Some(NodeKind::Shape(ShapeKind::Path(p))) => p.value_at(frame).closed,
-                    Some(NodeKind::Shape(ShapeKind::CompoundPath(c))) => {
-                        c.contours.iter().all(|p| p.value_at(frame).closed)
-                    }
-                    Some(NodeKind::Shape(_)) => true,
-                    _ => false,
-                };
-                if !closed {
-                    self.status =
-                        Some("Division requires closed shapes (open cutting not supported)".into());
-                    self.repaint();
-                    return;
-                }
-            }
-        }
-
-        let mut pieces: Vec<Vec<renamite_geometry::VectorPath>> = Vec::new();
-        let mut remaining: Vec<renamite_geometry::VectorPath> =
-            match self.contours_in_subject_space(subject, subject) {
-                Ok(paths) => paths,
-                Err(message) => {
-                    self.status = Some(message);
-                    self.repaint();
-                    return;
-                }
-            };
-
-        for cutter in ids.iter().copied().skip(1) {
-            let rhs = match self.contours_in_subject_space(cutter, subject) {
-                Ok(paths) => paths,
-                Err(message) => {
-                    self.status = Some(message);
-                    self.repaint();
-                    return;
-                }
-            };
-            let rhs_bez = renamite_geometry::contours_to_bez(&rhs);
-
-            let current = mem::take(&mut remaining);
-            if current.is_empty() {
-                break;
-            }
-            let cur_bez = renamite_geometry::contours_to_bez(&current);
-
-            match (
-                renamite_geometry::boolean_bez(
-                    &cur_bez,
-                    &rhs_bez,
-                    renamite_geometry::BooleanOp::Intersection,
-                ),
-                renamite_geometry::boolean_bez(
-                    &cur_bez,
-                    &rhs_bez,
-                    renamite_geometry::BooleanOp::Difference,
-                ),
-            ) {
-                (Ok(inside), Ok(outside)) => {
-                    if !inside.is_empty() {
-                        pieces.push(inside);
-                    }
-                    remaining = outside;
-
-                    if remaining.is_empty() {
-                        break;
-                    }
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    self.status = Some(e.to_string());
-                    self.repaint();
-                    return;
-                }
-            }
-        }
-        if !remaining.is_empty() {
-            pieces.push(remaining);
-        }
-        let output_kinds: Vec<renamite_model::ShapeKind> = pieces
-            .into_iter()
-            .filter_map(shape_kind_from_contours)
-            .collect();
-        if output_kinds.is_empty() {
-            self.status = Some("Division produced no geometry".into());
-            self.repaint();
-            return;
-        }
-
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        commands.push(EditorCommand::SetNodeKind {
-            id: subject,
-            kind: renamite_model::NodeKind::Shape(output_kinds[0].clone()),
-        });
-
-        let (parent, index) = match self.file.document.locate(subject) {
-            Some((Parent::Node(p), i)) => (Parent::Node(p), i),
-            Some((Parent::Comp(c), i)) => (Parent::Comp(c), i),
-            None => {
-                self.status = Some("Subject is not attached".into());
-                self.repaint();
-                return;
-            }
-        };
-        let template_name = self
-            .file
-            .document
-            .nodes
-            .get(subject)
-            .map(|n| n.name.clone())
-            .unwrap_or_else(|| "Piece".into());
-
-        for (k, kind) in output_kinds.iter().enumerate().skip(1) {
-            let mut node = self
-                .file
-                .document
-                .nodes
-                .get(subject)
-                .cloned()
-                .unwrap_or_else(|| Node::new(template_name.as_str(), NodeKind::Group));
-            node.name = format!("{template_name} {}", k + 1);
-            node.parent = None;
-            node.children.clear();
-            node.kind = renamite_model::NodeKind::Shape(kind.clone());
-            commands.push(EditorCommand::InsertNode {
-                parent,
-                index: index + k,
-                tree: NodeTree::leaf(node),
-            });
-        }
-
-        for id in ids.iter().copied().skip(1) {
-            commands.push(EditorCommand::RemoveNode { id });
-        }
-
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction("Division".into()),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![subject])),
-        ]);
+        let edit = renamite_behavior_common::pathfinder::divide(
+            &self.file.document,
+            self.file.document.main,
+            &self.selection.nodes,
+            self.playback.head,
+        );
+        self.run_pathfinder(edit, "Division".into());
     }
 
     pub fn combine_selection(&mut self) {
-        let ids = self.selected_shape_roots_in_z_order();
-        if ids.len() < 2 {
-            self.status = Some("Select at least two objects to combine".into());
-            self.repaint();
-            return;
-        }
-        let bottom = ids[0];
-
-        let mut contours: Vec<renamite_geometry::VectorPath> = Vec::new();
-        for id in &ids {
-            match self.contours_in_subject_space(*id, bottom) {
-                Ok(paths) => contours.extend(paths),
-                Err(message) => {
-                    self.status = Some(message);
-                    self.repaint();
-                    return;
-                }
-            }
-        }
-        if contours.is_empty() {
-            self.status = Some("Nothing to combine".into());
-            self.repaint();
-            return;
-        }
-
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        commands.push(EditorCommand::SetNodeKind {
-            id: bottom,
-            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
-                renamite_model::CompoundPath {
-                    contours: contours
-                        .into_iter()
-                        .map(renamite_animation::Animated::new)
-                        .collect(),
-                },
-            )),
-        });
-        for id in ids.iter().copied().skip(1) {
-            commands.push(EditorCommand::RemoveNode { id });
-        }
-
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction("Combine".into()),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![bottom])),
-        ]);
+        let edit = renamite_behavior_common::pathfinder::combine(
+            &self.file.document,
+            self.file.document.main,
+            &self.selection.nodes,
+            self.playback.head,
+        );
+        self.run_pathfinder(edit, "Combine".into());
     }
 
     pub fn break_apart_selection(&mut self) {
-        use renamite_history::NodeTree;
-        use renamite_model::{Node, Parent};
-
-        if self.selection.nodes.len() != 1 {
-            self.status = Some("Select one combined path to break apart".into());
-            self.repaint();
-            return;
-        }
-        let id = self.selection.nodes[0];
-        let Some(contours) = (match self.file.document.nodes.get(id).map(|n| &n.kind) {
-            Some(renamite_model::NodeKind::Shape(renamite_model::ShapeKind::CompoundPath(
-                compound,
-            ))) => Some(
-                compound
-                    .contours
-                    .iter()
-                    .map(|c| c.value_at(self.playback.head))
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        }) else {
-            self.status = Some("Break apart requires a compound path".into());
-            self.repaint();
-            return;
-        };
-        if contours.len() < 2 {
-            self.status = Some("The compound path has a single contour".into());
-            self.repaint();
-            return;
-        }
-
-        let (parent, index) = match self.file.document.locate(id) {
-            Some((Parent::Node(p), i)) => (Parent::Node(p), i),
-            Some((Parent::Comp(c), i)) => (Parent::Comp(c), i),
-            None => {
-                self.status = Some("Node is not attached".into());
-                self.repaint();
-                return;
-            }
-        };
-        let name = self
-            .file
-            .document
-            .nodes
-            .get(id)
-            .map(|n| n.name.clone())
-            .unwrap_or_else(|| "Path".into());
-
-        let mut commands: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        commands.push(EditorCommand::SetNodeKind {
-            id,
-            kind: renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
-                renamite_animation::Animated::new(contours[0].clone()),
-            )),
-        });
-        for (k, contour) in contours.iter().enumerate().skip(1) {
-            let mut node = self
-                .file
-                .document
-                .nodes
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| Node::new(name.as_str(), renamite_model::NodeKind::Group));
-            node.name = format!("{name} {}", k + 1);
-            node.parent = None;
-            node.children.clear();
-            node.kind = renamite_model::NodeKind::Shape(renamite_model::ShapeKind::Path(
-                renamite_animation::Animated::new(contour.clone()),
-            ));
-            commands.push(EditorCommand::InsertNode {
-                parent,
-                index: index + k,
-                tree: NodeTree::leaf(node),
-            });
-        }
-
-        self.apply_outputs(smallvec![
-            ToolOutput::BeginTransaction("Break apart".into()),
-            ToolOutput::Commands(commands),
-            ToolOutput::CommitTransaction,
-            ToolOutput::RequestSelection(renamite_history::SelectionChange::Set(vec![id])),
-        ]);
+        let edit = renamite_behavior_common::pathfinder::break_apart(
+            &self.file.document,
+            &self.selection.nodes,
+            self.playback.head,
+        );
+        self.run_pathfinder(edit, "Break apart".into());
     }
 
     pub fn align_selection(
@@ -2071,198 +1622,61 @@ impl Session {
         op: renamite_behavior_common::align::AlignOp,
         anchor: renamite_behavior_common::align::AlignAnchor,
     ) {
-        use renamite_behavior_common::align;
-        let roots = self.selected_roots();
-        if roots.is_empty() {
-            return;
-        }
-        let bounds = align::root_bounds(&self.file.document, &self.engine.scene().items, &roots);
-        if bounds.is_empty() {
+        let Some(commands) = renamite_behavior_common::edit::align(
+            &self.file.document,
+            self.file.document.main,
+            &self.selection.nodes,
+            self.playback.head,
+            self.record_for_writes(),
+            op,
+            anchor,
+        ) else {
             self.status = Some("Nothing to align".into());
             self.repaint();
             return;
-        }
-        let target = match anchor {
-            align::AlignAnchor::Selection => match align::union_bounds(&bounds) {
-                Some(b) => b,
-                None => return,
-            },
-            align::AlignAnchor::Page => align::page_bounds(
-                self.file
-                    .document
-                    .main_composition()
-                    .map(|composition| composition.size)
-                    .unwrap_or((512, 512)),
-            ),
         };
-        let frame = self.playback.head;
-        let record = self.record_for_writes();
-        let prop = PropPath::new("transform.position");
-        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        for (id, delta) in align::align_deltas(&bounds, target, op) {
-            let Some(id) = self.geometric_target(id) else {
-                continue;
-            };
-            if self
-                .file
-                .document
-                .nodes
-                .get(id)
-                .map(|n| n.locked)
-                .unwrap_or(true)
-            {
-                continue;
-            }
-            if !delta.is_finite() || delta.length_squared() < 1e-24 {
-                continue;
-            }
-            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
-                continue;
-            };
-            let local =
-                renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
-                    .unwrap_or(delta);
-            if !local.is_finite() {
-                continue;
-            }
-            cmds.push(renamite_history::resolve_property_edit(
-                &self.file.document,
-                id,
-                &prop,
-                Value::DVec2(current + local),
-                Frame(frame.round() as i64),
-                record,
-            ));
-        }
-        if cmds.is_empty() {
-            self.status = Some("Nothing to align".into());
-            self.repaint();
-            return;
-        }
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Align".into()),
-            ToolOutput::Commands(cmds),
+            ToolOutput::Commands(commands.into_iter().collect()),
             ToolOutput::CommitTransaction,
         ]);
     }
 
     pub fn distribute_selection(&mut self, horizontal: bool) {
-        use renamite_behavior_common::align;
-        let roots = self.selected_roots();
-        if roots.len() < 3 {
-            self.status = Some("Select 3+ objects to distribute".into());
-            self.repaint();
-            return;
-        }
-        let bounds = align::root_bounds(&self.file.document, &self.engine.scene().items, &roots);
-        if bounds.len() < 3 {
-            self.status = Some("Select 3+ visible objects to distribute".into());
-            self.repaint();
-            return;
-        }
-        let Some(deltas) = align::distribute_deltas(&bounds, horizontal) else {
+        let Some(commands) = renamite_behavior_common::edit::distribute(
+            &self.file.document,
+            self.file.document.main,
+            &self.selection.nodes,
+            self.playback.head,
+            self.record_for_writes(),
+            horizontal,
+        ) else {
             self.status = Some("Nothing to distribute".into());
             self.repaint();
             return;
         };
-        let frame = self.playback.head;
-        let record = self.record_for_writes();
-        let prop = PropPath::new("transform.position");
-        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        for (id, delta) in deltas {
-            let Some(id) = self.geometric_target(id) else {
-                continue;
-            };
-            if self
-                .file
-                .document
-                .nodes
-                .get(id)
-                .map(|n| n.locked)
-                .unwrap_or(true)
-            {
-                continue;
-            }
-            if !delta.is_finite() || delta.length_squared() < 1e-24 {
-                continue;
-            }
-            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
-                continue;
-            };
-            let local =
-                renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
-                    .unwrap_or(delta);
-            if !local.is_finite() {
-                continue;
-            }
-            cmds.push(renamite_history::resolve_property_edit(
-                &self.file.document,
-                id,
-                &prop,
-                Value::DVec2(current + local),
-                Frame(frame.round() as i64),
-                record,
-            ));
-        }
-        if cmds.is_empty() {
-            self.status = Some("Nothing to distribute".into());
-            self.repaint();
-            return;
-        }
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Distribute".into()),
-            ToolOutput::Commands(cmds),
+            ToolOutput::Commands(commands.into_iter().collect()),
             ToolOutput::CommitTransaction,
         ]);
     }
 
     pub fn flip_selection(&mut self, horizontal: bool) {
-        let roots = self.selected_roots();
-        if roots.is_empty() {
-            return;
-        }
-        let frame = self.playback.head;
-        let record = self.record_for_writes();
-        let prop = PropPath::new("transform.scale");
-        let mut cmds: SmallVec<[EditorCommand; 4]> = SmallVec::new();
-        for id in roots {
-            let Some(id) = self.geometric_target(id) else {
-                continue;
-            };
-            let Some(node) = self.file.document.nodes.get(id) else {
-                continue;
-            };
-            if node.locked {
-                continue;
-            }
-            let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame) else {
-                continue;
-            };
-            let next = if horizontal {
-                DVec2::new(-current.x, current.y)
-            } else {
-                DVec2::new(current.x, -current.y)
-            };
-            if !next.is_finite() {
-                continue;
-            }
-            cmds.push(renamite_history::resolve_property_edit(
-                &self.file.document,
-                id,
-                &prop,
-                Value::DVec2(next),
-                Frame(frame.round() as i64),
-                record,
-            ));
-        }
-        if cmds.is_empty() {
+        let Some(commands) = renamite_behavior_common::edit::flip(
+            &self.file.document,
+            &self.selection.nodes,
+            self.playback.head,
+            self.record_for_writes(),
+            horizontal,
+        ) else {
             self.status = Some("Flip does not apply to the selection".into());
             self.repaint();
             return;
-        }
+        };
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Flip".into()),
-            ToolOutput::Commands(cmds),
+            ToolOutput::Commands(commands.into_iter().collect()),
             ToolOutput::CommitTransaction,
         ]);
     }
@@ -2280,50 +1694,18 @@ impl Session {
             2.0
         } / scale;
         let delta = dir * step;
-        if !delta.is_finite() {
+        let Some(commands) = renamite_behavior_common::edit::nudge(
+            &self.file.document,
+            &self.selection.nodes,
+            self.playback.head,
+            self.record_for_writes(),
+            delta,
+        ) else {
             return;
-        }
-        let frame = self.playback.head;
-        let record = self.record_for_writes();
-        let prop = PropPath::new("transform.position");
-        let roots = self.selected_roots();
-        let targets: Vec<renamite_model::NodeId> = roots
-            .into_iter()
-            .filter_map(|id| self.geometric_target(id))
-            .collect();
-        let cmds: SmallVec<[EditorCommand; 4]> = targets
-            .into_iter()
-            .filter_map(|id| {
-                let node = self.file.document.nodes.get(id)?;
-                if node.locked {
-                    return None;
-                }
-                let Ok(Value::DVec2(current)) = self.file.document.value_at(id, &prop, frame)
-                else {
-                    return None;
-                };
-                let local =
-                    renamite_model::world_delta_to_parent(&self.file.document, id, frame, delta)
-                        .unwrap_or(delta);
-                if !local.is_finite() {
-                    return None;
-                }
-                Some(renamite_history::resolve_property_edit(
-                    &self.file.document,
-                    id,
-                    &prop,
-                    Value::DVec2(current + local),
-                    Frame(frame.round() as i64),
-                    record,
-                ))
-            })
-            .collect();
-        if cmds.is_empty() {
-            return;
-        }
+        };
         self.apply_outputs(smallvec![
             ToolOutput::BeginTransaction("Nudge".into()),
-            ToolOutput::Commands(cmds),
+            ToolOutput::Commands(commands.into_iter().collect()),
             ToolOutput::CommitTransaction,
         ]);
     }
@@ -5458,25 +4840,6 @@ fn kurbo_cap(cap: renamite_model::StrokeCap) -> kurbo::Cap {
         renamite_model::StrokeCap::Butt => kurbo::Cap::Butt,
         renamite_model::StrokeCap::Round => kurbo::Cap::Round,
         renamite_model::StrokeCap::Square => kurbo::Cap::Square,
-    }
-}
-
-fn shape_kind_from_contours(
-    contours: Vec<renamite_geometry::VectorPath>,
-) -> Option<renamite_model::ShapeKind> {
-    match contours.len() {
-        0 => None,
-        1 => Some(renamite_model::ShapeKind::Path(
-            renamite_animation::Animated::new(contours.into_iter().next().unwrap()),
-        )),
-        _ => Some(renamite_model::ShapeKind::CompoundPath(
-            renamite_model::CompoundPath {
-                contours: contours
-                    .into_iter()
-                    .map(renamite_animation::Animated::new)
-                    .collect(),
-            },
-        )),
     }
 }
 

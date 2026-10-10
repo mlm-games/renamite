@@ -4,12 +4,14 @@ pub mod align;
 pub mod assets;
 pub mod color;
 pub mod context_menu;
+pub mod edit;
 pub mod fill;
 pub mod inspect;
 pub mod layers;
 pub mod machine;
 pub mod modifiers;
 pub mod path;
+pub mod pathfinder;
 pub mod snap;
 pub mod stroke;
 
