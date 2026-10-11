@@ -6,7 +6,7 @@ license.workspace = true
 description = "Files and autosave backends for renamite (desktop + mobile/web)."
 
 [dependencies]
-rlobkit-dialogs = "0.5"
+rlobkit-dialogs.workspace = true
 game-utils.workspace = true
 log = "0.4"
 futures-lite = "2"
