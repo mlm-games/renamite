@@ -17,6 +17,7 @@ jobs:
       pkgdesc: "Vector animation editor built on the Repose GUI framework"
       binary-name: renamite-${{ inputs.version_name }}-x86_64-unknown-linux-gnu.tar.gz
       binary-name-aarch64: renamite-${{ inputs.version_name }}-aarch64-unknown-linux-gnu.tar.gz
+      extra-binaries: "renamite-cli"
       app-name: "Renamite"
       license: "MPL-2.0"
       provides: "renamite"

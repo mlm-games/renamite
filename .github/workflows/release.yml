@@ -36,6 +36,8 @@ jobs:
       app-name: "renamite"
       app-slug: "renamite"
       bin-name: "renamite-desktop"
+      cargo-build-args: "-p renamite-editor -p renamite-cli"
+      extra-binaries: "renamite=renamite-cli"
       # crate-publish already bumped + tagged; build the editor at that version.
       bump-type: none
       include-android: true
