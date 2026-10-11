@@ -54,4 +54,4 @@ wasm-bindgen = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 winit = "0.30"
-rlobkit-app-events = { version = "0.5", features = ["jni-bridge"] }
+rlobkit-app-events = { version = "0.6", features = ["jni-bridge"] }
