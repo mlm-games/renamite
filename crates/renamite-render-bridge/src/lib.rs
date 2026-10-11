@@ -678,6 +678,15 @@ impl SceneRenderer {
                     }
                 }
             }
+            (ScenePaint::LinearGradient { start, end, stops }, PaintKind::Fill(_)) => {
+                match linear_strip_mesh(source_path, *start, *end, stops, item.opacity, tol) {
+                    Some(m) => Arc::new(m),
+                    None => {
+                        let m = self.tessellate(&lyon_path, &item.kind, [1.0; 4], tol)?;
+                        colorize_mesh(m, &item.paint, item.opacity)
+                    }
+                }
+            }
             _ => match profiled {
                 Some(m) => colorize_mesh(m, &item.paint, item.opacity),
                 None => {
@@ -868,6 +877,117 @@ fn colorize_mesh(mesh: VectorMeshData, paint: &ScenePaint, opacity: f64) -> Arc<
     Arc::new(VectorMeshData {
         vertices,
         indices: mesh.indices,
+    })
+}
+
+/// A path flattened into its closed contours.
+fn flatten_contours(path: &kurbo::BezPath, tol: f32) -> Vec<Vec<[f32; 2]>> {
+    let mut contours: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut cur: Vec<[f32; 2]> = Vec::new();
+    kurbo::flatten(path.elements().iter().copied(), tol as f64, |el| match el {
+        kurbo::PathEl::MoveTo(p) => {
+            if !cur.is_empty() {
+                contours.push(std::mem::take(&mut cur));
+            }
+            cur.push([p.x as f32, p.y as f32]);
+        }
+        kurbo::PathEl::LineTo(p) => cur.push([p.x as f32, p.y as f32]),
+        kurbo::PathEl::ClosePath if !cur.is_empty() => {
+            contours.push(std::mem::take(&mut cur));
+        }
+        _ => {}
+    });
+    if !cur.is_empty() {
+        contours.push(cur);
+    }
+    contours
+}
+
+/// Sutherland-Hodgman clip of a convex polygon down to `dot(p, d) <= bound`.
+fn clip_below(outline: &[glam::DVec2], d: glam::DVec2, bound: f64) -> Vec<glam::DVec2> {
+    let mut out: Vec<glam::DVec2> = Vec::with_capacity(outline.len() + 2);
+    for i in 0..outline.len() {
+        let a = outline[i];
+        let b = outline[(i + 1) % outline.len()];
+        let da = a.dot(d) - bound;
+        let db = b.dot(d) - bound;
+        if da <= 0.0 {
+            out.push(a);
+        }
+        if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+            out.push(a + (b - a) * (da / (da - db)));
+        }
+    }
+    out
+}
+
+/// Linear gradient over a convex path, banded along the gradient axis.
+///
+/// A flat fill only colours its tessellation vertices, so across a large
+/// shape a ramp collapses to a Gouraud blend of its corner colours and every
+/// interior stop is never sampled. Slicing the outline at each stop offset
+/// puts real geometry on every stop, the way `radial_fan_mesh` rings a radial
+/// ramp. Returns `None` for anything it cannot represent, so the caller keeps
+/// the flat tessellation.
+fn linear_strip_mesh(
+    path: &kurbo::BezPath,
+    start: glam::DVec2,
+    end: glam::DVec2,
+    stops: &GradientStops,
+    opacity: f64,
+    tol: f32,
+) -> Option<VectorMeshData> {
+    let mut contours = flatten_contours(path, tol);
+    if contours.len() != 1 {
+        return None;
+    }
+    let contour = contours.pop().unwrap();
+    if contour.len() < 3 || !is_convex(&contour) {
+        return None;
+    }
+    let d = end - start;
+    let len2 = d.length_squared();
+    if !len2.is_finite() || len2 <= 1e-12 {
+        return None;
+    }
+
+    let poly: Vec<glam::DVec2> = contour
+        .iter()
+        .map(|o| glam::DVec2::new(o[0] as f64, o[1] as f64))
+        .collect();
+    let base = start.dot(d);
+    let proj = |p: glam::DVec2| ((p.dot(d) - base) / len2).clamp(0.0, 1.0);
+
+    let mut cuts: Vec<f64> = poly.iter().map(|p| proj(*p)).collect();
+    cuts.extend(stops.0.iter().map(|s| s.offset.clamp(0.0, 1.0)));
+    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+    let mut vertices: Vec<VectorVertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    for pair in cuts.windows(2) {
+        let (t0, t1) = (pair[0], pair[1]);
+        let band = clip_below(&poly, d, base + t1 * len2);
+        let band = clip_below(&band, -d, -(base + t0 * len2));
+        if band.len() < 3 {
+            continue;
+        }
+        let first = vertices.len() as u32;
+        for p in &band {
+            let c = stops.sample(proj(*p));
+            vertices.push(VectorVertex {
+                pos: [p.x as f32, p.y as f32],
+                color: linear_vertex_color(c.r, c.g, c.b, c.a * opacity),
+                uv: [0.0, 0.0],
+            });
+        }
+        for i in 1..band.len() - 1 {
+            indices.extend_from_slice(&[first, first + i as u32, first + i as u32 + 1]);
+        }
+    }
+    (vertices.len() >= 3).then(|| VectorMeshData {
+        vertices: vertices.into(),
+        indices: indices.into(),
     })
 }
 
