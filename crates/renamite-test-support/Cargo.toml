@@ -18,7 +18,7 @@ renamite-machine.workspace = true
 glam.workspace = true
 serde_json.workspace = true
 serde.workspace = true
-proptest = { version = "1", optional = true }
+proptest = { workspace = true, optional = true }
 
 [features]
 proptest = ["dep:proptest"]

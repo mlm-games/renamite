@@ -8,15 +8,15 @@ description = "Files and autosave backends for renamite (desktop + mobile/web)."
 [dependencies]
 rlobkit-dialogs.workspace = true
 game-utils.workspace = true
-log = "0.4"
-futures-lite = "2"
-web-time = "1.1"
+log.workspace = true
+futures-lite.workspace = true
+web-time.workspace = true
 
 [target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
-directories = "6"
+directories.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4"
+wasm-bindgen-futures.workspace = true

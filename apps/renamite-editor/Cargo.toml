@@ -47,11 +47,9 @@ renamite-mcp.workspace = true
 renamite-ui.workspace = true
 renamite-platform.workspace = true
 anyhow.workspace = true
-env_logger = "0.11"
+env_logger.workspace = true
+winit.workspace = true
+rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-
-[target.'cfg(target_os = "android")'.dependencies]
-winit = "0.30"
-rlobkit-app-events = { version = "0.6", features = ["jni-bridge"] }
+wasm-bindgen.workspace = true

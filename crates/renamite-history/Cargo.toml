@@ -17,6 +17,5 @@ renamite-machine.workspace = true
 glam.workspace = true
 
 [dev-dependencies]
-glam.workspace = true
 serde_json.workspace = true
 proptest.workspace = true

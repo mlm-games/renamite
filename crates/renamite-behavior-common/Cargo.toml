@@ -16,7 +16,3 @@ kurbo.workspace = true
 serde.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-renamite-geometry.workspace = true
-kurbo.workspace = true

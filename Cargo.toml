@@ -19,8 +19,6 @@ repose-docking = "0.31"
 repose-platform = "0.31"
 repose-render-wgpu = { version = "0.31", default-features = false }
 repose-text = "0.31"
-repose-app = "0.31"
-repose-tree = "0.31"
 
 game-utils = "0.4"
 
@@ -55,14 +53,25 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 base64 = "0.22"
-tracing = "0.1"
-bytemuck = { version = "1.25", features = ["derive"] }
 rustc-hash = "2.1"
 log = "0.4"
-bitflags = { version = "2", features = ["serde"] }
 
 rlobkit-dialogs = "0.6"
+rlobkit-app-events = "0.6"
 web-workers = "0.3"
+
+env_logger = "0.11"
+futures-lite = "2"
+web-time = "1.1"
+directories = "6"
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+winit = "0.30"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", default-features = false, features = ["console"] }
+console_error_panic_hook = "0.1"
 
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
