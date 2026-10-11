@@ -3269,7 +3269,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renamite-animation"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "proptest",
@@ -3279,7 +3279,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-canvas"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-common"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3311,7 +3311,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-timeline"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3325,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-cli"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-editor"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3369,7 +3369,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-examples"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "image",
@@ -3380,7 +3380,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-geometry"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3391,7 +3391,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-history"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "proptest",
@@ -3408,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-lottie"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-ren"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "postcard",
@@ -3441,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-svg"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3458,7 +3458,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-machine"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-mcp"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "log",
@@ -3493,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-model"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-platform"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "directories",
  "futures-lite",
@@ -3523,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player-ui"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "renamite-behavior-common",
@@ -3550,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-bridge"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "kurbo",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-offscreen"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "glam",
@@ -3591,7 +3591,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-test-support"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "proptest",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-text"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "kurbo",
  "repose-text",
@@ -3619,7 +3619,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-ui"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3661,7 +3661,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-validate"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "glam",
  "image",
@@ -3938,23 +3938,10 @@ dependencies = [
  "jni-min-helper",
  "log",
  "paranoid-android",
- "rlobkit-core 0.6.1",
+ "rlobkit-core",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rlobkit-core"
-version = "0.5.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1c00b67d671791379f4a39d78496f1970fd2f4d1296c58b48c65ea311dfa496"
-dependencies = [
- "bytes",
- "dirs",
- "mime_guess",
- "thiserror 2.0.21",
- "tokio",
 ]
 
 [[package]]
@@ -3972,9 +3959,9 @@ dependencies = [
 
 [[package]]
 name = "rlobkit-dialogs"
-version = "0.5.13"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caeffc3ee0d785fd4b93c8cc308c81fdcefac1f58b6e46a7ac8f2ee50a5a77a2"
+checksum = "dd911dd3ed2eaf1a8658f49bf26d67e43a28d16805c066272f8c3fbba239f351"
 dependencies = [
  "bytes",
  "futures-lite",
@@ -3985,7 +3972,7 @@ dependencies = [
  "mime_guess",
  "ndk-context",
  "rfd",
- "rlobkit-core 0.5.13",
+ "rlobkit-core",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
