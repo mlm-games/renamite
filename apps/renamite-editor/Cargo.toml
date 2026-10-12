@@ -48,6 +48,7 @@ renamite-ui.workspace = true
 renamite-platform.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true
+log.workspace = true
 winit.workspace = true
 rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
 

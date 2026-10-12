@@ -84,7 +84,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         env!("CARGO_PKG_NAME"),
         concat!(
             env!("CARGO_PKG_NAME"),
-            "=info,renamite_ui=info,renamite_platform=info"
+            "=info,renamite_editor=info,renamite_ui=info,renamite_platform=info,rlobkit_app_events=info"
         ),
     );
 
@@ -104,6 +104,12 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             navigation: true,
         },
     );
+
+    // Without this link the Activity's calls are all `UnsatisfiedLinkError`, which
+    // it swallows: the app runs with no insets at all and nothing says why.
+    if !rlobkit_app_events::jni::verify_linked() {
+        log::warn!("renamite: rlobkit bridge missing, window insets will stay zero");
+    }
 
     rlobkit_app_events::insets::set_on_insets(Box::new(
         |insets: rlobkit_app_events::insets::WindowInsets| {

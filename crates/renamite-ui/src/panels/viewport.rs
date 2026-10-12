@@ -6,13 +6,11 @@ use repose_canvas::{Canvas, DrawScope};
 use repose_core::geometry::Rect;
 use repose_core::input::{KeyEvent, PointerEvent, PointerEventKind, PointerKind};
 use repose_core::{
-    AlignItems, Color, CursorIcon, Dp, FocusRequester, JustifyContent, Modifier, Overflow, Px,
-    View, remember_auto, remember_with_key, request_frame, theme,
+    AlignItems, Color, CursorIcon, Dp, FocusRequester, Modifier, Overflow, Px, View, remember_auto,
+    remember_with_key, request_frame, theme,
 };
-use repose_ui::scroll::{
-    HorizontalScrollArea, ScrollArea, remember_horizontal_scroll_state, remember_scroll_state,
-};
-use repose_ui::{Box, Column, Row, Text, TextStyle, ViewExt, ZStack};
+use repose_ui::scroll::{HorizontalScrollArea, remember_horizontal_scroll_state};
+use repose_ui::{Box, Row, Text, TextStyle, ViewExt, ZStack};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -107,411 +105,405 @@ pub fn ViewportPanel(session: SessionRef) -> View {
     let focus = remember_auto("focus", FocusRequester::new);
     let long_press = remember_auto("long_press", || Rc::new(RefCell::new(None::<LongPress>)));
 
-    let show_template_picker = { session.borrow().welcome };
-
-    let main_view = if show_template_picker {
-        TemplatePicker(session.clone())
-    } else {
-        let panning = session.borrow().viewport.pan_last.is_some();
-        let space_armed = session.borrow().viewport.space_held;
-        Canvas(
-            Modifier::new()
-                .fill_max_size()
-                .background(theme().surface_container_lowest)
-                .overflow(Overflow::Clip)
-                .focusable(true)
-                .focus_requester((*focus).clone())
-                .on_globally_positioned({
-                    let session = session.clone();
-                    move |r: Rect| session.borrow_mut().viewport.screen_rect = Some(rect_to_px(r))
-                })
-                .cursor(if panning {
-                    CursorIcon::Grabbing
-                } else if space_armed {
-                    CursorIcon::Hidden
-                } else {
-                    CursorIcon::Default
-                })
-                .on_scroll({
-                    let session = session.clone();
-                    move |delta: repose_core::Vec2| {
-                        let (is_tool_drag, touch_count, canvas_press) = {
-                            let s = session.borrow();
-                            (
-                                s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool),
-                                s.touch_count(),
-                                s.viewport.pointer_down,
-                            )
-                        };
-                        if is_tool_drag {
-                            return repose_core::Vec2::ZERO;
-                        }
-                        if touch_count > 1 {
-                            // Two fingers are a pinch, and the platform already
-                            // turns them into a zoom or pan action. Swallowing
-                            // the delta here is what keeps a pinch from moving
-                            // the view while it scales it.
-                            return repose_core::Vec2::ZERO;
-                        }
-                        if touch_count == 1 && !canvas_press {
-                            // Scroll handlers chain down the hit regions under
-                            // the finger, each returning what it did not use. A
-                            // side rail is a vertical scroller, so it eats
-                            // delta.y and hands us delta.x - which used to drag
-                            // the canvas sideways while the rail scrolled.
-                            // Panning belongs to a drag that began on the
-                            // canvas, so ignore the axis nobody claimed.
-                            return repose_core::Vec2::ZERO;
-                        }
-                        let mut s = session.borrow_mut();
-                        if touch_count == 1 {
-                            // A finger drag on the canvas is a pan on both
-                            // axes, never a zoom: pinch is the two-finger
-                            // gesture.
-                            s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
-                        } else if delta.y.abs() < delta.x.abs() {
-                            // Horizontal wheel: pan the canvas along X.
-                            s.viewport.view.offset += DVec2::new(delta.x as f64, 0.0);
+    let panning = session.borrow().viewport.pan_last.is_some();
+    let space_armed = session.borrow().viewport.space_held;
+    let main_view = Canvas(
+        Modifier::new()
+            .fill_max_size()
+            .background(theme().surface_container_lowest)
+            .overflow(Overflow::Clip)
+            .focusable(true)
+            .focus_requester((*focus).clone())
+            .on_globally_positioned({
+                let session = session.clone();
+                move |r: Rect| session.borrow_mut().viewport.screen_rect = Some(rect_to_px(r))
+            })
+            .cursor(if panning {
+                CursorIcon::Grabbing
+            } else if space_armed {
+                CursorIcon::Hidden
+            } else {
+                CursorIcon::Default
+            })
+            .on_scroll({
+                let session = session.clone();
+                move |delta: repose_core::Vec2| {
+                    let (is_tool_drag, touch_count, canvas_press) = {
+                        let s = session.borrow();
+                        (
+                            s.viewport.pan_last.is_some() || s.tool.is_dragging(s.active_tool),
+                            s.touch_count(),
+                            s.viewport.pointer_down,
+                        )
+                    };
+                    if is_tool_drag {
+                        return repose_core::Vec2::ZERO;
+                    }
+                    if touch_count > 1 {
+                        // Two fingers are a pinch, and the platform already
+                        // turns them into a zoom or pan action. Swallowing
+                        // the delta here is what keeps a pinch from moving
+                        // the view while it scales it.
+                        return repose_core::Vec2::ZERO;
+                    }
+                    if touch_count == 1 && !canvas_press {
+                        // Scroll handlers chain down the hit regions under
+                        // the finger, each returning what it did not use. A
+                        // side rail is a vertical scroller, so it eats
+                        // delta.y and hands us delta.x - which used to drag
+                        // the canvas sideways while the rail scrolled.
+                        // Panning belongs to a drag that began on the
+                        // canvas, so ignore the axis nobody claimed.
+                        return repose_core::Vec2::ZERO;
+                    }
+                    let mut s = session.borrow_mut();
+                    if touch_count == 1 {
+                        // A finger drag on the canvas is a pan on both
+                        // axes, never a zoom: pinch is the two-finger
+                        // gesture.
+                        s.viewport.view.offset += DVec2::new(delta.x as f64, delta.y as f64);
+                    } else if delta.y.abs() < delta.x.abs() {
+                        // Horizontal wheel: pan the canvas along X.
+                        s.viewport.view.offset += DVec2::new(delta.x as f64, 0.0);
+                    } else {
+                        let anchor = if s.viewport.has_pointer {
+                            s.viewport.last_pointer
                         } else {
-                            let anchor = if s.viewport.has_pointer {
-                                s.viewport.last_pointer
-                            } else {
-                                s.viewport.surface_size() * 0.5
-                            };
-                            let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
-                            s.viewport.zoom_at(anchor, factor);
-                        }
-                        request_frame();
-                        repose_core::Vec2::ZERO
+                            s.viewport.surface_size() * 0.5
+                        };
+                        let factor = (1.0 + (-delta.y as f64) * 0.002).clamp(0.5, 2.0);
+                        s.viewport.zoom_at(anchor, factor);
                     }
-                })
-                .on_key_event({
-                    let session = session.clone();
-                    move |ke: KeyEvent| crate::shortcuts::handle_viewport_key(&session, ke)
-                })
-                .on_action({
-                    let session = session.clone();
-                    move |action: repose_core::shortcuts::Action| {
-                        handle_viewport_gesture(&session, &action)
-                    }
-                })
-                .on_pointer_down({
-                    let session = session.clone();
-                    let long_press = long_press.clone();
-                    move |pe: PointerEvent| {
-                        arm_long_press(&long_press, &session, &pe);
-                        let mut s = session.borrow_mut();
-                        let pos = pe_pos(&pe);
-                        s.viewport.last_pointer = pos;
-                        s.viewport.has_pointer = true;
-                        s.viewport.touch_drag = pe.kind == PointerKind::Touch;
-                        // A fresh press means any previous gesture is over, even
-                        // if its lift landed off-surface and never reached here.
-                        s.viewport.gesture_anchor.end();
+                    request_frame();
+                    repose_core::Vec2::ZERO
+                }
+            })
+            .on_key_event({
+                let session = session.clone();
+                move |ke: KeyEvent| crate::shortcuts::handle_viewport_key(&session, ke)
+            })
+            .on_action({
+                let session = session.clone();
+                move |action: repose_core::shortcuts::Action| {
+                    handle_viewport_gesture(&session, &action)
+                }
+            })
+            .on_pointer_down({
+                let session = session.clone();
+                let long_press = long_press.clone();
+                move |pe: PointerEvent| {
+                    arm_long_press(&long_press, &session, &pe);
+                    let mut s = session.borrow_mut();
+                    let pos = pe_pos(&pe);
+                    s.viewport.last_pointer = pos;
+                    s.viewport.has_pointer = true;
+                    s.viewport.touch_drag = pe.kind == PointerKind::Touch;
+                    // A fresh press means any previous gesture is over, even
+                    // if its lift landed off-surface and never reached here.
+                    s.viewport.gesture_anchor.end();
 
-                        if map_button(&pe) == PointerButton::Secondary {
-                            focus.request_focus();
-                            let world = s.viewport.view.screen_to_world(pos);
-                            let screen = overlay_anchor(&pe);
-                            open_canvas_context_menu(&mut s, world, screen, pe.modifiers.shift);
-                            return;
-                        }
-
-                        let is_middle_pan = map_button(&pe) == PointerButton::Middle;
-                        let is_space_pan =
-                            map_button(&pe) == PointerButton::Primary && s.viewport.space_held;
-                        if is_middle_pan || is_space_pan {
-                            pe.consume();
-                            s.viewport.begin_pan(pos);
-                            request_frame();
-                            return;
-                        }
-
-                        if map_button(&pe) == PointerButton::Primary
-                            && s.mode != crate::session::EditorMode::Interact
-                            && !s.machine_preview_enabled
-                        {
-                            let ruler = 20.0;
-                            let surface = s.viewport.surface_size();
-                            let in_top_ruler = pos.y >= 0.0
-                                && pos.y < ruler
-                                && pos.x >= ruler
-                                && pos.x < surface.x.max(ruler);
-                            let in_left_ruler = pos.x >= 0.0
-                                && pos.x < ruler
-                                && pos.y >= ruler
-                                && pos.y < surface.y.max(ruler);
-                            if in_top_ruler || in_left_ruler {
-                                pe.consume();
-                                s.viewport.begin_guide_drag_new(if in_top_ruler {
-                                    crate::session::GuideAxis::Horizontal
-                                } else {
-                                    crate::session::GuideAxis::Vertical
-                                });
-                                s.viewport.update_guide_drag(pos);
-                                request_frame();
-                                return;
-                            }
-                            if let Some(index) = s.viewport.guide_hit(pos) {
-                                pe.consume();
-                                s.viewport.begin_guide_drag_existing(index);
-                                request_frame();
-                                return;
-                            }
-                        }
-
+                    if map_button(&pe) == PointerButton::Secondary {
                         focus.request_focus();
-                        s.viewport.pointer_down = true;
-                        if s.renaming.is_some() {
-                            s.commit_rename();
-                            s.renaming = None;
-                        }
                         let world = s.viewport.view.screen_to_world(pos);
-                        if s.mode == crate::session::EditorMode::Interact
-                            || s.machine_preview_enabled
-                        {
-                            let to_engine = !pe.modifiers.alt;
-                            s.viewport.pointer_route = Some(to_engine);
-                            if pe.modifiers.alt {
-                                dispatch_canvas(
-                                    &mut s,
-                                    CanvasEvent::PointerDown {
-                                        pos: world,
-                                        button: map_button(&pe),
-                                    },
-                                    map_modifiers(&pe),
-                                );
-                            } else {
-                                s.engine_pointer_down(world);
-                            }
-                            return;
-                        }
-                        s.viewport.pointer_route = Some(false);
-                        dispatch_canvas(
-                            &mut s,
-                            CanvasEvent::PointerDown {
-                                pos: world,
-                                button: map_button(&pe),
-                            },
-                            map_modifiers(&pe),
-                        );
+                        let screen = overlay_anchor(&pe);
+                        open_canvas_context_menu(&mut s, world, screen, pe.modifiers.shift);
+                        return;
                     }
-                })
-                .on_pointer_move({
-                    let session = session.clone();
-                    let long_press = long_press.clone();
-                    move |pe: PointerEvent| {
-                        track_long_press_move(&long_press, &pe);
-                        let mut s = session.borrow_mut();
-                        let pos = pe_pos(&pe);
-                        s.viewport.last_pointer = pos;
-                        s.viewport.has_pointer = true;
 
-                        if s.viewport.update_pan(pos) {
-                            pe.consume();
-                            request_frame();
-                            return;
-                        }
+                    let is_middle_pan = map_button(&pe) == PointerButton::Middle;
+                    let is_space_pan =
+                        map_button(&pe) == PointerButton::Primary && s.viewport.space_held;
+                    if is_middle_pan || is_space_pan {
+                        pe.consume();
+                        s.viewport.begin_pan(pos);
+                        request_frame();
+                        return;
+                    }
 
-                        if s.viewport.guide_drag.is_some() {
+                    if map_button(&pe) == PointerButton::Primary
+                        && s.mode != crate::session::EditorMode::Interact
+                        && !s.machine_preview_enabled
+                    {
+                        let ruler = 20.0;
+                        let surface = s.viewport.surface_size();
+                        let in_top_ruler = pos.y >= 0.0
+                            && pos.y < ruler
+                            && pos.x >= ruler
+                            && pos.x < surface.x.max(ruler);
+                        let in_left_ruler = pos.x >= 0.0
+                            && pos.x < ruler
+                            && pos.y >= ruler
+                            && pos.y < surface.y.max(ruler);
+                        if in_top_ruler || in_left_ruler {
                             pe.consume();
+                            s.viewport.begin_guide_drag_new(if in_top_ruler {
+                                crate::session::GuideAxis::Horizontal
+                            } else {
+                                crate::session::GuideAxis::Vertical
+                            });
                             s.viewport.update_guide_drag(pos);
                             request_frame();
                             return;
                         }
-
-                        let world = s.viewport.view.screen_to_world(pos);
-                        let to_engine = match s.viewport.pointer_route {
-                            Some(v) => v,
-                            None => {
-                                (s.mode == crate::session::EditorMode::Interact
-                                    || s.machine_preview_enabled)
-                                    && !pe.modifiers.alt
-                            }
-                        };
-                        if to_engine
-                            && (s.mode == crate::session::EditorMode::Interact
-                                || s.machine_preview_enabled)
-                        {
-                            s.engine_pointer_move(world);
-                            return;
-                        }
-                        dispatch_canvas(
-                            &mut s,
-                            CanvasEvent::PointerMove { pos: world },
-                            map_modifiers(&pe),
-                        );
-                    }
-                })
-                .on_pointer_up({
-                    let session = session.clone();
-                    let long_press = long_press.clone();
-                    move |pe: PointerEvent| {
-                        if finish_long_press(&long_press) {
-                            // The menu is already up; letting the lift reach the
-                            // tools would retarget the selection behind it.
+                        if let Some(index) = s.viewport.guide_hit(pos) {
                             pe.consume();
-                            return;
-                        }
-                        let mut s = session.borrow_mut();
-                        s.viewport.pointer_down = false;
-                        s.viewport.touch_drag = false;
-                        s.viewport.gesture_anchor.end();
-
-                        if s.viewport.guide_drag.is_some() {
-                            let surface = s.viewport.surface_size();
-                            let pos = pe_pos(&pe);
-                            if s.viewport.end_guide_drag(pos, surface) {
-                                s.repaint();
-                            }
-                            pe.consume();
+                            s.viewport.begin_guide_drag_existing(index);
                             request_frame();
-                            s.viewport.pointer_route = None;
                             return;
                         }
-
-                        if s.viewport.pan_last.is_some() {
-                            if map_button(&pe) != PointerButton::Secondary {
-                                pe.consume();
-                                s.viewport.end_pan();
-                                request_frame();
-                            }
-                            s.viewport.pointer_route = None;
-                            return;
-                        }
-
-                        let world = s.viewport.view.screen_to_world(pe_pos(&pe));
-                        let to_engine = match s.viewport.pointer_route.take() {
-                            Some(v) => v,
-                            None => {
-                                (s.mode == crate::session::EditorMode::Interact
-                                    || s.machine_preview_enabled)
-                                    && !pe.modifiers.alt
-                            }
-                        };
-                        if to_engine
-                            && (s.mode == crate::session::EditorMode::Interact
-                                || s.machine_preview_enabled)
-                        {
-                            s.engine_pointer_up(world);
-                            return;
-                        }
-                        dispatch_canvas(
-                            &mut s,
-                            CanvasEvent::PointerUp {
-                                pos: world,
-                                button: map_button(&pe),
-                            },
-                            map_modifiers(&pe),
-                        );
                     }
-                })
-                .on_pointer_cancel({
-                    let session = session.clone();
-                    let long_press = long_press.clone();
-                    move |pe| {
-                        pe.consume();
-                        cancel_long_press(&long_press);
-                        let mut s = session.borrow_mut();
-                        s.viewport.pointer_down = false;
-                        s.viewport.pointer_route = None;
-                        s.viewport.touch_drag = false;
-                        s.viewport.gesture_anchor.end();
-                        let tool = s.active_tool;
-                        let outs = s.tool.cancel(tool);
-                        s.apply_outputs(outs);
-                        if s.machine_preview_enabled
-                            || s.mode == crate::session::EditorMode::Interact
-                        {
-                            s.engine_pointer_leave();
+
+                    focus.request_focus();
+                    s.viewport.pointer_down = true;
+                    if s.renaming.is_some() {
+                        s.commit_rename();
+                        s.renaming = None;
+                    }
+                    let world = s.viewport.view.screen_to_world(pos);
+                    if s.mode == crate::session::EditorMode::Interact
+                        || s.machine_preview_enabled
+                    {
+                        let to_engine = !pe.modifiers.alt;
+                        s.viewport.pointer_route = Some(to_engine);
+                        if pe.modifiers.alt {
+                            dispatch_canvas(
+                                &mut s,
+                                CanvasEvent::PointerDown {
+                                    pos: world,
+                                    button: map_button(&pe),
+                                },
+                                map_modifiers(&pe),
+                            );
+                        } else {
+                            s.engine_pointer_down(world);
                         }
-                        if s.viewport.pan_last.is_some() {
+                        return;
+                    }
+                    s.viewport.pointer_route = Some(false);
+                    dispatch_canvas(
+                        &mut s,
+                        CanvasEvent::PointerDown {
+                            pos: world,
+                            button: map_button(&pe),
+                        },
+                        map_modifiers(&pe),
+                    );
+                }
+            })
+            .on_pointer_move({
+                let session = session.clone();
+                let long_press = long_press.clone();
+                move |pe: PointerEvent| {
+                    track_long_press_move(&long_press, &pe);
+                    let mut s = session.borrow_mut();
+                    let pos = pe_pos(&pe);
+                    s.viewport.last_pointer = pos;
+                    s.viewport.has_pointer = true;
+
+                    if s.viewport.update_pan(pos) {
+                        pe.consume();
+                        request_frame();
+                        return;
+                    }
+
+                    if s.viewport.guide_drag.is_some() {
+                        pe.consume();
+                        s.viewport.update_guide_drag(pos);
+                        request_frame();
+                        return;
+                    }
+
+                    let world = s.viewport.view.screen_to_world(pos);
+                    let to_engine = match s.viewport.pointer_route {
+                        Some(v) => v,
+                        None => {
+                            (s.mode == crate::session::EditorMode::Interact
+                                || s.machine_preview_enabled)
+                                && !pe.modifiers.alt
+                        }
+                    };
+                    if to_engine
+                        && (s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled)
+                    {
+                        s.engine_pointer_move(world);
+                        return;
+                    }
+                    dispatch_canvas(
+                        &mut s,
+                        CanvasEvent::PointerMove { pos: world },
+                        map_modifiers(&pe),
+                    );
+                }
+            })
+            .on_pointer_up({
+                let session = session.clone();
+                let long_press = long_press.clone();
+                move |pe: PointerEvent| {
+                    if finish_long_press(&long_press) {
+                        // The menu is already up; letting the lift reach the
+                        // tools would retarget the selection behind it.
+                        pe.consume();
+                        return;
+                    }
+                    let mut s = session.borrow_mut();
+                    s.viewport.pointer_down = false;
+                    s.viewport.touch_drag = false;
+                    s.viewport.gesture_anchor.end();
+
+                    if s.viewport.guide_drag.is_some() {
+                        let surface = s.viewport.surface_size();
+                        let pos = pe_pos(&pe);
+                        if s.viewport.end_guide_drag(pos, surface) {
+                            s.repaint();
+                        }
+                        pe.consume();
+                        request_frame();
+                        s.viewport.pointer_route = None;
+                        return;
+                    }
+
+                    if s.viewport.pan_last.is_some() {
+                        if map_button(&pe) != PointerButton::Secondary {
+                            pe.consume();
                             s.viewport.end_pan();
                             request_frame();
-                        } else {
-                            request_frame();
                         }
+                        s.viewport.pointer_route = None;
+                        return;
                     }
-                })
-                .on_pointer_leave({
-                    let session = session.clone();
-                    move |_pe: PointerEvent| {
-                        let mut s = session.borrow_mut();
-                        if s.machine_preview_enabled
-                            || s.mode == crate::session::EditorMode::Interact
-                        {
-                            s.engine_pointer_leave();
+
+                    let world = s.viewport.view.screen_to_world(pe_pos(&pe));
+                    let to_engine = match s.viewport.pointer_route.take() {
+                        Some(v) => v,
+                        None => {
+                            (s.mode == crate::session::EditorMode::Interact
+                                || s.machine_preview_enabled)
+                                && !pe.modifiers.alt
                         }
-                    }
-                }),
-            move |scope| {
-                let mut s = draw_session.borrow_mut();
-                let comp_id = s.file.document.main;
-                let (cw, ch) = {
-                    let comp = &s.file.document.compositions[comp_id];
-                    (comp.size.0, comp.size.1)
-                };
-                let artboard = DVec2::new(cw as f64, ch as f64);
-                let surface = DVec2::new(scope.size.width as f64, scope.size.height as f64);
-
-                s.viewport.ensure_fit(surface, artboard);
-
-                let comp = &s.file.document.compositions[comp_id];
-                paint_artboard(scope, comp, &s.viewport.view);
-                paint_rulers(scope, &s.viewport.view, surface);
-
-                if s.viewport.show_grid {
-                    paint_grid(scope, comp, &s.viewport);
-                }
-                if s.viewport.show_guides {
-                    paint_guides(scope, &s.viewport.view, &s.viewport.guides);
-                }
-
-                let scene = s.engine.scene().clone();
-                let view = s.viewport.view;
-                let prepared = s.renderer.prepare(&scene, &view);
-                s.renderer.paint_prepared(&prepared, scope);
-
-                let overlay = {
-                    let guide_positions: Vec<(bool, f64)> = s
-                        .viewport
-                        .guides
-                        .iter()
-                        .map(|g| {
-                            (
-                                matches!(g.axis, crate::session::GuideAxis::Horizontal),
-                                g.position,
-                            )
-                        })
-                        .collect();
-                    let ctx = ToolContext {
-                        doc: &s.file.document,
-                        scene: &scene,
-                        comp: s.file.document.main,
-                        selection: &s.selection,
-                        playhead: renamite_animation::Frame(s.playback.head.round() as i64),
-                        record: s.record_for_writes(),
-                        view,
-                        snap: SnapConfig {
-                            grid: (s.viewport.show_grid
-                                && s.viewport.snapping_enabled
-                                && s.viewport.snap_to_grid)
-                                .then_some(s.viewport.grid_spacing.x.max(1e-6)),
-                            anchor: s.viewport.snapping_enabled && s.viewport.snap_to_objects,
-                            guide: s.viewport.show_guides
-                                && s.viewport.snapping_enabled
-                                && s.viewport.snap_to_guides,
-                        },
-                        guides: &guide_positions,
-                        modifiers: Modifiers::none(),
-                        current_paint: &s.current_paint,
                     };
-                    s.tool.overlay(s.active_tool, &ctx)
+                    if to_engine
+                        && (s.mode == crate::session::EditorMode::Interact
+                            || s.machine_preview_enabled)
+                    {
+                        s.engine_pointer_up(world);
+                        return;
+                    }
+                    dispatch_canvas(
+                        &mut s,
+                        CanvasEvent::PointerUp {
+                            pos: world,
+                            button: map_button(&pe),
+                        },
+                        map_modifiers(&pe),
+                    );
+                }
+            })
+            .on_pointer_cancel({
+                let session = session.clone();
+                let long_press = long_press.clone();
+                move |pe| {
+                    pe.consume();
+                    cancel_long_press(&long_press);
+                    let mut s = session.borrow_mut();
+                    s.viewport.pointer_down = false;
+                    s.viewport.pointer_route = None;
+                    s.viewport.touch_drag = false;
+                    s.viewport.gesture_anchor.end();
+                    let tool = s.active_tool;
+                    let outs = s.tool.cancel(tool);
+                    s.apply_outputs(outs);
+                    if s.machine_preview_enabled
+                        || s.mode == crate::session::EditorMode::Interact
+                    {
+                        s.engine_pointer_leave();
+                    }
+                    if s.viewport.pan_last.is_some() {
+                        s.viewport.end_pan();
+                        request_frame();
+                    } else {
+                        request_frame();
+                    }
+                }
+            })
+            .on_pointer_leave({
+                let session = session.clone();
+                move |_pe: PointerEvent| {
+                    let mut s = session.borrow_mut();
+                    if s.machine_preview_enabled
+                        || s.mode == crate::session::EditorMode::Interact
+                    {
+                        s.engine_pointer_leave();
+                    }
+                }
+            }),
+        move |scope| {
+            let mut s = draw_session.borrow_mut();
+            let comp_id = s.file.document.main;
+            let (cw, ch) = {
+                let comp = &s.file.document.compositions[comp_id];
+                (comp.size.0, comp.size.1)
+            };
+            let artboard = DVec2::new(cw as f64, ch as f64);
+            let surface = DVec2::new(scope.size.width as f64, scope.size.height as f64);
+
+            s.viewport.ensure_fit(surface, artboard);
+
+            let comp = &s.file.document.compositions[comp_id];
+            paint_artboard(scope, comp, &s.viewport.view);
+            paint_rulers(scope, &s.viewport.view, surface);
+
+            if s.viewport.show_grid {
+                paint_grid(scope, comp, &s.viewport);
+            }
+            if s.viewport.show_guides {
+                paint_guides(scope, &s.viewport.view, &s.viewport.guides);
+            }
+
+            let scene = s.engine.scene().clone();
+            let view = s.viewport.view;
+            let prepared = s.renderer.prepare(&scene, &view);
+            s.renderer.paint_prepared(&prepared, scope);
+
+            let overlay = {
+                let guide_positions: Vec<(bool, f64)> = s
+                    .viewport
+                    .guides
+                    .iter()
+                    .map(|g| {
+                        (
+                            matches!(g.axis, crate::session::GuideAxis::Horizontal),
+                            g.position,
+                        )
+                    })
+                    .collect();
+                let ctx = ToolContext {
+                    doc: &s.file.document,
+                    scene: &scene,
+                    comp: s.file.document.main,
+                    selection: &s.selection,
+                    playhead: renamite_animation::Frame(s.playback.head.round() as i64),
+                    record: s.record_for_writes(),
+                    view,
+                    snap: SnapConfig {
+                        grid: (s.viewport.show_grid
+                            && s.viewport.snapping_enabled
+                            && s.viewport.snap_to_grid)
+                            .then_some(s.viewport.grid_spacing.x.max(1e-6)),
+                        anchor: s.viewport.snapping_enabled && s.viewport.snap_to_objects,
+                        guide: s.viewport.show_guides
+                            && s.viewport.snapping_enabled
+                            && s.viewport.snap_to_guides,
+                    },
+                    guides: &guide_positions,
+                    modifiers: Modifiers::none(),
+                    current_paint: &s.current_paint,
                 };
-                paint_overlay(scope, &overlay, &view);
-            },
-        )
-    };
+                s.tool.overlay(s.active_tool, &ctx)
+            };
+            paint_overlay(scope, &overlay, &view);
+        },
+    );
 
     ZStack(Modifier::new().fill_max_size()).child((
         main_view,
@@ -829,203 +821,6 @@ fn ViewportHint(session: SessionRef) -> View {
             .color(theme().on_surface_variant)
             .modifier(Modifier::new().padding(Dp(8.0))),
     ))
-}
-
-/// Empty-composition launcher: quick-start actions plus template cards.
-fn TemplatePicker(session: SessionRef) -> View {
-    let th = theme();
-    let panel_w = remember_auto("panel_w", || Cell::new(0.0f32));
-
-    let available = welcome_available_width(panel_w.get());
-    let content_w = (available - 48.0).max(0.0);
-
-    let cols = launcher_cols(content_w);
-    let card_w = launcher_card_width(content_w, cols);
-    let tile_cols = launcher_tile_cols(content_w);
-    let tile_w = launcher_tile_width(content_w, tile_cols);
-
-    let cards: Vec<View> = renamite_examples::templates()
-        .iter()
-        .map(|t| TemplateCard(session.clone(), t, card_w))
-        .collect();
-    let rows: Vec<View> = cards
-        .chunks(cols)
-        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
-        .collect();
-
-    let tiles: Vec<View> = vec![
-        LauncherTile("New", "Create a fresh project", tile_w, {
-            let session = session.clone();
-            move || crate::file::new_document(&session)
-        }),
-        LauncherTile("Open", "Open .ren / .renb", tile_w, {
-            let session = session.clone();
-            move || crate::file::open_document(&session)
-        }),
-        LauncherTile("Import Lottie", "Bring in JSON animation", tile_w, {
-            let session = session.clone();
-            move || crate::file::import_lottie(&session)
-        }),
-        LauncherTile("Import SVG", "Bring in vector artwork", tile_w, {
-            let session = session.clone();
-            move || crate::file::import_svg(&session)
-        }),
-    ];
-    let tile_rows: Vec<View> = tiles
-        .chunks(tile_cols)
-        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
-        .collect();
-
-    Column(
-        Modifier::new()
-            .fill_max_size()
-            .padding(Dp(24.0))
-            .gap(Dp(20.0))
-            .justify_content(JustifyContent::CENTER)
-            .align_items(AlignItems::CENTER)
-            .on_size_changed({
-                let panel_w = panel_w.clone();
-                move |size: repose_core::Vec2| {
-                    let w = size.x;
-                    if (panel_w.get() - w).abs() > 0.5 {
-                        panel_w.set(w);
-                        request_frame();
-                    }
-                }
-            }),
-    )
-    .child(
-        Text("Start a Renamite project")
-            .size(th.typography.headline_small)
-            .color(th.on_surface),
-    )
-    .child(
-        Text("Open an existing file, import artwork, or start from a motion template.")
-            .size(th.typography.body_medium)
-            .color(th.on_surface_variant),
-    )
-    .child(Column(Modifier::new().gap(Dp(12.0))).child(tile_rows))
-    .child(ScrollArea(
-        Modifier::new().fill_max_size(),
-        remember_scroll_state("template_picker_scroll"),
-        Column(
-            Modifier::new()
-                .fill_max_width()
-                .gap(Dp(12.0))
-                .align_items(AlignItems::CENTER),
-        )
-        .child(
-            Text("Templates")
-                .size(th.typography.title_medium)
-                .color(th.on_surface),
-        )
-        .child(Column(Modifier::new().gap(Dp(12.0))).child(rows)),
-    ))
-    .child(
-        Text("Or dismiss to a blank canvas")
-            .size(th.typography.label_medium)
-            .color(th.primary)
-            .modifier(Modifier::new().on_pointer_down({
-                let session = session.clone();
-                move |_| {
-                    let mut s = session.borrow_mut();
-                    s.welcome = false;
-                    s.revision = s.revision.wrapping_add(1);
-                    request_frame();
-                }
-            })),
-    )
-}
-
-fn welcome_available_width(measured: f32) -> f64 {
-    if measured > 0.0 {
-        return measured as f64;
-    }
-    let win = repose_core::get_window_container_width() as f64;
-    match crate::shell::platform_shell_class() {
-        crate::shell::ShellClass::Expanded => win * 0.55,
-        crate::shell::ShellClass::Medium => (win - 416.0).max(0.0),
-        crate::shell::ShellClass::Compact => win,
-    }
-}
-
-fn launcher_cols(content_w: f64) -> usize {
-    ((content_w / 272.0).floor() as usize).clamp(1, 4)
-}
-
-fn launcher_card_width(content_w: f64, cols: usize) -> f32 {
-    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
-    w.clamp(120.0, 260.0) as f32
-}
-
-fn launcher_tile_cols(content_w: f64) -> usize {
-    ((content_w / 192.0).floor() as usize).clamp(1, 4)
-}
-
-fn launcher_tile_width(content_w: f64, cols: usize) -> f32 {
-    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
-    w.clamp(140.0, 180.0) as f32
-}
-
-fn LauncherTile(
-    title: &'static str,
-    subtitle: &'static str,
-    width: f32,
-    on_click: impl Fn() + 'static,
-) -> View {
-    let th = theme();
-    Box(Modifier::new()
-        .width(Dp(width))
-        .padding(Dp(14.0))
-        .background(th.surface_container_high)
-        .clip_rounded(Dp(12.0))
-        .on_pointer_down(move |_| on_click()))
-    .child(
-        Column(Modifier::new().gap(Dp(6.0))).child((
-            Text(title)
-                .size(th.typography.title_small)
-                .color(th.on_surface),
-            Text(subtitle)
-                .size(th.typography.body_small)
-                .color(th.on_surface_variant),
-        )),
-    )
-}
-
-fn TemplateCard(
-    session: SessionRef,
-    template: &'static renamite_examples::TemplateInfo,
-    width: f32,
-) -> View {
-    let th = theme();
-    Box(Modifier::new()
-        .width(Dp(width))
-        .padding(Dp(14.0))
-        .background(th.surface_container_high)
-        .clip_rounded(Dp(10.0))
-        .on_pointer_down({
-            let session = session.clone();
-            let id = template.id;
-            move |_| {
-                let file = renamite_examples::build_template(id);
-                let mut s = session.borrow_mut();
-                s.replace_file(file);
-                s.welcome = false;
-                s.current_path = None;
-                s.mark_dirty();
-                s.status = Some(format!("Created from \"{}\"", id.display_name()));
-            }
-        }))
-    .child(
-        Column(Modifier::new().gap(Dp(6.0))).child((
-            Text(template.name)
-                .size(th.typography.title_small)
-                .color(th.on_surface),
-            Text(template.description)
-                .size(th.typography.body_small)
-                .color(th.on_surface_variant),
-        )),
-    )
 }
 
 fn paint_artboard(scope: &mut DrawScope, comp: &Composition, view: &ViewTransform) {

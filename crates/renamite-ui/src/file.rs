@@ -273,10 +273,13 @@ pub fn new_document(session: &SessionRef) {
 
 fn new_document_inner(session: &SessionRef) {
     let mut s = session.borrow_mut();
+    let from_launcher = s.welcome;
     let mut file = blank_file();
     file.meta.name = "Untitled".into();
     s.replace_file(file);
-    s.welcome = true;
+    // `replace_file` clears it; re-arm only when New came from the editor, so
+    // the launcher's own New tile lands on the blank canvas it asked for.
+    s.welcome = from_launcher;
     s.current_path = None;
     s.status = Some("New document".into());
 }

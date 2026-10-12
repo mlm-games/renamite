@@ -1,12 +1,13 @@
 use repose_core::input::{Key, KeyEvent, KeyEventType, PointerEvent};
 use repose_core::{
-    Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_auto, remember_state_auto,
-    remember_with_key, request_frame, theme,
+    AlignItems, Dp, JustifyContent, Modifier, PaddingValues, Vec2, View, remember_auto,
+    remember_state_auto, remember_with_key, request_frame, theme,
 };
 use repose_material::material3::{
     Button, ButtonConfig, Dialog, DialogProperties, DropdownMenu, DropdownMenuConfig,
     DropdownMenuEntry, DropdownMenuItem, DropdownMenuSubmenu, MenuState, NavItem, NavigationBar,
-    NavigationBarConfig, Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig, TextButton,
+    NavigationBarConfig, NavigationBarDefaults, Scaffold, ScaffoldConfig, Snackbar, SnackbarConfig,
+    TextButton,
 };
 use repose_ui::overlay::{SnackbarController, SnackbarRequest};
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
@@ -69,12 +70,20 @@ pub fn EditorShell(session: SessionRef) -> View {
         }
     }
 
+    // The start screen replaces the workspace instead of dressing it: a tool rail
+    // and side panels around a launcher act on a document that does not exist.
+    let welcome = { session_body.borrow().welcome };
+
     let scaffold = Scaffold(
         move |content_padding| {
-            let body = match class {
-                ShellClass::Expanded => ExpandedWorkspace(session_body.clone()),
-                ShellClass::Medium => MediumWorkspace(session_body.clone()),
-                ShellClass::Compact => CompactWorkspace(session_body.clone()),
+            let body = if welcome {
+                WelcomeSurface(session_body.clone())
+            } else {
+                match class {
+                    ShellClass::Expanded => ExpandedWorkspace(session_body.clone()),
+                    ShellClass::Medium => MediumWorkspace(session_body.clone()),
+                    ShellClass::Compact => CompactWorkspace(session_body.clone()),
+                }
             };
             Box(Modifier::new()
                 .fill_max_size()
@@ -83,11 +92,12 @@ pub fn EditorShell(session: SessionRef) -> View {
         },
         ScaffoldConfig {
             top_bar: Some(crate::AppTopBar(session.clone())),
-            bottom_bar: match class {
-                ShellClass::Compact => Some(BottomNavigation(session.clone())),
-                // status (file actions, errors) is surfaced as a snackbar.
-                _ => None,
-            },
+            // Nothing: the compact nav bar is a child of the body, not of the
+            // scaffold's bottom slot. That slot anchors to the window edge, so
+            // the navigation-bar inset narrows it from the right instead of
+            // lifting it, and the bar ends up under the gesture handle. In the
+            // body the same inset is padding, and the bar sits above it.
+            bottom_bar: None,
             container_color: theme().surface_container_lowest,
             ..Default::default()
         },
@@ -784,14 +794,18 @@ fn MediumWorkspace(session: SessionRef) -> View {
 
 fn CompactWorkspace(session: SessionRef) -> View {
     let page = session.borrow().active_page;
-    match page {
-        PanelPage::Canvas => CompactCanvas(session),
-        PanelPage::Layers => LayersPanel(session),
-        PanelPage::Timeline => TimelinePanel(session),
-        PanelPage::Inspect => PropertiesPanel(session),
-        PanelPage::Assets => AssetsPanel(session),
-        PanelPage::Interact => InteractivityPanel(session),
-    }
+    let page_view = match page {
+        PanelPage::Canvas => CompactCanvas(session.clone()),
+        PanelPage::Layers => LayersPanel(session.clone()),
+        PanelPage::Timeline => TimelinePanel(session.clone()),
+        PanelPage::Inspect => PropertiesPanel(session.clone()),
+        PanelPage::Assets => AssetsPanel(session.clone()),
+        PanelPage::Interact => InteractivityPanel(session.clone()),
+    };
+    Column(Modifier::new().fill_max_size()).child((
+        Box(Modifier::new().weight(1.0).fill_max_width()).child(page_view),
+        BottomNavigation(session),
+    ))
 }
 
 fn CompactCanvas(session: SessionRef) -> View {
@@ -829,6 +843,200 @@ fn CompactToolPalette(session: SessionRef) -> View {
     ))
 }
 
+/// Start screen shown while no document has been opened: quick-start actions
+/// plus template cards. It stands in for the whole workspace, so none of the
+/// editor chrome is composed behind it.
+pub fn WelcomeSurface(session: SessionRef) -> View {
+    let th = theme();
+    let surface_w = remember_auto("welcome_w", || Cell::new(0.0f32));
+
+    let available = welcome_available_width(surface_w.get());
+    let content_w = (available - 48.0).max(0.0);
+
+    let cols = launcher_cols(content_w);
+    let card_w = launcher_card_width(content_w, cols);
+    let tile_cols = launcher_tile_cols(content_w);
+    let tile_w = launcher_tile_width(content_w, tile_cols);
+
+    let cards: Vec<View> = renamite_examples::templates()
+        .iter()
+        .map(|t| TemplateCard(session.clone(), t, card_w))
+        .collect();
+    let rows: Vec<View> = cards
+        .chunks(cols)
+        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
+        .collect();
+
+    let tiles: Vec<View> = vec![
+        LauncherTile("New", "Create a fresh project", tile_w, {
+            let session = session.clone();
+            move || crate::file::new_document(&session)
+        }),
+        LauncherTile("Open", "Open .ren / .renb", tile_w, {
+            let session = session.clone();
+            move || crate::file::open_document(&session)
+        }),
+        LauncherTile("Import Lottie", "Bring in JSON animation", tile_w, {
+            let session = session.clone();
+            move || crate::file::import_lottie(&session)
+        }),
+        LauncherTile("Import SVG", "Bring in vector artwork", tile_w, {
+            let session = session.clone();
+            move || crate::file::import_svg(&session)
+        }),
+    ];
+    let tile_rows: Vec<View> = tiles
+        .chunks(tile_cols)
+        .map(|chunk| Row(Modifier::new().gap(Dp(12.0))).child(chunk.to_vec()))
+        .collect();
+
+    Column(
+        Modifier::new()
+            .fill_max_size()
+            .padding(Dp(24.0))
+            .gap(Dp(20.0))
+            .justify_content(JustifyContent::CENTER)
+            .align_items(AlignItems::CENTER)
+            .on_size_changed({
+                let surface_w = surface_w.clone();
+                move |size: repose_core::Vec2| {
+                    let w = size.x;
+                    if (surface_w.get() - w).abs() > 0.5 {
+                        surface_w.set(w);
+                        request_frame();
+                    }
+                }
+            }),
+    )
+    .child(
+        Text("Start a Renamite project")
+            .size(th.typography.headline_small)
+            .color(th.on_surface),
+    )
+    .child(
+        Text("Open an existing file, import artwork, or start from a motion template.")
+            .size(th.typography.body_medium)
+            .color(th.on_surface_variant),
+    )
+    .child(Column(Modifier::new().gap(Dp(12.0))).child(tile_rows))
+    .child(ScrollArea(
+        Modifier::new().fill_max_size(),
+        remember_scroll_state("welcome_scroll"),
+        Column(
+            Modifier::new()
+                .fill_max_width()
+                .gap(Dp(12.0))
+                .align_items(AlignItems::CENTER),
+        )
+        .child(
+            Text("Templates")
+                .size(th.typography.title_medium)
+                .color(th.on_surface),
+        )
+        .child(Column(Modifier::new().gap(Dp(12.0))).child(rows)),
+    ))
+    .child(
+        Text("Or dismiss to a blank canvas")
+            .size(th.typography.label_medium)
+            .color(th.primary)
+            .modifier(Modifier::new().on_pointer_down({
+                let session = session.clone();
+                move |_| {
+                    let mut s = session.borrow_mut();
+                    s.welcome = false;
+                    s.revision = s.revision.wrapping_add(1);
+                    request_frame();
+                }
+            })),
+    )
+}
+
+fn welcome_available_width(measured: f32) -> f64 {
+    if measured > 0.0 {
+        return measured as f64;
+    }
+    repose_core::get_window_container_width() as f64
+}
+
+fn launcher_cols(content_w: f64) -> usize {
+    ((content_w / 272.0).floor() as usize).clamp(1, 4)
+}
+
+fn launcher_card_width(content_w: f64, cols: usize) -> f32 {
+    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
+    w.clamp(120.0, 260.0) as f32
+}
+
+fn launcher_tile_cols(content_w: f64) -> usize {
+    ((content_w / 192.0).floor() as usize).clamp(1, 4)
+}
+
+fn launcher_tile_width(content_w: f64, cols: usize) -> f32 {
+    let w = (content_w - (cols as f64 - 1.0) * 12.0) / cols as f64;
+    w.clamp(140.0, 180.0) as f32
+}
+
+fn LauncherTile(
+    title: &'static str,
+    subtitle: &'static str,
+    width: f32,
+    on_click: impl Fn() + 'static,
+) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .width(Dp(width))
+        .padding(Dp(14.0))
+        .background(th.surface_container_high)
+        .clip_rounded(Dp(12.0))
+        .on_pointer_down(move |_| on_click()))
+    .child(
+        Column(Modifier::new().gap(Dp(6.0))).child((
+            Text(title)
+                .size(th.typography.title_small)
+                .color(th.on_surface),
+            Text(subtitle)
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant),
+        )),
+    )
+}
+
+fn TemplateCard(
+    session: SessionRef,
+    template: &'static renamite_examples::TemplateInfo,
+    width: f32,
+) -> View {
+    let th = theme();
+    Box(Modifier::new()
+        .width(Dp(width))
+        .padding(Dp(14.0))
+        .background(th.surface_container_high)
+        .clip_rounded(Dp(10.0))
+        .on_pointer_down({
+            let session = session.clone();
+            let id = template.id;
+            move |_| {
+                let file = renamite_examples::build_template(id);
+                let mut s = session.borrow_mut();
+                s.replace_file(file);
+                s.welcome = false;
+                s.current_path = None;
+                s.mark_dirty();
+                s.status = Some(format!("Created from \"{}\"", id.display_name()));
+            }
+        }))
+    .child(
+        Column(Modifier::new().gap(Dp(6.0))).child((
+            Text(template.name)
+                .size(th.typography.title_small)
+                .color(th.on_surface),
+            Text(template.description)
+                .size(th.typography.body_small)
+                .color(th.on_surface_variant),
+        )),
+    )
+}
+
 fn active_side_panel(session: SessionRef) -> View {
     let page = session.borrow().active_page;
     match page {
@@ -861,7 +1069,12 @@ fn BottomNavigation(session: SessionRef) -> View {
             .iter()
             .map(|&page| nav_item(session.clone(), page, page_symbol(page), page_label(page)))
             .collect(),
-        NavigationBarConfig::default(),
+        NavigationBarConfig {
+            // The bar fills its parent, which as a column child would stretch it
+            // over the page; pin it to the M3 bar height instead.
+            modifier: Modifier::new().height(NavigationBarDefaults::HEIGHT),
+            ..Default::default()
+        },
     )
 }
 
