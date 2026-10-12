@@ -1,0 +1,2 @@
+- welcome owns the shell, not the viewport
+- add extra-bin targets

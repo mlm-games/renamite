@@ -1,3 +1,9 @@
+## v0.3.16
+
+- welcome owns the shell, not the viewport
+- add extra-bin targets
+
+
 ## v0.3.14
 
 - Update lib.rs

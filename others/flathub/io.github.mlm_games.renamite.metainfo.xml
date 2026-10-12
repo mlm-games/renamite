@@ -58,6 +58,14 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.16" date="2026-10-12" type="stable">
+      <description>
+        <ul>
+          <li>welcome owns the shell, not the viewport</li>
+          <li>add extra-bin targets</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.14" date="2026-10-11" type="stable">
       <description>
         <ul>
