@@ -40,7 +40,7 @@ pub fn coerce_value(
     if property.contains("rotation") {
         return input
             .as_f64()
-            .map(|degrees| ModelValue::Angle(Angle(degrees.to_radians())));
+            .map(|degrees| ModelValue::Angle(Angle(degrees)));
     }
     if let Some(like) = like {
         return match like {
@@ -52,7 +52,7 @@ pub fn coerce_value(
             ModelValue::Bool(_) => input.as_bool().map(ModelValue::Bool),
             ModelValue::Angle(_) => input
                 .as_f64()
-                .map(|degrees| ModelValue::Angle(Angle(degrees.to_radians()))),
+                .map(|degrees| ModelValue::Angle(Angle(degrees))),
             other => input.as_f64().map(|_| other.clone()),
         };
     }
@@ -515,7 +515,7 @@ pub fn transform(
                 pos.base = next_pos;
                 size.base = next_size;
                 if let Some(degrees) = rotation {
-                    node.transform.rotation.base = renamite_animation::Angle(degrees.to_radians());
+                    node.transform.rotation.base = renamite_animation::Angle(degrees);
                 }
                 if let (Some(sx), Some(sy)) = (scale_x, scale_y) {
                     node.transform.scale.base = glam::DVec2::new(sx, sy);
@@ -1046,7 +1046,7 @@ pub fn model_value_json(value: &ModelValue) -> Value {
         ModelValue::I64(value) => json!(value),
         ModelValue::Bool(value) => json!(value),
         ModelValue::DVec2(value) => json!([value.x, value.y]),
-        ModelValue::Angle(value) => json!(value.0.to_degrees()),
+        ModelValue::Angle(value) => json!(value.0),
         ModelValue::Color(value) => json!(hex_color(*value)),
         other => json!(format!("{other:?}")),
     }

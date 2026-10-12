@@ -25,6 +25,7 @@ use repose_material::material3::{
 use repose_platform::RenderContext;
 use repose_ui::scroll::{ScrollArea, remember_scroll_state};
 use repose_ui::{Box, Column, Row, ViewExt};
+use std::cell::Cell;
 use std::rc::Rc;
 use web_time::Instant;
 
@@ -440,21 +441,30 @@ pub(crate) fn CompactSwatchButton(session: SessionRef) -> View {
         )
     };
 
+    let pressed: Rc<Cell<glam::DVec2>> =
+        remember_auto("compact_swatch_pressed", || Cell::new(glam::DVec2::ZERO));
+
     Box(
         current_paint_chrome(Modifier::new(), &paint, base, &stops_frame, is_open)
             .width(Dp(32.0))
             .height(Dp(32.0))
             .clip_rounded(Dp(8.0))
             .on_pointer_down({
+                // The picker anchors on the press, so it opens where the user
+                // aimed rather than where the release landed.
+                let pressed = pressed.clone();
+                move |pe: repose_core::input::PointerEvent| pressed.set(overlay_anchor(&pe))
+            })
+            .on_click({
                 let session = session.clone();
-                move |pe: repose_core::input::PointerEvent| {
+                let pressed = pressed.clone();
+                move || {
                     let mut s = session.borrow_mut();
                     if s.open_picker.is_some() {
                         s.close_color_picker();
                     } else {
                         let c = s.current_paint.base_color();
-                        let anchor = overlay_anchor(&pe);
-                        s.open_color_picker(PickerTarget::CurrentPaint, c, anchor);
+                        s.open_color_picker(PickerTarget::CurrentPaint, c, pressed.get());
                     }
                 }
             }),

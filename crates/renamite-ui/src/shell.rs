@@ -432,7 +432,7 @@ fn color_picker_overlay(session: SessionRef) -> View {
     ZStack(Modifier::new().fill_max_size()).child((
         // Transparent close layer: click anywhere outside the picker to
         // dismiss (cancels). Not a modal scrim - the editor stays visible.
-        Box(Modifier::new().fill_max_size().on_pointer_down(move |_| {
+        Box(Modifier::new().fill_max_size().on_click(move || {
             session_close.borrow_mut().close_color_picker();
         })),
         Box(Modifier::new()
@@ -939,9 +939,9 @@ pub fn WelcomeSurface(session: SessionRef) -> View {
         Text("Or dismiss to a blank canvas")
             .size(th.typography.label_medium)
             .color(th.primary)
-            .modifier(Modifier::new().on_pointer_down({
+            .modifier(Modifier::new().on_click({
                 let session = session.clone();
-                move |_| {
+                move || {
                     let mut s = session.borrow_mut();
                     s.welcome = false;
                     s.revision = s.revision.wrapping_add(1);
@@ -988,7 +988,7 @@ fn LauncherTile(
         .padding(Dp(14.0))
         .background(th.surface_container_high)
         .clip_rounded(Dp(12.0))
-        .on_pointer_down(move |_| on_click()))
+        .on_click(on_click))
     .child(
         Column(Modifier::new().gap(Dp(6.0))).child((
             Text(title)
@@ -1012,10 +1012,10 @@ fn TemplateCard(
         .padding(Dp(14.0))
         .background(th.surface_container_high)
         .clip_rounded(Dp(10.0))
-        .on_pointer_down({
+        .on_click({
             let session = session.clone();
             let id = template.id;
-            move |_| {
+            move || {
                 let file = renamite_examples::build_template(id);
                 let mut s = session.borrow_mut();
                 s.replace_file(file);

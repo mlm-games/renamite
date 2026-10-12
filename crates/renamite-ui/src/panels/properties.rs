@@ -1243,6 +1243,10 @@ fn color_row(
         (c.b * 255.0) as u8
     );
     let alpha_pct = (c.a * 100.0).round() as i64;
+    let pressed: Rc<Cell<glam::DVec2>> = remember_with_key(
+        format!("colorrow_pressed_{}", path.as_str()),
+        || Cell::new(glam::DVec2::ZERO),
+    );
 
     // When a single node is selected, the swatch opens the color picker.
     // Style nodes target their own color; any other Color prop (image tint,
@@ -1282,15 +1286,22 @@ fn color_row(
             (c.a * 255.0) as u8,
         ))
         .on_pointer_down({
+            // The picker anchors where the press landed, not where the release
+            // did, so a drag off the swatch that ends back on it still opens at
+            // the point the user aimed at.
+            let pressed = pressed.clone();
+            move |pe: PointerEvent| pressed.set(overlay_anchor(&pe))
+        })
+        .on_click({
             let session = session.clone();
             let color = c;
             let picker_target = picker_target.clone();
-            move |pe: PointerEvent| {
+            let pressed = pressed.clone();
+            move || {
                 if let Some(target) = picker_target.clone() {
-                    let anchor = overlay_anchor(&pe);
                     session
                         .borrow_mut()
-                        .open_color_picker(target, color, anchor);
+                        .open_color_picker(target, color, pressed.get());
                 }
             }
         }));
@@ -1326,9 +1337,9 @@ fn color_row(
                         th.surface
                     })
                     .clip_rounded(Dp(999.0))
-                    .on_pointer_down({
+                    .on_click({
                         let open = open.clone();
-                        move |_pe: PointerEvent| {
+                        move || {
                             let next = !*open.borrow();
                             *open.borrow_mut() = next;
                             request_frame();
@@ -1626,7 +1637,7 @@ fn modifier_chip(label: &'static str, on_click: impl Fn() + 'static) -> View {
         .background(th.surface_container_high)
         .clip_rounded(Dp(999.0))
         .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
-        .on_pointer_down(move |_| on_click()))
+        .on_click(on_click))
     .child(
         Row(Modifier::new().gap(Dp(6.0)).align_items(AlignItems::CENTER)).child((
             AppIcon(Symbols::add, 18.0),
@@ -1663,9 +1674,9 @@ fn style_action_chip(session: SessionRef, shape_id: NodeId, action: StyleAction)
         .background(th.surface_container_high)
         .clip_rounded(Dp(999.0))
         .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
-        .on_pointer_down({
+        .on_click({
             let session = session.clone();
-            move |_| {
+            move || {
                 let mut s = session.borrow_mut();
                 let doc = &s.file.document;
                 let (cmd, tx_label) = match action {
@@ -1893,11 +1904,11 @@ fn bool_toggle_segment(
                     th.surface
                 })
                 .clip_rounded(Dp(6.0))
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
                     let ids = ids.clone();
                     let path = path.clone();
-                    move |_pe: PointerEvent| {
+                    move || {
                         let mut s = session.borrow_mut();
                         let cmds: Vec<_> = ids
                             .iter()
@@ -1956,11 +1967,11 @@ fn enum2_segment(
                     th.surface
                 })
                 .clip_rounded(Dp(6.0))
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
                     let ids = ids.clone();
                     let path = path.clone();
-                    move |_pe: PointerEvent| {
+                    move || {
                         let mut s = session.borrow_mut();
                         let cmds: Vec<EditorCommand> = ids
                             .iter()
@@ -2019,11 +2030,11 @@ fn enum3_segment(
                     th.surface
                 })
                 .clip_rounded(Dp(6.0))
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
                     let ids = ids.clone();
                     let path = path.clone();
-                    move |_pe: PointerEvent| {
+                    move || {
                         let mut s = session.borrow_mut();
                         let cmds: Vec<EditorCommand> = ids
                             .iter()
@@ -2225,7 +2236,7 @@ fn align_section(session: SessionRef, selection_len: usize) -> View {
             .background(th.surface_container_high)
             .clip_rounded(Dp(999.0))
             .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
-            .on_pointer_down(move |_| on_click()))
+            .on_click(on_click))
         .child(Text(label).size(th.typography.label_medium))
     }
     let mut rows: Vec<View> = Vec::new();
@@ -2577,7 +2588,7 @@ fn guide_chip(session: SessionRef, label: String, index: usize) -> View {
         .background(th.surface_container_high)
         .clip_rounded(Dp(999.0))
         .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
-        .on_pointer_down(move |_| {
+        .on_click(move || {
             let mut s = session.borrow_mut();
             if index < s.viewport.guides.len() {
                 s.viewport.guides.remove(index);
@@ -2603,7 +2614,7 @@ fn align_chip(
         .background(th.surface_container_high)
         .clip_rounded(Dp(999.0))
         .border(Dp(1.0), th.outline_variant.with_alpha(140), Dp(999.0))
-        .on_pointer_down(move |_| {
+        .on_click(move || {
             on_click(&mut session.borrow_mut());
         }))
     .child(Text(label).size(th.typography.label_medium))
@@ -3251,7 +3262,7 @@ fn blend_segment(
                 } else {
                     th.surface
                 })
-                .on_pointer_down(move |_pe: PointerEvent| {
+                .on_click(move || {
                     if index == current {
                         return;
                     }
@@ -3481,9 +3492,9 @@ fn use_section(session: SessionRef, id: NodeId) -> Option<View> {
                     Text("Select source")
                         .size(th.typography.label_medium)
                         .color(th.primary)
-                        .modifier(Modifier::new().on_pointer_down({
+                        .modifier(Modifier::new().on_click({
                             let session = session.clone();
-                            move |_| {
+                            move || {
                                 let mut s = session.borrow_mut();
                                 s.selection.nodes = vec![target];
                                 s.ensure_selection_visible();
@@ -3496,9 +3507,9 @@ fn use_section(session: SessionRef, id: NodeId) -> Option<View> {
                 Text("Unlink (bake copy)")
                     .size(th.typography.label_medium)
                     .color(th.primary)
-                    .modifier(Modifier::new().on_pointer_down({
+                    .modifier(Modifier::new().on_click({
                         let session = session.clone();
-                        move |_| {
+                        move || {
                             session.borrow_mut().unlink_use_node(id);
                         }
                     })),
@@ -3536,9 +3547,9 @@ fn precomp_comp_chip(
                 } else {
                     th.surface
                 })
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
-                    move |_| {
+                    move || {
                         if active {
                             return;
                         }
@@ -3584,9 +3595,9 @@ fn font_chip(
                 } else {
                     th.surface
                 })
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
-                    move |_| {
+                    move || {
                         let mut s = session.borrow_mut();
                         s.apply_outputs(smallvec![
                             ToolOutput::BeginTransaction("Change font".into()),
@@ -4141,9 +4152,9 @@ fn paint_segment(
                 } else {
                     th.surface
                 })
-                .on_pointer_down({
+                .on_click({
                     let session = session.clone();
-                    move |_pe: PointerEvent| {
+                    move || {
                         let mut s = session.borrow_mut();
                         let frame = s.playback.head;
                         let current = match &s.file.document.nodes.get(style_id).map(|n| &n.kind) {
@@ -4245,6 +4256,10 @@ fn stop_rows(
             let th = theme();
             let path = PropPath::new("grad.stops");
             let stop_color = stop.color;
+            let pressed: Rc<Cell<glam::DVec2>> =
+                remember_with_key(format!("gradstop_pressed_{style_id:?}_{i}"), || {
+                    Cell::new(glam::DVec2::ZERO)
+                });
             let swatch = Box(Modifier::new()
                 .width(Dp(20.0))
                 .height(Dp(20.0))
@@ -4257,13 +4272,19 @@ fn stop_rows(
                     (stop_color.a * 255.0) as u8,
                 ))
                 .on_pointer_down({
+                    // Anchor on the press so the picker opens where the user
+                    // aimed, not where a later release happened to land.
+                    let pressed = pressed.clone();
+                    move |pe: repose_core::input::PointerEvent| pressed.set(overlay_anchor(&pe))
+                })
+                .on_click({
                     let session = session.clone();
-                    move |pe: repose_core::input::PointerEvent| {
-                        let anchor = overlay_anchor(&pe);
+                    let pressed = pressed.clone();
+                    move || {
                         session.borrow_mut().open_color_picker(
                             PickerTarget::GradientStop { style_id, index: i },
                             stop_color,
-                            anchor,
+                            pressed.get(),
                         );
                     }
                 }));

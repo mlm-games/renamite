@@ -288,9 +288,9 @@ fn MachineSelector(session: SessionRef) -> View {
                             th.surface_container
                         })
                         .clip_rounded(Dp(8.0))
-                        .on_pointer_down({
+                        .on_click({
                             let session = session.clone();
-                            move |_| {
+                            move || {
                                 session.borrow_mut().select_machine(id);
                             }
                         }),
@@ -3043,9 +3043,9 @@ fn transition_row(
         .align_items(AlignItems::CENTER)
         .background(th.surface_container)
         .clip_rounded(Dp(6.0))
-        .on_pointer_down({
+        .on_click({
             let session = session.clone();
-            move |_| {
+            move || {
                 let mut s = session.borrow_mut();
                 s.machine_selection = MachineSelection::Transition {
                     layer,
@@ -3273,7 +3273,7 @@ fn chip(label: &'static str, active: bool, on_click: impl Fn() + 'static) -> Vie
                     th.surface
                 })
                 .clip_rounded(Dp(6.0))
-                .on_pointer_down(move |_| on_click()),
+                .on_click(on_click),
         )
 }
 
@@ -3453,10 +3453,10 @@ fn dropdown(key: impl Into<String>, label: String, items: Vec<DropdownMenuEntry>
                         }))
                     }
                 })
-                .on_pointer_down({
+                .on_click({
                     let state = state.clone();
                     let anchor = anchor.clone();
-                    move |_| match anchor.get() {
+                    move || match anchor.get() {
                         Some(pos) => state.open_at(pos),
                         None => state.open(),
                     }

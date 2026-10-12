@@ -537,10 +537,10 @@ fn hex_row(
                     (c.a * 255.0) as u8,
                 )
             })
-            .on_pointer_down({
+            .on_click({
                 let state = state.clone();
                 let on_commit = on_commit.clone();
-                move |_| {
+                move || {
                     if !state.borrow().hex_error {
                         on_commit(state.borrow().color());
                     }
@@ -580,10 +580,10 @@ fn swatch_row(
             .height(Dp(20.0))
             .clip_rounded(Dp(4.0))
             .background(th.surface_container_low)
-            .on_pointer_down({
+            .on_click({
                 let state = state.clone();
                 let on_add_swatch = on_add_swatch.clone();
-                move |_| on_add_swatch(state.borrow().color())
+                move || on_add_swatch(state.borrow().color())
             }))
         .child(
             Text("+")
@@ -607,7 +607,7 @@ fn swatch_cell(c: ModelColor, on_click: impl Fn() + 'static) -> View {
             (c.b * 255.0) as u8,
             (c.a * 255.0) as u8,
         ))
-        .on_pointer_down(move |_| on_click()))
+        .on_click(on_click))
 }
 
 fn draw_strip_cursor(scope: &mut DrawScope, x: f32, h: f32) {

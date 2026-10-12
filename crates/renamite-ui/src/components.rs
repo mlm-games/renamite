@@ -95,7 +95,7 @@ pub fn CollapsibleSection(
     let th = theme();
     let toggle_open = {
         let open = open.clone();
-        move |_| {
+        move || {
             let next = !*open.borrow();
             *open.borrow_mut() = next;
             request_frame();
@@ -116,7 +116,7 @@ pub fn CollapsibleSection(
         .gap(Dp(4.0))
         .clickable()
         .cursor(repose_core::CursorIcon::Pointer)
-        .on_pointer_down(toggle_open);
+        .on_click(toggle_open);
 
     if let Some(d) = drag {
         let SectionDrag {
@@ -364,7 +364,7 @@ pub fn PillIconButton(
         })
         .background(bg)
         .clip_rounded(Dp(999.0))
-        .on_pointer_down(move |_| on_click()))
+        .on_click(on_click))
     .child({
         let mut children: Vec<View> = Vec::new();
         if let Some(s) = symbol {
