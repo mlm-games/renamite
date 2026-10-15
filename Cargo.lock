@@ -3574,7 +3574,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renamite-animation"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "proptest",
@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-canvas"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-common"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-behavior-timeline"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3630,7 +3630,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-cli"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "anyhow",
  "clap",
@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-editor"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3676,7 +3676,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-examples"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "image",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-geometry"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-history"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "proptest",
@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-lottie"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3732,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-raster"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "image",
@@ -3747,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-ren"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "postcard",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-io-svg"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "base64 0.22.1",
  "glam",
@@ -3780,7 +3780,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-machine"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "renamite-animation",
@@ -3793,7 +3793,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-mcp"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "log",
@@ -3815,7 +3815,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-model"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-platform"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "directories",
  "futures-lite",
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3859,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-player-ui"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "renamite-behavior-common",
@@ -3872,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-bridge"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "kurbo",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-render-offscreen"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "anyhow",
  "glam",
@@ -3913,7 +3913,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-test-support"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "proptest",
@@ -3931,7 +3931,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-text"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "kurbo",
  "repose-text",
@@ -3941,7 +3941,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-ui"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3983,7 +3983,7 @@ dependencies = [
 
 [[package]]
 name = "renamite-validate"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "glam",
  "image",
@@ -4004,7 +4004,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repose-app"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8f4ebd399208937d2536911e477e9dce29da88596a9650f13f61f0bd36bb2f3"
 dependencies = [
  "log",
  "repose-core",
@@ -4015,7 +4017,9 @@ dependencies = [
 
 [[package]]
 name = "repose-canvas"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d88ea6e72fa56feb34a0df82e644a10c62f75874e9437a0f2ff98c0fd14a9e5"
 dependencies = [
  "lyon_path",
  "lyon_tessellation",
@@ -4025,7 +4029,9 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adc68638a2035afa698d93b0ac6b027dfc51d8410868a0cdfc214b06ba52ec0c"
 dependencies = [
  "accesskit",
  "log",
@@ -4038,7 +4044,9 @@ dependencies = [
 
 [[package]]
 name = "repose-devtools"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35bfb842c59342d87d56467a6b3881c94f9d55e4a5725f00c3d493d073d2ab6"
 dependencies = [
  "repose-core",
  "web-time",
@@ -4047,7 +4055,9 @@ dependencies = [
 
 [[package]]
 name = "repose-docking"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3548dc6022ab143399911aefde76000ac77893c5a2be2390935d7fbc4c6f4544"
 dependencies = [
  "repose-core",
  "repose-ui",
@@ -4056,7 +4066,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13ae1dacf1a08fa8b5e8efa096a75b2bed4a4e010bba780d42af91b5ae9f2f2d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4065,7 +4077,9 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fb6f86a41a9f05c4cfc5cfac7ab3b28fea3618b0ab0c12edfdbc05792850114"
 dependencies = [
  "repose-canvas",
  "repose-core",
@@ -4077,7 +4091,9 @@ dependencies = [
 
 [[package]]
 name = "repose-navigation"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f589d41c583da4ed4df3c8ee6858b8f3a7886927e5fe76b0a467b3034eec8e2e"
 dependencies = [
  "log",
  "repose-core",
@@ -4088,7 +4104,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d58fdd7d20e5b3fc7d06138b8e3833bafd16e4a9f13675efd2e1c635d08d0491"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4120,7 +4138,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b151ea1fe7fc1a59ff360a1be8db1464b70b58df07621305324c03abf93bdbb0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4140,7 +4160,9 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fb075444a168da362bc91d18f462a495339fd141909b9a1912db4dd5ef77a9e"
 dependencies = [
  "font-awl",
  "js-sys",
@@ -4157,7 +4179,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a73dcbc12cb64d3e449baa084e54f9542816cad128b468eddd904303a1066088"
 dependencies = [
  "log",
  "rapidhash",
@@ -4170,7 +4194,9 @@ dependencies = [
 
 [[package]]
 name = "repose-ui"
-version = "0.31.23"
+version = "0.31.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ab36708d4154e853ef606fecbf87b30482f6dbca64b1e10953313feff5ff792"
 dependencies = [
  "log",
  "repose-core",
