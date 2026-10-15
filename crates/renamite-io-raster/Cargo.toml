@@ -1,0 +1,19 @@
+[package]
+name = "renamite-io-raster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Raster (pixel-art sprite sheet) import and tracing for renamite."
+
+[dependencies]
+renamite-animation.workspace = true
+renamite-geometry.workspace = true
+renamite-model.workspace = true
+thiserror.workspace = true
+glam.workspace = true
+image = { workspace = true }
+
+[dev-dependencies]
+renamite-io-ren.workspace = true
+renamite-validate.workspace = true
+kurbo.workspace = true

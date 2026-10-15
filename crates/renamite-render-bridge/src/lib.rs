@@ -108,6 +108,71 @@ pub struct PreparedClip {
     pub mesh: Arc<VectorMeshData>,
 }
 
+/// Compose a placement affine with a draw's own transform. Both are
+/// column-major: `x' = a[0]*x + a[2]*y + a[4]`, `y' = a[1]*x + a[3]*y + a[5]`.
+pub fn compose(instance: [f64; 6], local: [f64; 6]) -> [f64; 6] {
+    [
+        instance[0] * local[0] + instance[2] * local[1],
+        instance[1] * local[0] + instance[3] * local[1],
+        instance[0] * local[2] + instance[2] * local[3],
+        instance[1] * local[2] + instance[3] * local[3],
+        instance[0] * local[4] + instance[2] * local[5] + instance[4],
+        instance[1] * local[4] + instance[3] * local[5] + instance[5],
+    ]
+}
+
+/// Lowest alpha a paint can produce, or 1.0 when the paint carries no colour
+/// of its own (`Solid` takes it from the mesh vertices instead).
+fn paint_min_alpha(paint: &PaintDesc) -> f32 {
+    match paint {
+        PaintDesc::Solid => 1.0,
+        PaintDesc::Linear {
+            start_color,
+            end_color,
+            ..
+        }
+        | PaintDesc::Radial {
+            start_color,
+            end_color,
+            ..
+        }
+        | PaintDesc::Sweep {
+            start_color,
+            end_color,
+            ..
+        } => start_color.3.min(end_color.3) as f32 / 255.0,
+        PaintDesc::LinearStops { stops, .. } | PaintDesc::RadialStops { stops, .. } => {
+            stops.min_alpha()
+        }
+        _ => 1.0,
+    }
+}
+
+impl PreparedScene {
+    /// Whether this frame may be drawn instanced across many placements.
+    ///
+    /// Batching reorders emission - every placement's mesh 0 is drawn before
+    /// any placement's mesh 1 - which is invisible for opaque content and
+    /// changes compositing otherwise. So a frame qualifies only when every
+    /// draw is an alpha-blended vector mesh that is fully opaque in both its
+    /// vertex colours and its paint. An [`PreparedDraw::Image`] disqualifies
+    /// the frame outright: images are placed individually and have no
+    /// instanced form.
+    pub fn is_batchable(&self) -> bool {
+        !self.draws.is_empty()
+            && self.draws.iter().all(|draw| match draw {
+                PreparedDraw::Vector {
+                    mesh, paint, blend, ..
+                } => {
+                    *blend == BlendMode::Alpha
+                        && paint_min_alpha(paint) >= 0.9999
+                        && mesh.vertices.iter().all(|vertex| vertex.color[3] >= 0.9999)
+                }
+                PreparedDraw::Image { .. } => false,
+            })
+    }
+}
+
 /// Tessellated frame: item draws plus the clip masks they reference.
 pub struct PreparedScene {
     pub draws: Vec<PreparedDraw>,
@@ -200,7 +265,10 @@ impl SceneRenderer {
         };
         let safe_view = ViewTransform { scale, offset };
         let tol = quantized_tolerance((0.25 / scale) as f32);
-        // world -> screen affine: out = M * p + t, [m00, m01, m10, m11, tx, ty].
+        // world -> screen affine, column-major: x' = a[0]*x + a[2]*y + a[4],
+        // y' = a[1]*x + a[3]*y + a[5]. Same layout as `transform_mesh` and
+        // `compose_view_affine`; `affine_to_repose` reorders it to row-major
+        // for `decompose_linear`.
         let t = [
             scale as f32,
             0.0,
@@ -444,6 +512,124 @@ impl SceneRenderer {
                         scope.commands.push(DrawCommand::PopVectorClip);
                     }
                 }
+            }
+        }
+    }
+
+    /// Paint one prepared frame at N placements, collapsing each mesh into a
+    /// single instanced draw. `instances` are the per-placement affines in
+    /// this crate's column-major order; each is composed with the draw's own
+    /// transform here, so callers never touch the local placement matrix.
+    ///
+    /// Equivalent to painting the frame once per instance - except that
+    /// batching emits mesh 0 of every placement before mesh 1 of any, which
+    /// only preserves compositing when the frame is fully opaque. The caller
+    /// must therefore check [`PreparedScene::is_batchable`] and use the
+    /// per-instance path when it is false; that path owns image placement,
+    /// which this one does not do.
+    pub fn paint_prepared_instanced(
+        &self,
+        prepared: &PreparedScene,
+        instances: &[[f64; 6]],
+        scope: &mut DrawScope,
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+        debug_assert!(
+            prepared.is_batchable(),
+            "paint_prepared_instanced requires a batchable frame"
+        );
+        for draw in &prepared.draws {
+            let PreparedDraw::Vector {
+                mesh,
+                transform,
+                paint,
+                clips,
+                blend,
+            } = draw
+            else {
+                continue;
+            };
+            let transforms: Vec<[f32; 6]> = instances
+                .iter()
+                .map(|instance| compose(*instance, transform.map(f64::from)))
+                .map(|value| value.map(|component| component as f32))
+                .collect();
+            let mut pushed_clips = 0usize;
+            for &ci in clips {
+                if let Some(clip) = prepared.clips.get(ci as usize) {
+                    scope.commands.push(DrawCommand::PushVectorClip {
+                        mesh: clip.mesh.clone(),
+                        op: ClipOp::Intersect,
+                    });
+                    pushed_clips += 1;
+                }
+            }
+            scope.commands.push(DrawCommand::VectorMeshInstanced {
+                mesh: mesh.clone(),
+                transforms,
+                paint: *paint,
+                blend: *blend,
+            });
+            for _ in 0..pushed_clips {
+                scope.commands.push(DrawCommand::PopVectorClip);
+            }
+        }
+    }
+
+    /// [`append_repose_scene`](Self::append_repose_scene) for a frame placed
+    /// N times: one instanced node per mesh instead of N nodes. Same
+    /// `is_batchable` requirement as
+    /// [`paint_prepared_instanced`](Self::paint_prepared_instanced), which
+    /// documents why batching is order-sensitive.
+    pub fn append_repose_scene_instanced(
+        &self,
+        prepared: &PreparedScene,
+        instances: &[[f64; 6]],
+        out: &mut ReposeScene,
+    ) {
+        debug_assert!(
+            prepared.is_batchable(),
+            "append_repose_scene_instanced requires a batchable frame"
+        );
+        if instances.is_empty() {
+            return;
+        }
+        for draw in &prepared.draws {
+            let PreparedDraw::Vector {
+                mesh,
+                transform,
+                paint,
+                clips,
+                blend,
+            } = draw
+            else {
+                continue;
+            };
+            let transforms: Vec<[f32; 6]> = instances
+                .iter()
+                .map(|instance| compose(*instance, transform.map(f64::from)))
+                .map(|value| value.map(|component| component as f32))
+                .collect();
+            let mut pushed_clips = 0usize;
+            for &ci in clips {
+                if let Some(clip) = prepared.clips.get(ci as usize) {
+                    out.nodes.push(SceneNode::PushVectorClip {
+                        mesh: clip.mesh.clone(),
+                        op: ClipOp::Intersect,
+                    });
+                    pushed_clips += 1;
+                }
+            }
+            out.nodes.push(SceneNode::VectorMeshInstanced {
+                mesh: mesh.clone(),
+                transforms,
+                paint: *paint,
+                blend: *blend,
+            });
+            for _ in 0..pushed_clips {
+                out.nodes.push(SceneNode::PopVectorClip);
             }
         }
     }
@@ -1569,5 +1755,180 @@ mod tests {
                 .is_none(),
             "a flat profile should stay on the constant-width path"
         );
+    }
+
+    fn quad_mesh() -> Arc<VectorMeshData> {
+        let vertices: Arc<[VectorVertex]> = [
+            ([0.0, 0.0], [0.0, 0.0]),
+            ([10.0, 0.0], [1.0, 0.0]),
+            ([10.0, 10.0], [1.0, 1.0]),
+            ([0.0, 10.0], [0.0, 1.0]),
+        ]
+        .iter()
+        .map(|(pos, uv)| VectorVertex {
+            pos: *pos,
+            color: [1.0, 1.0, 1.0, 1.0],
+            uv: *uv,
+        })
+        .collect();
+        Arc::new(VectorMeshData {
+            vertices,
+            indices: [0u32, 1, 2, 0, 2, 3].into(),
+        })
+    }
+
+    fn frame(mesh: Arc<VectorMeshData>, alpha: f32) -> PreparedScene {
+        let mesh = if alpha >= 1.0 {
+            mesh
+        } else {
+            let vertices: Arc<[VectorVertex]> = mesh
+                .vertices
+                .iter()
+                .map(|vertex| VectorVertex {
+                    pos: vertex.pos,
+                    color: [vertex.color[0], vertex.color[1], vertex.color[2], alpha],
+                    uv: vertex.uv,
+                })
+                .collect();
+            Arc::new(VectorMeshData {
+                vertices,
+                indices: mesh.indices.clone(),
+            })
+        };
+        PreparedScene {
+            draws: vec![PreparedDraw::Vector {
+                mesh,
+                transform: [1.0, 0.0, 0.0, 1.0, 3.0, 4.0],
+                paint: PaintDesc::Solid,
+                clips: Vec::new(),
+                blend: BlendMode::Alpha,
+            }],
+            clips: Vec::new(),
+        }
+    }
+
+    fn placement(x: f64, y: f64) -> [f64; 6] {
+        [1.0, 0.0, 0.0, 1.0, x, y]
+    }
+
+    #[test]
+    fn only_fully_opaque_vector_frames_are_batchable() {
+        assert!(frame(quad_mesh(), 1.0).is_batchable());
+        assert!(
+            !frame(quad_mesh(), 0.5).is_batchable(),
+            "a translucent mesh reorders against itself when batched"
+        );
+
+        let mut painted = frame(quad_mesh(), 1.0);
+        let PreparedDraw::Vector {
+            mesh,
+            transform,
+            clips,
+            blend,
+            ..
+        } = painted.draws.remove(0)
+        else {
+            unreachable!("frame() builds a vector draw")
+        };
+        painted.draws.push(PreparedDraw::Vector {
+            mesh,
+            transform,
+            paint: PaintDesc::Linear {
+                start: repose_core::Vec2::ZERO,
+                end: repose_core::Vec2 { x: 1.0, y: 1.0 },
+                start_color: repose_core::Color::from_rgba(0, 0, 0, 0),
+                end_color: repose_core::Color::from_rgba(255, 255, 255, 255),
+            },
+            clips,
+            blend,
+        });
+        assert!(
+            !painted.is_batchable(),
+            "a translucent paint must disqualify the frame"
+        );
+    }
+
+    #[test]
+    fn instancing_collapses_placements_into_one_command_per_mesh() {
+        let renderer = SceneRenderer::new();
+        let prepared = frame(quad_mesh(), 1.0);
+        let instances = [
+            placement(0.0, 0.0),
+            placement(50.0, 0.0),
+            placement(0.0, 50.0),
+        ];
+
+        let mut scope = DrawScope {
+            commands: Vec::new(),
+            size: repose_core::Size {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        renderer.paint_prepared_instanced(&prepared, &instances, &mut scope);
+
+        let batched: Vec<&DrawCommand> = scope
+            .commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::VectorMeshInstanced { .. }))
+            .collect();
+        assert_eq!(
+            batched.len(),
+            1,
+            "one mesh at three placements is one draw, not three"
+        );
+        let DrawCommand::VectorMeshInstanced { transforms, .. } = batched[0] else {
+            unreachable!("filtered above")
+        };
+        assert_eq!(transforms.len(), instances.len());
+
+        // Each instance must be the draw's own transform composed with its
+        // placement, in the bridge's column-major order.
+        for (transform, instance) in transforms.iter().zip(instances) {
+            let expected = compose(instance, [1.0, 0.0, 0.0, 1.0, 3.0, 4.0]);
+            for (got, want) in transform.iter().zip(expected) {
+                assert!(
+                    (f64::from(*got) - want).abs() < 1e-4,
+                    "{transform:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_lone_placement_still_paints_as_a_single_mesh() {
+        let renderer = SceneRenderer::new();
+        let prepared = frame(quad_mesh(), 1.0);
+        let mut scope = DrawScope {
+            commands: Vec::new(),
+            size: repose_core::Size {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        renderer.paint_prepared_instanced(&prepared, &[placement(7.0, 9.0)], &mut scope);
+
+        assert!(
+            scope
+                .commands
+                .iter()
+                .any(|command| matches!(command, DrawCommand::VectorMeshInstanced { .. })),
+            "a single placement takes the instanced node with one instance"
+        );
+    }
+
+    #[test]
+    fn empty_placements_emit_nothing() {
+        let renderer = SceneRenderer::new();
+        let prepared = frame(quad_mesh(), 1.0);
+        let mut scope = DrawScope {
+            commands: Vec::new(),
+            size: repose_core::Size {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        renderer.paint_prepared_instanced(&prepared, &[], &mut scope);
+        assert!(scope.commands.is_empty());
     }
 }

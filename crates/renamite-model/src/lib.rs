@@ -3174,20 +3174,24 @@ fn bounded_parent_chain(doc: &Document, id: NodeId) -> Option<Vec<NodeId>> {
 }
 
 fn descendant_reaches(doc: &Document, ancestor: NodeId, node: NodeId) -> Option<bool> {
-    let mut pending = vec![node];
+    let mut frontier = vec![node];
     let mut seen = std::collections::HashSet::new();
     for _ in 0..MAX_PARENT_DEPTH {
-        let Some(current) = pending.pop() else {
+        if frontier.is_empty() {
             return Some(false);
-        };
-        if current == ancestor {
-            return Some(true);
         }
-        if !seen.insert(current) {
-            continue;
+        let mut next = Vec::new();
+        for current in frontier {
+            if current == ancestor {
+                return Some(true);
+            }
+            if !seen.insert(current) {
+                continue;
+            }
+            let current_node = doc.nodes.get(current)?;
+            next.extend(current_node.children.iter().copied());
         }
-        let current_node = doc.nodes.get(current)?;
-        pending.extend(current_node.children.iter().copied());
+        frontier = next;
     }
     None
 }

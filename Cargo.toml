@@ -95,6 +95,7 @@ renamite-io-svg = { path = "crates/renamite-io-svg", version = "0.3.16" }
 renamite-test-support = { path = "crates/renamite-test-support", version = "0.3.16" }
 renamite-machine = { path = "crates/renamite-machine", version = "0.3.16" }
 renamite-io-ren = { path = "crates/renamite-io-ren", version = "0.3.16" }
+renamite-io-raster = { path = "crates/renamite-io-raster", version = "0.3.16" }
 renamite-validate = { path = "crates/renamite-validate", version = "0.3.16" }
 renamite-examples = { path = "crates/renamite-examples", version = "0.3.16" }
 renamite-player = { path = "crates/renamite-player", version = "0.3.16" }

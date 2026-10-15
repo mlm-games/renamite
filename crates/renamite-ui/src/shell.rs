@@ -57,6 +57,7 @@ pub fn EditorShell(session: SessionRef) -> View {
                 message: message.clone(),
                 action: None,
                 duration_ms: 3500,
+                on_finished: None,
                 builder: Rc::new(move |dismissing| {
                     Snackbar(
                         message.clone(),

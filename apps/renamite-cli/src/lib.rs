@@ -174,6 +174,28 @@ pub enum Commands {
         strict: bool,
     },
 
+    /// Convert a PNG sprite sheet to a Renamite project by contouring it.
+    ImportRaster {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Frame cell size, WIDTHxHEIGHT. Omit for a single-frame image.
+        #[arg(long, value_parser = parse_cell)]
+        cell: Option<(u32, u32)>,
+        /// Composition playback rate, as a frames-per-second fraction.
+        #[arg(long, default_value = "12/1")]
+        rate: String,
+        /// Keep the pixels as image nodes instead of contouring them.
+        #[arg(long)]
+        embed: bool,
+        /// Contour every cell regardless of how many colours it has.
+        #[arg(long)]
+        no_color_limit: bool,
+        /// Fail if the importer emitted compatibility warnings.
+        #[arg(long)]
+        strict: bool,
+    },
+
     /// Generate shell completions
     /// Serve the MCP server over stdio.
     Mcp {
@@ -259,6 +281,15 @@ fn dispatch(command: Commands) -> Result<()> {
             output,
             strict,
         } => cmd_import_svg(input, output, strict),
+        Commands::ImportRaster {
+            input,
+            output,
+            cell,
+            rate,
+            embed,
+            no_color_limit,
+            strict,
+        } => cmd_import_raster(input, output, cell, rate, embed, no_color_limit, strict),
         Commands::Mcp { connect } => match connect {
             Some(addr) => renamite_mcp::serve_remote(&addr)
                 .map_err(|error| anyhow::anyhow!("mcp remote {addr}: {error}")),
@@ -962,6 +993,91 @@ fn cmd_import_svg(input: PathBuf, output: PathBuf, strict: bool) -> Result<()> {
     }
     for warning in &report.warnings {
         eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    let file = RenFile::new(report.value, name_from_path(&input));
+    match output.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("renb") => {
+            atomic_write(&output, &renamite_io_ren::save_binary(&file)?)?;
+        }
+        _ => {
+            atomic_write(&output, renamite_io_ren::save(&file)?.as_bytes())?;
+        }
+    }
+    println!("Imported {} -> {}", input.display(), output.display());
+    Ok(())
+}
+
+fn parse_cell(raw: &str) -> Result<(u32, u32), String> {
+    let (w, h) = raw
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected WIDTHxHEIGHT, got {raw:?}"))?;
+    let parse = |part: &str, axis: &str| {
+        part.trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{axis} is not a number in {raw:?}"))
+            .and_then(|value| {
+                if value == 0 {
+                    Err(format!("{axis} must be greater than zero"))
+                } else {
+                    Ok(value)
+                }
+            })
+    };
+    Ok((parse(w, "width")?, parse(h, "height")?))
+}
+
+fn parse_rate(raw: &str) -> Result<renamite_animation::FrameRate, String> {
+    let (num, den) = match raw.split_once('/') {
+        Some((num, den)) => (num, den),
+        None => (raw, "1"),
+    };
+    let num = num
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("rate numerator is not a number in {raw:?}"))?;
+    let den = den
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("rate denominator is not a number in {raw:?}"))?;
+    if num == 0 || den == 0 {
+        return Err(format!("rate must be non-zero in {raw:?}"));
+    }
+    Ok(renamite_animation::FrameRate { num, den })
+}
+
+fn cmd_import_raster(
+    input: PathBuf,
+    output: PathBuf,
+    cell: Option<(u32, u32)>,
+    rate: String,
+    embed: bool,
+    no_color_limit: bool,
+    strict: bool,
+) -> Result<()> {
+    let bytes = read_limited(&input, renamite_io_raster::MAX_INPUT_BYTES as u64, "raster")?;
+    let options = renamite_io_raster::RasterOptions {
+        cell,
+        rate: parse_rate(&rate).map_err(anyhow::Error::msg)?,
+        mode: if embed {
+            renamite_io_raster::RasterMode::Embed
+        } else {
+            renamite_io_raster::RasterMode::Trace
+        },
+        max_colors_per_frame: if no_color_limit {
+            None
+        } else {
+            renamite_io_raster::RasterOptions::default().max_colors_per_frame
+        },
+    };
+    let report = renamite_io_raster::import_with_report(&bytes, &options)?;
+    for warning in &report.warnings {
+        eprintln!("warning at {}: {}", warning.path, warning.message);
+    }
+    if strict && !report.warnings.is_empty() {
+        bail!(
+            "raster import produced {} compatibility warning(s)",
+            report.warnings.len()
+        );
     }
     let file = RenFile::new(report.value, name_from_path(&input));
     match output.extension().and_then(|extension| extension.to_str()) {
