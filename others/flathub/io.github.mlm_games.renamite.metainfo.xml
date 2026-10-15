@@ -58,6 +58,14 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.17" date="2026-10-15" type="stable">
+      <description>
+        <ul>
+          <li>add raster import (for easier gameart imports)</li>
+          <li>repl. pointer down calls with on_click, fix a mvp bug</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.16" date="2026-10-12" type="stable">
       <description>
         <ul>

@@ -1,3 +1,9 @@
+## v0.3.17
+
+- add raster import (for easier gameart imports)
+- repl. pointer down calls with on_click, fix a mvp bug
+
+
 ## v0.3.16
 
 - welcome owns the shell, not the viewport
