@@ -1621,6 +1621,7 @@ fn kind_label(kind: &StateKind) -> String {
         StateKind::Empty => "empty".into(),
         StateKind::Clip { .. } => "clip".into(),
         StateKind::Blend1D { children, .. } => format!("blend, {}", children.len()),
+        StateKind::Blend2D { children, .. } => format!("blend2d, {}", children.len()),
     }
 }
 
@@ -2000,6 +2001,7 @@ fn StateInspector(session: SessionRef, machine_id: MachineId, layer: usize, stat
             );
         }
         StateKind::Empty => {}
+        StateKind::Blend2D { .. } => {}
     }
 
     rows.push(

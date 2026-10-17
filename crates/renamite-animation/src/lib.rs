@@ -4,6 +4,9 @@ use glam::DVec2;
 use renamite_geometry::{Anchor, VectorPath, match_topology};
 use serde::{Deserialize, Serialize};
 
+mod tween_sequence;
+pub use tween_sequence::{LoopPolicy, TweenBuilder, TweenPlayer, TweenSequence, TweenStep, TweenStepKind};
+
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]

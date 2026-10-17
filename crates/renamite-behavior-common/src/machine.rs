@@ -245,11 +245,13 @@ pub fn add_layer(machine: &mut Machine, name: impl Into<String>) -> Result<usize
         name: name.to_owned(),
         entry: 0,
         any_transitions: Vec::new(),
+        blend: Default::default(),
         states: vec![State {
             name: "Entry".into(),
             kind: StateKind::Empty,
             transitions: Vec::new(),
             graph_pos: None,
+            sync_group: None,
         }],
     });
 
@@ -308,6 +310,7 @@ pub fn add_state(
         kind,
         transitions: Vec::new(),
         graph_pos: None,
+        sync_group: None,
     });
 
     Ok(layer.states.len() - 1)

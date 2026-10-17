@@ -63,6 +63,43 @@ pub fn value_tween(a: &Value, b: &Value, t: f64) -> Value {
     }
 }
 
+/// Scale a numeric Value by `s`; `None` for variants with no scale.
+pub fn value_scale(v: &Value, s: f64) -> Option<Value> {
+    use Value::*;
+    let s = if s.is_finite() { s } else { 0.0 };
+    Some(match v {
+        F64(x) => F64(x * s),
+        DVec2(x) => DVec2(*x * s),
+        Angle(a) => Angle(renamite_animation::Angle(a.0 * s)),
+        I64(i) => I64((*i as f64 * s).round() as i64),
+        Color(c) => Color(renamite_model::Color {
+            r: c.r * s,
+            g: c.g * s,
+            b: c.b * s,
+            a: c.a * s,
+        }),
+        _ => return None,
+    })
+}
+
+/// Component-add two Values; `None` when their variants differ or lack an add.
+pub fn value_add(a: &Value, b: &Value) -> Option<Value> {
+    use Value::*;
+    Some(match (a, b) {
+        (F64(x), F64(y)) => F64(x + y),
+        (DVec2(x), DVec2(y)) => DVec2(*x + *y),
+        (Angle(x), Angle(y)) => Angle(renamite_animation::Angle(x.0 + y.0)),
+        (I64(x), I64(y)) => I64(x + y),
+        (Color(x), Color(y)) => Color(renamite_model::Color {
+            r: x.r + y.r,
+            g: x.g + y.g,
+            b: x.b + y.b,
+            a: x.a + y.a,
+        }),
+        _ => return None,
+    })
+}
+
 impl Track {
     pub fn value_at(&self, frame: f64) -> Option<Value> {
         let ks = &self.keys;
@@ -120,6 +157,48 @@ impl Clip {
             }
         }
     }
+
+    /// Root/hips delta for `node` between two layer-local times, using the
+    /// node's `transform.position` / `transform.rotation` tracks and the same
+    /// `speed` / `loop_mode` mapping as playback. For a looping clip the delta
+    /// is the plain difference between the wrapped samples.
+    pub fn root_motion_delta(
+        &self,
+        node: NodeId,
+        prev_time: f64,
+        time: f64,
+        speed: f64,
+        loop_mode: LoopMode,
+    ) -> RootMotion {
+        let speed = finite_nonnegative(speed);
+        let prev = if prev_time.is_finite() {
+            prev_time * speed
+        } else {
+            0.0
+        };
+        let cur = if time.is_finite() { time * speed } else { prev };
+        let (prev_frame, _) = self.local(prev, loop_mode);
+        let (cur_frame, _) = self.local(cur, loop_mode);
+        let pos = |frame: f64| match self.track_value(node, "transform.position", frame) {
+            Some(Value::DVec2(v)) => v,
+            _ => glam::DVec2::ZERO,
+        };
+        let rot = |frame: f64| match self.track_value(node, "transform.rotation", frame) {
+            Some(Value::Angle(a)) => a.0,
+            _ => 0.0,
+        };
+        RootMotion {
+            position: pos(cur_frame) - pos(prev_frame),
+            rotation_deg: rot(cur_frame) - rot(prev_frame),
+        }
+    }
+
+    fn track_value(&self, node: NodeId, prop: &str, frame: f64) -> Option<Value> {
+        self.tracks
+            .iter()
+            .find(|t| t.node == node && t.prop.as_str() == prop)
+            .and_then(|t| t.value_at(frame))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,6 +209,10 @@ pub struct Machine {
     /// Pointer interactions on scene nodes → input actions. Picking is free:
     /// `SceneItem` already carries the shape `NodeId`.
     pub listeners: Vec<Listener>,
+    /// Root/hips node whose transform is reported as root motion and removed
+    /// from the pose. `None` keeps every track in the pose.
+    #[serde(default)]
+    pub root_motion: Option<NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -152,6 +235,21 @@ pub struct MachineLayer {
     pub entry: usize,
     /// Checked before per-state transitions, from any state (Rive-style Any).
     pub any_transitions: Vec<Transition>,
+    /// How this layer combines with the layers below it.
+    #[serde(default)]
+    pub blend: LayerBlend,
+}
+
+/// Layer composition mode. `Override` replaces lower layers; `Additive`
+/// adds its state's values (scaled by a Number input) onto them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum LayerBlend {
+    #[default]
+    Override,
+    Additive {
+        /// Number input used as the additive weight.
+        weight: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -161,6 +259,10 @@ pub struct State {
     pub transitions: Vec<Transition>,
     #[serde(default)]
     pub graph_pos: Option<(f64, f64)>,
+    /// States sharing a non-empty group keep a shared normalized phase across
+    /// a transition (walk/run style).
+    #[serde(default)]
+    pub sync_group: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -176,6 +278,14 @@ pub enum StateKind {
         input: usize,
         children: Vec<BlendChild>,
     },
+    /// 2D blend across clips positioned in the input plane. Weights come from
+    /// a Delaunay triangulation of the child positions: barycentric inside a
+    /// triangle, segment projection on the nearest edge otherwise.
+    Blend2D {
+        input_x: usize,
+        input_y: usize,
+        children: Vec<BlendPoint2D>,
+    },
     /// No animation (rest pose = document values).
     Empty,
 }
@@ -183,6 +293,12 @@ pub enum StateKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlendChild {
     pub threshold: f64,
+    pub clip: ClipId,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlendPoint2D {
+    pub pos: (f64, f64),
     pub clip: ClipId,
 }
 
@@ -246,6 +362,87 @@ fn finite_nonnegative(value: f64) -> f64 {
     }
 }
 
+fn additive_weight(inputs: &[InputValue], weight: usize) -> f64 {
+    match inputs.get(weight) {
+        Some(InputValue::Number(n)) if n.is_finite() => *n,
+        _ => 0.0,
+    }
+}
+
+/// Compose one additive-layer value onto `out`, scaling by `weight`.
+/// Non-scalable or type-mismatched values fall back to an override.
+fn apply_additive(out: &mut Overrides, node: NodeId, prop: PropPath, value: Value, weight: f64) {
+    let Some(delta) = value_scale(&value, weight) else {
+        out.set(node, prop, value);
+        return;
+    };
+    let merged = match out.get(node, prop.as_str()).cloned() {
+        Some(base) => value_add(&base, &delta).unwrap_or(delta),
+        None => delta,
+    };
+    out.set(node, prop, merged);
+}
+
+/// Normalized phase (0..1) of a state that carries a clip chain.
+fn state_phase(state: &State, clips: &ClipMap, time: f64) -> Option<f64> {
+    let (clip_id, speed, loop_mode) = match &state.kind {
+        StateKind::Clip {
+            clip,
+            speed,
+            loop_mode,
+        } => (*clip, *speed, *loop_mode),
+        StateKind::Blend1D { children, .. } => (children.first()?.clip, 1.0, LoopMode::Loop),
+        StateKind::Blend2D { children, .. } => (children.first()?.clip, 1.0, LoopMode::Loop),
+        StateKind::Empty => return None,
+    };
+    let clip = clips.get(clip_id)?;
+    let speed = finite_nonnegative(speed);
+    let time = if time.is_finite() { time * speed } else { 0.0 };
+    Some(clip_phase(clip, time, loop_mode))
+}
+
+/// Layer-local time that puts `state` at normalized `phase`.
+fn state_time_for_phase(state: &State, clips: &ClipMap, phase: f64) -> Option<f64> {
+    let (clip_id, speed, _) = match &state.kind {
+        StateKind::Clip {
+            clip,
+            speed,
+            loop_mode,
+        } => (*clip, *speed, *loop_mode),
+        StateKind::Blend1D { children, .. } => (children.first()?.clip, 1.0, LoopMode::Loop),
+        StateKind::Blend2D { children, .. } => (children.first()?.clip, 1.0, LoopMode::Loop),
+        StateKind::Empty => return None,
+    };
+    let clip = clips.get(clip_id)?;
+    let speed = finite_nonnegative(speed);
+    if speed <= 0.0 {
+        return Some(0.0);
+    }
+    let phase = if phase.is_finite() {
+        phase.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    Some(phase * clip.len_frames() / speed)
+}
+
+/// Layer-local time for `to` that matches `from`'s phase, when both share a
+/// non-empty sync group.
+fn sync_aligned_time(
+    from: &State,
+    to: &State,
+    clips: &ClipMap,
+    from_time: f64,
+) -> Option<f64> {
+    let from_group = from.sync_group.as_deref()?;
+    let to_group = to.sync_group.as_deref()?;
+    if from_group.is_empty() || from_group != to_group {
+        return None;
+    }
+    let phase = state_phase(from, clips, from_time)?;
+    state_time_for_phase(to, clips, phase)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputValue {
     Bool(bool),
@@ -282,6 +479,24 @@ pub struct MachineInstance {
 #[derive(Clone, Debug, Default)]
 pub struct TickOutput {
     pub events: Vec<String>,
+    /// Root/hips delta for this tick when the machine declares one.
+    pub root_motion: RootMotion,
+}
+
+/// Delta of a root/hips node's transform over one tick. The caller applies it
+/// to a world transform instead of using the node's own pose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RootMotion {
+    /// Position delta in the node's transform space.
+    pub position: glam::DVec2,
+    /// Rotation delta in degrees.
+    pub rotation_deg: f64,
+}
+
+impl RootMotion {
+    pub fn is_zero(&self) -> bool {
+        self.position == glam::DVec2::ZERO && self.rotation_deg == 0.0
+    }
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -504,6 +719,25 @@ impl MachineInstance {
                 rt.current = tr.to;
                 rt.time = 0.0;
                 rt.entered = false;
+                if let Some(aligned) = sync_aligned_time(
+                    &layer.states[current],
+                    &layer.states[tr.to],
+                    clips,
+                    prev_time,
+                ) {
+                    rt.time = aligned;
+                }
+            }
+            // Keep a fade's target in phase with its source until it ends.
+            if let Some(f) = rt.fade.clone()
+                && let Some(aligned) = sync_aligned_time(
+                    &layer.states[f.from],
+                    &layer.states[rt.current],
+                    clips,
+                    f.from_time,
+                )
+            {
+                rt.time = aligned;
             }
 
             // sample
@@ -527,6 +761,18 @@ impl MachineInstance {
             } else {
                 prev_if_same(prev_time, rt.time)
             };
+            if li == 0
+                && let Some(root) = m.root_motion
+                && let StateKind::Clip {
+                    clip,
+                    speed,
+                    loop_mode,
+                } = &layer.states[rt.current].kind
+                && let Some(c) = clips.get(*clip)
+            {
+                output.root_motion =
+                    c.root_motion_delta(root, sample_prev, rt.time, *speed, *loop_mode);
+            }
             sample_state(
                 &layer.states[rt.current],
                 clips,
@@ -563,8 +809,22 @@ impl MachineInstance {
                     b.insert(k, merged);
                 }
             }
-            for (k, v) in b {
-                out.set(k.0, k.1, v);
+            if let Some(root) = m.root_motion {
+                b.remove(&(root, PropPath::new("transform.position")));
+                b.remove(&(root, PropPath::new("transform.rotation")));
+            }
+            match layer.blend {
+                LayerBlend::Override => {
+                    for (k, v) in b {
+                        out.set(k.0, k.1, v);
+                    }
+                }
+                LayerBlend::Additive { weight } => {
+                    let weight = additive_weight(&self.inputs, weight);
+                    for (k, v) in b {
+                        apply_additive(out, k.0, k.1, v, weight);
+                    }
+                }
             }
             output.events.append(&mut evs);
         }
@@ -619,8 +879,22 @@ impl MachineInstance {
                     b.insert(k, merged);
                 }
             }
-            for (k, v) in b {
-                out.set(k.0, k.1, v);
+            if let Some(root) = m.root_motion {
+                b.remove(&(root, PropPath::new("transform.position")));
+                b.remove(&(root, PropPath::new("transform.rotation")));
+            }
+            match layer.blend {
+                LayerBlend::Override => {
+                    for (k, v) in b {
+                        out.set(k.0, k.1, v);
+                    }
+                }
+                LayerBlend::Additive { weight } => {
+                    let weight = additive_weight(&self.inputs, weight);
+                    for (k, v) in b {
+                        apply_additive(out, k.0, k.1, v, weight);
+                    }
+                }
             }
         }
         output
@@ -808,6 +1082,15 @@ fn state_progress(state: &State, clips: &ClipMap, previous: f64, current: f64) -
                 reached_one: false,
             }),
         StateKind::Blend1D { children, .. } => children
+            .iter()
+            .find_map(|child| clips.get(child.clip))
+            .map(|clip| clip_progress(clip, previous, current, LoopMode::Loop, 1.0))
+            .unwrap_or(StateProgress {
+                previous: 0.0,
+                current: 0.0,
+                reached_one: false,
+            }),
+        StateKind::Blend2D { children, .. } => children
             .iter()
             .find_map(|child| clips.get(child.clip))
             .map(|clip| clip_progress(clip, previous, current, LoopMode::Loop, 1.0))
@@ -1031,6 +1314,76 @@ fn sample_state(
                 out.extend(a);
             }
         }
+        StateKind::Blend2D {
+            input_x,
+            input_y,
+            children,
+        } => {
+            if children.is_empty() {
+                return;
+            }
+            let x = match inputs.get(*input_x) {
+                Some(InputValue::Number(n)) if n.is_finite() => *n,
+                _ => 0.0,
+            };
+            let y = match inputs.get(*input_y) {
+                Some(InputValue::Number(n)) if n.is_finite() => *n,
+                _ => 0.0,
+            };
+            let weights = blend2d_weights(children, x, y);
+            let mut accumulator: HashMap<(NodeId, PropPath), Value> = HashMap::new();
+            let mut weight_sum: HashMap<(NodeId, PropPath), f64> = HashMap::new();
+            let mut event_keys = std::collections::HashSet::new();
+            for (index, child) in children.iter().enumerate() {
+                let weight = weights[index];
+                if weight <= 0.0 {
+                    continue;
+                }
+                let Some(c) = clips.get(child.clip) else {
+                    continue;
+                };
+                let mut sampled = HashMap::new();
+                let mut child_events = Vec::new();
+                c.sample_into(c.local(time, LoopMode::Loop).0, &mut sampled);
+                emit_events(
+                    c,
+                    prev_time,
+                    time,
+                    LoopMode::Loop,
+                    include_start,
+                    &mut child_events,
+                );
+                for event in child_events {
+                    if event_keys.insert((child.clip, event.clone())) {
+                        events.push(event);
+                    }
+                }
+                for (key, value) in sampled {
+                    let merged = match accumulator.get(&key) {
+                        Some(current) => {
+                            let previous = weight_sum.get(&key).copied().unwrap_or(0.0);
+                            let total = previous + weight;
+                            let t = if total > 0.0 { weight / total } else { 0.0 };
+                            Some(value_tween(current, &value, t))
+                        }
+                        None => None,
+                    };
+                    match merged {
+                        Some(v) => {
+                            let total =
+                                weight_sum.get(&key).copied().unwrap_or(0.0) + weight;
+                            accumulator.insert(key.clone(), v);
+                            weight_sum.insert(key, total);
+                        }
+                        None => {
+                            weight_sum.insert(key.clone(), weight);
+                            accumulator.insert(key, value);
+                        }
+                    }
+                }
+            }
+            out.extend(accumulator);
+        }
     }
 }
 
@@ -1079,6 +1432,249 @@ fn bracket(children: &[BlendChild], x: f64) -> (usize, usize, f64) {
         0.0
     };
     (low, high, factor.clamp(0.0, 1.0))
+}
+
+const WEIGHT_EPS: f64 = 1e-9;
+
+/// Blend weights for `children` at plane point `(x, y)`.
+///
+/// One child: 1. With two: projection onto the segment. Otherwise a Delaunay
+/// triangulation of the child positions: barycentric weights inside a triangle,
+/// projection onto the nearest edge outside, nearest child when degenerate.
+fn blend2d_weights(children: &[BlendPoint2D], x: f64, y: f64) -> Vec<f64> {
+    let n = children.len();
+    let mut weights = vec![0.0; n];
+    if n == 0 {
+        return weights;
+    }
+    let points: Vec<(f64, f64)> = children.iter().map(|child| child.pos).collect();
+    if n == 1 {
+        weights[0] = 1.0;
+        return weights;
+    }
+    let x = if x.is_finite() { x } else { 0.0 };
+    let y = if y.is_finite() { y } else { 0.0 };
+    if n == 2 {
+        let t = closest_on_segment(points[0], points[1], x, y).0;
+        weights[0] = 1.0 - t;
+        weights[1] = t;
+        return weights;
+    }
+    let triangles = delaunay_triangles(&points);
+    if triangles.is_empty() {
+        weights[nearest_point(&points, x, y)] = 1.0;
+        return weights;
+    }
+    for triangle in &triangles {
+        if let Some((u, v, w)) = barycentric(
+            points[triangle[0]],
+            points[triangle[1]],
+            points[triangle[2]],
+            x,
+            y,
+        ) && u >= -WEIGHT_EPS
+            && v >= -WEIGHT_EPS
+            && w >= -WEIGHT_EPS
+        {
+            weights[triangle[0]] = u;
+            weights[triangle[1]] = v;
+            weights[triangle[2]] = w;
+            return weights;
+        }
+    }
+    let mut best = f64::INFINITY;
+    let mut best_edge: Option<(usize, usize, f64)> = None;
+    for triangle in &triangles {
+        let verts = [triangle[0], triangle[1], triangle[2]];
+        for k in 0..3 {
+            let ia = verts[k];
+            let ib = verts[(k + 1) % 3];
+            let (t, (cx, cy)) = closest_on_segment(points[ia], points[ib], x, y);
+            let d2 = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+            if d2 < best {
+                best = d2;
+                best_edge = Some((ia, ib, t));
+            }
+        }
+    }
+    match best_edge {
+        Some((ia, ib, t)) => {
+            weights[ia] = 1.0 - t;
+            weights[ib] = t;
+        }
+        None => weights[nearest_point(&points, x, y)] = 1.0,
+    }
+    weights
+}
+
+fn nearest_point(points: &[(f64, f64)], x: f64, y: f64) -> usize {
+    let mut best = 0;
+    let mut best_d = f64::INFINITY;
+    for (index, &(px, py)) in points.iter().enumerate() {
+        if !px.is_finite() || !py.is_finite() {
+            continue;
+        }
+        let d = (px - x) * (px - x) + (py - y) * (py - y);
+        if d < best_d {
+            best_d = d;
+            best = index;
+        }
+    }
+    best
+}
+
+/// Closest point on segment `a..b` to `p`, as `(t, point)` with `t` in 0..=1.
+fn closest_on_segment(a: (f64, f64), b: (f64, f64), x: f64, y: f64) -> (f64, (f64, f64)) {
+    let (ax, ay) = a;
+    let (bx, by) = b;
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 {
+        (((x - ax) * dx + (y - ay) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (t, (ax + dx * t, ay + dy * t))
+}
+
+/// Barycentric weights of `p` in triangle `(a, b, c)`, or `None` if degenerate.
+fn barycentric(
+    a: (f64, f64),
+    b: (f64, f64),
+    c: (f64, f64),
+    px: f64,
+    py: f64,
+) -> Option<(f64, f64, f64)> {
+    let (ax, ay) = a;
+    let (bx, by) = b;
+    let (cx, cy) = c;
+    let v0 = (bx - ax, by - ay);
+    let v1 = (cx - ax, cy - ay);
+    let v2 = (px - ax, py - ay);
+    let d00 = v0.0 * v0.0 + v0.1 * v0.1;
+    let d01 = v0.0 * v1.0 + v0.1 * v1.1;
+    let d11 = v1.0 * v1.0 + v1.1 * v1.1;
+    let d20 = v2.0 * v0.0 + v2.1 * v0.1;
+    let d21 = v2.0 * v1.0 + v2.1 * v1.1;
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    Some((1.0 - v - w, v, w))
+}
+
+/// Delaunay triangulation (Bowyer-Watson) of `points`, as index triples.
+/// Deterministic for a fixed input order. Empty when fewer than three finite,
+/// non-degenerate points exist.
+fn delaunay_triangles(points: &[(f64, f64)]) -> Vec<[usize; 3]> {
+    let n = points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let ids: Vec<usize> = (0..n)
+        .filter(|&i| points[i].0.is_finite() && points[i].1.is_finite())
+        .collect();
+    if ids.len() < 3 {
+        return Vec::new();
+    }
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for &i in &ids {
+        let (x, y) = points[i];
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    let extent = (max_x - min_x).max(max_y - min_y).max(1e-6);
+    let d = extent * 32.0;
+    let center = (min_x + max_x) * 0.5;
+    let middle = (min_y + max_y) * 0.5;
+    let super_vertices = [
+        (center - d, middle - d),
+        (center + d, middle - d),
+        (center, middle + d),
+    ];
+    let point_at = |i: usize| {
+        if i < n {
+            points[i]
+        } else {
+            super_vertices[i - n]
+        }
+    };
+    let mut triangles: Vec<[usize; 3]> = vec![[n, n + 1, n + 2]];
+    for &pi in &ids {
+        let point = point_at(pi);
+        let mut bad: Vec<usize> = Vec::new();
+        for (index, triangle) in triangles.iter().enumerate() {
+            if in_circumcircle(
+                point,
+                point_at(triangle[0]),
+                point_at(triangle[1]),
+                point_at(triangle[2]),
+            ) {
+                bad.push(index);
+            }
+        }
+        if bad.is_empty() {
+            continue;
+        }
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for &index in &bad {
+            let triangle = triangles[index];
+            for k in 0..3 {
+                let edge = (triangle[k], triangle[(k + 1) % 3]);
+                let shared = bad.iter().any(|&other| {
+                    if other == index {
+                        return false;
+                    }
+                    let candidate = triangles[other];
+                    (0..3).any(|m| {
+                        let e = (candidate[m], candidate[(m + 1) % 3]);
+                        e == edge || (e.1, e.0) == edge
+                    })
+                });
+                if !shared {
+                    edges.push(edge);
+                }
+            }
+        }
+        let mut sorted = bad;
+        sorted.sort_unstable();
+        for &index in sorted.iter().rev() {
+            triangles.remove(index);
+        }
+        for (a, b) in edges {
+            triangles.push([a, b, pi]);
+        }
+    }
+    triangles.retain(|triangle| triangle.iter().all(|&vertex| vertex < n));
+    triangles
+}
+
+fn in_circumcircle(d: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    let (dx, dy) = d;
+    let (ax, ay) = a;
+    let (bx, by) = b;
+    let (cx, cy) = c;
+    let adx = ax - dx;
+    let ady = ay - dy;
+    let bdx = bx - dx;
+    let bdy = by - dy;
+    let cdx = cx - dx;
+    let cdy = cy - dy;
+    let det = (adx * adx + ady * ady) * (bdx * cdy - bdy * cdx)
+        - (bdx * bdx + bdy * bdy) * (adx * cdy - ady * cdx)
+        + (cdx * cdx + cdy * cdy) * (adx * bdy - ady * bdx);
+    let orient = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if orient > 0.0 { det > 1e-12 } else { det < -1e-12 }
 }
 
 fn emit_events(
@@ -1197,6 +1793,7 @@ mod tests {
                 name: "base".into(),
                 entry: 0,
                 any_transitions: vec![],
+                blend: LayerBlend::Override,
                 states: vec![
                     State {
                         name: "Down".into(),
@@ -1215,6 +1812,7 @@ mod tests {
                             }],
                         }],
                         graph_pos: None,
+                        sync_group: None,
                     },
                     State {
                         name: "Up".into(),
@@ -1233,6 +1831,7 @@ mod tests {
                             }],
                         }],
                         graph_pos: None,
+                        sync_group: None,
                     },
                 ],
             }],
@@ -1244,6 +1843,7 @@ mod tests {
                     value: true,
                 },
             }],
+            root_motion: None,
         };
         (clips, m, node)
     }
@@ -1356,5 +1956,283 @@ mod tests {
             panic!("expected f64 opacity");
         };
         assert!(op > 0.0 && op < 1.0, "got {op}");
+    }
+
+    fn node_id() -> NodeId {
+        let mut doc = renamite_model::Document::empty();
+        doc.create_node(renamite_model::Node::new(
+            "n",
+            renamite_model::NodeKind::Group,
+        ))
+    }
+
+    fn const_clip(node: NodeId, value: f64) -> Clip {
+        Clip {
+            name: format!("c{value}"),
+            range: (Frame(0), Frame(60)),
+            tracks: vec![Track {
+                node,
+                prop: PropPath::new("opacity"),
+                keys: vec![key(0, value), key(60, value)],
+            }],
+            events: vec![],
+        }
+    }
+
+    #[test]
+    fn blend2d_weights_are_exact_at_sample_points() {
+        let point = |x: f64, y: f64| BlendPoint2D {
+            pos: (x, y),
+            clip: ClipId::default(),
+        };
+        let children = [
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ];
+        assert_eq!(blend2d_weights(&children, 1.0, 0.0), vec![0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            blend2d_weights(&children, 0.5, 0.0),
+            vec![0.5, 0.5, 0.0, 0.0]
+        );
+        assert_eq!(
+            blend2d_weights(&children, -1.0, 0.5),
+            vec![0.5, 0.0, 0.5, 0.0]
+        );
+    }
+
+    #[test]
+    fn blend2d_output_is_the_weighted_average() {
+        let node = node_id();
+        let mut clips = ClipMap::default();
+        let children: Vec<BlendPoint2D> = [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 10.0),
+            (0.0, 1.0, 20.0),
+            (1.0, 1.0, 30.0),
+        ]
+        .into_iter()
+        .map(|(x, y, v)| BlendPoint2D {
+            pos: (x, y),
+            clip: clips.insert(const_clip(node, v)),
+        })
+        .collect();
+        let machine = Machine {
+            name: "m".into(),
+            inputs: vec![
+                InputDef {
+                    name: "x".into(),
+                    kind: InputKind::Number { default: 0.5 },
+                },
+                InputDef {
+                    name: "y".into(),
+                    kind: InputKind::Number { default: 0.0 },
+                },
+            ],
+            layers: vec![MachineLayer {
+                name: "base".into(),
+                entry: 0,
+                any_transitions: vec![],
+                blend: LayerBlend::Override,
+                states: vec![State {
+                    name: "blend".into(),
+                    kind: StateKind::Blend2D {
+                        input_x: 0,
+                        input_y: 1,
+                        children,
+                    },
+                    transitions: vec![],
+                    graph_pos: None,
+                    sync_group: None,
+                }],
+            }],
+            listeners: vec![],
+            root_motion: None,
+        };
+        let mut instance = MachineInstance::new(&machine);
+        let mut overrides = Overrides::default();
+        instance.tick(&machine, &clips, 1.0, &mut overrides);
+        assert_eq!(overrides.get(node, "opacity"), Some(&Value::F64(5.0)));
+    }
+
+    #[test]
+    fn additive_layer_accumulates_over_lower_layers() {
+        let node = node_id();
+        let mut clips = ClipMap::default();
+        let base = clips.insert(const_clip(node, 0.2));
+        let add = clips.insert(const_clip(node, 0.5));
+        let machine = Machine {
+            name: "m".into(),
+            inputs: vec![InputDef {
+                name: "add".into(),
+                kind: InputKind::Number { default: 0.5 },
+            }],
+            layers: vec![
+                MachineLayer {
+                    name: "base".into(),
+                    entry: 0,
+                    any_transitions: vec![],
+                    blend: LayerBlend::Override,
+                    states: vec![State {
+                        name: "base".into(),
+                        kind: StateKind::Clip {
+                            clip: base,
+                            speed: 1.0,
+                            loop_mode: LoopMode::Loop,
+                        },
+                        transitions: vec![],
+                        graph_pos: None,
+                        sync_group: None,
+                    }],
+                },
+                MachineLayer {
+                    name: "add".into(),
+                    entry: 0,
+                    any_transitions: vec![],
+                    blend: LayerBlend::Additive { weight: 0 },
+                    states: vec![State {
+                        name: "add".into(),
+                        kind: StateKind::Clip {
+                            clip: add,
+                            speed: 1.0,
+                            loop_mode: LoopMode::Loop,
+                        },
+                        transitions: vec![],
+                        graph_pos: None,
+                        sync_group: None,
+                    }],
+                },
+            ],
+            listeners: vec![],
+            root_motion: None,
+        };
+        let mut instance = MachineInstance::new(&machine);
+        let mut overrides = Overrides::default();
+        instance.tick(&machine, &clips, 1.0, &mut overrides);
+        assert_eq!(overrides.get(node, "opacity"), Some(&Value::F64(0.45)));
+    }
+
+    #[test]
+    fn sync_group_keeps_phase_across_transition() {
+        let node = node_id();
+        let mut clips = ClipMap::default();
+        let a = clips.insert(const_clip(node, 0.0));
+        let b = clips.insert(Clip {
+            range: (Frame(0), Frame(40)),
+            ..const_clip(node, 0.0)
+        });
+        let state = |name: &str, clip: ClipId, transitions: Vec<Transition>| State {
+            name: name.into(),
+            kind: StateKind::Clip {
+                clip,
+                speed: 1.0,
+                loop_mode: LoopMode::Loop,
+            },
+            transitions,
+            graph_pos: None,
+            sync_group: Some("gait".into()),
+        };
+        let machine = Machine {
+            name: "m".into(),
+            inputs: vec![InputDef {
+                name: "run".into(),
+                kind: InputKind::Bool { default: false },
+            }],
+            layers: vec![MachineLayer {
+                name: "base".into(),
+                entry: 0,
+                any_transitions: vec![],
+                blend: LayerBlend::Override,
+                states: vec![
+                    state(
+                        "walk",
+                        a,
+                        vec![Transition {
+                            to: 1,
+                            duration: 10.0,
+                            exit_time: None,
+                            conditions: vec![Condition::BoolIs {
+                                input: 0,
+                                value: true,
+                            }],
+                        }],
+                    ),
+                    state("run", b, vec![]),
+                ],
+            }],
+            listeners: vec![],
+            root_motion: None,
+        };
+        let mut instance = MachineInstance::new(&machine);
+        let mut overrides = Overrides::default();
+        instance.tick(&machine, &clips, 20.0, &mut overrides);
+        instance.set_bool(0, true);
+        instance.tick(&machine, &clips, 1.0, &mut overrides);
+        let layer = &machine.layers[0];
+        let fade = instance.layers[0].fade.clone().expect("crossfade");
+        let phase_a = state_phase(&layer.states[fade.from], &clips, fade.from_time).unwrap();
+        let phase_b = state_phase(&layer.states[instance.layers[0].current], &clips, instance.layers[0].time).unwrap();
+        assert!(
+            (phase_a - phase_b).abs() < 1e-12,
+            "walk phase {phase_a} vs run phase {phase_b}"
+        );
+    }
+
+    #[test]
+    fn root_motion_delta_is_exact_for_a_clip() {
+        let node = node_id();
+        let mut clips = ClipMap::default();
+        let clip = clips.insert(Clip {
+            name: "walk".into(),
+            range: (Frame(0), Frame(10)),
+            tracks: vec![
+                Track {
+                    node,
+                    prop: PropPath::new("transform.position"),
+                    keys: vec![
+                        KeyframeData {
+                            frame: Frame(0),
+                            value: Value::DVec2(glam::DVec2::ZERO),
+                            interpolation: Interpolation::Linear,
+                            ease_out: EasingHandle::LINEAR_OUT,
+                            ease_in: EasingHandle::LINEAR_IN,
+                        },
+                        KeyframeData {
+                            frame: Frame(10),
+                            value: Value::DVec2(glam::DVec2::new(100.0, 0.0)),
+                            interpolation: Interpolation::Linear,
+                            ease_out: EasingHandle::LINEAR_OUT,
+                            ease_in: EasingHandle::LINEAR_IN,
+                        },
+                    ],
+                },
+                Track {
+                    node,
+                    prop: PropPath::new("transform.rotation"),
+                    keys: vec![
+                        KeyframeData {
+                            frame: Frame(0),
+                            value: Value::Angle(renamite_animation::Angle(0.0)),
+                            interpolation: Interpolation::Linear,
+                            ease_out: EasingHandle::LINEAR_OUT,
+                            ease_in: EasingHandle::LINEAR_IN,
+                        },
+                        KeyframeData {
+                            frame: Frame(10),
+                            value: Value::Angle(renamite_animation::Angle(90.0)),
+                            interpolation: Interpolation::Linear,
+                            ease_out: EasingHandle::LINEAR_OUT,
+                            ease_in: EasingHandle::LINEAR_IN,
+                        },
+                    ],
+                },
+            ],
+            events: vec![],
+        });
+        let c = &clips[clip];
+        let delta = c.root_motion_delta(node, 0.0, 5.0, 1.0, LoopMode::Once);
+        assert_eq!(delta.position, glam::DVec2::new(50.0, 0.0));
+        assert_eq!(delta.rotation_deg, 45.0);
     }
 }

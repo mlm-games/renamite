@@ -712,8 +712,10 @@ pub fn machine_new(file: &mut RenFile, params: &Value) -> Result<Value, String> 
             states: Vec::new(),
             entry: 0,
             any_transitions: Vec::new(),
+            blend: Default::default(),
         }],
         listeners: Vec::new(),
+        root_motion: None,
     };
     let id = file.machines.insert(machine);
     file.machine_order.push(id);
@@ -789,6 +791,7 @@ pub fn machine_state(file: &mut RenFile, params: &Value) -> Result<Value, String
         kind,
         transitions: Vec::new(),
         graph_pos: None,
+        sync_group: None,
     });
     let state = layer.states.len() - 1;
     Ok(json!({"ok": true, "state": state}))

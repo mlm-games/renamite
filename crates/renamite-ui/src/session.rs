@@ -3635,14 +3635,17 @@ impl Session {
                 name: "Layer 1".into(),
                 entry: 0,
                 any_transitions: Vec::new(),
+                blend: Default::default(),
                 states: vec![State {
                     name: "Idle".into(),
                     kind: StateKind::Empty,
                     transitions: Vec::new(),
                     graph_pos: None,
+                    sync_group: None,
                 }],
             }],
             listeners: Vec::new(),
+            root_motion: None,
         };
 
         self.history.begin("Create machine".to_string());

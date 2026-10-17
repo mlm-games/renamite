@@ -124,6 +124,11 @@ impl RenFile {
                                 live_c.insert(ch.clip);
                             }
                         }
+                        StateKind::Blend2D { children, .. } => {
+                            for ch in children {
+                                live_c.insert(ch.clip);
+                            }
+                        }
                         StateKind::Empty => {}
                     }
                 }

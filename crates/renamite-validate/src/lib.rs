@@ -1680,9 +1680,58 @@ impl<'a> Validator<'a> {
                                 prev = Some(child.threshold);
                             }
                         }
+                        StateKind::Blend2D {
+                            input_x,
+                            input_y,
+                            children,
+                        } => {
+                            let base = format!(
+                                "machine/{machine_id:?}/layer/{layer_index}/state/{state_index}/blend2d"
+                            );
+                            for (label, input) in [("x", input_x), ("y", input_y)] {
+                                match machine.inputs.get(*input) {
+                                    Some(input_def) => {
+                                        if !matches!(input_def.kind, InputKind::Number { .. }) {
+                                            self.err(
+                                                format!("{base}/input_{label}"),
+                                                "Blend2D input must be a number input",
+                                            );
+                                        }
+                                    }
+                                    None => self.err(
+                                        format!("{base}/input_{label}"),
+                                        "Blend2D input index is out of range",
+                                    ),
+                                }
+                            }
+                            if children.is_empty() {
+                                self.err(format!("{base}/children"), "Blend2D has no children");
+                            }
+                            if children.len() > MAX_TREE_NODES {
+                                self.err(
+                                    format!("{base}/children"),
+                                    "Blend2D has too many children",
+                                );
+                            }
+                            for (child_index, child) in
+                                children.iter().take(MAX_TREE_NODES).enumerate()
+                            {
+                                if !self.file.clips.contains_key(child.clip) {
+                                    self.err(
+                                        format!("{base}/child/{child_index}"),
+                                        "blend child references missing clip",
+                                    );
+                                }
+                                if !child.pos.0.is_finite() || !child.pos.1.is_finite() {
+                                    self.err(
+                                        format!("{base}/child/{child_index}/pos"),
+                                        "blend position must be finite",
+                                    );
+                                }
+                            }
+                        }
                         StateKind::Empty => {}
                     }
-
                     self.validate_transitions(
                         machine_id,
                         machine,

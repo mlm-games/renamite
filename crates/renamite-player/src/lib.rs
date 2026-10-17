@@ -723,6 +723,7 @@ mod tests {
                 name: "base".into(),
                 entry: 0,
                 any_transitions: vec![],
+                blend: Default::default(),
                 states: vec![
                     State {
                         name: "Idle".into(),
@@ -737,6 +738,7 @@ mod tests {
                             }],
                         }],
                         graph_pos: None,
+                        sync_group: None,
                     },
                     State {
                         name: "Move".into(),
@@ -747,6 +749,7 @@ mod tests {
                         },
                         transitions: vec![],
                         graph_pos: None,
+                        sync_group: None,
                     },
                 ],
             }],
@@ -758,6 +761,7 @@ mod tests {
                     value: true,
                 },
             }],
+            root_motion: None,
         };
         let mut machines = MachineMap::default();
         let id = machines.insert(machine);
